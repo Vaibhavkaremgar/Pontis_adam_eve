@@ -1,0 +1,11 @@
+# Monorepo-wide ignores
+.env*
+node_modules/
+.next/
+
+# Build artifacts
+dist/
+out/
+coverage/
+*.log
+*.tsbuildinfo
