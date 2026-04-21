@@ -39,6 +39,10 @@ export default function OutreachPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isOutreachComplete, setIsOutreachComplete] = useState(false);
+  const shortlisted = useMemo(
+    () => candidates.filter((candidate) => ["shortlisted", "contacted", "exported", "interview_scheduled"].includes(candidate.status)),
+    [candidates]
+  );
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -98,7 +102,7 @@ export default function OutreachPage() {
           )}
 
           <div className="space-y-3">
-            {candidates.map((candidate) => (
+            {shortlisted.map((candidate) => (
               <label
                 key={candidate.id}
                 className="flex cursor-pointer items-start justify-between rounded-xl border border-[#E5E7EB] bg-white p-4"
@@ -112,26 +116,31 @@ export default function OutreachPage() {
                     disabled={isSubmitting}
                   />
                   <div className="space-y-1">
-                    <p className="font-semibold text-gray-900">{candidate.name}</p>
+                    <p className="font-semibold text-gray-900">{candidate.name || candidate.id.slice(0, 8)}</p>
                     <p className="text-sm text-gray-600">{candidate.role}</p>
                   </div>
                 </div>
                 <Badge
                   variant={
-                    candidate.status === "Replied"
+                    candidate.status === "exported" || candidate.status === "interview_scheduled"
                       ? "high"
-                      : candidate.status === "Sent"
+                      : candidate.status === "contacted"
                         ? "medium"
                         : "low"
                   }
                 >
-                  {candidate.status}
+                  {candidate.outreachStatus ? `${candidate.status} • ${candidate.outreachStatus}` : candidate.status}
                 </Badge>
               </label>
             ))}
+            {shortlisted.length === 0 && (
+              <div className="rounded-xl border border-[#E5E7EB] bg-gray-50 p-4 text-sm text-gray-600">
+                No shortlisted candidates yet. Review candidates first.
+              </div>
+            )}
           </div>
 
-          <Button className="w-full justify-center" onClick={handleSendOutreach} disabled={!canSubmit}>
+          <Button className="w-full justify-center" onClick={handleSendOutreach} disabled={!canSubmit || shortlisted.length === 0}>
             {isSubmitting ? "Loading..." : "Send for Outreach"}
           </Button>
 

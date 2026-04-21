@@ -103,10 +103,6 @@ export default function CompanyPage() {
             />
           </div>
 
-          <div className="rounded-xl border border-[#E5E7EB] bg-gray-50 p-4 text-sm text-gray-600">
-            Frontend stores only recruiter-entered form fields. Embeddings and AI logic remain backend-only.
-          </div>
-
           {error && <p className="text-sm text-red-600">{error}</p>}
 
           <Button className="w-full justify-center" onClick={handleSubmit} disabled={isSubmitting}>

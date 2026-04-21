@@ -15,8 +15,9 @@
 export type User = {
   id: string;
   email: string;
-  provider: "email" | "google";
+  provider?: "email" | "google";
   name?: string;
+  picture?: string;
 };
 
 /** Company context captured in step 1 and sent with hiring create payload. */
@@ -40,16 +41,44 @@ export type Candidate = {
   id: string;
   name: string;
   role: string;
+  company: string;
+  skills: string[];
   summary: string;
   fitScore: number;
+  decision: "strong_match" | "potential" | "weak";
+  explanation?: {
+    semantic?: number;
+    semanticScore?: number;
+    skills_match?: string[];
+    feedback_boost?: number;
+    diversity_bonus?: number;
+    exploration_bonus?: number;
+    rejection_penalty?: number;
+    summary?: string[];
+    skillOverlap?: number;
+    finalScore?: number;
+    pdlRelevance?: number;
+    recencyScore?: number;
+    aiReasoning?: string;
+    penalties?: {
+      semanticPenalty?: number;
+      missingSkillsPenalty?: number;
+      feedbackBonus?: number;
+      feedbackBias?: number;
+      diversityBonus?: number;
+      explorationBonus?: number;
+      rejectionPenalty?: number;
+      [key: string]: number | undefined;
+    };
+  };
   strategy: "HIGH" | "MEDIUM" | "LOW";
-  status: "New" | "Sent" | "Replied" | "No response";
+  status: "new" | "contacted" | "shortlisted" | "interview_scheduled" | "rejected" | "exported";
+  outreachStatus?: "pending" | "dry_run" | "sent" | "failed" | string;
+  exportStatus?: "pending" | "queued" | "exported" | "failed" | string;
 };
 
 /** Interview stage record shown in final ready step. */
 export type InterviewStatus = {
   candidateId: string;
-  candidateName: string;
-  role: string;
-  status: "Ready" | "Scheduled" | "Pending";
+  status: "shortlisted" | "contacted" | "interview_scheduled" | "rejected" | "exported" | "new";
 };

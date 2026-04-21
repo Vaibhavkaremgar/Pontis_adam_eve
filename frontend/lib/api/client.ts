@@ -80,7 +80,7 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
     const result: ApiResponse<T> = {
       success: Boolean(parsed?.success),
       data: (parsed?.data as T | null) ?? null,
-      error: parsed?.error
+      error: parsed?.error || null
     };
 
     logRequest({ url, method, payload, response: result });

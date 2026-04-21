@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppContext } from "@/context/AppContext";
-import { getCandidates } from "@/lib/api/candidates";
+import { getCandidatesWithMode } from "@/lib/api/candidates";
 import { createHiring } from "@/lib/api/hiring";
 
 export default function JobPage() {
@@ -35,6 +35,7 @@ export default function JobPage() {
   const [showCandidates, setShowCandidates] = useState(false);
   const [progress, setProgress] = useState(8);
   const [error, setError] = useState("");
+  const [scoringMode, setScoringMode] = useState<"volume" | "elite">("volume");
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -91,7 +92,7 @@ export default function JobPage() {
     setJobId(jobId);
     setProgress(60);
 
-    const candidatesResult = await getCandidates({ jobId });
+    const candidatesResult = await getCandidatesWithMode({ jobId, mode: scoringMode, refresh: true });
     if (!candidatesResult.success || !candidatesResult.data) {
       setShowLoading(false);
       setError(candidatesResult.error || "Failed to load candidates.");
@@ -197,6 +198,29 @@ export default function JobPage() {
                 <RadioGroupItem value="not-required" id="not-required" />
                 <Label htmlFor="not-required" className="cursor-pointer font-normal text-gray-600">
                   Not required
+                </Label>
+              </div>
+            </RadioGroup>
+          </div>
+
+          <div className="space-y-3">
+            <Label>Scoring Mode</Label>
+            <RadioGroup
+              value={scoringMode}
+              onValueChange={(value) => setScoringMode(value as "volume" | "elite")}
+              className="gap-2"
+              disabled={showLoading}
+            >
+              <div className="flex items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white px-4 py-3">
+                <RadioGroupItem value="volume" id="volume" />
+                <Label htmlFor="volume" className="cursor-pointer font-normal text-gray-600">
+                  Volume mode (fast scoring)
+                </Label>
+              </div>
+              <div className="flex items-center gap-3 rounded-lg border border-[#E5E7EB] bg-white px-4 py-3">
+                <RadioGroupItem value="elite" id="elite" />
+                <Label htmlFor="elite" className="cursor-pointer font-normal text-gray-600">
+                  Elite mode (deep reasoning)
                 </Label>
               </div>
             </RadioGroup>

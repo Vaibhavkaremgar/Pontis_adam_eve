@@ -1,32 +1,20 @@
-from app.schemas.candidate import (
-    Candidate,
-    InterviewRequest,
-    InterviewResponse,
-    OutreachRequest,
-    OutreachResponse,
-)
-from app.schemas.job import (
-    Company,
-    Job,
-    JobInput,
-    JobCreatePayload,
-    JobCreateResponse,
-    VoiceRefineRequest,
-)
-from app.schemas.user import LoginRequest, User
+from app.schemas.candidate import CandidateResult, InterviewItem, OutreachData, OutreachRequest
+from app.schemas.job import Company, Job, JobCreatePayload, JobCreateResponse, JobInput, VoiceRefineData, VoiceRefineRequest
+from app.schemas.user import LoginData, LoginRequest, UserProfile
 
 __all__ = [
-    "Candidate",
+    "CandidateResult",
     "Company",
-    "InterviewRequest",
-    "InterviewResponse",
+    "InterviewItem",
     "Job",
     "JobInput",
     "JobCreatePayload",
     "JobCreateResponse",
+    "LoginData",
     "LoginRequest",
+    "OutreachData",
     "OutreachRequest",
-    "OutreachResponse",
-    "User",
+    "UserProfile",
+    "VoiceRefineData",
     "VoiceRefineRequest",
 ]

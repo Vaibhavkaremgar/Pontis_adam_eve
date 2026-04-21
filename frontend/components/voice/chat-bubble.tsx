@@ -1,17 +1,24 @@
 "use client";
 
-/**
- * What this component does:
- * Renders a clean AI conversation bubble without decorative placeholders.
- *
- * Which state it depends on:
- * Depends on transcript text passed from callStatus-driven voice state.
- */
+export type ChatMessage = {
+  role: "assistant" | "user";
+  text: string;
+};
 
-export function ChatBubble({ text }: { text: string }) {
+export function ChatBubble({ message }: { message: ChatMessage }) {
+  if (message.role === "assistant") {
+    return (
+      <div className="flex items-start gap-2 animate-[fadeIn_220ms_ease-out]">
+        <img src="/images/maya.png" alt="Maya" className="h-8 w-8 rounded-full object-cover" />
+        <div className="max-w-[70%] rounded-xl bg-gray-200/90 px-4 py-2 text-sm text-[#111111] shadow-sm">{message.text}</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="max-w-[600px] rounded-xl bg-gray-100 px-5 py-4 font-body text-base leading-relaxed text-[#111111]">
-      {text}
+    <div className="flex items-start justify-end gap-2 animate-[fadeIn_220ms_ease-out]">
+      <div className="max-w-[70%] rounded-xl bg-green-500 px-4 py-2 text-sm text-white shadow-sm">{message.text}</div>
+      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-800 text-sm font-semibold text-white">R</div>
     </div>
   );
 }

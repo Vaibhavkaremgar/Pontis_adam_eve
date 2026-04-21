@@ -19,7 +19,8 @@ import {
   useEffect,
   useMemo,
   useState,
-  type ReactNode
+  type ReactNode,
+  type SetStateAction
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -46,7 +47,7 @@ type AppContextValue = {
   setJob: (data: Job) => void;
   setJobId: (id: string) => void;
   setCandidates: (data: Candidate[]) => void;
-  setVoiceNotes: (notes: string[]) => void;
+  setVoiceNotes: (notes: SetStateAction<string[]>) => void;
   setIsRefined: (value: boolean) => void;
   setCallStatus: (value: CallStatus) => void;
   setTranscript: (value: string) => void;
@@ -95,7 +96,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setJob = useCallback((data: Job) => setJobState(data), []);
   const setJobId = useCallback((id: string) => setJobIdState(id), []);
   const setCandidates = useCallback((data: Candidate[]) => setCandidatesState(data), []);
-  const setVoiceNotes = useCallback((notes: string[]) => setVoiceNotesState(notes), []);
+  const setVoiceNotes = useCallback((notes: SetStateAction<string[]>) => setVoiceNotesState(notes), []);
   const setIsRefined = useCallback((value: boolean) => setIsRefinedState(value), []);
   const setCallStatus = useCallback((value: CallStatus) => setCallStatusState(value), []);
   const setTranscript = useCallback((value: string) => setTranscriptState(value), []);
@@ -123,13 +124,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const storedToken = getStoredToken();
     const storedUser = getStoredUser();
+    let cancelled = false;
 
-    if (storedToken && storedUser) {
-      setTokenState(storedToken);
-      setUserState(storedUser);
-    }
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (storedToken && storedUser) {
+        setTokenState(storedToken);
+        setUserState(storedUser);
+      }
+      setIsSessionReady(true);
+    });
 
-    setIsSessionReady(true);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Persist or clear session whenever user/token changes.

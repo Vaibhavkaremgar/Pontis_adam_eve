@@ -1,31 +1,18 @@
-from fastapi import APIRouter, HTTPException
+from __future__ import annotations
 
-from app.schemas.job import Job, VoiceRefineRequest
-from app.services.db_service import get_job, update_job
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.schemas.job import VoiceRefineRequest
+from app.services.voice_service import refine_job_with_voice
+from app.utils.responses import success_response
 
 router = APIRouter(tags=["voice"])
 
 
-@router.post("/voice/refine", response_model=Job)
-def refine_voice_notes(payload: VoiceRefineRequest) -> Job:
-    existing_job = get_job(payload.jobId)
-    if not existing_job:
-        raise HTTPException(status_code=404, detail="Job not found")
+@router.post("/voice/refine")
+def refine_voice_notes(payload: VoiceRefineRequest, db: Session = Depends(get_db)):
+    data = refine_job_with_voice(db=db, job_id=payload.jobId, voice_notes=payload.voiceNotes)
+    return success_response(data)
 
-    notes_text = " ".join(payload.voiceNotes).strip()
-    refined_description = existing_job.get("description", "")
-    if notes_text:
-        refined_description = f"{refined_description}\n\nHiring Notes:\n{notes_text}".strip()
-
-    updated_job = update_job(payload.jobId, {"description": refined_description})
-    if not updated_job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    return Job(
-        id=updated_job["id"],
-        title=updated_job["title"],
-        description=updated_job["description"],
-        location=updated_job["location"],
-        compensation=updated_job["compensation"],
-        workAuthorization=updated_job["workAuthorization"],
-    )

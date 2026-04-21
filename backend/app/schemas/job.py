@@ -8,7 +8,6 @@ class Company(BaseModel):
 
 
 class Job(BaseModel):
-    id: str
     title: str
     description: str
     location: str
@@ -36,4 +35,8 @@ class JobCreateResponse(BaseModel):
 class VoiceRefineRequest(BaseModel):
     voiceNotes: list[str]
     jobId: str
+
+
+class VoiceRefineData(BaseModel):
+    refined: bool
 

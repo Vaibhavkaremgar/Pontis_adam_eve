@@ -13,6 +13,7 @@ import "@fontsource/inter/index.css";
 import "@fontsource/playfair-display/600.css";
 import "@fontsource/playfair-display/700.css";
 
+import { OAuthProvider } from "@/components/providers/oauth-provider";
 import { AppProvider } from "@/context/AppContext";
 
 import "./globals.css";
@@ -30,7 +31,9 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="min-h-screen font-sans">
-        <AppProvider>{children}</AppProvider>
+        <OAuthProvider>
+          <AppProvider>{children}</AppProvider>
+        </OAuthProvider>
       </body>
     </html>
   );

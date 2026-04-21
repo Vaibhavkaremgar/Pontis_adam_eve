@@ -35,6 +35,10 @@ export default function VoiceProcessingPage() {
   const { user, isSessionReady, jobId, voiceNotes, setCandidates, setIsRefined } = useAppContext();
   const [completed, setCompleted] = useState(0);
   const [error, setError] = useState("");
+  const emptyTranscriptWarning =
+    jobId && voiceNotes.length === 0
+      ? "No transcript found. Please complete voice intake before refining candidates."
+      : "";
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -113,14 +117,17 @@ export default function VoiceProcessingPage() {
               </div>
             ))}
 
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {(error || emptyTranscriptWarning) && (
+              <p className="text-sm text-red-600">{error || emptyTranscriptWarning}</p>
+            )}
 
             <Link
               href="/outreach"
               className={cn(
                 buttonVariants({ variant: "default" }),
                 "mt-2 w-full justify-center",
-                (completed < checks.length || Boolean(error)) && "pointer-events-none opacity-50"
+                (completed < checks.length || Boolean(error) || Boolean(emptyTranscriptWarning)) &&
+                  "pointer-events-none opacity-50"
               )}
             >
               Continue to Outreach

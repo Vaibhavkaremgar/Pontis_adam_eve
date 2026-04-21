@@ -32,21 +32,15 @@ export async function GET(request: Request) {
   const items: InterviewStatus[] = [
     {
       candidateId: `${jobId}_cand_1`,
-      candidateName: "Avery Patel",
-      role: "Senior Product Designer",
-      status: "Ready"
+      status: "shortlisted"
     },
     {
       candidateId: `${jobId}_cand_2`,
-      candidateName: "Riley Morgan",
-      role: "Staff Frontend Engineer",
-      status: "Scheduled"
+      status: "contacted"
     },
     {
       candidateId: `${jobId}_cand_3`,
-      candidateName: "Jordan Lee",
-      role: "Talent Intelligence Specialist",
-      status: "Pending"
+      status: "interview_scheduled"
     }
   ];
 

@@ -18,6 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppContext } from "@/context/AppContext";
+import { exportCandidates } from "@/lib/api/candidates";
 import { getInterviewStatuses } from "@/lib/api/interviews";
 import type { InterviewStatus } from "@/types";
 
@@ -27,6 +28,8 @@ export default function ReadyPage() {
   const [items, setItems] = useState<InterviewStatus[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [exportMessage, setExportMessage] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -60,6 +63,24 @@ export default function ReadyPage() {
     run();
   }, [isSessionReady, jobId, router, user]);
 
+  const handleExport = async () => {
+    if (!jobId || isExporting) return;
+
+    setIsExporting(true);
+    setExportMessage("");
+    const candidateIds = items.filter((item) => item.status !== "shortlisted").map((item) => item.candidateId);
+    const result = await exportCandidates({ jobId, candidateIds, provider: "merge" });
+
+    if (!result.success || !result.data) {
+      setExportMessage(result.error || "Failed to export candidates.");
+      setIsExporting(false);
+      return;
+    }
+
+    setExportMessage(`Export ${result.data.status}: ${result.data.exportedCount} candidates (${result.data.reference})`);
+    setIsExporting(false);
+  };
+
   return (
     <AppShell activeStep={5}>
       <Card className="mx-auto w-full max-w-[560px]">
@@ -75,10 +96,17 @@ export default function ReadyPage() {
             <div key={item.candidateId} className="space-y-3 rounded-xl border border-[#E5E7EB] bg-white p-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="font-semibold text-gray-900">{item.candidateName}</p>
-                  <p className="text-sm text-gray-600">{item.role}</p>
+                  <p className="font-semibold text-gray-900">{item.candidateId.slice(0, 8)}</p>
                 </div>
-                <Badge variant={item.status === "Ready" ? "high" : item.status === "Scheduled" ? "medium" : "neutral"}>
+                <Badge
+                  variant={
+                    item.status === "interview_scheduled"
+                      ? "high"
+                      : item.status === "contacted"
+                        ? "medium"
+                        : "neutral"
+                  }
+                >
                   {item.status}
                 </Badge>
               </div>
@@ -95,6 +123,11 @@ export default function ReadyPage() {
           )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
+
+          <Button className="w-full justify-center" onClick={handleExport} disabled={isLoading || isExporting || items.length === 0}>
+            {isExporting ? "Exporting..." : "Export to ATS"}
+          </Button>
+          {exportMessage && <p className="text-sm text-gray-700">{exportMessage}</p>}
         </CardContent>
       </Card>
     </AppShell>

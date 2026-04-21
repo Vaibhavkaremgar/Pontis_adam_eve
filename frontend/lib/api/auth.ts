@@ -22,13 +22,38 @@ type LoginPayload = {
 type LoginData = {
   user: User;
   token: string;
+  access_token?: string;
+};
+
+type GoogleLoginPayload = {
+  token: string;
 };
 
 /** This function calls backend API and returns structured response. */
 export async function login(payload: LoginPayload): Promise<ApiResponse<LoginData>> {
-  return requestApi<LoginData>({
+  const response = await requestApi<LoginData>({
     url: `${API_BASE_URL}/auth/login`,
     method: "POST",
     payload
   });
+
+  if (response.success && response.data?.user && !response.data.user.provider) {
+    response.data.user.provider = payload.provider ?? "email";
+  }
+
+  return response;
+}
+
+export async function loginWithGoogle(payload: GoogleLoginPayload): Promise<ApiResponse<LoginData>> {
+  const response = await requestApi<LoginData>({
+    url: `${API_BASE_URL}/auth/google`,
+    method: "POST",
+    payload
+  });
+
+  if (response.success && response.data?.user && !response.data.user.provider) {
+    response.data.user.provider = "google";
+  }
+
+  return response;
 }

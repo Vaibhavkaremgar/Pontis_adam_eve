@@ -3,10 +3,22 @@ from pydantic import BaseModel
 
 class LoginRequest(BaseModel):
     email: str
-    password: str
+    provider: str = "email"
 
 
-class User(BaseModel):
+class GoogleLoginRequest(BaseModel):
+    token: str
+
+
+class UserProfile(BaseModel):
     id: str
-    name: str
     email: str
+    name: str = ""
+    picture: str = ""
+    provider: str = "email"
+
+
+class LoginData(BaseModel):
+    user: UserProfile
+    token: str
+    access_token: str

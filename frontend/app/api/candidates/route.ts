@@ -14,19 +14,6 @@ import { NextResponse } from "next/server";
 
 import type { Candidate } from "@/types";
 
-const names = [
-  "Avery Patel",
-  "Riley Morgan",
-  "Jordan Lee",
-  "Samira Khan",
-  "Tyler Brooks",
-  "Nina Alvarez",
-  "Marcus Chen",
-  "Leah Okafor",
-  "Diego Ramos",
-  "Priya Nair"
-];
-
 const roles = [
   "Senior Product Designer",
   "Staff Frontend Engineer",
@@ -57,20 +44,34 @@ export async function GET(request: Request) {
   }
 
   const candidates: Candidate[] = Array.from({ length: 10 }).map((_, index) => {
-    const baseScore = 94 - index * 4;
-    const fitScore = refined ? Math.min(99, baseScore + 2) : baseScore;
-    const strategy: Candidate["strategy"] = fitScore >= 88 ? "HIGH" : fitScore >= 76 ? "MEDIUM" : "LOW";
+    const baseScore = 4.8 - index * 0.3;
+    const fitScore = refined ? Math.min(5, Number((baseScore + 0.1).toFixed(2))) : Number(baseScore.toFixed(2));
+    const strategy: Candidate["strategy"] = fitScore >= 4 ? "HIGH" : fitScore >= 2.5 ? "MEDIUM" : "LOW";
 
     return {
       id: `${jobId}_cand_${index + 1}`,
-      name: names[index],
+      name: `Candidate ${index + 1}`,
       role: roles[index],
+      company: "Demo Company",
+      skills: ["communication", "execution"],
       summary: refined
         ? "Refined profile based on recruiter voice calibration and role-specific constraints."
         : "Ranked profile based on job brief relevance and sourcing match signals.",
       fitScore,
+      decision: fitScore >= 3.8 ? "strong_match" : fitScore >= 2.5 ? "potential" : "weak",
+      explanation: {
+        semanticScore: Number((fitScore / 5).toFixed(3)),
+        skillOverlap: 0.4,
+        finalScore: Number((fitScore / 5).toFixed(3)),
+        pdlRelevance: Number((fitScore / 5).toFixed(3)),
+        recencyScore: 0.5,
+        penalties: {
+          semanticPenalty: 1,
+          missingSkillsPenalty: 1
+        }
+      },
       strategy,
-      status: index % 3 === 0 ? "Replied" : index % 2 === 0 ? "Sent" : "New"
+      status: index % 3 === 0 ? "interview_scheduled" : index % 2 === 0 ? "contacted" : "new"
     };
   });
 
