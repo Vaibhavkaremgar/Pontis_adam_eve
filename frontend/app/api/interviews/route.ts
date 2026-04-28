@@ -32,14 +32,17 @@ export async function GET(request: Request) {
   const items: InterviewStatus[] = [
     {
       candidateId: `${jobId}_cand_1`,
+      name: "Candidate One",
       status: "shortlisted"
     },
     {
       candidateId: `${jobId}_cand_2`,
+      name: "Candidate Two",
       status: "contacted"
     },
     {
       candidateId: `${jobId}_cand_3`,
+      name: "Candidate Three",
       status: "interview_scheduled"
     }
   ];

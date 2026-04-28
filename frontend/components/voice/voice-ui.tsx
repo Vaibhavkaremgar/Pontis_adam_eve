@@ -2,211 +2,355 @@
 
 /**
  * What this component does:
- * Renders the conversation panel for voice intake using only real state.
- *
- * Which state it depends on:
- * Depends on `callStatus` and `transcript` from AppContext to decide exactly what appears.
- *
- * Why dummy UI is removed:
- * Production voice UX must never show fabricated transcript or placeholder conversation.
- *
- * Why state-driven UI is required:
- * Real voice systems stream state asynchronously, so rendering must follow callStatus transitions directly.
+ * Full production voice intake UI.
+ * - Starts Vapi directly with job context injected as variableValues + dynamic firstMessage
+ * - Captures BOTH assistant and user turns as structured VoiceTurn[]
+ * - On call-end: auto-triggers POST /voice/refine with full conversation transcript
+ * - Then auto-triggers GET /candidates?refresh=true
+ * - Navigates to /outreach on success, shows retry on failure
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Vapi from "@vapi-ai/web";
 
 import { useAppContext } from "@/context/AppContext";
+import { getCandidatesWithMode } from "@/lib/api/candidates";
+import { refineWithVoice } from "@/lib/api/voice";
 
 import { ChatBubble, type ChatMessage } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
 
-function normalizeTranscriptText(value: string) {
+// ─── types ────────────────────────────────────────────────────────────────────
+
+type VoiceTurn = {
+  role: "assistant" | "user";
+  text: string;
+};
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+function normalize(value: string) {
   return value.trim().replace(/\s+/g, " ");
 }
 
-function getTranscriptPayload(message: unknown): { text: string; isFinal: boolean } | null {
-  if (!message || typeof message !== "object") return null;
-
-  const record = message as Record<string, unknown>;
-  const type = typeof record.type === "string" ? record.type : "";
-  const transcriptType = typeof record.transcriptType === "string" ? record.transcriptType : "";
-
-  if (type !== "transcript") return null;
-
-  const rawTranscript = record.transcript;
-  if (typeof rawTranscript !== "string") return null;
-
-  const text = normalizeTranscriptText(rawTranscript);
-  if (!text) return null;
-
-  return {
-    text,
-    isFinal: transcriptType === "final"
-  };
+function toErrorMessage(error: unknown): string {
+  if (!error) return "Unknown error";
+  if (typeof error === "string") return error;
+  if (typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const message = record.message;
+    if (typeof message === "string" && message.trim()) return message;
+    try {
+      return JSON.stringify(record);
+    } catch {
+      return "Unknown error object";
+    }
+  }
+  return String(error);
 }
+
+function buildFullTranscript(turns: VoiceTurn[]): string {
+  return turns
+    .map((t) => `${t.role === "assistant" ? "Maya" : "Recruiter"}: ${t.text}`)
+    .join("\n");
+}
+
+function extractTranscriptEvent(message: unknown): { role: "assistant" | "user"; text: string; isFinal: boolean } | null {
+  if (!message || typeof message !== "object") return null;
+  const r = message as Record<string, unknown>;
+  if (r.type !== "transcript") return null;
+  if (typeof r.transcript !== "string") return null;
+  const text = normalize(r.transcript);
+  if (!text) return null;
+  const role: "assistant" | "user" = r.role === "assistant" ? "assistant" : "user";
+  return { role, text, isFinal: r.transcriptType === "final" };
+}
+
+function classifyVoiceError(error: unknown): { kind: string; message: string } {
+  if (!error || typeof error !== "object") {
+    return { kind: "unknown", message: "Unknown voice error" };
+  }
+
+  const record = error as Record<string, unknown>;
+  const nested = (record.error && typeof record.error === "object" ? record.error : null) as Record<string, unknown> | null;
+  const type = String(nested?.type || record.type || "").trim();
+  const message = String(nested?.msg || record.errorMsg || record.message || "Unknown voice error").trim();
+
+  if (type === "ejected") {
+    return { kind: "ejected", message: "The voice assistant was disconnected." };
+  }
+
+  return { kind: type || "unknown", message: message || "Voice assistant failed to connect." };
+}
+
+// ─── component ────────────────────────────────────────────────────────────────
 
 export function VoiceUi() {
   const router = useRouter();
-  const { callStatus, setCallStatus, transcript, setTranscript, setVoiceNotes } = useAppContext();
-  const [error, setError] = useState("");
-  const hasPersistedRef = useRef(false);
+  const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user } = useAppContext();
+
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
+  const [pipelineError, setPipelineError] = useState("");
+
+  // Refs — never cause re-renders, safe to read inside Vapi callbacks
   const vapiRef = useRef<Vapi | null>(null);
-  const transcriptPartsRef = useRef<string[]>([]);
-  const transcriptRef = useRef("");
+  const turnsRef = useRef<VoiceTurn[]>([]);       // full structured conversation
+  const firedRef = useRef(false);                  // guard against double pipeline trigger
+  const callStartedAtRef = useRef<number | null>(null);
+  const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
 
+  // ── scroll chat to bottom on new messages ──────────────────────────────────
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    transcriptRef.current = transcript;
-  }, [transcript]);
+    chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [chatMessages]);
 
-  const appendTranscriptNote = useCallback(() => {
-    const finalTranscript = normalizeTranscriptText(transcriptRef.current);
-    if (!finalTranscript) {
-      setError("No transcript was captured. Please try the call again.");
+  // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
+  const runPipeline = useCallback(async (turns: VoiceTurn[]) => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+
+    const fullTranscript = buildFullTranscript(turns);
+    const endedAt = Date.now();
+
+    if (!fullTranscript.trim()) {
+      setPipelineStatus("error");
+      setPipelineError("No conversation was captured. Please try again.");
       return;
     }
 
-    setVoiceNotes((prev) => {
-      if (prev[prev.length - 1] === finalTranscript) return prev;
-      return [...prev, finalTranscript];
+    console.info("[voice] pipeline_start", {
+      jobId,
+      durationMs: callStartedAtRef.current ? endedAt - callStartedAtRef.current : null,
+      turnsCaptured: turns.length,
     });
-  }, [setVoiceNotes]);
 
+    // Store voiceNotes for any downstream consumers (outreach, etc.)
+    setVoiceNotes([fullTranscript]);
+
+    setPipelineStatus("refining");
+    const refineResult = await refineWithVoice({
+      jobId,
+      voiceNotes: [fullTranscript],
+      transcript: fullTranscript,
+    });
+
+    if (!refineResult.success) {
+      setPipelineStatus("error");
+      setPipelineError(refineResult.error || "Could not refine job. Proceeding with original.");
+      // Soft failure — still fetch candidates with original job
+    }
+
+    setPipelineStatus("fetching");
+    const candidatesResult = await getCandidatesWithMode({ jobId, mode: "volume", refresh: true });
+
+    if (!candidatesResult.success || !candidatesResult.data) {
+      setPipelineStatus("error");
+      setPipelineError(candidatesResult.error || "Could not load candidates.");
+      return;
+    }
+
+    setCandidates(candidatesResult.data);
+    setIsRefined(true);
+    setPipelineStatus("done");
+    terminalStateRef.current = "done";
+
+    // Auto-navigate to outreach after a short pause so recruiter sees "done"
+    setTimeout(() => router.push("/outreach"), 1200);
+  }, [jobId, router, setCandidates, setIsRefined, setVoiceNotes]);
+
+  // ── Vapi instance (created once per session) ───────────────────────────────
   const ensureVapi = useCallback(() => {
     if (vapiRef.current) return vapiRef.current;
 
     const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
-    if (!publicKey) {
-      throw new Error("Voice setup missing. Add NEXT_PUBLIC_VAPI_PUBLIC_KEY to frontend env.");
-    }
+    if (!publicKey) throw new Error("NEXT_PUBLIC_VAPI_PUBLIC_KEY is not set.");
 
     const vapi = new Vapi(publicKey);
 
     vapi.on("call-start", () => {
-      setCallStatus("listening");
-      setError("");
-    });
-
-    vapi.on("speech-start", () => {
-      setCallStatus("speaking");
-    });
-
-    vapi.on("speech-end", () => {
+      terminalStateRef.current = "live";
+      if (!callStartedAtRef.current) {
+        callStartedAtRef.current = Date.now();
+      }
+      console.info("[vapi] call-start", {
+        jobId,
+      });
       setCallStatus("listening");
     });
+
+    vapi.on("speech-start", () => setCallStatus("speaking"));
+    vapi.on("speech-end", () => setCallStatus("listening"));
 
     vapi.on("message", (message) => {
-      const payload = getTranscriptPayload(message);
-      if (!payload) return;
+      const event = extractTranscriptEvent(message);
+      if (!event) return;
 
-      if (payload.isFinal) {
-        const prevParts = transcriptPartsRef.current;
-        const previous = prevParts[prevParts.length - 1];
-        if (previous !== payload.text) {
-          transcriptPartsRef.current = [...prevParts, payload.text];
-        }
+      if (event.isFinal) {
+        // Append final turn to structured log
+        turnsRef.current = [...turnsRef.current, { role: event.role, text: event.text }];
 
-        setTranscript(transcriptPartsRef.current.join(" ").trim());
-        return;
+        // Update chat UI — replace last partial bubble of same role or append
+        setChatMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === event.role && !last.isFinal) {
+            return [...prev.slice(0, -1), { role: event.role, text: event.text, isFinal: true }];
+          }
+          return [...prev, { role: event.role, text: event.text, isFinal: true }];
+        });
+      } else {
+        // Live partial — update last bubble of same role in-place
+        setChatMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === event.role && !last.isFinal) {
+            return [...prev.slice(0, -1), { role: event.role, text: event.text, isFinal: false }];
+          }
+          return [...prev, { role: event.role, text: event.text, isFinal: false }];
+        });
       }
-
-      const stable = transcriptPartsRef.current.join(" ").trim();
-      setTranscript([stable, payload.text].filter(Boolean).join(" ").trim());
     });
 
-    vapi.on("error", () => {
+    vapi.on("error", (error) => {
+      const classified = classifyVoiceError(error);
+      terminalStateRef.current = classified.kind === "ejected" ? "ejected" : "error";
+      const endedAt = Date.now();
+      console.error("[vapi] error", {
+        jobId,
+        durationMs: callStartedAtRef.current ? endedAt - callStartedAtRef.current : null,
+        kind: classified.kind,
+        message: classified.message,
+        error,
+      });
       setCallStatus("error");
-      setError("Voice assistant failed to connect. Please try again.");
+      setPipelineStatus("error");
+      setPipelineError(classified.message);
+    });
+    vapi.on("call-start-failed", (event) => {
+      terminalStateRef.current = "error";
+      console.error("[vapi] call-start-failed", {
+        jobId,
+        event,
+      });
+      setCallStatus("error");
+      setPipelineStatus("error");
+      setPipelineError(`Unable to start voice session: ${event?.error || "unknown startup failure"}`);
     });
 
     vapi.on("call-end", () => {
+      const endedAt = Date.now();
+      console.info("[vapi] call-end", {
+        jobId,
+        durationMs: callStartedAtRef.current ? endedAt - callStartedAtRef.current : null,
+        terminalState: terminalStateRef.current,
+      });
+
+      if (terminalStateRef.current === "ejected" || terminalStateRef.current === "error") {
+        setCallStatus("error");
+        return;
+      }
+
       setCallStatus("completed");
-      if (hasPersistedRef.current) return;
-      appendTranscriptNote();
-      hasPersistedRef.current = true;
+      terminalStateRef.current = "done";
+      // Auto-trigger pipeline with everything captured so far
+      void runPipeline(turnsRef.current);
     });
 
     vapiRef.current = vapi;
     return vapi;
-  }, [appendTranscriptNote, setCallStatus, setTranscript]);
+  }, [runPipeline, setCallStatus]);
 
+  // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
     const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
     if (!assistantId) {
       setCallStatus("error");
-      setError("Voice assistant not configured. Add NEXT_PUBLIC_VAPI_ASSISTANT_ID.");
+      setPipelineError("Voice assistant not configured. Add NEXT_PUBLIC_VAPI_ASSISTANT_ID.");
       return;
     }
 
-    setError("");
-    setTranscript("");
-    transcriptPartsRef.current = [];
-    hasPersistedRef.current = false;
+    // Reset state
+    setChatMessages([]);
+    turnsRef.current = [];
+    firedRef.current = false;
+    callStartedAtRef.current = null;
+    terminalStateRef.current = "starting";
+    setPipelineStatus("idle");
+    setPipelineError("");
+
+    const jobTitle = job.title || "this role";
+    const companyName = company.name || "your company";
+    const jobDescription = job.description || "";
+    const location = job.location || "";
+    const recruiterName = user?.name || user?.email || "Recruiter";
+
+    const firstMessage = companyName && jobTitle
+      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's refine the requirements — what's the most important thing you're looking for in this candidate?`
+      : `Let's refine your job requirements. What's the most important thing you're looking for in this candidate?`;
 
     try {
       const vapi = ensureVapi();
       setCallStatus("connecting");
-      await vapi.start(assistantId);
-    } catch {
+      await vapi.start(assistantId, {
+        variableValues: {
+          jobTitle,
+          companyName,
+          jobDescription: jobDescription.slice(0, 500), // keep prompt size reasonable
+          location,
+          recruiterName,
+        },
+        firstMessage,
+      });
+    } catch (error) {
+      terminalStateRef.current = "error";
+      console.error("[voice] start_failed", {
+        jobId,
+        error,
+      });
       setCallStatus("error");
-      setError("Unable to start voice session. Check microphone permission and try again.");
+      setPipelineStatus("error");
+      setPipelineError(`Unable to start voice session: ${toErrorMessage(error)}`);
     }
   };
 
+  // ── end call manually ──────────────────────────────────────────────────────
   const handleEndCall = async () => {
-    const vapi = vapiRef.current;
-    if (!vapi) return;
-
+    if (!vapiRef.current) return;
+    terminalStateRef.current = "manual-stop";
     setCallStatus("processing");
     try {
-      vapi.end();
-      await vapi.stop();
+      await vapiRef.current.stop();
     } catch {
       setCallStatus("error");
-      setError("We could not end the call cleanly. Please try again.");
+      setPipelineError("Could not end the call cleanly. Please try again.");
     }
   };
 
+  // ── cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
-    return () => {
-      if (!vapiRef.current) return;
-      vapiRef.current.stop().catch(() => undefined);
-    };
+    return () => { vapiRef.current?.stop().catch(() => undefined); };
   }, []);
 
-  const showEmpty = callStatus === "idle" && !transcript.trim();
-  const showListening = callStatus === "connecting" || callStatus === "listening";
-  const showProcessing = callStatus === "processing";
-  const canContinue = callStatus === "completed";
+  // ── derived display state ──────────────────────────────────────────────────
+  const isIdle = callStatus === "idle";
+  const isErrorState = callStatus === "error";
   const isLive = callStatus === "connecting" || callStatus === "listening" || callStatus === "speaking";
-  const messages = useMemo<ChatMessage[]>(() => {
-    const rows: ChatMessage[] = [];
-    if (callStatus !== "idle") {
-      rows.push({
-        role: "assistant",
-        text:
-          callStatus === "completed"
-            ? "Thanks. I captured your requirements."
-            : "Hi, I'm Maya. Tell me about the role and your ideal candidate."
-      });
-    }
-    if (transcript.trim()) {
-      rows.push({ role: "user", text: transcript.trim() });
-    }
-    return rows;
-  }, [callStatus, transcript]);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const isSpeaking = callStatus === "speaking";
+  const isProcessingCall = callStatus === "processing" || callStatus === "completed";
+  const showChat = !isIdle || chatMessages.length > 0;
 
-  useEffect(() => {
-    const node = chatScrollRef.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [messages, callStatus]);
+  const pipelineLabel: Record<typeof pipelineStatus, string> = {
+    idle: "",
+    refining: "Analysing conversation and updating job profile...",
+    fetching: "Running candidate search with updated requirements...",
+    done: "Done — loading your candidates.",
+    error: pipelineError,
+  };
 
   return (
     <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-3">
           <div className="flex items-center gap-3">
@@ -215,32 +359,24 @@ export function VoiceUi() {
             </div>
             <p className="font-heading text-2xl leading-none text-[#111111]">Maya</p>
           </div>
-
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">
-              Discovery
-            </span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">
-              Calibration
-            </span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">
-              Summary
-            </span>
+            <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">Discovery</span>
+            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Calibration</span>
+            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Summary</span>
           </div>
         </div>
 
         {isLive && (
           <div className="flex items-center gap-3">
-            {/* Buttons are only visible during active voice interaction */}
-            {/* (listening/speaking) to match real conversational UX */}
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-100">
-              <span className="w-2 h-2 bg-green-600 rounded-full animate-pulse" />
-              <span className="text-sm text-green-700 font-medium">Speaking</span>
+            <div className="flex items-center gap-2 rounded-full bg-green-100 px-3 py-1">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-green-600" />
+              <span className="text-sm font-medium text-green-700">
+                {isSpeaking ? "Speaking" : "Listening"}
+              </span>
             </div>
-
             <button
               onClick={handleEndCall}
-              className="px-4 py-1 rounded-full border border-red-500 text-red-500 hover:bg-red-50"
+              className="rounded-full border border-red-500 px-4 py-1 text-red-500 hover:bg-red-50"
             >
               End
             </button>
@@ -248,79 +384,104 @@ export function VoiceUi() {
         )}
       </div>
 
-      <div className="rounded-2xl bg-white p-6 shadow-[0_10px_26px_rgba(17,17,17,0.08)] md:p-8">
+      {/* Conversation panel */}
+      <div className="rounded-[20px] border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-6 shadow-[0_4px_12px_rgba(0,0,0,0.02)] md:p-8">
         <div className="mb-6 flex items-center justify-between gap-4">
           <p className="font-body text-base font-semibold text-[#111111]">Conversation</p>
-          <p className="font-body text-sm text-[#6B7280]">Say &quot;pause a moment&quot; to pause</p>
+          {isLive && (
+            <p className="font-body text-sm text-[#6B7280]">Say &quot;that&apos;s everything&quot; to finish</p>
+          )}
         </div>
 
         <div className="space-y-6">
-          {showEmpty && (
+          {/* Empty state */}
+          {(isIdle || isErrorState) && chatMessages.length === 0 && (
             <div className="flex min-h-[120px] items-center justify-center rounded-xl bg-[#F9FAFB]">
               <p className="font-body text-sm text-[#6B7280]">Click start to begin voice intake</p>
             </div>
           )}
 
-          {!showEmpty && (
+          {/* Chat bubbles */}
+          {showChat && (
             <div
               ref={chatScrollRef}
               className="max-h-[320px] space-y-3 overflow-y-auto rounded-xl bg-[#F8FAFC] p-3 md:max-h-[360px]"
             >
-              {messages.map((message, index) => (
-                <ChatBubble key={`${message.role}-${index}-${message.text.slice(0, 16)}`} message={message} />
+              {chatMessages.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
+                <p className="text-center text-xs text-gray-400">Waiting for Maya...</p>
+              )}
+              {chatMessages.map((msg, i) => (
+                <ChatBubble key={`${msg.role}-${i}-${msg.text.slice(0, 12)}`} message={msg} />
               ))}
+              {/* "Maya is thinking..." indicator — shown when assistant speech just ended and user hasn't spoken */}
+              {callStatus === "listening" && chatMessages[chatMessages.length - 1]?.role === "assistant" && (
+                <div className="flex items-center gap-2 px-2 py-1">
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
+                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
+                </div>
+              )}
             </div>
           )}
 
+          {/* Wave animation while live */}
           <AnimatePresence mode="wait">
-            {showListening && (
+            {isLive && (
               <motion.div
-                key="listening"
+                key="wave"
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.22 }}
-                className="flex min-h-[120px] items-center justify-center"
+                className="flex min-h-[80px] items-center justify-center"
               >
                 <WaveAnimation isActive />
               </motion.div>
             )}
-
-            {showProcessing && (
-              <motion.div
-                key="processing"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.22 }}
-                className="flex items-center gap-3 rounded-xl bg-[#F3F4F6] px-5 py-4"
-              >
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
-                <span className="font-body text-sm text-[#6B7280]">Wrapping up your conversation...</span>
-              </motion.div>
-            )}
           </AnimatePresence>
 
+          {/* Pipeline status — shown after call ends */}
+          {(isProcessingCall || isErrorState) && pipelineStatus !== "idle" && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`flex items-center gap-3 rounded-xl px-5 py-4 ${
+                pipelineStatus === "error" ? "bg-red-50" : "bg-[#F3F4F6]"
+              }`}
+            >
+              {pipelineStatus !== "error" && pipelineStatus !== "done" && (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
+              )}
+              {pipelineStatus === "done" && (
+                <span className="text-green-600">✓</span>
+              )}
+              <span className={`font-body text-sm ${pipelineStatus === "error" ? "text-red-600" : "text-[#6B7280]"}`}>
+                {pipelineLabel[pipelineStatus]}
+              </span>
+            </motion.div>
+          )}
+
+          {/* Action buttons */}
           <div className="mt-6 flex gap-3">
-            {callStatus === "idle" && (
+            {(isIdle || isErrorState) && (
               <button
                 onClick={handleStart}
                 className="rounded-xl bg-[#1F6F4A] px-6 py-3 font-body text-base font-semibold text-white"
               >
-                Start Conversation
+                {isErrorState ? "Start Conversation Again" : "Start Conversation"}
               </button>
             )}
 
-            {canContinue && (
+            {/* Retry button on error */}
+            {pipelineStatus === "error" && (
               <button
-                onClick={() => router.push("/voice/processing")}
-                className="rounded-xl bg-[#1F6F4A] px-6 py-3 font-body text-base font-semibold text-white opacity-80"
+                onClick={() => { void handleStart(); }}
+                className="rounded-xl border border-gray-300 px-6 py-3 font-body text-base font-semibold text-gray-700 hover:bg-gray-50"
               >
-                Continue
+                Try Again
               </button>
             )}
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
       </div>
     </div>

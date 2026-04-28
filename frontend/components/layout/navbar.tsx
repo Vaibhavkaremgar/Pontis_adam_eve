@@ -12,7 +12,7 @@ import Link from "next/link";
 
 export function Navbar() {
   return (
-    <header className="border-b border-[#E5E7EB] bg-[#F8F5F0]">
+    <header className="border-b border-[rgba(120,100,80,0.08)] bg-[#EFE6D8]">
       <div className="mx-auto flex w-full max-w-2xl items-center justify-between px-4 py-3">
         <Link href="/company" className="text-lg font-semibold text-gray-900">
           Pontis

@@ -11,21 +11,21 @@ const config: Config = {
         heading: ["Playfair Display", "serif"]
       },
       colors: {
-        background: "#F8F5F0",
-        foreground: "#4b5563",
-        card: "#ffffff",
-        muted: "#f3f4f6",
-        border: "#E5E7EB",
+        background: "#F6F1E8",
+        foreground: "#4b3f32",
+        card: "#F3EDE3",
+        muted: "#EFE6D8",
+        border: "rgba(120, 100, 80, 0.08)",
         primary: "#14532D",
         "primary-foreground": "#ffffff",
         accent: "#f59e0b",
         success: "#166534"
       },
       borderRadius: {
-        xl: "0.75rem"
+        xl: "1rem"
       },
       boxShadow: {
-        card: "0 1px 2px rgba(0, 0, 0, 0.06)"
+        card: "0 4px 12px rgba(0, 0, 0, 0.02)"
       }
     }
   },

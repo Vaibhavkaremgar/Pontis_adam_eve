@@ -9,6 +9,9 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    background:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.35), transparent 32%),
+      linear-gradient(180deg, #f6f1e8 0%, #f3ede3 100%);
   }
 
   h1,
@@ -21,6 +24,22 @@
   h5,
   h6 {
     @apply text-gray-900;
+  }
+}
+
+@layer components {
+  .surface-card {
+    background: #f3ede3;
+    border: 1px solid rgba(120, 100, 80, 0.08);
+    border-radius: 20px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
+  }
+
+  .surface-card-strong {
+    background: #efe6d8;
+    border: 1px solid rgba(120, 100, 80, 0.08);
+    border-radius: 20px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.025);
   }
 }
 

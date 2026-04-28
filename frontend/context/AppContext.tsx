@@ -40,7 +40,6 @@ type AppContextValue = {
   voiceNotes: string[];
   isRefined: boolean;
   callStatus: CallStatus;
-  transcript: string;
   setUser: (data: User | null) => void;
   setToken: (token: string) => void;
   setCompany: (data: Company) => void;
@@ -50,14 +49,16 @@ type AppContextValue = {
   setVoiceNotes: (notes: SetStateAction<string[]>) => void;
   setIsRefined: (value: boolean) => void;
   setCallStatus: (value: CallStatus) => void;
-  setTranscript: (value: string) => void;
   logout: () => void;
 };
 
 const initialCompany: Company = {
   name: "",
   website: "",
-  description: ""
+  description: "",
+  industry: "",
+  atsProvider: "",
+  atsConnected: false
 };
 
 const initialJob: Job = {
@@ -65,7 +66,10 @@ const initialJob: Job = {
   description: "",
   location: "",
   compensation: "",
-  workAuthorization: "required"
+  workAuthorization: "required",
+  remotePolicy: "hybrid",
+  experienceRequired: "",
+  autoExportToAts: false
 };
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -84,11 +88,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [voiceNotes, setVoiceNotesState] = useState<string[]>([]);
   const [isRefined, setIsRefinedState] = useState(false);
 
-  // Prepared voice call state for future realtime voice integration.
+  // Prepared voice call state.
   const [callStatus, setCallStatusState] = useState<CallStatus>("idle");
-
-  // Prepared transcript state for future voice-to-text streaming output.
-  const [transcript, setTranscriptState] = useState("");
 
   const setUser = useCallback((data: User | null) => setUserState(data), []);
   const setToken = useCallback((nextToken: string) => setTokenState(nextToken), []);
@@ -99,7 +100,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setVoiceNotes = useCallback((notes: SetStateAction<string[]>) => setVoiceNotesState(notes), []);
   const setIsRefined = useCallback((value: boolean) => setIsRefinedState(value), []);
   const setCallStatus = useCallback((value: CallStatus) => setCallStatusState(value), []);
-  const setTranscript = useCallback((value: string) => setTranscriptState(value), []);
 
   const logout = useCallback(() => {
     // Fully reset session and flow state, then return recruiter to login screen.
@@ -113,7 +113,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setVoiceNotesState([]);
     setIsRefinedState(false);
     setCallStatusState("idle");
-    setTranscriptState("");
 
     if (pathname !== "/login") {
       router.replace("/login");
@@ -177,7 +176,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       voiceNotes,
       isRefined,
       callStatus,
-      transcript,
       setUser,
       setToken,
       setCompany,
@@ -187,7 +185,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setVoiceNotes,
       setIsRefined,
       setCallStatus,
-      setTranscript,
       logout
     }),
     [
@@ -201,7 +198,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       voiceNotes,
       isRefined,
       callStatus,
-      transcript,
       setUser,
       setToken,
       setCompany,
@@ -211,7 +207,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setVoiceNotes,
       setIsRefined,
       setCallStatus,
-      setTranscript,
       logout
     ]
   );

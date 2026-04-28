@@ -2,14 +2,13 @@
 
 /**
  * What this file does:
- * Handles recruiter login with strict email auth and Google placeholder behavior.
+ * Handles recruiter login via OTP email verification and Google OAuth.
  *
  * What API it connects to:
- * Uses /lib/api/auth -> POST /auth/login via centralized API client.
+ * POST /auth/request-otp, POST /auth/verify-otp, POST /auth/google
  *
  * How it fits in the pipeline:
- * This is the required entry gate before recruiter can access company/job/candidate pipeline.
- * Auth data is stored in a standard DB (not vector DB).
+ * Required entry gate before recruiter can access company/job/candidate pipeline.
  */
 import Image from "next/image";
 import { GoogleLogin, GoogleOAuthProvider } from "@react-oauth/google";
@@ -20,7 +19,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAppContext } from "@/context/AppContext";
-import { login, loginWithGoogle } from "@/lib/api/auth";
+import { requestOtp, verifyOtp, loginWithGoogle } from "@/lib/api/auth";
 import { cn } from "@/lib/utils";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -30,35 +29,51 @@ export default function LoginPage() {
   const { setUser, setToken } = useAppContext();
 
   const [email, setEmail] = useState("");
+  const [otp, setOtp] = useState("");
+  const [step, setStep] = useState<"email" | "otp">("email");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
   const googleClientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
   const isGoogleConfigured = Boolean(googleClientId.trim());
 
   const emailTrimmed = email.trim();
   const hasValidEmail = EMAIL_REGEX.test(emailTrimmed);
-  const canContinue = hasValidEmail && !isLoading;
 
-  const handleEmailLogin = async () => {
-    if (!emailTrimmed) return;
-
-    if (!EMAIL_REGEX.test(emailTrimmed)) {
+  const handleRequestOtp = async () => {
+    if (!hasValidEmail) {
       setError("Please enter a valid email address.");
       return;
     }
-
-    // This handles real-world API delays and failures.
     try {
       setIsLoading(true);
       setError("");
-
-      const result = await login({ email: emailTrimmed, provider: "email" });
-      if (!result.success || !result.data) {
-        setError(result.error || "Login failed. Please try again.");
+      const result = await requestOtp({ email: emailTrimmed });
+      if (!result.success) {
+        setError(result.error || "Failed to send OTP. Please try again.");
         return;
       }
+      setStep("otp");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
+  const handleVerifyOtp = async () => {
+    const otpTrimmed = otp.trim();
+    if (!otpTrimmed) {
+      setError("Please enter the OTP sent to your email.");
+      return;
+    }
+    try {
+      setIsLoading(true);
+      setError("");
+      const result = await verifyOtp({ email: emailTrimmed, otp: otpTrimmed });
+      if (!result.success || !result.data) {
+        setError(result.error || "Invalid or expired OTP. Please try again.");
+        return;
+      }
       setToken(result.data.access_token || result.data.token);
       setUser(result.data.user);
       router.push("/company");
@@ -68,9 +83,9 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#F8F5F0] px-4 py-10">
+    <main className="flex min-h-screen items-center justify-center bg-[#F6F1E8] px-4 py-10">
       <div className="w-full max-w-xl space-y-6 text-center">
-        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full border border-[#E5E7EB] bg-white text-xl font-semibold text-gray-900 shadow-sm">
+        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] text-xl font-semibold text-gray-900 shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
           <Image
             src="/images/Maya.jpg.jpeg"
             alt="Maya avatar"
@@ -130,31 +145,69 @@ export default function LoginPage() {
             )}
             {isGoogleLoading && <p className="text-sm text-gray-600">Signing in with Google...</p>}
             {!isGoogleConfigured && (
-              <p className="text-sm text-gray-600">Set NEXT_PUBLIC_GOOGLE_CLIENT_ID in frontend/.env.local to enable Google login.</p>
+              <p className="text-sm text-gray-600">
+                Set NEXT_PUBLIC_GOOGLE_CLIENT_ID in frontend/.env.local to enable Google login.
+              </p>
             )}
 
             <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-[#E5E7EB]" />
+              <div className="h-px flex-1 bg-[rgba(120,100,80,0.08)]" />
               <span className="text-[11px] font-semibold tracking-[0.08em] text-gray-500">
                 OR CONTINUE WITH WORK EMAIL
               </span>
-              <div className="h-px flex-1 bg-[#E5E7EB]" />
+              <div className="h-px flex-1 bg-[rgba(120,100,80,0.08)]" />
             </div>
 
-            <div className="space-y-3">
-              <Input
-                type="email"
-                placeholder="Work email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-              {!hasValidEmail && emailTrimmed.length > 0 && (
-                <p className="text-sm text-red-600">Please enter a valid email address.</p>
-              )}
-              <Button className="w-full justify-center" onClick={handleEmailLogin} disabled={!canContinue}>
-                {isLoading ? "Loading..." : "Continue with email"}
-              </Button>
-            </div>
+            {step === "email" ? (
+              <div className="space-y-3">
+                <Input
+                  type="email"
+                  placeholder="Work email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleRequestOtp()}
+                />
+                {!hasValidEmail && emailTrimmed.length > 0 && (
+                  <p className="text-sm text-red-600">Please enter a valid email address.</p>
+                )}
+                <Button
+                  className="w-full justify-center"
+                  onClick={handleRequestOtp}
+                  disabled={!hasValidEmail || isLoading}
+                >
+                  {isLoading ? "Sending..." : "Send OTP"}
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">
+                  A 6-digit code was sent to <span className="font-medium">{emailTrimmed}</span>.
+                </p>
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Enter 6-digit OTP"
+                  maxLength={6}
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
+                  onKeyDown={(e) => e.key === "Enter" && handleVerifyOtp()}
+                />
+                <Button
+                  className="w-full justify-center"
+                  onClick={handleVerifyOtp}
+                  disabled={otp.trim().length !== 6 || isLoading}
+                >
+                  {isLoading ? "Verifying..." : "Verify OTP"}
+                </Button>
+                <button
+                  type="button"
+                  className="text-sm text-gray-500 underline"
+                  onClick={() => { setStep("email"); setOtp(""); setError(""); }}
+                >
+                  Use a different email
+                </button>
+              </div>
+            )}
 
             {error && <p className="text-sm text-red-600">{error}</p>}
           </CardContent>

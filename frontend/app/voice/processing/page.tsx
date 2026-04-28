@@ -2,32 +2,32 @@
 
 /**
  * What this file does:
- * Submits voice refinements and refreshes candidate list.
+ * Fallback processing page — only reached if recruiter manually navigates here
+ * or if the auto-pipeline in voice-ui.tsx failed and they need to retry.
+ *
+ * Normal flow: voice-ui.tsx auto-triggers refine + candidates and navigates
+ * directly to /outreach. This page is a safety net.
  *
  * What API it connects to:
- * Uses /lib/api/voice -> POST /voice/refine and /lib/api/candidates -> GET /candidates?refined=true.
- *
- * How it fits in the pipeline:
- * Bridges recruiter voice input into backend candidate re-ranking flow.
+ * POST /voice/refine  and  GET /candidates?refresh=true
  */
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppContext } from "@/context/AppContext";
-import { getCandidates } from "@/lib/api/candidates";
+import { getCandidatesWithMode } from "@/lib/api/candidates";
 import { refineWithVoice } from "@/lib/api/voice";
 import { cn } from "@/lib/utils";
 
-const checks = [
-  "Analyzing voice notes",
-  "Applying must-haves and red-flag constraints",
-  "Refreshing ranked candidates",
-  "Preparing refined shortlist"
+const STEPS = [
+  "Analysing conversation",
+  "Updating job profile",
+  "Re-embedding job vector",
+  "Fetching ranked candidates",
 ];
 
 export default function VoiceProcessingPage() {
@@ -35,103 +35,103 @@ export default function VoiceProcessingPage() {
   const { user, isSessionReady, jobId, voiceNotes, setCandidates, setIsRefined } = useAppContext();
   const [completed, setCompleted] = useState(0);
   const [error, setError] = useState("");
-  const emptyTranscriptWarning =
-    jobId && voiceNotes.length === 0
-      ? "No transcript found. Please complete voice intake before refining candidates."
-      : "";
+  const [done, setDone] = useState(false);
 
   useEffect(() => {
     if (!isSessionReady) return;
-
-    if (!user) {
-      router.replace("/login");
-      return;
-    }
-
-    if (!jobId) {
-      router.replace("/job");
-    }
+    if (!user) { router.replace("/login"); return; }
+    if (!jobId) { router.replace("/job"); }
   }, [isSessionReady, jobId, router, user]);
 
   useEffect(() => {
-    let isMounted = true;
+    if (!jobId || voiceNotes.length === 0) return;
+
+    let cancelled = false;
 
     const run = async () => {
-      // This handles real-world API delays and failures.
+      const fullTranscript = voiceNotes.join("\n");
+
       setCompleted(1);
+      const refineResult = await refineWithVoice({
+        jobId,
+        voiceNotes,
+        transcript: fullTranscript,
+      });
 
-      const refineResult = await refineWithVoice({ jobId, voiceNotes });
+      if (cancelled) return;
+
       if (!refineResult.success) {
-        if (isMounted) {
-          setError(refineResult.error || "Could not refine candidates right now.");
-        }
+        setError(refineResult.error || "Could not refine job. Proceeding with original.");
+        // Soft failure — still try to fetch candidates
+      }
+
+      setCompleted(3);
+
+      const candidatesResult = await getCandidatesWithMode({ jobId, mode: "volume", refresh: true });
+      if (cancelled) return;
+
+      if (!candidatesResult.success || !candidatesResult.data) {
+        setError(candidatesResult.error || "Could not load candidates.");
         return;
       }
 
-      setCompleted(2);
-
-      const refreshedResult = await getCandidates({ jobId, refined: true });
-      if (!refreshedResult.success || !refreshedResult.data) {
-        if (isMounted) {
-          setError(refreshedResult.error || "Could not load refined candidates.");
-        }
-        return;
-      }
-
-      if (isMounted) {
-        setCompleted(4);
-        setCandidates(refreshedResult.data);
-        setIsRefined(true);
-      }
+      setCandidates(candidatesResult.data);
+      setIsRefined(true);
+      setCompleted(4);
+      setDone(true);
     };
 
-    if (jobId && voiceNotes.length > 0) {
-      run();
-    }
+    run();
+    return () => { cancelled = true; };
+  }, [jobId, voiceNotes, setCandidates, setIsRefined]);
 
-    return () => {
-      isMounted = false;
-    };
-  }, [jobId, setCandidates, setIsRefined, voiceNotes]);
+  const noTranscript = jobId && voiceNotes.length === 0;
 
   return (
-    <AppShell activeStep={3}>
+    <AppShell activeStep={4}>
       <div className="mx-auto w-full max-w-[560px]">
         <Card>
           <CardHeader className="text-center">
-            <CardTitle>Refining candidates...</CardTitle>
+            <CardTitle>{done ? "Candidates ready" : "Processing voice intake..."}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            {checks.map((item, idx) => (
-              <div
-                key={item}
-                className={cn(
-                  "flex items-center justify-between rounded-xl border p-3 text-sm",
-                  idx < completed ? "border-green-200 bg-green-50" : "border-[#E5E7EB] bg-white"
-                )}
-              >
-                <p className="text-gray-600">{item}</p>
-                <Badge variant={idx < completed ? "high" : "neutral"}>
-                  {idx < completed ? "Done" : "Pending"}
-                </Badge>
+            {noTranscript ? (
+              <div className="space-y-4">
+                <p className="text-sm text-red-600">
+                  No transcript found. Please complete voice intake before continuing.
+                </p>
+                <Button className="w-full justify-center" onClick={() => router.push("/voice")}>
+                  Back to Voice Intake
+                </Button>
               </div>
-            ))}
+            ) : (
+              <>
+                {STEPS.map((label, idx) => (
+                  <div
+                    key={label}
+                    className={cn(
+                      "flex items-center justify-between rounded-xl border p-3 text-sm",
+                      idx < completed ? "border-green-200 bg-green-50" : "border-[rgba(120,100,80,0.08)] bg-[#F3EDE3]"
+                    )}
+                  >
+                    <p className="text-gray-600">{label}</p>
+                    <Badge variant={idx < completed ? "high" : "neutral"}>
+                      {idx < completed ? "Done" : "Pending"}
+                    </Badge>
+                  </div>
+                ))}
 
-            {(error || emptyTranscriptWarning) && (
-              <p className="text-sm text-red-600">{error || emptyTranscriptWarning}</p>
+                {error && <p className="text-sm text-amber-600">⚠ {error}</p>}
+
+                <Button
+                  className="mt-2 w-full justify-center"
+                  disabled={!done}
+                  onClick={() => router.push("/outreach")}
+                >
+                  {done ? "Continue to Outreach" : "Processing..."}
+                </Button>
+              </>
             )}
-
-            <Link
-              href="/outreach"
-              className={cn(
-                buttonVariants({ variant: "default" }),
-                "mt-2 w-full justify-center",
-                (completed < checks.length || Boolean(error) || Boolean(emptyTranscriptWarning)) &&
-                  "pointer-events-none opacity-50"
-              )}
-            >
-              Continue to Outreach
-            </Link>
           </CardContent>
         </Card>
       </div>

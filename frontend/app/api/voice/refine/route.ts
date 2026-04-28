@@ -29,7 +29,24 @@ export async function POST(request: Request) {
   return NextResponse.json(
     {
       success: true,
-      data: { refined: true }
+      data: {
+        refined: true,
+        job: {
+          title: "Refined role",
+          description: "Refined description",
+          location: "",
+          compensation: "",
+          skills_required: [],
+          responsibilities: [],
+          experience_level: ""
+        },
+        extraction: {
+          success: true,
+          usedFallback: true,
+          confidence: 0.5,
+          fields: ["role", "skills", "experience"]
+        }
+      }
     },
     { status: 200 }
   );

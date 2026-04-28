@@ -4,8 +4,9 @@
   "private": true,
   "description": "Multi-step hiring intake and candidate matching UI",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && next build --webpack",
     "start": "next start",
     "lint": "eslint ."
   },

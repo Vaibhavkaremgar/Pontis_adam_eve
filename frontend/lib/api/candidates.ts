@@ -31,13 +31,16 @@ type SwipeData = {
   jobId: string;
   candidateId: string;
   action: "accept" | "reject";
+  previousState: string;
+  newState: string;
   message: string;
+  ats_export_status?: string;
 };
 
 type ExportPayload = {
   jobId: string;
   candidateIds: string[];
-  provider?: "merge";
+  provider?: string;
 };
 
 type ExportData = {
@@ -45,6 +48,12 @@ type ExportData = {
   status: string;
   exportedCount: number;
   reference: string;
+  results?: Array<{
+    candidateId: string;
+    status: string;
+    error?: string;
+    existing?: boolean;
+  }>;
 };
 
 /** This function calls backend API and returns structured response. */
@@ -72,6 +81,13 @@ export async function getCandidatesWithMode({
   });
 }
 
+export async function getShortlistedCandidates(jobId: string): Promise<ApiResponse<Candidate[]>> {
+  return requestApi<Candidate[]>({
+    url: `${API_BASE_URL}/candidates/shortlisted?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET"
+  });
+}
+
 export async function swipeCandidate(payload: SwipePayload): Promise<ApiResponse<SwipeData>> {
   return requestApi<SwipeData>({
     url: `${API_BASE_URL}/candidates/swipe`,
@@ -84,6 +100,6 @@ export async function exportCandidates(payload: ExportPayload): Promise<ApiRespo
   return requestApi<ExportData>({
     url: `${API_BASE_URL}/candidates/export`,
     method: "POST",
-    payload: { ...payload, provider: payload.provider || "merge" }
+    payload: payload.provider ? payload : { jobId: payload.jobId, candidateIds: payload.candidateIds }
   });
 }

@@ -3,6 +3,7 @@
 export type ChatMessage = {
   role: "assistant" | "user";
   text: string;
+  isFinal?: boolean;
 };
 
 export function ChatBubble({ message }: { message: ChatMessage }) {

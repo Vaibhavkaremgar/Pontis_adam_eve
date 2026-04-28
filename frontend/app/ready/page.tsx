@@ -2,13 +2,12 @@
 
 /**
  * What this file does:
- * Displays interview-ready candidates and statuses.
+ * Displays interview-ready candidates with real names and statuses.
+ * Allows ATS export. Schedule Interview navigates to a calendar link.
  *
  * What API it connects to:
- * Uses /lib/api/interviews -> GET /interviews?jobId=...
- *
- * How it fits in the pipeline:
- * Final frontend stage that visualizes backend interview-readiness output.
+ * GET /interviews?jobId=...
+ * POST /candidates/export
  */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -20,6 +19,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useAppContext } from "@/context/AppContext";
 import { exportCandidates } from "@/lib/api/candidates";
 import { getInterviewStatuses } from "@/lib/api/interviews";
+import { getMetrics } from "@/lib/api/metrics";
 import type { InterviewStatus } from "@/types";
 
 export default function ReadyPage() {
@@ -30,33 +30,35 @@ export default function ReadyPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [metrics, setMetrics] = useState<{
+    emails_sent: number;
+    replies_received: number;
+    interviews_booked: number;
+    conversion_rate: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!isSessionReady) return;
-
-    if (!user) {
-      router.replace("/login");
-      return;
-    }
-
-    if (!jobId) {
-      router.replace("/job");
-      return;
-    }
+    if (!user) { router.replace("/login"); return; }
+    if (!jobId) { router.replace("/job"); return; }
 
     const run = async () => {
-      // This handles real-world API delays and failures.
       setIsLoading(true);
       setError("");
-
-      const result = await getInterviewStatuses(jobId);
+      const [result, metricsResult] = await Promise.all([getInterviewStatuses(jobId), getMetrics()]);
       if (!result.success || !result.data) {
         setError(result.error || "Could not load interview statuses.");
-        setIsLoading(false);
-        return;
+      } else {
+        setItems(result.data);
       }
-
-      setItems(result.data);
+      if (metricsResult.success && metricsResult.data) {
+        setMetrics({
+          emails_sent: metricsResult.data.emails_sent,
+          replies_received: metricsResult.data.replies_received,
+          interviews_booked: metricsResult.data.interviews_booked,
+          conversion_rate: metricsResult.data.conversion_rate
+        });
+      }
       setIsLoading(false);
     };
 
@@ -65,24 +67,33 @@ export default function ReadyPage() {
 
   const handleExport = async () => {
     if (!jobId || isExporting) return;
-
     setIsExporting(true);
     setExportMessage("");
-    const candidateIds = items.filter((item) => item.status !== "shortlisted").map((item) => item.candidateId);
-    const result = await exportCandidates({ jobId, candidateIds, provider: "merge" });
-
+    const candidateIds = items
+      .filter((item) => !["rejected"].includes(item.status))
+      .map((item) => item.candidateId);
+    const result = await exportCandidates({ jobId, candidateIds });
     if (!result.success || !result.data) {
       setExportMessage(result.error || "Failed to export candidates.");
       setIsExporting(false);
       return;
     }
-
-    setExportMessage(`Export ${result.data.status}: ${result.data.exportedCount} candidates (${result.data.reference})`);
+    setExportMessage(
+      `Export ${result.data.status}: ${result.data.exportedCount} candidate${result.data.exportedCount !== 1 ? "s" : ""} (ref: ${result.data.reference})`
+    );
     setIsExporting(false);
   };
 
+  const statusVariant = (status: InterviewStatus["status"]) => {
+    if (status === "interview_scheduled") return "high";
+    if (status === "booked") return "high";
+    if (status === "contacted") return "medium";
+    if (status === "rejected") return "low";
+    return "neutral";
+  };
+
   return (
-    <AppShell activeStep={5}>
+    <AppShell activeStep={6}>
       <Card className="mx-auto w-full max-w-[560px]">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Candidates ready for interview</CardTitle>
@@ -90,44 +101,82 @@ export default function ReadyPage() {
         </CardHeader>
 
         <CardContent className="space-y-4">
-          {isLoading && <p className="text-sm text-gray-600">Loading...</p>}
+          {isLoading && <p className="text-sm text-gray-600">Loading interview statuses...</p>}
+
+          {!isLoading && !error && items.length === 0 && (
+            <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-600">
+              No replies yet. Outreach is still warming up or no candidate has booked an interview.
+            </div>
+          )}
 
           {items.map((item) => (
-            <div key={item.candidateId} className="space-y-3 rounded-xl border border-[#E5E7EB] bg-white p-4">
+            <div key={item.candidateId} className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="font-semibold text-gray-900">{item.candidateId.slice(0, 8)}</p>
+                  <p className="font-semibold text-gray-900">
+                    {item.name || item.candidateId.slice(0, 8)}
+                  </p>
+                  <p className="text-xs text-gray-500">{item.candidateId.slice(0, 12)}…</p>
                 </div>
-                <Badge
-                  variant={
-                    item.status === "interview_scheduled"
-                      ? "high"
-                      : item.status === "contacted"
-                        ? "medium"
-                        : "neutral"
-                  }
-                >
-                  {item.status}
-                </Badge>
+                <Badge variant={statusVariant(item.status)}>{item.status.replace("_", " ")}</Badge>
               </div>
-              <Button className="w-full justify-center" disabled={isLoading}>
+              <Button
+                className="w-full justify-center"
+                variant="outline"
+                disabled={isLoading}
+                onClick={() => {
+                  // Opens a mailto as a lightweight scheduling action.
+                  // Replace with a real calendar integration (Calendly, etc.) when available.
+                  window.open(
+                    `mailto:?subject=Interview%20invitation&body=Hi%20${encodeURIComponent(item.name || "there")}%2C%0A%0AWe%27d%20love%20to%20schedule%20an%20interview.%20Please%20let%20us%20know%20your%20availability.`,
+                    "_blank"
+                  );
+                }}
+              >
                 Schedule Interview
               </Button>
             </div>
           ))}
 
-          {!isLoading && !error && items.length === 0 && (
-            <div className="rounded-xl border border-[#E5E7EB] bg-gray-50 p-4 text-sm text-gray-600">
-              No interview-ready candidates yet.
+          {metrics && (
+            <div className="grid grid-cols-2 gap-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm">
+              <div>
+                <p className="text-gray-500">Emails sent</p>
+                <p className="font-semibold text-gray-900">{metrics.emails_sent}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Replies received</p>
+                <p className="font-semibold text-gray-900">{metrics.replies_received}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Interviews booked</p>
+                <p className="font-semibold text-gray-900">{metrics.interviews_booked}</p>
+              </div>
+              <div>
+                <p className="text-gray-500">Conversion</p>
+                <p className="font-semibold text-gray-900">{(metrics.conversion_rate * 100).toFixed(0)}%</p>
+              </div>
             </div>
           )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
 
-          <Button className="w-full justify-center" onClick={handleExport} disabled={isLoading || isExporting || items.length === 0}>
+          <Button
+            className="w-full justify-center"
+            onClick={handleExport}
+            disabled={isLoading || isExporting || items.length === 0}
+          >
             {isExporting ? "Exporting..." : "Export to ATS"}
           </Button>
           {exportMessage && <p className="text-sm text-gray-700">{exportMessage}</p>}
+
+          <Button
+            variant="outline"
+            className="w-full justify-center"
+            onClick={() => router.push("/outreach")}
+          >
+            ← Back to Outreach
+          </Button>
         </CardContent>
       </Card>
     </AppShell>

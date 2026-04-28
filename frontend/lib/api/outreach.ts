@@ -17,13 +17,27 @@ import type { ApiResponse } from "./types";
 type OutreachPayload = {
   jobId: string;
   selectedCandidates: string[];
+  customBody?: string;
 };
 
 type OutreachData = {
-  message: string;
+  success: boolean;
+  processed: number;
+  sent: number;
+  skipped: number;
+  details: { candidateId: string; status: string; reason: string; toEmail: string }[];
+  skippedCandidates: { candidateId: string; reason: string }[];
+  skipReasons: Record<string, number>;
+  warnings?: string[];
 };
 
-type OutreachStatusItem = {
+type QueueOutreachData = {
+  queued: boolean;
+  job_id: string;
+  selected_count: number;
+};
+
+export type OutreachStatusItem = {
   candidateId: string;
   status: Candidate["outreachStatus"];
   provider: string;
@@ -32,6 +46,12 @@ type OutreachStatusItem = {
   lastSentAt: string | null;
   nextFollowUpAt: string | null;
   lastError: string;
+};
+
+export type EmailPreview = {
+  subject: string;
+  body: string;
+  toEmail: string;
 };
 
 /** This function calls backend API and returns structured response. */
@@ -43,9 +63,24 @@ export async function sendOutreach(payload: OutreachPayload): Promise<ApiRespons
   });
 }
 
+export async function queueOutreach(payload: OutreachPayload): Promise<ApiResponse<QueueOutreachData>> {
+  return requestApi<QueueOutreachData>({
+    url: `${API_BASE_URL}/outreach/queue`,
+    method: "POST",
+    payload
+  });
+}
+
 export async function getOutreachStatuses(jobId: string): Promise<ApiResponse<OutreachStatusItem[]>> {
   return requestApi<OutreachStatusItem[]>({
     url: `${API_BASE_URL}/outreach/status?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET"
+  });
+}
+
+export async function getEmailPreview(jobId: string, candidateId: string): Promise<ApiResponse<EmailPreview>> {
+  return requestApi<EmailPreview>({
+    url: `${API_BASE_URL}/outreach/preview?jobId=${encodeURIComponent(jobId)}&candidateId=${encodeURIComponent(candidateId)}`,
     method: "GET"
   });
 }

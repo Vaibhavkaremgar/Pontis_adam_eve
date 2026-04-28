@@ -65,6 +65,10 @@ export async function GET(request: Request) {
         finalScore: Number((fitScore / 5).toFixed(3)),
         pdlRelevance: Number((fitScore / 5).toFixed(3)),
         recencyScore: 0.5,
+        skillsMatched: ["communication", "execution"],
+        experienceMatch: "4 years vs 3-5 years",
+        candidateExperience: "4 years",
+        jobExperience: "3-5 years",
         penalties: {
           semanticPenalty: 1,
           missingSkillsPenalty: 1

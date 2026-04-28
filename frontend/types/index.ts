@@ -25,6 +25,9 @@ export type Company = {
   name: string;
   website: string;
   description: string;
+  industry?: string;
+  atsProvider?: string;
+  atsConnected?: boolean;
 };
 
 /** Job brief captured in step 2 and used to trigger backend embedding pipeline. */
@@ -34,6 +37,9 @@ export type Job = {
   location: string;
   compensation: string;
   workAuthorization: "required" | "preferred" | "not-required";
+  remotePolicy?: string;
+  experienceRequired?: string;
+  autoExportToAts?: boolean;
 };
 
 /** Candidate record returned by candidate search endpoint. */
@@ -50,6 +56,10 @@ export type Candidate = {
     semantic?: number;
     semanticScore?: number;
     skills_match?: string[];
+    skillsMatched?: string[];
+    experienceMatch?: string;
+    candidateExperience?: string;
+    jobExperience?: string;
     feedback_boost?: number;
     diversity_bonus?: number;
     exploration_bonus?: number;
@@ -72,13 +82,15 @@ export type Candidate = {
     };
   };
   strategy: "HIGH" | "MEDIUM" | "LOW";
-  status: "new" | "contacted" | "shortlisted" | "interview_scheduled" | "rejected" | "exported";
+  status: "new" | "contacted" | "shortlisted" | "interview_scheduled" | "booked" | "rejected" | "exported";
   outreachStatus?: "pending" | "dry_run" | "sent" | "failed" | string;
   exportStatus?: "pending" | "queued" | "exported" | "failed" | string;
+  ats_export_status?: "sent" | "failed" | "not_sent" | string;
 };
 
 /** Interview stage record shown in final ready step. */
 export type InterviewStatus = {
   candidateId: string;
-  status: "shortlisted" | "contacted" | "interview_scheduled" | "rejected" | "exported" | "new";
+  name: string;
+  status: "shortlisted" | "contacted" | "interview_scheduled" | "rejected" | "exported" | "new" | "booked";
 };

@@ -46,7 +46,6 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const [pipelineTab, setPipelineTab] = useState<PipelineTab>("all");
   const [deckIndex, setDeckIndex] = useState(0);
   const [expandedById, setExpandedById] = useState<Record<string, boolean>>({});
-  const [bookCallMessage, setBookCallMessage] = useState("");
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [error, setError] = useState("");
   const [isSyncing, setIsSyncing] = useState(false);
@@ -119,7 +118,8 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     const penalties = explanation?.penalties;
     return {
       semantic: explanation?.semantic ?? explanation?.semanticScore ?? 0,
-      skillsMatch: explanation?.skills_match || [],
+      skillsMatch: explanation?.skillsMatched || explanation?.skills_match || [],
+      experienceMatch: explanation?.experienceMatch || "",
       feedbackBoost: explanation?.feedback_boost ?? penalties?.feedbackBias ?? penalties?.feedbackBonus ?? 0,
       diversityBonus: explanation?.diversity_bonus ?? penalties?.diversityBonus ?? 0,
       explorationBonus: explanation?.exploration_bonus ?? penalties?.explorationBonus ?? 0,
@@ -132,6 +132,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     const reasons: string[] = [];
     if (signals.semantic > 0.7) reasons.push("Strong semantic match");
     if (signals.skillsMatch.length > 0) reasons.push("Matches required skills");
+    if (signals.experienceMatch) reasons.push("Experience level aligns");
     if (signals.feedbackBoost > 0) reasons.push("Similar to successful past candidates");
     if (signals.diversityBonus > 0) reasons.push("Adds diversity to candidate pool");
     if (signals.explorationBonus > 0) reasons.push("Discovered via exploration");
@@ -143,7 +144,8 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     const signals = getSignals(candidate);
     const lowSemantic = signals.semantic > 0 && signals.semantic < 0.45;
     const highPenalty = signals.rejectionPenalty > 0.08;
-    const missingSkills = candidate.explanation?.skills_match !== undefined && signals.skillsMatch.length === 0;
+    const hasSkillSignals = candidate.explanation?.skillsMatched !== undefined || candidate.explanation?.skills_match !== undefined;
+    const missingSkills = hasSkillSignals && signals.skillsMatch.length === 0;
     return lowSemantic || highPenalty || missingSkills;
   };
 
@@ -179,7 +181,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     }
 
     updateCandidateStatus(candidateId, action === "accept" ? "shortlisted" : "rejected");
-    setFeedbackMessage(result.data.message);
+    setFeedbackMessage(result.data.message ?? "Feedback recorded.");
     setActionLoadingId("");
     setDeckIndex((prev) => Math.min(prev + 1, Math.max(0, reviewQueue.length - 1)));
     void syncCandidates();
@@ -196,7 +198,11 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       return;
     }
     updateCandidateStatus(candidateId, "contacted", { outreachStatus: "pending" });
-    setFeedbackMessage(result.data.message);
+    setFeedbackMessage(
+      result.data.sent > 0
+        ? `Outreach sent to ${result.data.sent} candidate${result.data.sent !== 1 ? "s" : ""}.`
+        : "Outreach processed."
+    );
     setActionLoadingId("");
     void syncCandidates();
   };
@@ -205,17 +211,26 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     if (!jobId) return;
     setActionLoadingId(candidateId);
     setError("");
-    const result = await exportCandidates({ jobId, candidateIds: [candidateId], provider: "merge" });
+    const currentCandidate = uniqueCandidates.find((candidate) => candidate.id === candidateId);
+    const result = await exportCandidates({ jobId, candidateIds: [candidateId] });
     if (!result.success || !result.data) {
       setError(result.error || "Failed to export candidate.");
       setActionLoadingId("");
       return;
     }
-    const nextExportStatus = result.data.status === "exported" ? "exported" : result.data.status;
-    updateCandidateStatus(candidateId, nextExportStatus === "exported" ? "exported" : "contacted", {
-      exportStatus: nextExportStatus
+    const rowResult = result.data.results?.[0];
+    const nextAtsStatus = rowResult?.status === "sent" ? "sent" : rowResult?.status === "failed" ? "failed" : result.data.status === "sent" ? "sent" : "not_sent";
+    updateCandidateStatus(candidateId, nextAtsStatus === "sent" ? "exported" : currentCandidate?.status || "shortlisted", {
+      exportStatus: nextAtsStatus === "sent" ? "exported" : nextAtsStatus === "failed" ? "failed" : "pending",
+      ats_export_status: nextAtsStatus
     });
-    setFeedbackMessage(`Export ${result.data.status}: ${result.data.reference}`);
+    setFeedbackMessage(
+      nextAtsStatus === "sent"
+        ? "Exported to ATS ✅"
+        : nextAtsStatus === "failed"
+          ? "Failed to export ❌"
+          : "Already exported"
+    );
     setActionLoadingId("");
     void syncCandidates();
   };
@@ -246,6 +261,9 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
             </p>
           ))}
         </div>
+        {signals.experienceMatch && (
+          <p className="text-xs text-gray-600">Experience: {signals.experienceMatch}</p>
+        )}
         {hasConcerns(candidate) && (
           <div className="rounded-md bg-yellow-50 px-2 py-2 text-xs text-yellow-800">
             ⚠ Potential gaps in experience or skills
@@ -272,7 +290,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   };
 
   const renderPipelineCard = (candidate: Candidate) => (
-    <Card key={candidate.id} className="space-y-2 rounded-xl p-4 shadow-sm">
+    <Card key={candidate.id} className="space-y-2 rounded-[20px] p-4 shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h4 className="text-sm font-semibold text-gray-900">{candidate.name || candidate.id.slice(0, 8)}</h4>
@@ -289,7 +307,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       <div className="flex flex-wrap gap-2 text-xs text-gray-500">
         <span>Status: {candidate.status}</span>
         <span>Outreach: {candidate.outreachStatus || "pending"}</span>
-        <span>Export: {candidate.exportStatus || "pending"}</span>
+        <span>ATS: {candidate.ats_export_status || "not_sent"}</span>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <Button
@@ -372,7 +390,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
                     transition={{ duration: 0.2 }}
                     className="cursor-grab active:cursor-grabbing"
                   >
-                    <Card className="space-y-3 rounded-xl p-4 shadow-sm">
+                    <Card className="space-y-3 rounded-[20px] p-4 shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <h4 className="text-sm font-semibold text-gray-900">
@@ -428,24 +446,23 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
           </div>
         )}
 
-        {bookCallMessage && <p className="text-sm text-gray-700">{bookCallMessage}</p>}
         {feedbackMessage && <p className="text-sm text-gray-700">{feedbackMessage}</p>}
         {error && <p className="text-sm text-red-600">{error}</p>}
 
         <div className="grid gap-2 sm:grid-cols-2">
-          <Button
-            variant="outline"
-            className="justify-center"
-            onClick={() => setBookCallMessage("Book a Call flow will connect to calendar tooling in backend.")}
-          >
-            Book a Call
-          </Button>
           <Link
             href="/voice"
             onClick={() => onOpenChange(false)}
             className={cn(buttonVariants({ variant: "default" }), "justify-center")}
           >
-            Continue to Voice Intake
+            Voice Intake
+          </Link>
+          <Link
+            href="/outreach"
+            onClick={() => onOpenChange(false)}
+            className={cn(buttonVariants({ variant: "outline" }), "justify-center")}
+          >
+            Skip to Outreach
           </Link>
         </div>
       </div>

@@ -1,21 +1,16 @@
 /**
  * What this file does:
- * Displays progress across Company, Job, Voice, Outreach, and Ready steps.
- *
- * What API it connects to:
- * No direct API calls here.
- *
- * How it fits in the pipeline:
- * Mirrors the orchestration stages that trigger backend APIs in each page.
+ * Displays progress across Company, Job, Review, Voice, Outreach, and Ready steps.
  */
 import { cn } from "@/lib/utils";
 
 const STEPS = [
   { id: 1, label: "Company" },
   { id: 2, label: "Job" },
-  { id: 3, label: "Voice" },
-  { id: 4, label: "Outreach" },
-  { id: 5, label: "Ready" }
+  { id: 3, label: "Review" },
+  { id: 4, label: "Voice" },
+  { id: 5, label: "Outreach" },
+  { id: 6, label: "Ready" },
 ];
 
 type StepperProps = {
@@ -24,10 +19,10 @@ type StepperProps = {
 
 export function Stepper({ activeStep }: StepperProps) {
   return (
-    <div className="border-b border-[#E5E7EB] bg-[#F8F5F0]/95 backdrop-blur">
+    <div className="border-b border-[rgba(120,100,80,0.08)] bg-[#EFE6D8]/95 backdrop-blur">
       <div className="mx-auto max-w-2xl px-4 py-4">
-        <div className="relative grid grid-cols-5 gap-2 text-center">
-          <div className="absolute left-[10%] right-[10%] top-3 h-px bg-gray-300" />
+        <div className="relative grid grid-cols-6 gap-2 text-center">
+          <div className="absolute left-[8%] right-[8%] top-3 h-px bg-gray-300" />
           {STEPS.map((step) => {
             const isActive = step.id === activeStep;
             const isDone = step.id < activeStep;
