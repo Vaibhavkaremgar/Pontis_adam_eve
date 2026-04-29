@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import CHAR, TypeDecorator
@@ -41,26 +41,33 @@ class Base(DeclarativeBase):
     pass
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 class UserEntity(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     companies: Mapped[list["CompanyEntity"]] = relationship(back_populates="user")
 
 
 class CompanyEntity(Base):
     __tablename__ = "companies"
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_companies_user_name"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     website: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     industry: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    ats_provider: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    ats_connected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     user_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     user: Mapped["UserEntity"] = relationship(back_populates="companies")
     jobs: Mapped[list["JobEntity"]] = relationship(back_populates="company")
@@ -70,6 +77,8 @@ class JobEntity(Base):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    vetting_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="volume")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     responsibilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
@@ -79,8 +88,11 @@ class JobEntity(Base):
     compensation: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     structured_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     work_authorization: Mapped[str] = mapped_column(String(64), nullable=False, default="required")
+    ats_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    auto_export_to_ats: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_candidate_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     company: Mapped["CompanyEntity"] = relationship(back_populates="jobs")
     interviews: Mapped[list["InterviewEntity"]] = relationship(back_populates="job")
@@ -93,13 +105,16 @@ class JobEntity(Base):
 
 class InterviewEntity(Base):
     __tablename__ = "interviews"
-    __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_interviews_job_candidate"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", name="uq_interviews_job_candidate"),
+        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
+    )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="shortlisted")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="interviews")
 
@@ -120,8 +135,8 @@ class CandidateProfileEntity(Base):
     fit_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     decision: Mapped[str] = mapped_column(String(64), nullable=False, default="weak")
     strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="LOW")
-    last_scored_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="candidate_profiles")
 
@@ -138,7 +153,7 @@ class ScoringProfileEntity(Base):
     weight_recency: Mapped[float] = mapped_column(Float, nullable=False, default=0.05)
     feedback_bias: Mapped[float] = mapped_column(Float, nullable=False, default=0.15)
     elite_reasoning_bonus: Mapped[float] = mapped_column(Float, nullable=False, default=0.08)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="scoring_profile")
 
@@ -153,30 +168,39 @@ class CandidateFeedbackEntity(Base):
     feedback: Mapped[str] = mapped_column(String(16), nullable=False)  # accept | reject
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="feedback_items")
 
 
 class ATSExportEntity(Base):
     __tablename__ = "ats_exports"
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", "provider", name="uq_ats_exports_job_candidate_provider"),
+        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
+    )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None, index=True)
     candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="merge")
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="mock")
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
     external_reference: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     response_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    exported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    exported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="ats_exports")
 
 
 class OutreachEventEntity(Base):
     __tablename__ = "outreach_events"
-    __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_outreach_events_job_candidate"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", name="uq_outreach_events_job_candidate"),
+        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
+    )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
@@ -187,10 +211,58 @@ class OutreachEventEntity(Base):
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    follow_up_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
-    next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    message_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    resume_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="outreach_events")
+
+
+class InterviewSessionEntity(Base):
+    __tablename__ = "interview_sessions"
+    __table_args__ = (UniqueConstraint("token", name="uq_interview_sessions_token"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    token: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class OtpEntity(Base):
+    __tablename__ = "otps"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    otp_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class ATSExportRetryEntity(Base):
+    """Retry queue for failed ATS exports."""
+    __tablename__ = "ats_export_retries"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False, default="mock")
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    next_retry_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")  # pending | exhausted
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)

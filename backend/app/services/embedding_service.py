@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import random
+from typing import List
 from threading import Lock
 
 from sentence_transformers import SentenceTransformer
@@ -32,7 +33,7 @@ def _get_model() -> SentenceTransformer:
     return _model
 
 
-def get_embedding(text: str) -> list[float]:
+def embed(text: str) -> List[float]:
     safe_text = text.strip() if text else ""
     cache_key = hashlib.sha256((safe_text or " ").encode("utf-8")).hexdigest()
     cached = get_json("embeddings", cache_key)
@@ -51,6 +52,10 @@ def get_embedding(text: str) -> list[float]:
         return vector
 
 
+def get_embedding(text: str) -> list[float]:
+    return embed(text)
+
+
 def _fallback_embedding(text: str) -> list[float]:
     seed = int(hashlib.sha256(text.encode("utf-8")).hexdigest(), 16) % (2**32)
     rng = random.Random(seed)
@@ -65,7 +70,7 @@ def preload_sample_candidate_embeddings() -> int:
     preloaded = 0
     for text in _SAMPLE_EMBEDDING_TEXTS:
         try:
-            get_embedding(text)
+            embed(text)
             preloaded += 1
         except Exception as exc:
             logger.warning("Failed preloading sample embedding", exc_info=exc)

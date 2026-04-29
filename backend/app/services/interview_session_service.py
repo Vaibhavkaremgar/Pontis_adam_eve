@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+from sqlalchemy.orm import Session
+
+from app.core.config import INTERVIEW_SESSION_TTL_MINUTES, PUBLIC_APP_URL
+from app.db.repositories import CandidateProfileRepository, InterviewRepository, InterviewSessionRepository, JobRepository
+from app.services.metrics_service import log_metric
+from app.services.candidate_service import ensure_candidate_email
+from app.utils.exceptions import APIError
+
+logger = logging.getLogger(__name__)
+
+
+def _booking_url(token: str) -> str:
+    base_url = (PUBLIC_APP_URL or "").rstrip("/")
+    return f"{base_url}/interview/book?token={token}" if base_url else f"/interview/book?token={token}"
+
+
+def _session_payload(row) -> dict[str, str | None]:
+    return {
+        "id": row.id,
+        "jobId": row.job_id,
+        "candidateId": row.candidate_id,
+        "email": row.email,
+        "token": row.token,
+        "status": row.status,
+        "expiresAt": row.expires_at.isoformat(),
+        "bookedAt": row.booked_at.isoformat() if row.booked_at else None,
+        "bookingUrl": _booking_url(row.token),
+    }
+
+
+def create_interview_session(*, db: Session, job_id: str, candidate_id: str) -> dict[str, str | None]:
+    job = JobRepository(db).get(job_id)
+    if not job:
+        raise APIError("Job not found", status_code=404)
+
+    profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    if not profile:
+        raise APIError("Candidate not found", status_code=404)
+
+    email = ensure_candidate_email(profile)
+    if not email:
+        raise APIError("Candidate email is required", status_code=400)
+
+    token = str(uuid4())
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=INTERVIEW_SESSION_TTL_MINUTES)
+    row = InterviewSessionRepository(db).create(
+        job_id=job_id,
+        candidate_id=candidate_id,
+        email=email,
+        token=token,
+        expires_at=expires_at,
+    )
+    db.commit()
+    logger.info("interview_session_created job_id=%s candidate_id=%s token=%s", job_id, candidate_id, token)
+    return _session_payload(row)
+
+
+def get_interview_session(*, db: Session, token: str) -> dict[str, str | None]:
+    row = InterviewSessionRepository(db).get_by_token(token)
+    if not row:
+        raise APIError("Interview session not found", status_code=404)
+    if row.expires_at <= datetime.now(timezone.utc):
+        raise APIError("Interview session expired", status_code=410)
+    return _session_payload(row)
+
+
+def book_interview_session(*, db: Session, token: str, scheduled_at: str | None = None) -> dict[str, str]:
+    repo = InterviewSessionRepository(db)
+    row = repo.get_by_token(token)
+    if not row:
+        raise APIError("Interview session not found", status_code=404)
+    if row.expires_at <= datetime.now(timezone.utc):
+        raise APIError("Interview session expired", status_code=410)
+    if (row.status or "").strip().lower() == "booked":
+        raise APIError("Interview session already booked", status_code=409)
+
+    row = repo.mark_booked(token)
+    if not row:
+        raise APIError("Interview session not found", status_code=404)
+
+    InterviewRepository(db).upsert_status(job_id=row.job_id, candidate_id=row.candidate_id, status="booked")
+    db.commit()
+    logger.info("interview_session_booked job_id=%s candidate_id=%s token=%s", row.job_id, row.candidate_id, token)
+    log_metric("interview_booked", job_id=row.job_id, candidate_id=row.candidate_id)
+    return {
+        "token": row.token,
+        "status": row.status,
+        "jobId": row.job_id,
+        "candidateId": row.candidate_id,
+    }

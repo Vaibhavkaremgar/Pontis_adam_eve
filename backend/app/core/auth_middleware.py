@@ -13,15 +13,29 @@ EXEMPT_PATHS = {
     "/docs",
     "/openapi.json",
     "/redoc",
+    "/health",
+    "/slack/commands",
+    "/slack/interactions",
     "/api/auth/login",
     "/api/auth/google",
     "/api/auth/google/callback",
+    "/api/auth/request-otp",
+    "/api/auth/verify-otp",
+    "/api/replies/attachments",
 }
 
 
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if request.method == "OPTIONS":
+        return await call_next(request)
+    if path.startswith("/api/outreach/webhook"):
+        return await call_next(request)
+    if path.startswith("/api/replies/attachments/"):
+        return await call_next(request)
+    if request.method == "GET" and path == "/api/interview/session":
+        return await call_next(request)
+    if request.method == "POST" and path == "/api/interview/book":
         return await call_next(request)
     if not path.startswith("/api") or path in EXEMPT_PATHS:
         return await call_next(request)

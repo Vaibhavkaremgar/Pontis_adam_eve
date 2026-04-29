@@ -13,6 +13,10 @@ router = APIRouter(tags=["voice"])
 
 @router.post("/voice/refine")
 def refine_voice_notes(payload: VoiceRefineRequest, db: Session = Depends(get_db)):
-    data = refine_job_with_voice(db=db, job_id=payload.jobId, voice_notes=payload.voiceNotes)
+    data = refine_job_with_voice(
+        db=db,
+        job_id=payload.jobId,
+        voice_notes=payload.voiceNotes,
+        transcript=payload.transcript,
+    )
     return success_response(data)
-

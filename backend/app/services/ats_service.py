@@ -1,135 +1,84 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-import requests
 from sqlalchemy.orm import Session
 
-from app.core.config import HTTP_TIMEOUT_SECONDS, MERGE_ACCOUNT_TOKEN, MERGE_API_KEY, MERGE_BASE_URL
-from app.db.repositories import ATSExportRepository, CandidateFeedbackRepository, CandidateProfileRepository, InterviewRepository, JobRepository
+from app.db.repositories import CandidateProfileRepository, InterviewRepository, JobRepository
+from app.services.ats.service import export_candidate_to_ats, run_ats_retry_cycle as _run_ats_retry_cycle
+from app.services.metrics_service import log_metric
+from app.services.state_machine import assert_valid_transition
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_candidate_ids(db: Session, *, job_id: str, candidate_ids: list[str]) -> list[str]:
+def _selected_candidate_ids(job_id: str, candidate_ids: list[str], db: Session) -> list[str]:
     if candidate_ids:
-        return list(dict.fromkeys(candidate_ids))
+        return list(dict.fromkeys([str(cid).strip() for cid in candidate_ids if str(cid).strip()]))
 
-    feedback = CandidateFeedbackRepository(db).list_for_job(job_id)
-    accepted_ids = [row.candidate_id for row in feedback if row.feedback == "accept"]
-    if accepted_ids:
-        return list(dict.fromkeys(accepted_ids))
-
-    stored = CandidateProfileRepository(db).list_for_job(job_id)
-    return [row.candidate_id for row in stored[:5]]
-
-
-def _merge_headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if MERGE_API_KEY:
-        headers["Authorization"] = f"Bearer {MERGE_API_KEY}"
-    if MERGE_ACCOUNT_TOKEN:
-        headers["X-Account-Token"] = MERGE_ACCOUNT_TOKEN
-    return headers
+    interview_rows = InterviewRepository(db).list_for_job(job_id)
+    return [
+        row.candidate_id
+        for row in interview_rows
+        if (row.status or "").strip().lower() in {"contacted", "interview_scheduled", "shortlisted"}
+    ]
 
 
-def _build_merge_candidates_payload(*, profiles) -> list[dict]:
-    candidates: list[dict] = []
-    for profile in profiles:
-        candidates.append(
-            {
-                "first_name": (profile.name.split(" ")[0] if profile.name else "Candidate"),
-                "last_name": (" ".join(profile.name.split(" ")[1:]) if profile.name and " " in profile.name else ""),
-                "company": profile.company,
-                "title": profile.role,
-                "applications": [],
-                "remote_id": profile.candidate_id,
-                "custom_fields": {
-                    "pontis_fit_score": profile.fit_score,
-                    "pontis_decision": profile.decision,
-                    "pontis_strategy": profile.strategy,
-                },
-            }
-        )
-    return candidates
-
-
-def export_to_ats(*, db: Session, job_id: str, candidate_ids: list[str], provider: str = "merge") -> dict:
-    jobs = JobRepository(db)
-    if not jobs.get(job_id):
+def export_to_ats(*, db: Session, job_id: str, candidate_ids: list[str], provider: str | None = None) -> dict:
+    job = JobRepository(db).get(job_id)
+    if not job:
         raise APIError("Job not found", status_code=404)
 
-    provider_name = provider.strip().lower()
-    if provider_name != "merge":
-        raise APIError("Only merge provider is supported", status_code=400)
+    selected_candidate_ids = _selected_candidate_ids(job_id, candidate_ids, db)
+    if not selected_candidate_ids:
+        raise APIError("No candidates selected for export", status_code=400)
 
-    resolved_candidate_ids = _resolve_candidate_ids(db, job_id=job_id, candidate_ids=candidate_ids)
-    if not resolved_candidate_ids:
-        raise APIError("No candidates available to export", status_code=400)
+    exported = failed = skipped = 0
+    last_reference = ""
+    results: list[dict] = []
+    resolved_provider = provider or "mock"
 
-    profile_repo = CandidateProfileRepository(db)
-    profiles = [
-        profile_repo.get(job_id=job_id, candidate_id=candidate_id)
-        for candidate_id in resolved_candidate_ids
-    ]
-    profiles = [profile for profile in profiles if profile]
-    if not profiles:
-        raise APIError("Candidates not found for this job", status_code=404)
-
-    payload = {"candidates": _build_merge_candidates_payload(profiles=profiles)}
-    url = f"{MERGE_BASE_URL.rstrip('/')}/candidates"
-
-    status = "queued"
-    external_reference = f"local-{int(datetime.now(timezone.utc).timestamp())}"
-    response_payload: dict = {
-        "message": "Merge credentials missing; export queued locally",
-    }
-
-    if MERGE_API_KEY and MERGE_ACCOUNT_TOKEN:
+    for candidate_id in selected_candidate_ids:
         try:
-            response = requests.post(url, headers=_merge_headers(), json=payload, timeout=HTTP_TIMEOUT_SECONDS)
-            ok = 200 <= response.status_code < 300
-            status = "exported" if ok else "failed"
-            parsed = {}
-            try:
-                parsed = response.json() if response.text else {}
-            except ValueError:
-                parsed = {"raw": response.text[:300]}
-            response_payload = {
-                "status_code": response.status_code,
-                "body": parsed,
-            }
-            if ok and isinstance(parsed, dict):
-                external_reference = str(parsed.get("id") or external_reference)
-        except requests.RequestException as exc:
-            logger.warning("Merge export request failed", exc_info=exc)
-            status = "failed"
-            response_payload = {"message": str(exc)}
+            profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+            if not profile:
+                skipped += 1
+                results.append({"candidateId": candidate_id, "status": "failed", "error": "Candidate not found"})
+                continue
 
-    ATSExportRepository(db).create(
-        job_id=job_id,
-        candidate_ids=[profile.candidate_id for profile in profiles],
-        provider=provider_name,
-        status=status,
-        external_reference=external_reference,
-        response_payload=response_payload,
-    )
-    if status == "exported":
-        interviews = InterviewRepository(db)
-        for profile in profiles:
-            interviews.upsert_status(
-                job_id=job_id,
-                candidate_id=profile.candidate_id,
-                status="exported",
-                create_default="shortlisted",
-            )
-    db.commit()
+            result = export_candidate_to_ats(profile, job, provider=None, db=db)
+            results.append(result)
+            resolved_provider = result.get("provider", resolved_provider) or resolved_provider
+            if result.get("status") == "sent":
+                exported += 1
+                last_reference = result.get("externalReference", last_reference) or last_reference
+            elif result.get("status") == "failed":
+                failed += 1
+            else:
+                skipped += 1
+        except Exception as exc:
+            failed += 1
+            results.append({"candidateId": candidate_id, "status": "failed", "error": str(exc)})
+            logger.warning("ats_export_batch_failed job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc), exc_info=exc)
+
+    status = "sent" if exported and not failed else "failed"
+    if exported:
+        logger.info("ats_export_batch_success job_id=%s count=%s", job_id, exported)
+        log_metric("ats_export_batch_success", job_id=job_id, count=exported)
+    if failed:
+        logger.warning("ats_export_batch_partial_failure job_id=%s failed=%s skipped=%s", job_id, failed, skipped)
+        log_metric("ats_export_batch_partial_failure", job_id=job_id, failed=failed, skipped=skipped)
 
     return {
-        "provider": provider_name,
+        "provider": resolved_provider,
         "status": status,
-        "exportedCount": len(profiles),
-        "reference": external_reference,
+        "exportedCount": exported,
+        "reference": last_reference,
+        "results": results,
     }
+
+
+def run_ats_retry_cycle(db: Session) -> dict:
+    return _run_ats_retry_cycle(db)

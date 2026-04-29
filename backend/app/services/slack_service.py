@@ -16,7 +16,7 @@ def notify_slack(*, title: str, lines: list[str] | None = None) -> None:
     content_lines = [line.strip() for line in (lines or []) if line and line.strip()]
     message = f"*{title}*"
     if content_lines:
-        message = f"{message}\n" + "\n".join(f"• {line}" for line in content_lines)
+        message = f"{message}\n" + "\n".join(f"- {line}" for line in content_lines)
 
     try:
         requests.post(

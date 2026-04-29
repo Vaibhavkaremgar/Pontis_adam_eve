@@ -9,15 +9,22 @@ from statistics import mean, pstdev
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
+from typing import Any
 
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.core.config import (
+    ENABLE_HARD_FILTERING,
+    ENABLE_FAKE_EMAILS,
+    FEEDBACK_WEIGHTS,
     OPENAI_API_KEY,
     OPENAI_MODEL,
+    EMBEDDING_VERSION,
+    MIN_SKILL_MATCH_THRESHOLD,
     PDL_SEARCH_SIZE,
     RLHF_FEEDBACK_HALF_LIFE_DAYS,
+    RANKING_WEIGHTS,
     SCORING_DEFAULT_MODE,
 )
 from app.db.repositories import (
@@ -30,9 +37,13 @@ from app.db.repositories import (
     ScoringProfileRepository,
 )
 from app.schemas.candidate import CandidateExplanation, CandidateResult
-from app.services.embedding_service import get_embedding, preload_sample_candidate_embeddings
+from app.services.candidate_text import build_candidate_text
+from app.services.ats.service import export_candidate_to_ats
+from app.services.embedding_service import embed, preload_sample_candidate_embeddings
+from app.services.evaluation_service import record_candidate_fetch, record_shortlist_event
 from app.services.metrics_service import log_metric
-from app.services.pdl_service import fetch_candidates_with_filters
+from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
+from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
     delete_candidate_vectors,
     ensure_all_collections,
@@ -42,6 +53,7 @@ from app.services.qdrant_service import (
     upsert_candidate_chunks,
 )
 from app.services.slack_service import notify_slack
+from app.services.state_machine import assert_valid_transition, is_swipe_locked, swipe_to_status
 from app.utils.exceptions import APIError
 from app.utils.text import average_vectors, chunk_text, cosine_similarity
 
@@ -79,6 +91,23 @@ class ScoringWeights:
 
 
 @dataclass
+class RankingWeights:
+    similarity: float
+    skill_overlap: float
+    experience: float
+
+
+@dataclass
+class ModeConfig:
+    mode: str
+    top_k: int
+    min_skill_match_threshold: int
+    use_hard_filtering: bool
+    ranking_weights: RankingWeights
+    strategy: str
+
+
+@dataclass
 class FeedbackLearningContext:
     candidate_feedback: dict[str, float]
     candidate_accept_counts: dict[str, int]
@@ -98,6 +127,47 @@ class ExplorationContext:
     system_confidence: float = 0.0
     used: int = 0
     total: int = 0
+
+
+def _safe_commit(db: Session, *, context: str, job_id: str) -> bool:
+    try:
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        logger.warning("%s_commit_failed job_id=%s error=%s", context, job_id, str(exc), exc_info=exc)
+        log_metric(
+            "db_commit_failed",
+            context=context,
+            job_id=job_id,
+            error_type=type(exc).__name__,
+        )
+        return False
+
+
+def _normalize_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalize_list(values: Any, *, max_items: int = 20) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = _normalize_text(item)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+        if len(normalized) >= max_items:
+            break
+    return normalized
 
 
 def _normalize_job_filters(
@@ -123,23 +193,26 @@ def _candidate_text(candidate: dict) -> str:
     role = str(candidate.get("job_title") or candidate.get("title") or "").strip()
     company = str(candidate.get("job_company_name") or candidate.get("company") or "").strip()
     skills = ", ".join(str(s) for s in (candidate.get("skills") or []))
+    experience = _candidate_experience(candidate)
     summary = str(candidate.get("summary") or candidate.get("bio") or candidate.get("experience_summary") or "").strip()
     return (
         f"Name: {name}\n"
         f"Role: {role}\n"
         f"Company: {company}\n"
         f"Skills: {skills}\n"
+        f"Experience: {experience}\n"
         f"Summary: {summary}"
     )
 
 
-def _candidate_embedding_text(*, name: str, role: str, company: str, skills: list[str], summary: str) -> str:
-    return (
-        f"Name: {name}\n"
-        f"Role: {role}\n"
-        f"Company: {company}\n"
-        f"Skills: {', '.join(skills)}\n"
-        f"Summary: {summary}"
+def _candidate_embedding_text(*, role: str, skills: list[str], experience: str, summary: str) -> str:
+    return build_candidate_text(
+        {
+            "role": role,
+            "skills": skills,
+            "experience": experience,
+            "summary": summary,
+        }
     )
 
 
@@ -199,6 +272,38 @@ def _extract_candidate_email(candidate: dict) -> str:
     return ""
 
 
+def _candidate_lookup_value(candidate: Any, key: str) -> str:
+    if isinstance(candidate, dict):
+        return str(candidate.get(key) or "").strip()
+    return str(getattr(candidate, key, "") or "").strip()
+
+
+def ensure_candidate_email(candidate: Any) -> str:
+    if isinstance(candidate, dict):
+        existing = _extract_candidate_email(candidate)
+    else:
+        existing = _candidate_lookup_value(candidate, "email")
+        if not existing:
+            raw_data = getattr(candidate, "raw_data", None)
+            if isinstance(raw_data, dict):
+                existing = _extract_candidate_email(raw_data)
+    if existing:
+        return existing
+    if not ENABLE_FAKE_EMAILS:
+        return ""
+
+    name = _candidate_lookup_value(candidate, "name") or _candidate_lookup_value(candidate, "full_name") or "candidate"
+    candidate_id = (
+        _candidate_lookup_value(candidate, "id")
+        or _candidate_lookup_value(candidate, "candidate_id")
+        or _candidate_lookup_value(candidate, "candidateId")
+        or "000000"
+    )
+    safe_name = re.sub(r"[^a-z0-9]+", "", name.lower()) or "candidate"
+    safe_id = re.sub(r"[^a-z0-9]+", "", candidate_id.lower())[:6] or "000000"
+    return f"{safe_name}_{safe_id}@test.local"
+
+
 def _extract_candidate_external_id(candidate: dict) -> str:
     for key in ("id", "external_id", "profile_id", "linkedin_id", "linkedin_url"):
         value = candidate.get(key)
@@ -242,11 +347,120 @@ def _candidate_summary(candidate: dict) -> str:
 
     company = _candidate_company(candidate)
     skills = _candidate_skills(candidate)
+    experience = _candidate_experience(candidate)
     if company and skills:
-        return f"Currently at {company}. Skills: {', '.join(skills[:6])}"
+        prefix = f"Currently at {company}"
+        if experience:
+            prefix += f" with {experience}"
+        return f"{prefix}. Skills: {', '.join(skills[:6])}"
+    if experience and skills:
+        return f"Experience: {experience}. Skills: {', '.join(skills[:6])}"
     if skills:
         return f"Skills: {', '.join(skills[:6])}"
+    if experience:
+        return f"Experience: {experience}"
     return "Candidate profile sourced from People Data Labs."
+
+
+def _candidate_experience(candidate: dict) -> str:
+    for key in ("experience", "years_experience", "experience_summary", "experienceLevel", "experience_level"):
+        value = candidate.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    text = " ".join(
+        part
+        for part in [
+            str(candidate.get("summary") or ""),
+            str(candidate.get("bio") or ""),
+            str(candidate.get("experience_summary") or ""),
+        ]
+        if part
+    ).strip()
+    match = re.search(r"\b\d+\s*[-–]\s*\d+\s+years\b", text, flags=re.IGNORECASE) or re.search(
+        r"\b\d+\+?\s+years\b", text, flags=re.IGNORECASE
+    )
+    return match.group(0) if match else ""
+
+
+def _job_experience(job) -> str:
+    structured = getattr(job, "structured_data", None)
+    structured_experience = ""
+    if isinstance(structured, dict):
+        structured_experience = str(structured.get("experience") or structured.get("experience_level") or "").strip()
+    return str(getattr(job, "experience_level", "") or structured_experience or "").strip()
+
+
+def _parse_year_span(text: str) -> tuple[float | None, float | None]:
+    normalized = (text or "").strip()
+    if not normalized:
+        return (None, None)
+
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s+years?", normalized, flags=re.IGNORECASE)
+    if range_match:
+        return (float(range_match.group(1)), float(range_match.group(2)))
+
+    plus_match = re.search(r"(\d+(?:\.\d+)?)\+?\s+years?", normalized, flags=re.IGNORECASE)
+    if plus_match:
+        value = float(plus_match.group(1))
+        return (value, value)
+
+    single_match = re.search(r"(\d+(?:\.\d+)?)", normalized)
+    if single_match:
+        value = float(single_match.group(1))
+        return (value, value)
+
+    return (None, None)
+
+
+def _experience_match(candidate_experience: str, job_experience: str) -> float:
+    candidate_range = _parse_year_span(candidate_experience)
+    job_range = _parse_year_span(job_experience)
+
+    candidate_min, candidate_max = candidate_range
+    job_min, job_max = job_range
+
+    if job_min is None and candidate_min is None:
+        return 0.5 if candidate_experience or job_experience else 0.0
+
+    if candidate_min is None:
+        return 0.35 if job_experience else 0.0
+
+    if job_min is None:
+        return 0.55 if candidate_experience else 0.0
+
+    if job_max is None:
+        job_max = job_min
+    if candidate_max is None:
+        candidate_max = candidate_min
+
+    if candidate_max < job_min:
+        gap = job_min - candidate_max
+        return max(0.0, 1.0 - min(1.0, gap / max(job_min, 1.0)))
+    if candidate_min > job_max:
+        gap = candidate_min - job_max
+        return max(0.0, 1.0 - min(1.0, gap / max(candidate_min, 1.0)))
+
+    return 1.0
+
+
+def _experience_match_summary(candidate_experience: str, job_experience: str) -> str:
+    candidate_text = candidate_experience.strip()
+    job_text = job_experience.strip()
+    if candidate_text and job_text:
+        return f"{candidate_text} vs {job_text}"
+    if candidate_text:
+        return candidate_text
+    if job_text:
+        return f"Matches {job_text} requirement"
+    return "Experience not explicitly stated"
+
+
+def _matched_skills(job_skills: list[str] | set[str], candidate_skills: list[str]) -> list[str]:
+    job_tokens = normalize_skills(list(job_skills) if isinstance(job_skills, set) else job_skills)
+    candidate_tokens = normalize_skills(candidate_skills)
+    matches = sorted(job_tokens.intersection(candidate_tokens))
+    return matches[:8]
 
 
 def _candidate_id(candidate: dict) -> str:
@@ -310,32 +524,93 @@ def _normalized_skill_tokens(values: list[str]) -> set[str]:
 
 
 def _job_skill_set(job) -> set[str]:
-    return _normalized_skill_tokens([job.title, job.description])
+    structured = getattr(job, "structured_data", None)
+    structured_skills = []
+    if isinstance(structured, dict):
+        structured_skills = [str(skill) for skill in (structured.get("skills") or structured.get("skills_required") or [])]
+    structured_skill_tokens = normalize_skills(structured_skills or list(getattr(job, "skills_required", None) or []))
+    if structured_skill_tokens:
+        return structured_skill_tokens
+
+    responsibilities = [str(item) for item in (getattr(job, "responsibilities", None) or []) if str(item).strip()]
+    experience_level = _job_experience(job)
+    return _normalized_skill_tokens([job.title, job.description, experience_level, *structured_skills, *responsibilities])
 
 
-def _skill_overlap(job_skills: set[str], candidate_skills: list[str]) -> float:
-    if not job_skills:
+def _job_requirement_skills(job) -> list[str]:
+    structured = getattr(job, "structured_data", None)
+    raw_skills: list[str] = []
+    if isinstance(structured, dict):
+        raw_skills.extend(str(skill) for skill in (structured.get("skills") or structured.get("skills_required") or []) if str(skill).strip())
+    raw_skills.extend(str(skill) for skill in (getattr(job, "skills_required", None) or []) if str(skill).strip())
+    normalized = sorted(normalize_skills(raw_skills))
+    return normalized or _normalize_list(raw_skills)
+
+
+def _job_min_experience_years(job) -> int:
+    structured = getattr(job, "structured_data", None)
+    experience_text = ""
+    if isinstance(structured, dict):
+        experience_text = str(structured.get("experience") or structured.get("experience_level") or "").strip()
+    if not experience_text:
+        experience_text = _job_experience(job)
+    return parse_experience(experience_text)
+
+
+def _candidate_skill_values(candidate: dict, *, fallback_profile=None) -> list[str]:
+    if fallback_profile is not None:
+        profile_skills = getattr(fallback_profile, "skills", None) or []
+        if isinstance(profile_skills, list) and profile_skills:
+            return [str(skill).strip() for skill in profile_skills if str(skill).strip()]
+    skills = candidate.get("skills") or []
+    if isinstance(skills, list):
+        return [str(skill).strip() for skill in skills if str(skill).strip()]
+    return []
+
+
+def _candidate_experience_years(candidate: dict, *, fallback_profile=None) -> int:
+    experience_text = ""
+    if fallback_profile is not None:
+        raw_data = getattr(fallback_profile, "raw_data", None)
+        if isinstance(raw_data, dict):
+            experience_text = _candidate_experience(raw_data)
+        if not experience_text:
+            experience_text = str(getattr(fallback_profile, "summary", "") or "").strip()
+    if not experience_text:
+        experience_text = _candidate_experience(candidate)
+    return parse_experience(experience_text)
+
+
+def passes_hard_filters(
+    candidate,
+    job_skills: list[str],
+    min_experience: int,
+    *,
+    min_skill_matches: int = MIN_SKILL_MATCH_THRESHOLD,
+) -> bool:
+    candidate_skills = normalize_skills(candidate.get("candidate_skills") or [])
+    job_skill_set = normalize_skills(job_skills)
+
+    if job_skill_set:
+        required_matches = max(1, min(min_skill_matches, len(job_skill_set)))
+        skill_match = len(candidate_skills & job_skill_set) >= required_matches
+    else:
+        skill_match = True
+
+    candidate_experience_years = int(candidate.get("candidate_experience_years") or 0)
+    experience_ok = candidate_experience_years >= min_experience if min_experience > 0 else True
+    return skill_match and experience_ok
+
+
+def _skill_overlap(job_skills: list[str] | set[str], candidate_skills: list[str]) -> float:
+    job_skill_tokens = normalize_skills(list(job_skills) if isinstance(job_skills, set) else job_skills)
+    if not job_skill_tokens:
         return 0.0
-    candidate_skill_tokens = _normalized_skill_tokens(candidate_skills)
+    candidate_skill_tokens = normalize_skills(candidate_skills)
     if not candidate_skill_tokens:
         return 0.0
 
-    exact = len(job_skills.intersection(candidate_skill_tokens))
-    exact_ratio = exact / len(job_skills)
-
-    unmatched_job = [token for token in job_skills if token not in candidate_skill_tokens]
-    unmatched_candidate = [token for token in candidate_skill_tokens if token not in job_skills]
-    soft_hits = 0
-    for job_token in unmatched_job:
-        if any(
-            candidate_token.startswith(job_token[:3]) or job_token.startswith(candidate_token[:3])
-            for candidate_token in unmatched_candidate
-            if len(job_token) >= 3 and len(candidate_token) >= 3
-        ):
-            soft_hits += 1
-    soft_ratio = soft_hits / len(job_skills)
-
-    return max(0.0, min(1.0, (0.75 * exact_ratio) + (0.25 * soft_ratio)))
+    return max(0.0, min(1.0, len(job_skill_tokens.intersection(candidate_skill_tokens)) / len(job_skill_tokens)))
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -382,35 +657,156 @@ def _candidate_recency_score(candidate: dict) -> float:
 
 def _embed_text(text: str) -> list[float]:
     safe = text.strip() or " "
-    return list(get_embedding(safe))
+    return list(embed(safe))
+
+
+def _normalize_structured_items(values: Any) -> list[str]:
+    if isinstance(values, list):
+        return [str(item).strip() for item in values if str(item).strip()]
+    if isinstance(values, str) and values.strip():
+        return [values.strip()]
+    return []
+
+
+def _extract_voice_transcript(structured_data: Any) -> str:
+    if not isinstance(structured_data, dict):
+        return ""
+
+    for key in ("voiceTranscript", "transcript", "voice_input", "voiceInput", "transcriptText"):
+        value = structured_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return _normalize_text(value)
+
+    voice_extraction = structured_data.get("voiceExtraction")
+    if isinstance(voice_extraction, dict):
+        for key in ("transcript", "voiceTranscript", "voice_input", "voiceInput"):
+            value = voice_extraction.get(key)
+            if isinstance(value, str) and value.strip():
+                return _normalize_text(value)
+    return ""
+
+
+def structured_data_to_text(structured_data: Any) -> str:
+    if not isinstance(structured_data, dict):
+        return ""
+
+    voice_extraction = structured_data.get("voiceExtraction")
+    if not isinstance(voice_extraction, dict):
+        voice_extraction = {}
+
+    job_block = structured_data.get("job") if isinstance(structured_data.get("job"), dict) else {}
+    company_block = structured_data.get("company") if isinstance(structured_data.get("company"), dict) else {}
+    if not job_block and isinstance(voice_extraction.get("job"), dict):
+        job_block = voice_extraction.get("job") or {}
+    if not company_block and isinstance(voice_extraction.get("company"), dict):
+        company_block = voice_extraction.get("company") or {}
+
+    role = _normalize_text(
+        job_block.get("title")
+        or structured_data.get("role")
+        or structured_data.get("title")
+        or voice_extraction.get("role")
+    )
+    skills = _normalize_list(
+        job_block.get("skills_required")
+        or structured_data.get("skills")
+        or structured_data.get("skills_required")
+        or voice_extraction.get("skills")
+        or voice_extraction.get("skills_required")
+    )
+    experience = _normalize_text(
+        job_block.get("experience_level")
+        or structured_data.get("experience")
+        or structured_data.get("experience_level")
+        or voice_extraction.get("experience")
+    )
+    transcript = _extract_voice_transcript(structured_data)
+    company_name = _normalize_text(
+        company_block.get("name")
+        or structured_data.get("companyName")
+        or voice_extraction.get("companyName")
+    )
+    company_industry = _normalize_text(
+        company_block.get("industry")
+        or structured_data.get("industry")
+        or voice_extraction.get("industry")
+    )
+
+    lines: list[str] = []
+    if role:
+        lines.append(f"Role: {role}")
+    if skills:
+        lines.append(f"Skills: {', '.join(skills)}")
+    if experience:
+        lines.append(f"Experience: {experience}")
+    if company_name:
+        lines.append(f"Company: {company_name}")
+    if company_industry:
+        lines.append(f"Industry: {company_industry}")
+    if transcript:
+        lines.append(f"Transcript: {transcript}")
+    return "\n".join(lines).strip()
+
+
+def build_job_text(job, structured_data: Any | None = None, transcript: str = "") -> str:
+    resolved_structured_data = structured_data if isinstance(structured_data, dict) else getattr(job, "structured_data", None)
+    if not isinstance(resolved_structured_data, dict):
+        resolved_structured_data = {}
+
+    transcript_text = _normalize_text(transcript) or _extract_voice_transcript(resolved_structured_data)
+    role = _normalize_text(
+        resolved_structured_data.get("role")
+        or resolved_structured_data.get("title")
+        or getattr(job, "title", "")
+    )
+    skills = _normalize_list(
+        resolved_structured_data.get("skills")
+        or resolved_structured_data.get("skills_required")
+        or getattr(job, "skills_required", None)
+    )
+    experience = _normalize_text(
+        resolved_structured_data.get("experience")
+        or resolved_structured_data.get("experience_level")
+        or getattr(job, "experience_level", "")
+    )
+    original_jd = _normalize_text(getattr(job, "description", ""))
+    if not original_jd:
+        original_jd = _normalize_text(resolved_structured_data.get("description") or "")
+
+    role_line = role or _normalize_text(getattr(job, "title", ""))
+    skill_line = ", ".join(skills)
+    job_text = (
+        f"Role: {role_line}\n"
+        f"Experience: {experience}\n"
+        f"Skills: {skill_line}\n\n"
+        f"Job Description:\n{original_jd}\n\n"
+        f"Voice Input:\n{transcript_text}"
+    ).strip()
+    if not job_text:
+        job_text = original_jd or transcript_text or " "
+
+    source = "structured_data" if role or skills or experience else "transcript" if transcript_text else "description"
+    logger.info(
+        "job_text_built job_id=%s source=%s has_structured_data=%s transcript_present=%s length=%s",
+        getattr(job, "id", "unknown"),
+        source,
+        bool(role or skills or experience),
+        bool(transcript_text),
+        len(job_text),
+    )
+    return job_text
 
 
 def _job_vector(job, feedback_learning: FeedbackLearningContext | None = None) -> list[float]:
-    skills_text = ", ".join(str(skill).strip() for skill in (getattr(job, "skills_required", None) or []) if str(skill).strip())
-    responsibilities_text = "\n".join(
-        f"- {item.strip()}" for item in (getattr(job, "responsibilities", None) or []) if str(item).strip()
+    del feedback_learning
+    job_text = build_job_text(
+        job,
+        structured_data=getattr(job, "structured_data", None),
+        transcript=_extract_voice_transcript(getattr(job, "structured_data", None)),
     )
-    experience_level = str(getattr(job, "experience_level", "") or "").strip()
-    text = (
-        f"Title: {job.title}\n"
-        f"Skills Required: {skills_text}\n"
-        f"Responsibilities:\n{responsibilities_text}\n"
-        f"Description: {job.description}\n"
-        f"Experience Level: {experience_level}\n"
-        f"Location: {job.location}\n"
-        f"Compensation: {job.compensation}\n"
-        f"Work Authorization: {job.work_authorization}"
-    )
-    if feedback_learning:
-        learned_skills = ", ".join(feedback_learning.preferred_tokens[:6])
-        learned_roles = ", ".join(feedback_learning.preferred_roles[:3])
-        if learned_skills:
-            text += f"\nHistorically Successful Skills: {learned_skills}"
-        if learned_roles:
-            text += f"\nHistorically Successful Roles: {learned_roles}"
-    chunks = chunk_text(text)
-    vectors = [_embed_text(chunk) for chunk in chunks]
-    return average_vectors(vectors)
+    vector = embed(job_text)
+    logger.info("job_vector_created job_id=%s vector_length=%s", getattr(job, "id", "unknown"), len(vector))
+    return vector
 
 
 def _normalize_weights(pdl: float, semantic: float, skill: float, recency: float) -> tuple[float, float, float, float]:
@@ -433,6 +829,70 @@ def _load_scoring_weights(db: Session, *, job_id: str) -> ScoringWeights:
         recency=recency,
         feedback_bias=max(0.0, min(0.40, profile.feedback_bias)),
         elite_reasoning_bonus=max(0.0, min(0.25, profile.elite_reasoning_bonus)),
+    )
+
+
+def _normalize_weight_triplet(weights: dict[str, float]) -> RankingWeights:
+    similarity = max(0.0, float(weights.get("similarity", RANKING_WEIGHTS["similarity"])))
+    skill_overlap = max(0.0, float(weights.get("skill_overlap", RANKING_WEIGHTS["skill_overlap"])))
+    experience = max(0.0, float(weights.get("experience", RANKING_WEIGHTS["experience"])))
+    total = max(similarity + skill_overlap + experience, 1e-6)
+    return RankingWeights(
+        similarity=similarity / total,
+        skill_overlap=skill_overlap / total,
+        experience=experience / total,
+    )
+
+
+def _resolve_ranking_weights(job, *, default_weights: RankingWeights | None = None) -> RankingWeights:
+    structured = getattr(job, "structured_data", None)
+    override: dict[str, float] = {}
+    if isinstance(structured, dict):
+        raw_override = structured.get("rankingWeights") or structured.get("ranking_weights") or {}
+        if isinstance(raw_override, dict):
+            override = {
+                key: value
+                for key, value in raw_override.items()
+                if key in {"similarity", "skill_overlap", "experience"} and isinstance(value, (int, float, str))
+            }
+    if override:
+        return _normalize_weight_triplet(override)
+    if default_weights is not None:
+        return default_weights
+    return _normalize_weight_triplet({})
+
+
+def get_mode_config(mode: str | None) -> ModeConfig:
+    normalized = (mode or "volume").strip().lower()
+    if normalized == "elite":
+        return ModeConfig(
+            mode="elite",
+            top_k=20,
+            min_skill_match_threshold=2,
+            use_hard_filtering=True,
+            ranking_weights=_normalize_weight_triplet(
+                {
+                    "similarity": 0.6,
+                    "skill_overlap": 0.25,
+                    "experience": 0.15,
+                }
+            ),
+            strategy="high_precision",
+        )
+
+    return ModeConfig(
+        mode="volume",
+        top_k=50,
+        min_skill_match_threshold=1,
+        use_hard_filtering=False,
+        ranking_weights=_normalize_weight_triplet(
+            {
+                "similarity": 0.8,
+                "skill_overlap": 0.15,
+                "experience": 0.05,
+            }
+        ),
+        strategy="high_volume",
     )
 
 
@@ -464,12 +924,14 @@ def _feedback_success_value(feedback: str, status: str | None) -> float:
 
 def _feedback_signal_value(feedback: str, status: str | None) -> float:
     action = feedback.strip().lower()
-    direction = 1.0 if action == "accept" else -1.0
+    direction = FEEDBACK_WEIGHTS["accept"] if action == "accept" else FEEDBACK_WEIGHTS["reject"]
     return direction * _feedback_outcome_multiplier(status)
 
 
 def _score_feedback_skills(skills: list[str], bias_map: dict[str, float]) -> float:
-    tokens = _normalized_skill_tokens(skills)
+    tokens = normalize_skills(skills)
+    if not tokens:
+        tokens = _normalized_skill_tokens(skills)
     if not tokens:
         return 0.0
     values = [bias_map.get(token, 0.0) for token in tokens]
@@ -521,7 +983,15 @@ def _build_feedback_learning_context(db: Session, *, job_id: str) -> FeedbackLea
     interview_repo = InterviewRepository(db)
     profile_repo = CandidateProfileRepository(db)
 
-    rows = feedback_repo.list_all()
+    job_rows = feedback_repo.list_by_job(job_id)
+    global_sample = feedback_repo.list_recent_global(limit=100)
+    # Merge: job-specific rows are primary; global sample fills in cross-job signal.
+    seen_ids: set[str] = {row.id for row in job_rows}
+    rows = job_rows + [row for row in global_sample if row.id not in seen_ids]
+    logger.info(
+        "rlhf_feedback_loaded job_id=%s job_rows=%s global_sample=%s total=%s",
+        job_id, len(job_rows), len(global_sample), len(rows),
+    )
     if not rows:
         return FeedbackLearningContext(
             candidate_feedback={},
@@ -651,8 +1121,12 @@ def _elite_reasoning(job, candidate: CandidateResult) -> tuple[str, float]:
             f"CANDIDATE SUMMARY: {candidate.summary}\n"
             f"CANDIDATE SKILLS: {', '.join(candidate.skills)}"
         )
-        response = client.responses.create(model=OPENAI_MODEL, input=prompt, temperature=0)
-        text = (response.output_text or "").strip()
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        text = (response.choices[0].message.content or "").strip()
 
         score_match = re.search(r"SCORE\s*=\s*(\d{1,3})", text, re.IGNORECASE)
         reason_match = re.search(r"REASON\s*=\s*(.+)", text, re.IGNORECASE)
@@ -682,14 +1156,11 @@ def _normalize_vector_score(score: float) -> float:
 
 
 def _local_metadata_filters(job, feedback_learning: FeedbackLearningContext) -> dict[str, str | list[str]]:
-    company_name = ""
-    company = getattr(job, "company", None)
-    if company and getattr(company, "name", None):
-        company_name = str(company.name)
+    # NOTE: Do NOT pass company here — that field stores the *candidate's* employer,
+    # not the hiring company. Passing the hiring company name causes zero Qdrant hits.
+    # Only pass soft signals (preferred skills/roles) to widen recall.
     return {
-        "role": _normalize_identity_value(job.title),
-        "company": _normalize_identity_value(company_name),
-        "location": _normalize_identity_value(job.location),
+        "embeddingVersion": EMBEDDING_VERSION,
         "preferredSkills": feedback_learning.preferred_tokens[:4],
         "preferredRoles": feedback_learning.preferred_roles[:2],
     }
@@ -757,9 +1228,51 @@ def _update_diversity_counts(*, company: str, role: str, company_counts: dict[st
         role_counts[role_key] = role_counts.get(role_key, 0) + 1
 
 
-def _compute_final_score(
+def compute_match_score(
     *,
-    semantic_component: float,
+    similarity: float,
+    skill_overlap: float,
+    experience_match: float,
+    weights: RankingWeights | None = None,
+) -> float:
+    resolved = weights or _normalize_weight_triplet({})
+    return max(
+        0.0,
+        min(
+            1.0,
+            (resolved.similarity * similarity)
+            + (resolved.skill_overlap * skill_overlap)
+            + (resolved.experience * experience_match),
+        ),
+    )
+
+
+def build_match_explanation(*, candidate, job_context, semantic_similarity: float) -> dict[str, Any]:
+    job_experience = _job_experience(job_context)
+    candidate_experience = _candidate_experience(candidate) if isinstance(candidate, dict) else str(
+        getattr(candidate, "experience", "") or getattr(candidate, "summary", "") or ""
+    ).strip()
+    candidate_skills = _candidate_skills(candidate) if isinstance(candidate, dict) else list(getattr(candidate, "skills", []) or [])
+    job_skills = _job_requirement_skills(job_context)
+    matched_skills = _matched_skills(job_skills, candidate_skills)
+    experience_match_value = _experience_match(candidate_experience, job_experience)
+
+    return {
+        "skills_matched": matched_skills,
+        "experience_match": _experience_match_summary(candidate_experience, job_experience),
+        "similarity_score": round(max(0.0, min(1.0, semantic_similarity)), 4),
+        "candidate_experience": candidate_experience,
+        "job_experience": job_experience,
+        "experience_match_value": round(experience_match_value, 4),
+    }
+
+
+def compute_final_score(
+    *,
+    semantic_similarity: float,
+    skill_overlap: float,
+    experience_match: float,
+    ranking_weights: RankingWeights,
     pdl_component: float,
     feedback_bias: float,
     diversity_bonus: float,
@@ -768,10 +1281,19 @@ def _compute_final_score(
     semantic_penalty: float,
     missing_skills_penalty: float,
 ) -> float:
-    # final_score = semantic + pdl + feedback_bias + diversity_bonus + exploration_bonus
-    raw = semantic_component + pdl_component + feedback_bias + diversity_bonus + exploration_bonus - rejection_penalty
+    base_match = compute_match_score(
+        similarity=semantic_similarity,
+        skill_overlap=skill_overlap,
+        experience_match=experience_match,
+        weights=ranking_weights,
+    )
+    raw = base_match + pdl_component + feedback_bias + diversity_bonus + exploration_bonus - rejection_penalty
     penalized = raw * semantic_penalty * missing_skills_penalty
     return max(0.0, min(1.0, penalized))
+
+
+# fitScore is 0-5; threshold of 3/5 = 0.60 on the 0-1 similarity scale.
+LOW_SIMILARITY_PDL_THRESHOLD = 0.60
 
 
 def _decide_switching_mode(
@@ -782,24 +1304,15 @@ def _decide_switching_mode(
     feedback_success_rate: float,
     candidate_diversity: float,
 ) -> tuple[str, str]:
-    if refresh:
-        if local_count > 0:
-            return "hybrid", "refresh_requested_with_local_context"
-        return "pdl", "refresh_requested_without_local_candidates"
-
     if local_count == 0:
         return "pdl", "local_candidates_empty"
 
-    blended_quality = (
-        (0.45 * similarity_score)
-        + (0.35 * feedback_success_rate)
-        + (0.20 * candidate_diversity)
-    )
-    if blended_quality >= 0.68 and similarity_score >= 0.62 and candidate_diversity >= 0.24:
-        return "local", "strong_similarity_feedback_and_diversity"
-    if similarity_score < 0.38 and candidate_diversity < 0.18:
-        return "pdl", "low_similarity_and_low_diversity"
-    return "hybrid", "mixed_quality_signals_prefer_hybrid"
+    # If avg similarity < 0.60 (equivalent to fitScore < 3/5), ping PDL for better matches.
+    # PDL results will be merged; if PDL returns nothing, local results are used as fallback.
+    if similarity_score < LOW_SIMILARITY_PDL_THRESHOLD:
+        return "pdl_with_local_fallback", "low_similarity_score_below_threshold"
+
+    return "local", "similarity_above_threshold"
 
 
 def _allow_pdl_when_qdrant_is_unhealthy() -> bool:
@@ -826,6 +1339,7 @@ def _build_local_candidates(
     db: Session,
     job,
     mode: str,
+    mode_config: ModeConfig,
     feedback_learning: FeedbackLearningContext,
     exploration: ExplorationContext,
 ) -> list[CandidateResult]:
@@ -865,14 +1379,20 @@ def _build_local_candidates(
         return []
 
     profile_repo = CandidateProfileRepository(db)
-    profiles = profile_repo.latest_by_candidate_ids(list(best_by_candidate.keys()))
+    profiles = profile_repo.latest_by_candidate_ids(job_id=job.id, candidate_ids=list(best_by_candidate.keys()))
     ordered = sorted(best_by_candidate.items(), key=lambda row: row[1]["score"], reverse=True)
 
     weights = _load_scoring_weights(db, job_id=job.id)
-    local_results: list[CandidateResult] = []
+    ranking_weights = _resolve_ranking_weights(job, default_weights=mode_config.ranking_weights)
     company_counts: dict[str, int] = {}
     role_counts: dict[str, int] = {}
-    for candidate_id, item in ordered[:RESULT_LIMIT]:
+    upserted_ids: set[str] = set()
+    job_skills = _job_requirement_skills(job)
+    job_experience = _job_experience(job)
+    min_experience_years = _job_min_experience_years(job)
+    candidate_rows: list[dict[str, Any]] = []
+    candidate_limit = max(1, mode_config.top_k)
+    for candidate_id, item in ordered[:candidate_limit]:
         payload = item["payload"]
         semantic = _normalize_vector_score(item["score"])
         profile = profiles.get(candidate_id)
@@ -880,7 +1400,7 @@ def _build_local_candidates(
         historical = 0.0
         if profile:
             historical = max(0.0, min(1.0, profile.fit_score / 5.0))
-        semantic_component = (0.70 * semantic) + (0.30 * historical)
+        semantic_similarity = (0.70 * semantic) + (0.30 * historical)
         feedback_direct = _feedback_adjustment(
             feedback_learning.candidate_feedback.get(candidate_id),
             bias=weights.feedback_bias,
@@ -888,7 +1408,99 @@ def _build_local_candidates(
 
         company = (profile.company if profile else str(payload.get("company") or "")).strip()
         role = (profile.role if profile else str(payload.get("role") or "")).strip() or "Unknown Role"
-        skills = profile.skills if profile else [str(skill) for skill in (payload.get("skills") or []) if str(skill).strip()]
+        skills = _candidate_skill_values(payload, fallback_profile=profile)
+        candidate_experience = _candidate_experience(profile.raw_data if profile and isinstance(profile.raw_data, dict) else payload)
+        candidate_rows.append(
+            {
+                "candidate_id": candidate_id,
+                "payload": payload,
+                "semantic": semantic,
+                "historical": historical,
+                "company": company,
+                "role": role,
+                "skills": skills,
+                "candidate_experience": candidate_experience,
+                "candidate_experience_years": _candidate_experience_years(payload, fallback_profile=profile),
+                "profile": profile,
+                "feedback_direct": feedback_direct,
+            }
+        )
+
+    filtered_candidate_rows = candidate_rows
+    if mode_config.use_hard_filtering:
+        filtered_candidate_rows = [
+            row
+            for row in candidate_rows
+            if passes_hard_filters(
+                row,
+                job_skills,
+                min_experience_years,
+                min_skill_matches=mode_config.min_skill_match_threshold,
+            )
+        ]
+    filtered_out = len(candidate_rows) - len(filtered_candidate_rows)
+    logger.info(
+        "hard_filter_applied job_id=%s source=local enabled=%s total=%s kept=%s filtered_out=%s min_experience=%s min_skill_matches=%s",
+        job.id,
+        mode_config.use_hard_filtering,
+        len(candidate_rows),
+        len(filtered_candidate_rows),
+        filtered_out,
+        min_experience_years,
+        mode_config.min_skill_match_threshold,
+    )
+    log_metric(
+        "hard_filter_applied",
+        job_id=job.id,
+        source="local",
+        enabled=mode_config.use_hard_filtering,
+        total=len(candidate_rows),
+        kept=len(filtered_candidate_rows),
+        filtered_out=filtered_out,
+        min_experience=min_experience_years,
+        min_skill_matches=mode_config.min_skill_match_threshold,
+    )
+    logger.info(
+        "candidates_filtered_count job_id=%s source=local total=%s filtered_out=%s",
+        job.id,
+        len(candidate_rows),
+        filtered_out,
+    )
+    log_metric(
+        "candidates_filtered_count",
+        job_id=job.id,
+        source="local",
+        total=len(candidate_rows),
+        filtered_out=filtered_out,
+    )
+    if mode_config.use_hard_filtering and candidate_rows and not filtered_candidate_rows:
+        logger.info(
+            "fallback_to_unfiltered job_id=%s source=local reason=no_candidates_after_hard_filter",
+            job.id,
+        )
+        log_metric(
+            "fallback_to_unfiltered",
+            job_id=job.id,
+            source="local",
+            reason="no_candidates_after_hard_filter",
+            total=len(candidate_rows),
+        )
+        filtered_candidate_rows = candidate_rows
+
+    local_results: list[CandidateResult] = []
+    for row in filtered_candidate_rows:
+        candidate_id = row["candidate_id"]
+        payload = row["payload"]
+        semantic = row["semantic"]
+        historical = row["historical"]
+        company = row["company"]
+        role = row["role"]
+        skills = row["skills"]
+        candidate_experience = row["candidate_experience"]
+        profile = row["profile"]
+
+        skill_overlap = _skill_overlap(job_skills, skills or [])
+        experience_match = _experience_match(candidate_experience, job_experience)
         global_skill_feedback = _score_feedback_skills(skills or [], feedback_learning.global_skill_bias) * 0.05
         role_feedback = _score_feedback_role(role, feedback_learning.global_role_bias) * 0.03
         diversity_bonus = _diversity_bonus(
@@ -898,6 +1510,7 @@ def _build_local_candidates(
             role_counts=role_counts,
         )
         exploration_bonus = _exploration_bonus(exploration)
+        feedback_direct = row["feedback_direct"]
         feedback_bias = feedback_direct + global_skill_feedback + role_feedback
         rejection_penalty = _candidate_rejection_penalty(candidate_id, feedback_learning)
         log_metric(
@@ -906,8 +1519,11 @@ def _build_local_candidates(
             candidate_id=candidate_id,
             penalty=round(rejection_penalty, 4),
         )
-        final = _compute_final_score(
-            semantic_component=semantic_component,
+        final = compute_final_score(
+            semantic_similarity=(0.70 * semantic) + (0.30 * historical),
+            skill_overlap=skill_overlap,
+            experience_match=experience_match,
+            ranking_weights=ranking_weights,
             pdl_component=0.0,
             feedback_bias=feedback_bias,
             diversity_bonus=diversity_bonus,
@@ -921,22 +1537,39 @@ def _build_local_candidates(
         decision = _decision_from_score(final)
         name = (profile.name if profile else str(payload.get("name") or "")).strip() or f"Candidate {candidate_id[:8]}"
         summary = (profile.summary if profile else str(payload.get("summary") or "")).strip() or "Local profile match."
+        candidate_email = ensure_candidate_email(profile or payload)
+        raw_data_source = getattr(profile, "raw_data", None) or payload
+        stored_raw_data = dict(raw_data_source) if isinstance(raw_data_source, dict) else {}
+        if candidate_email and not _extract_candidate_email(stored_raw_data):
+            stored_raw_data["email"] = candidate_email
+            stored_raw_data["work_email"] = candidate_email
+            stored_raw_data["personal_email"] = candidate_email
+        if candidate_email.endswith("@test.local"):
+            stored_raw_data["is_mock_email"] = True
+            stored_raw_data["email_source"] = "generated"
 
+        strategy = _strategy_from_score(fit_score)
         result = CandidateResult(
             id=candidate_id,
             name=name,
             role=role,
             company=company,
+            email=candidate_email,
+            isMockEmail=candidate_email.endswith("@test.local"),
             skills=skills or [],
             summary=summary,
             fitScore=fit_score,
             decision=decision,
             explanation=CandidateExplanation(
-                semanticScore=round(semantic, 4),
-                skillOverlap=0.0,
+                semanticScore=round((0.70 * semantic) + (0.30 * historical), 4),
+                skillOverlap=round(skill_overlap, 4),
                 finalScore=round(final, 4),
                 pdlRelevance=0.0,
                 recencyScore=0.0,
+                skillsMatched=_matched_skills(job_skills, skills or []),
+                experienceMatch=_experience_match_summary(candidate_experience, job_experience),
+                candidateExperience=candidate_experience,
+                jobExperience=job_experience,
                 penalties={
                     "source": 1.0,
                     "feedbackBias": round(feedback_bias, 4),
@@ -944,9 +1577,25 @@ def _build_local_candidates(
                     "explorationBonus": round(exploration_bonus, 4),
                 },
             ),
-            strategy=_strategy_from_score(fit_score),
+            strategy=strategy,
             status="new",
         )
+        # Persist profile so swipe/feedback can find this candidate by job_id + candidate_id.
+        if candidate_id not in upserted_ids:
+            profile_repo.upsert(
+                job_id=job.id,
+                candidate_id=candidate_id,
+                name=name,
+                role=role,
+                company=company,
+                summary=summary,
+                skills=skills or [],
+                raw_data=stored_raw_data,
+                fit_score=fit_score,
+                decision=decision,
+                strategy=strategy,
+            )
+            upserted_ids.add(candidate_id)
         local_results.append(result)
         _update_diversity_counts(company=company, role=role, company_counts=company_counts, role_counts=role_counts)
 
@@ -964,7 +1613,9 @@ def _build_local_candidates(
             enriched.append((candidate, candidate.explanation.finalScore))
         local_results = [candidate for candidate, _ in sorted(enriched, key=lambda row: row[1], reverse=True)]
 
-    return local_results
+    ranked_local = sorted([(candidate, candidate.explanation.finalScore) for candidate in local_results], key=lambda row: row[1], reverse=True)
+    diverse_local = diversify_candidates(ranked_local, limit=mode_config.top_k)
+    return [candidate for candidate, _ in diverse_local]
 
 
 def _build_ranked_candidates_from_pdl(
@@ -973,6 +1624,7 @@ def _build_ranked_candidates_from_pdl(
     job,
     mode: str,
     size: int,
+    mode_config: ModeConfig,
     feedback_learning: FeedbackLearningContext,
     exploration: ExplorationContext,
 ) -> list[CandidateResult]:
@@ -997,19 +1649,97 @@ def _build_ranked_candidates_from_pdl(
         deduped_candidates.append(candidate)
     candidates = deduped_candidates
 
+    if len(candidates) > size:
+        candidates = candidates[:size]
+    if candidates:
+        logger.info("pdl_top_k_applied count=%s job_id=%s", len(candidates), job.id)
+
+    if not candidates:
+        logger.warning(
+            "PDL fetch failed — preserving existing vectors job_id=%s", job.id
+        )
+        return []
+
     job_vec = _job_vector(job, feedback_learning)
-    job_skills = _job_skill_set(job)
+    job_skills = _job_requirement_skills(job)
+    min_experience_years = _job_min_experience_years(job)
     ensure_all_collections()
     delete_candidate_vectors(job.id)
 
     weights = _load_scoring_weights(db, job_id=job.id)
+    ranking_weights = _resolve_ranking_weights(job, default_weights=mode_config.ranking_weights)
     profile_repo = CandidateProfileRepository(db)
     company_counts: dict[str, int] = {}
     role_counts: dict[str, int] = {}
+    job_experience = _job_experience(job)
+
+    filtered_candidates = candidates
+    if mode_config.use_hard_filtering:
+        filtered_candidates = [
+            item
+            for item in candidates
+            if passes_hard_filters(
+                {
+                    "candidate_skills": _candidate_skills(item),
+                    "candidate_experience_years": _candidate_experience_years(item),
+                },
+                job_skills,
+                min_experience_years,
+                min_skill_matches=mode_config.min_skill_match_threshold,
+            )
+        ]
+    filtered_out = len(candidates) - len(filtered_candidates)
+    logger.info(
+        "hard_filter_applied job_id=%s source=pdl enabled=%s total=%s kept=%s filtered_out=%s min_experience=%s min_skill_matches=%s",
+        job.id,
+        mode_config.use_hard_filtering,
+        len(candidates),
+        len(filtered_candidates),
+        filtered_out,
+        min_experience_years,
+        mode_config.min_skill_match_threshold,
+    )
+    log_metric(
+        "hard_filter_applied",
+        job_id=job.id,
+        source="pdl",
+        enabled=mode_config.use_hard_filtering,
+        total=len(candidates),
+        kept=len(filtered_candidates),
+        filtered_out=filtered_out,
+        min_experience=min_experience_years,
+        min_skill_matches=mode_config.min_skill_match_threshold,
+    )
+    logger.info(
+        "candidates_filtered_count job_id=%s source=pdl total=%s filtered_out=%s",
+        job.id,
+        len(candidates),
+        filtered_out,
+    )
+    log_metric(
+        "candidates_filtered_count",
+        job_id=job.id,
+        source="pdl",
+        total=len(candidates),
+        filtered_out=filtered_out,
+    )
+    if mode_config.use_hard_filtering and candidates and not filtered_candidates:
+        logger.info(
+            "fallback_to_unfiltered job_id=%s source=pdl reason=no_candidates_after_hard_filter",
+            job.id,
+        )
+        log_metric(
+            "fallback_to_unfiltered",
+            job_id=job.id,
+            source="pdl",
+            reason="no_candidates_after_hard_filter",
+            total=len(candidates),
+        )
+        filtered_candidates = candidates
 
     scored: list[tuple[CandidateResult, float]] = []
-    total_candidates = len(candidates)
-    for index, item in enumerate(candidates):
+    total_candidates = len(filtered_candidates)
+    for index, item in enumerate(filtered_candidates):
         if not isinstance(item, dict):
             continue
 
@@ -1020,24 +1750,27 @@ def _build_ranked_candidates_from_pdl(
         candidate_location = _candidate_location(item)
         candidate_skills = _candidate_skills(item)
         candidate_summary = _candidate_summary(item)
-        candidate_email = _extract_candidate_email(item)
+        candidate_experience = _candidate_experience(item)
+        candidate_email = ensure_candidate_email(item)
         candidate_external_id = _extract_candidate_external_id(item)
         candidate_identity_key = _candidate_identity_key(item)
+        stored_raw_data = dict(item)
+        if candidate_email and not _extract_candidate_email(stored_raw_data):
+            stored_raw_data["email"] = candidate_email
+            stored_raw_data["work_email"] = candidate_email
+            stored_raw_data["personal_email"] = candidate_email
+        if candidate_email.endswith("@test.local"):
+            stored_raw_data["is_mock_email"] = True
+            stored_raw_data["email_source"] = "generated"
 
         if not candidate_name.strip() or not candidate_role.strip():
             continue
 
         candidate_embed_text = _candidate_embedding_text(
-            name=candidate_name,
             role=candidate_role,
-            company=candidate_company,
             skills=candidate_skills,
+            experience=candidate_experience,
             summary=candidate_summary,
-        )
-        candidate_embed_text += _build_embedding_boost_suffix(
-            feedback_learning=feedback_learning,
-            role=candidate_role,
-            skills=candidate_skills,
         )
         candidate_chunks = chunk_text(candidate_embed_text)
         candidate_vectors = [_embed_text(chunk) for chunk in candidate_chunks]
@@ -1047,13 +1780,8 @@ def _build_ranked_candidates_from_pdl(
         semantic_similarity = _normalize_similarity(cosine_score)
         pdl_relevance = _pdl_relevance(item, index=index, total=total_candidates)
         skill_overlap = _skill_overlap(job_skills, candidate_skills)
+        experience_match = _experience_match(candidate_experience, job_experience)
         recency_score = _candidate_recency_score(item)
-
-        semantic_component = (
-            (weights.semantic * semantic_similarity)
-            + (weights.skill * skill_overlap)
-            + (weights.recency * recency_score)
-        )
         pdl_component = weights.pdl * pdl_relevance
 
         semantic_penalty = 0.45 if semantic_similarity < 0.30 else 1.0
@@ -1079,8 +1807,11 @@ def _build_ranked_candidates_from_pdl(
             candidate_id=candidate_id,
             penalty=round(rejection_penalty, 4),
         )
-        final_score = _compute_final_score(
-            semantic_component=semantic_component,
+        final_score = compute_final_score(
+            semantic_similarity=semantic_similarity,
+            skill_overlap=skill_overlap,
+            experience_match=experience_match,
+            ranking_weights=ranking_weights,
             pdl_component=pdl_component,
             feedback_bias=feedback_bias,
             diversity_bonus=diversity_bonus,
@@ -1098,6 +1829,8 @@ def _build_ranked_candidates_from_pdl(
             name=candidate_name,
             role=candidate_role,
             company=candidate_company,
+            email=candidate_email,
+            isMockEmail=candidate_email.endswith("@test.local"),
             skills=candidate_skills,
             summary=candidate_summary,
             fitScore=fit_score,
@@ -1108,6 +1841,10 @@ def _build_ranked_candidates_from_pdl(
                 finalScore=round(final_score, 4),
                 pdlRelevance=round(pdl_relevance, 4),
                 recencyScore=round(recency_score, 4),
+                skillsMatched=_matched_skills(job_skills, candidate_skills),
+                experienceMatch=_experience_match_summary(candidate_experience, job_experience),
+                candidateExperience=candidate_experience,
+                jobExperience=job_experience,
                 penalties={
                     "semanticPenalty": round(semantic_penalty, 4),
                     "missingSkillsPenalty": round(missing_skills_penalty, 4),
@@ -1149,6 +1886,7 @@ def _build_ranked_candidates_from_pdl(
                 "locationNorm": _normalize_identity_value(candidate_location),
                 "skillTokens": sorted(_normalized_skill_tokens(candidate_skills)),
                 "rolePattern": _normalize_identity_value(candidate_role),
+                "embeddingVersion": EMBEDDING_VERSION,
             },
         )
 
@@ -1169,7 +1907,7 @@ def _build_ranked_candidates_from_pdl(
         scored.append((result, final_score))
 
     ranked = sorted(scored, key=lambda row: row[1], reverse=True)
-    diverse = _diverse_shortlist(ranked, limit=RESULT_LIMIT)
+    diverse = diversify_candidates(ranked, limit=mode_config.top_k)
 
     if mode == "elite":
         enriched: list[tuple[CandidateResult, float]] = []
@@ -1199,13 +1937,20 @@ def _dedupe_key_from_result(candidate: CandidateResult, profiles: dict[str, obje
     return candidate.id
 
 
-def _merge_candidates(*, db: Session, local_results: list[CandidateResult], pdl_results: list[CandidateResult]) -> list[CandidateResult]:
+def _merge_candidates(
+    *,
+    db: Session,
+    job_id: str,
+    local_results: list[CandidateResult],
+    pdl_results: list[CandidateResult],
+    limit: int = RESULT_LIMIT,
+) -> list[CandidateResult]:
     all_candidates = local_results + pdl_results
     if not all_candidates:
         return []
 
     candidate_ids = [candidate.id for candidate in all_candidates if candidate.id]
-    profiles = CandidateProfileRepository(db).latest_by_candidate_ids(candidate_ids)
+    profiles = CandidateProfileRepository(db).latest_by_candidate_ids(job_id=job_id, candidate_ids=candidate_ids)
 
     merged: dict[str, CandidateResult] = {}
     for candidate in all_candidates:
@@ -1213,13 +1958,18 @@ def _merge_candidates(*, db: Session, local_results: list[CandidateResult], pdl_
         existing = merged.get(dedupe_key)
         if not existing or candidate.fitScore > existing.fitScore:
             merged[dedupe_key] = candidate
-    return sorted(merged.values(), key=lambda row: row.fitScore, reverse=True)[:RESULT_LIMIT]
+    return sorted(merged.values(), key=lambda row: row.fitScore, reverse=True)[:limit]
 
 
-def _build_candidate_state_maps(db: Session, *, job_id: str) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+def _build_candidate_state_maps(
+    db: Session,
+    *,
+    job_id: str,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     interview_status_map: dict[str, str] = {}
     outreach_status_map: dict[str, str] = {}
     export_status_map: dict[str, str] = {}
+    ats_export_status_map: dict[str, str] = {}
 
     for row in InterviewRepository(db).list_for_job(job_id):
         interview_status_map[row.candidate_id] = (row.status or "").strip().lower() or "new"
@@ -1229,31 +1979,121 @@ def _build_candidate_state_maps(db: Session, *, job_id: str) -> tuple[dict[str, 
 
     for row in ATSExportRepository(db).list_for_job(job_id):
         export_state = (row.status or "").strip().lower() or "pending"
-        for candidate_id in row.candidate_ids or []:
-            export_status_map[str(candidate_id)] = export_state
+        export_status = "exported" if export_state == "sent" else "failed" if export_state == "failed" else "pending"
+        ats_state = "sent" if export_state == "sent" else "failed" if export_state == "failed" else "not_sent"
+        candidate_ids = [str(candidate_id).strip() for candidate_id in (row.candidate_ids or []) if str(candidate_id).strip()]
+        if row.candidate_id and row.candidate_id not in candidate_ids:
+            candidate_ids.insert(0, row.candidate_id)
+        for candidate_id in candidate_ids:
+            export_status_map[candidate_id] = export_status
+            ats_export_status_map[candidate_id] = ats_state
 
-    return interview_status_map, outreach_status_map, export_status_map
+    return interview_status_map, outreach_status_map, export_status_map, ats_export_status_map
 
 
 def _attach_candidate_workflow_state(db: Session, *, job_id: str, candidates: list[CandidateResult]) -> list[CandidateResult]:
     if not candidates:
         return candidates
 
-    interview_status_map, outreach_status_map, export_status_map = _build_candidate_state_maps(db, job_id=job_id)
+    interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
     for candidate in candidates:
         export_status = export_status_map.get(candidate.id, "pending")
+        ats_export_status = ats_export_status_map.get(candidate.id, "not_sent")
         outreach_status = outreach_status_map.get(candidate.id, "pending")
         status = interview_status_map.get(candidate.id, candidate.status or "new")
 
         if export_status == "exported":
             status = "exported"
-        elif outreach_status in {"sent", "dry_run"}:
+        elif outreach_status in {"sent", "dry_run", "simulated"}:
             status = "contacted"
 
         candidate.status = status
         candidate.outreachStatus = outreach_status
         candidate.exportStatus = export_status
+        candidate.ats_export_status = ats_export_status
     return candidates
+
+
+def _candidate_ats_export_status(db: Session, *, job_id: str, candidate_id: str) -> str:
+    rows = ATSExportRepository(db).list_for_job(job_id)
+    for row in rows:
+        candidate_ids = [str(candidate).strip() for candidate in (row.candidate_ids or []) if str(candidate).strip()]
+        if row.candidate_id and row.candidate_id not in candidate_ids:
+            candidate_ids.insert(0, row.candidate_id)
+        if candidate_id not in candidate_ids:
+            continue
+        status = (row.status or "").strip().lower()
+        if status == "sent":
+            return "sent"
+        if status == "failed":
+            return "failed"
+        return "not_sent"
+    return "not_sent"
+
+
+def _get_swiped_candidate_ids(db: Session, *, job_id: str) -> frozenset[str]:
+    """Return IDs of candidates already swiped (shortlisted or rejected) for this job."""
+    rows = CandidateFeedbackRepository(db).list_for_job(job_id)
+    return frozenset(row.candidate_id for row in rows)
+
+
+def _filter_unswiped_candidates(
+    candidates: list[CandidateResult],
+    swiped_ids: frozenset[str],
+    *,
+    job_id: str,
+) -> list[CandidateResult]:
+    """Remove already-swiped candidates from the recommendation list."""
+    filtered = [c for c in candidates if c.id not in swiped_ids]
+    excluded = len(candidates) - len(filtered)
+    if excluded:
+        logger.info(
+            "recommendation_filter job_id=%s total=%s excluded_swiped=%s remaining=%s",
+            job_id, len(candidates), excluded, len(filtered),
+        )
+        log_metric(
+            "recommendation_filter",
+            job_id=job_id,
+            total=len(candidates),
+            excluded_swiped=excluded,
+            remaining=len(filtered),
+        )
+    return filtered
+
+
+def _fallback_stored_candidates(
+    *,
+    db: Session,
+    job_id: str,
+    swiped_ids: frozenset[str],
+    source: str,
+    reason: str,
+) -> list[CandidateResult]:
+    stored_candidates = list_stored_candidates(db=db, job_id=job_id)
+    if not stored_candidates:
+        return []
+
+    filtered_stored = _filter_unswiped_candidates(stored_candidates, swiped_ids, job_id=job_id)
+    fallback_candidates = filtered_stored or stored_candidates
+    logger.warning(
+        "fallback_to_stored_candidates job_id=%s source=%s reason=%s stored_count=%s filtered_count=%s returned_count=%s",
+        job_id,
+        source,
+        reason,
+        len(stored_candidates),
+        len(filtered_stored),
+        len(fallback_candidates),
+    )
+    log_metric(
+        "fallback_to_stored_candidates",
+        job_id=job_id,
+        source=source,
+        reason=reason,
+        stored_count=len(stored_candidates),
+        filtered_count=len(filtered_stored),
+        returned_count=len(fallback_candidates),
+    )
+    return fallback_candidates
 
 
 def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False) -> list[CandidateResult]:
@@ -1262,8 +2102,21 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
     if not job:
         raise APIError("Job not found", status_code=404)
 
-    resolved_mode = _resolve_mode(mode)
+    job_status = (job.job_status or "active").strip().lower()
+    if refresh:
+        logger.info("manual_refresh_triggered job_id=%s", job_id)
+    elif job_status == "no_candidates":
+        logger.info("no_candidates_skipped job_id=%s reason=terminal_state", job_id)
+        return []
+
+    job_mode = (getattr(job, "vetting_mode", None) or SCORING_DEFAULT_MODE or "volume").strip().lower()
+    resolved_mode = _resolve_mode(mode or job_mode)
+    mode_config = get_mode_config(resolved_mode)
     log_metric("retrieval_request", job_id=job.id, mode=resolved_mode, refresh=refresh)
+    logger.info("dynamic_switch_applied job_id=%s mode=%s strategy=%s", job.id, mode_config.mode, mode_config.strategy)
+    log_metric("dynamic_switch_applied", job_id=job.id, mode=mode_config.mode, strategy=mode_config.strategy)
+    # Load swiped IDs once — used to exclude already-decided candidates server-side.
+    swiped_ids = _get_swiped_candidate_ids(db, job_id=job.id)
     feedback_learning = _build_feedback_learning_context(db, job_id=job.id)
     local_diversity_seed = 0.0
     seed_confidence = _compute_system_confidence(
@@ -1294,14 +2147,43 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         job_id=job.id,
         tokens="|".join(feedback_learning.learned_query_tokens),
     )
-    local_results = _build_local_candidates(
-        db=db,
-        job=job,
-        mode=resolved_mode,
-        feedback_learning=feedback_learning,
-        exploration=exploration,
-    )
+    try:
+        local_results = _build_local_candidates(
+            db=db,
+            job=job,
+            mode=resolved_mode,
+            mode_config=mode_config,
+            feedback_learning=feedback_learning,
+            exploration=exploration,
+        )
+    except Exception as exc:
+        logger.exception("local_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
+        log_metric(
+            "candidate_retrieval_error",
+            job_id=job.id,
+            mode=resolved_mode,
+            source="local",
+            error_type=type(exc).__name__,
+        )
+        local_results = []
     avg_local_similarity = mean([row.explanation.semanticScore for row in local_results]) if local_results else 0.0
+    local_top_score = local_results[0].explanation.semanticScore if local_results else 0.0
+    qdrant_hit = len(local_results) > 0
+    logger.info(
+        "qdrant_retrieval_result job_id=%s local_candidate_count=%s top_score=%.4f qdrant_hit=%s",
+        job.id,
+        len(local_results),
+        local_top_score,
+        qdrant_hit,
+    )
+    log_metric(
+        "qdrant_retrieval",
+        job_id=job.id,
+        local_candidate_count=len(local_results),
+        top_score=round(local_top_score, 4),
+        qdrant_hit=qdrant_hit,
+        fallback_reason="none" if qdrant_hit else "local_candidates_empty",
+    )
     log_metric("retrieval_similarity", job_id=job.id, mode=resolved_mode, value=round(avg_local_similarity, 4))
 
     local_top_semantic = local_results[0].explanation.semanticScore if local_results else 0.0
@@ -1368,88 +2250,231 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         diversity=round(candidate_diversity, 4),
         confidence=round(system_confidence, 4),
     )
-    pdl_allowed = _allow_pdl_when_qdrant_is_unhealthy()
-    should_call_pdl = switching_mode in {"hybrid", "pdl"}
-    if should_call_pdl and not pdl_allowed:
-        logger.warning(
-            "pdl_suppressed_due_to_qdrant_error job_id=%s qdrant_error=%s",
-            job_id,
-            last_qdrant_search_error() or "unknown",
-        )
-        log_metric("fallback", source="candidate_retrieval", reason="qdrant_error_backoff")
-        log_metric("pdl_suppressed", job_id=job.id, mode=resolved_mode, reason="qdrant_error_backoff")
-        return _attach_candidate_workflow_state(db, job_id=job.id, candidates=local_results[:RESULT_LIMIT])
+    pdl_disabled = is_pdl_disabled()
+    if pdl_disabled:
+        logger.warning("pdl_disabled job_id=%s reason=service_disabled", job_id)
+        log_metric("pdl_disabled", job_id=job.id, mode=resolved_mode, reason="service_disabled")
+    pdl_allowed = _allow_pdl_when_qdrant_is_unhealthy() and not pdl_disabled
+    should_call_pdl = switching_mode in {"pdl", "pdl_with_local_fallback"} and not pdl_disabled
 
     if not should_call_pdl:
+        # similarity >= 0.60 and local results exist — serve local directly.
         logger.info(
-            "local_hit job_id=%s count=%s top_semantic=%.4f adaptive_threshold=%.4f avg_similarity=%.4f exploration_rate=%.3f exploration_used=%s exploration_total=%s",
+            "local_hit job_id=%s count=%s top_semantic=%.4f avg_similarity=%.4f",
             job_id,
             len(local_results),
             local_top_semantic,
-            adaptive_threshold,
             avg_local_similarity,
-            exploration.rate,
-            exploration.used,
-            exploration.total,
         )
         log_metric("candidate_count", job_id=job.id, count=len(local_results), mode=resolved_mode, source="local")
         log_metric("local_hit", job_id=job.id, mode=resolved_mode, top_semantic=round(local_top_semantic, 4))
-        log_metric(
-            "exploration_usage",
+        _safe_commit(db, context="candidate_fetch_local_hit", job_id=job.id)
+        final_local = _filter_unswiped_candidates(
+            _attach_candidate_workflow_state(db, job_id=job.id, candidates=local_results[: mode_config.top_k]),
+            swiped_ids,
             job_id=job.id,
-            selected_mode="local",
-            rate=round(exploration.rate, 4),
-            used=exploration.used,
-            total=exploration.total,
         )
-        return _attach_candidate_workflow_state(db, job_id=job.id, candidates=local_results[:RESULT_LIMIT])
+        if not final_local:
+            stored_candidates = _fallback_stored_candidates(
+                db=db,
+                job_id=job.id,
+                swiped_ids=swiped_ids,
+                source="local",
+                reason="no_candidates_after_filter",
+            )
+            if stored_candidates:
+                record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+                logger.info("candidates_returned count=%s", len(stored_candidates))
+                return stored_candidates
+            jobs.update_candidate_sourcing_state(
+                job_id=job.id,
+                job_status="no_candidates",
+                last_candidate_attempt_at=datetime.now(timezone.utc),
+            )
+            logger.info(
+                "no_candidates_detected job_id=%s local_count=%s pdl_count=0",
+                job.id,
+                len(local_results),
+            )
+            log_metric(
+                "no_candidates_detected",
+                job_id=job.id,
+                local_count=len(local_results),
+                pdl_count=0,
+            )
+            _safe_commit(db, context="candidate_fetch_no_candidates_local", job_id=job.id)
+            return []
+        record_candidate_fetch(job_id=job.id, candidates=final_local)
+        logger.info("candidates_returned count=%s", len(final_local))
+        return final_local
 
-    fallback_reason = switch_reason
+    # PDL is required (low similarity or empty local). Check if PDL is healthy.
+    if not pdl_allowed:
+        logger.warning(
+            "pdl_suppressed_due_to_qdrant_error job_id=%s qdrant_error=%s — serving local fallback",
+            job_id,
+            last_qdrant_search_error() or "unknown",
+        )
+        log_metric("pdl_suppressed", job_id=job.id, mode=resolved_mode, reason="qdrant_error_backoff")
+        _safe_commit(db, context="candidate_fetch_qdrant_suppressed", job_id=job.id)
+        final_suppressed = _filter_unswiped_candidates(
+            _attach_candidate_workflow_state(db, job_id=job.id, candidates=local_results[: mode_config.top_k]),
+            swiped_ids,
+            job_id=job.id,
+        )
+        if not final_suppressed:
+            stored_candidates = _fallback_stored_candidates(
+                db=db,
+                job_id=job.id,
+                swiped_ids=swiped_ids,
+                source="local_fallback",
+                reason="no_candidates_after_filter",
+            )
+            if stored_candidates:
+                record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+                logger.info("candidates_returned count=%s", len(stored_candidates))
+                return stored_candidates
+            jobs.update_candidate_sourcing_state(
+                job_id=job.id,
+                job_status="no_candidates",
+                last_candidate_attempt_at=now,
+            )
+            logger.info(
+                "no_candidates_detected job_id=%s local_count=%s pdl_count=0",
+                job.id,
+                len(local_results),
+            )
+            log_metric(
+                "no_candidates_detected",
+                job_id=job.id,
+                local_count=len(local_results),
+                pdl_count=0,
+            )
+            _safe_commit(db, context="candidate_fetch_no_candidates_suppressed", job_id=job.id)
+            return []
+        record_candidate_fetch(job_id=job.id, candidates=final_suppressed)
+        logger.info("candidates_returned count=%s", len(final_suppressed))
+        return final_suppressed
+
     logger.info(
-        "pdl_switch_decision job_id=%s selected_mode=%s local_count=%s top_semantic=%.4f threshold=%.4f reason=%s",
+        "pdl_call job_id=%s reason=%s local_count=%s avg_similarity=%.4f",
         job_id,
-        switching_mode,
+        switch_reason,
         local_count,
-        local_top_semantic,
-        adaptive_threshold,
-        fallback_reason,
+        avg_local_similarity,
     )
-    log_metric("pdl_fallback", job_id=job.id, mode=resolved_mode, reason=fallback_reason)
-    log_metric("fallback", source="candidate_retrieval", reason=fallback_reason)
-    size = max(PDL_SEARCH_SIZE, 24) if resolved_mode == "elite" else PDL_SEARCH_SIZE
-    pdl_results = _build_ranked_candidates_from_pdl(
-        db=db,
-        job=job,
-        mode=resolved_mode,
-        size=size,
-        feedback_learning=feedback_learning,
-        exploration=exploration,
-    )
+    log_metric("pdl_call", job_id=job.id, mode=resolved_mode, reason=switch_reason)
 
-    if switching_mode == "hybrid" and local_results:
-        logger.info(
-            "hybrid_mode job_id=%s local_count=%s pdl_count=%s top_semantic=%.4f adaptive_threshold=%.4f avg_similarity=%.4f refresh=%s",
-            job_id,
-            len(local_results),
-            len(pdl_results),
-            local_top_semantic,
-            adaptive_threshold,
-            avg_local_similarity,
-            refresh,
+    size = max(PDL_SEARCH_SIZE, mode_config.top_k)
+    try:
+        pdl_results = _build_ranked_candidates_from_pdl(
+            db=db,
+            job=job,
+            mode=resolved_mode,
+            size=size,
+            mode_config=mode_config,
+            feedback_learning=feedback_learning,
+            exploration=exploration,
         )
-        candidates = _merge_candidates(db=db, local_results=local_results, pdl_results=pdl_results)
-        log_metric("candidate_count", job_id=job.id, count=len(candidates), mode=resolved_mode, source="hybrid")
+    except Exception as exc:
+        logger.exception("pdl_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
+        log_metric(
+            "candidate_retrieval_error",
+            job_id=job.id,
+            mode=resolved_mode,
+            source="pdl",
+            error_type=type(exc).__name__,
+        )
+        pdl_results = []
+
+    if pdl_results:
+        # PDL responded with candidates — use them (merged with local if available).
+        if local_results:
+            candidates = _merge_candidates(
+                db=db,
+                job_id=job_id,
+                local_results=local_results,
+                pdl_results=pdl_results,
+                limit=mode_config.top_k,
+            )
+            log_metric("candidate_count", job_id=job.id, count=len(candidates), mode=resolved_mode, source="pdl_merged_local")
+            logger.info(
+                "pdl_merged_with_local job_id=%s local_count=%s pdl_count=%s merged_count=%s",
+                job_id, len(local_results), len(pdl_results), len(candidates),
+            )
+        else:
+            candidates = pdl_results
+            log_metric("candidate_count", job_id=job.id, count=len(candidates), mode=resolved_mode, source="pdl")
+            logger.info(
+                "pdl_only job_id=%s pdl_count=%s",
+                job_id, len(pdl_results),
+            )
     else:
-        logger.info(
-            "pdl_mode job_id=%s local_count=%s pdl_count=%s adaptive_threshold=%.4f refresh=%s",
+        # PDL returned nothing — fall back to local Qdrant results with fitScore > 2.5.
+        # Candidates below 2.5 are too weak to show when PDL couldn't supplement them.
+        filtered_local = [c for c in local_results if c.fitScore > 2.5]
+        logger.warning(
+            "pdl_empty_fallback_to_local job_id=%s local_count=%s filtered_count=%s avg_similarity=%.4f",
             job_id,
             len(local_results),
-            len(pdl_results),
-            adaptive_threshold,
-            refresh,
+            len(filtered_local),
+            avg_local_similarity,
         )
-        candidates = pdl_results
-        log_metric("candidate_count", job_id=job.id, count=len(candidates), mode=resolved_mode, source="pdl")
+        log_metric(
+            "pdl_empty_fallback",
+            job_id=job.id,
+            mode=resolved_mode,
+            reason="pdl_returned_no_candidates",
+            local_total=len(local_results),
+            filtered_above_2_5=len(filtered_local),
+        )
+        candidates = filtered_local
+        log_metric("candidate_count", job_id=job.id, count=len(candidates), mode=resolved_mode, source="local_fallback")
+
+    now = datetime.now(timezone.utc)
+    if not candidates:
+        stored_candidates = _fallback_stored_candidates(
+            db=db,
+            job_id=job.id,
+            swiped_ids=swiped_ids,
+            source=resolved_mode,
+            reason="pdl_empty_or_filtered",
+        )
+        if stored_candidates:
+            jobs.update_candidate_sourcing_state(
+                job_id=job.id,
+                job_status="active",
+                last_candidate_attempt_at=now,
+            )
+            _safe_commit(db, context="candidate_fetch_pdl_fallback_active", job_id=job.id)
+            record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+            logger.info("candidates_returned count=%s", len(stored_candidates))
+            return stored_candidates
+        jobs.update_candidate_sourcing_state(
+            job_id=job.id,
+            job_status="no_candidates",
+            last_candidate_attempt_at=now,
+        )
+        logger.info(
+            "no_candidates_detected job_id=%s local_count=%s pdl_count=%s",
+            job.id,
+            local_count,
+            len(pdl_results) if pdl_results else 0,
+        )
+        log_metric(
+            "no_candidates_detected",
+            job_id=job.id,
+            local_count=local_count,
+            pdl_count=len(pdl_results) if pdl_results else 0,
+        )
+        _safe_commit(db, context="candidate_fetch_pdl_no_candidates", job_id=job.id)
+        return []
+
+    jobs.update_candidate_sourcing_state(
+        job_id=job.id,
+        job_status="active",
+        last_candidate_attempt_at=now,
+    )
     log_metric(
         "exploration_usage",
         job_id=job.id,
@@ -1458,16 +2483,8 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         used=exploration.used,
         total=exploration.total,
     )
-    logger.info(
-        "exploration_usage job_id=%s mode=%s rate=%.3f used=%s total=%s",
-        job_id,
-        switching_mode,
-        exploration.rate,
-        exploration.used,
-        exploration.total,
-    )
 
-    db.commit()
+    _safe_commit(db, context="candidate_fetch_final_state", job_id=job_id)
     notify_slack(
         title="Pontis Candidates Ready",
         lines=[
@@ -1477,7 +2494,14 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             f"switch={switching_mode}",
         ],
     )
-    return _attach_candidate_workflow_state(db, job_id=job.id, candidates=candidates)
+    final_candidates = _filter_unswiped_candidates(
+        _attach_candidate_workflow_state(db, job_id=job.id, candidates=candidates),
+        swiped_ids,
+        job_id=job.id,
+    )
+    record_candidate_fetch(job_id=job.id, candidates=final_candidates)
+    logger.info("candidates_returned count=%s", len(final_candidates))
+    return final_candidates
 
 
 def warm_candidate_retrieval() -> int:
@@ -1489,7 +2513,8 @@ def warm_candidate_retrieval() -> int:
 
 def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) -> dict:
     jobs = JobRepository(db)
-    if not jobs.get(job_id):
+    job = jobs.get(job_id)
+    if not job:
         raise APIError("Job not found", status_code=404)
 
     action = action.strip().lower()
@@ -1500,31 +2525,147 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
     if not profile:
         raise APIError("Candidate not found for this job", status_code=404)
 
+    # ── State machine: resolve current status ──────────────────────────────────
+    interview_repo = InterviewRepository(db)
+    existing_interview = interview_repo.get_by_job_and_candidate(job_id, candidate_id)
+    current_status = (existing_interview.status if existing_interview else None) or "new"
+    target_status = swipe_to_status(action)
+
+    # ── Idempotency: same action already applied → return success immediately ──
+    if current_status == target_status:
+        current_ats_status = _candidate_ats_export_status(db, job_id=job_id, candidate_id=candidate_id)
+        logger.info(
+            "swipe_idempotent job_id=%s candidate_id=%s action=%s status=%s",
+            job_id, candidate_id, action, current_status,
+        )
+        return {
+            "jobId": job_id,
+            "candidateId": candidate_id,
+            "action": action,
+            "previousState": current_status,
+            "newState": current_status,
+            "exportStatus": "exported" if current_ats_status == "sent" else "failed" if current_ats_status == "failed" else "pending",
+            "ats_export_status": current_ats_status,
+            "message": "Already recorded — no change.",
+        }
+
+    # ── State machine: enforce allowed transitions ─────────────────────────────
+    # is_swipe_locked covers shortlisted/contacted/interview_scheduled/exported.
+    # assert_valid_transition covers the full transition table.
+    if is_swipe_locked(current_status):
+        logger.warning(
+            "swipe_blocked job_id=%s candidate_id=%s current_status=%s action=%s",
+            job_id, candidate_id, current_status, action,
+        )
+        raise APIError(
+            f"Cannot swipe candidate in '{current_status}' state. "
+            "Only 'new' candidates can be accepted or rejected.",
+            status_code=409,
+        )
+
+    assert_valid_transition(
+        candidate_id=candidate_id,
+        job_id=job_id,
+        from_status=current_status,
+        to_status=target_status,
+    )
+
+    # ── Persist feedback (idempotent upsert) ───────────────────────────────────
+    existing_feedback = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    is_new_feedback = existing_feedback is None
+
     scoring_repo = ScoringProfileRepository(db)
     before_profile = scoring_repo.get_or_create(job_id=job_id)
-    before_feedback_bias = float(before_profile.feedback_bias)
+    before_weights = {
+        "pdl": round(float(before_profile.weight_pdl), 6),
+        "semantic": round(float(before_profile.weight_semantic), 6),
+        "skill": round(float(before_profile.weight_skill), 6),
+        "recency": round(float(before_profile.weight_recency), 6),
+        "feedback_bias": round(float(before_profile.feedback_bias), 6),
+    }
 
     CandidateFeedbackRepository(db).upsert(job_id=job_id, candidate_id=candidate_id, feedback=action)
-    after_profile = scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback=action)
-    after_feedback_bias = float(after_profile.feedback_bias)
-    feedback_bias_delta = round(after_feedback_bias - before_feedback_bias, 6)
-    InterviewRepository(db).upsert_status(
+
+    # Only run RLHF weight update for genuinely new feedback signals.
+    # Re-submitting the same action is already handled by idempotency above.
+    # A changed action (accept→reject) is blocked by state machine above.
+    # So reaching here always means is_new_feedback=True in practice,
+    # but we guard explicitly for safety.
+    if is_new_feedback:
+        after_profile = scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback=action)
+    else:
+        after_profile = before_profile
+
+    after_weights = {
+        "pdl": round(float(after_profile.weight_pdl), 6),
+        "semantic": round(float(after_profile.weight_semantic), 6),
+        "skill": round(float(after_profile.weight_skill), 6),
+        "recency": round(float(after_profile.weight_recency), 6),
+        "feedback_bias": round(float(after_profile.feedback_bias), 6),
+    }
+
+    # ── Update interview status (state transition) ─────────────────────────────
+    interview_repo.upsert_status(
         job_id=job_id,
         candidate_id=candidate_id,
-        status="shortlisted" if action == "accept" else "rejected",
-        create_default="shortlisted",
+        status=target_status,
+        create_default=target_status,
     )
-    db.commit()
-    feedback_count = len(CandidateFeedbackRepository(db).list_for_job(job_id))
+
+    ats_export_status = "not_sent"
+    export_status = "pending"
+    if target_status == "shortlisted" and bool(getattr(job, "auto_export_to_ats", False)):
+        try:
+            export_result = export_candidate_to_ats(profile, job, db=db)
+            export_status = "exported" if export_result.get("status") == "sent" else "failed"
+            ats_export_status = "sent" if export_result.get("status") == "sent" else "failed"
+        except Exception as exc:
+            export_status = "failed"
+            ats_export_status = "failed"
+            logger.warning(
+                "ats_auto_export_failed job_id=%s candidate_id=%s error=%s",
+                job_id,
+                candidate_id,
+                str(exc),
+                exc_info=exc,
+            )
+
+    _safe_commit(db, context="candidate_feedback_commit", job_id=job_id)
+
+    # ── Observability ──────────────────────────────────────────────────────────
+    feedback_count = CandidateFeedbackRepository(db).count_for_job(job_id)
+    rlhf_direction = "positive" if action == "accept" else "negative"
+    weight_deltas = {
+        k: round(after_weights[k] - before_weights[k], 6)
+        for k in before_weights
+    }
+
+    logger.info(
+        "swipe_recorded job_id=%s candidate_id=%s action=%s "
+        "previous_state=%s new_state=%s is_new_feedback=%s",
+        job_id, candidate_id, action, current_status, target_status, is_new_feedback,
+    )
+    logger.info(
+        "rlhf_update job_id=%s candidate_id=%s direction=%s "
+        "feedback_bias_before=%.6f feedback_bias_after=%.6f "
+        "semantic_delta=%.6f skill_delta=%.6f pdl_delta=%.6f feedback_bias_delta=%.6f",
+        job_id, candidate_id, rlhf_direction,
+        before_weights["feedback_bias"], after_weights["feedback_bias"],
+        weight_deltas["semantic"], weight_deltas["skill"],
+        weight_deltas["pdl"], weight_deltas["feedback_bias"],
+    )
+
     log_metric("feedback_count", job_id=job_id, count=feedback_count)
     log_metric(
-        "feedback_impact",
+        "rlhf_weight_update",
         job_id=job_id,
         candidate_id=candidate_id,
         action=action,
-        feedback_bias_before=round(before_feedback_bias, 6),
-        feedback_bias_after=round(after_feedback_bias, 6),
-        feedback_bias_delta=feedback_bias_delta,
+        direction=rlhf_direction,
+        is_new_feedback=is_new_feedback,
+        **{f"before_{k}": v for k, v in before_weights.items()},
+        **{f"after_{k}": v for k, v in after_weights.items()},
+        **{f"delta_{k}": v for k, v in weight_deltas.items()},
     )
     notify_slack(
         title="Pontis Candidate Feedback",
@@ -1532,7 +2673,8 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             f"job_id={job_id}",
             f"candidate_id={candidate_id}",
             f"action={action}",
-            f"feedback_bias_delta={feedback_bias_delta}",
+            f"state={current_status} → {target_status}",
+            f"rlhf={rlhf_direction} bias_delta={weight_deltas['feedback_bias']:+.6f}",
         ],
     )
 
@@ -1540,8 +2682,85 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
         "jobId": job_id,
         "candidateId": candidate_id,
         "action": action,
+        "previousState": current_status,
+        "newState": target_status,
+        "exportStatus": export_status,
+        "ats_export_status": ats_export_status,
         "message": "Feedback recorded and ranking weights updated",
     }
+
+
+def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateResult]:
+    """Return only shortlisted candidates for a job — used by the outreach page."""
+    jobs = JobRepository(db)
+    if not jobs.get(job_id):
+        raise APIError("Job not found", status_code=404)
+
+    interview_rows = InterviewRepository(db).list_for_job(job_id)
+    shortlisted_ids = [
+        row.candidate_id
+        for row in interview_rows
+        if (row.status or "").strip().lower() == "shortlisted"
+    ]
+
+    logger.info(
+        "outreach_shortlisted_fetch job_id=%s shortlisted_count=%s",
+        job_id, len(shortlisted_ids),
+    )
+    log_metric("outreach_shortlisted_fetch", job_id=job_id, count=len(shortlisted_ids))
+
+    if not shortlisted_ids:
+        return []
+
+    profile_repo = CandidateProfileRepository(db)
+    profiles = profile_repo.latest_by_candidate_ids(job_id=job_id, candidate_ids=shortlisted_ids)
+    outreach_status_map = {
+        row.candidate_id: (row.status or "").strip().lower()
+        for row in OutreachEventRepository(db).list_for_job(job_id)
+    }
+
+    results: list[CandidateResult] = []
+    interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
+    for candidate_id in shortlisted_ids:
+        profile = profiles.get(candidate_id)
+        if not profile:
+            logger.warning(
+                "invalid_candidate_reference_detected table=interviews job_id=%s candidate_id=%s",
+                job_id,
+                candidate_id,
+            )
+            continue
+        final_score = max(0.0, min(1.0, profile.fit_score / 5.0))
+        results.append(
+            CandidateResult(
+                id=profile.candidate_id,
+                name=profile.name,
+                role=profile.role,
+                company=profile.company,
+                email=ensure_candidate_email(profile),
+                isMockEmail=ensure_candidate_email(profile).endswith("@test.local"),
+                skills=profile.skills or [],
+                summary=profile.summary,
+                fitScore=round(profile.fit_score, 2),
+                decision=profile.decision,
+                explanation=CandidateExplanation(
+                    semanticScore=0.0,
+                    skillOverlap=0.0,
+                    finalScore=round(final_score, 4),
+                    pdlRelevance=0.0,
+                    recencyScore=0.0,
+                    penalties={},
+                ),
+                strategy=profile.strategy,
+                status="shortlisted",
+                outreachStatus=outreach_status_map.get(candidate_id, "pending"),
+                exportStatus=export_status_map.get(candidate_id, "pending"),
+                ats_export_status=ats_export_status_map.get(candidate_id, "not_sent"),
+            )
+        )
+    sorted_results = sorted(results, key=lambda r: r.fitScore, reverse=True)
+    record_shortlist_event(job_id=job_id, shortlisted_count=len(sorted_results))
+    return sorted_results
 
 
 def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]:
@@ -1562,6 +2781,8 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
                 name=row.name,
                 role=row.role,
                 company=row.company,
+                email=ensure_candidate_email(row),
+                isMockEmail=ensure_candidate_email(row).endswith("@test.local"),
                 skills=row.skills or [],
                 summary=row.summary,
                 fitScore=round(row.fit_score, 2),
@@ -1581,43 +2802,33 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
     return _attach_candidate_workflow_state(db, job_id=job_id, candidates=results)
 
 
-def refresh_candidates_for_job(*, db: Session, job_id: str, mode: str = "volume") -> int:
-    refreshed = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode)
+def refresh_candidates_for_job(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False) -> int:
+    refreshed = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh)
     return len(refreshed)
 
 
-def _diverse_shortlist(scored_rows: list[tuple[CandidateResult, float]], limit: int) -> list[tuple[CandidateResult, float]]:
+def diversify_candidates(scored_rows: list[tuple[CandidateResult, float]], limit: int = RESULT_LIMIT) -> list[tuple[CandidateResult, float]]:
     selected: list[tuple[CandidateResult, float]] = []
-    selected_ids: set[str] = set()
-    selected_signatures: set[tuple[str, str, str]] = set()
-    used_companies: set[str] = set()
+    seen_signatures: set[tuple[str, tuple[str, ...]]] = set()
 
     for candidate, score in scored_rows:
         if len(selected) >= limit:
             break
-        company_key = (candidate.company or "").strip().lower()
-        signature = (candidate.name.strip().lower(), candidate.role.strip().lower(), company_key)
-        if candidate.id in selected_ids or signature in selected_signatures:
+        skill_signature = tuple(sorted(str(skill).strip().lower() for skill in (candidate.skills or [])[:3] if str(skill).strip()))
+        signature = ((candidate.role or "").strip().lower(), skill_signature)
+        if signature in seen_signatures:
             continue
-        if company_key and company_key in used_companies:
-            continue
-
         selected.append((candidate, score))
-        selected_ids.add(candidate.id)
-        selected_signatures.add(signature)
-        if company_key:
-            used_companies.add(company_key)
+        seen_signatures.add(signature)
+
+    if len(selected) >= limit:
+        return selected[:limit]
 
     for candidate, score in scored_rows:
         if len(selected) >= limit:
             break
-        company_key = (candidate.company or "").strip().lower()
-        signature = (candidate.name.strip().lower(), candidate.role.strip().lower(), company_key)
-        if candidate.id in selected_ids or signature in selected_signatures:
+        if any(existing.id == candidate.id for existing, _ in selected):
             continue
-
         selected.append((candidate, score))
-        selected_ids.add(candidate.id)
-        selected_signatures.add(signature)
 
-    return selected
+    return selected[:limit]

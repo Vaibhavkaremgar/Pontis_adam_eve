@@ -15,15 +15,48 @@ logger = logging.getLogger(__name__)
 
 _client: QdrantClient | None = None
 _client_disabled = False
+_client_disabled_until: datetime | None = None
+_client_last_error = ""
 _last_search_error_at: datetime | None = None
 _last_search_error_message: str = ""
 QDRANT_ERROR_COOLDOWN_SECONDS = 180
+QDRANT_CLIENT_RETRY_COOLDOWN_SECONDS = 60
+
+
+def _mark_client_unavailable(reason: str, *, cooldown_seconds: int = QDRANT_CLIENT_RETRY_COOLDOWN_SECONDS) -> None:
+    global _client_disabled, _client_disabled_until, _client_last_error, _client
+
+    _client_disabled = True
+    _client_disabled_until = datetime.now(timezone.utc) + timedelta(seconds=max(1, cooldown_seconds))
+    _client_last_error = reason
+    _client = None
+    logger.warning(
+        "qdrant_unavailable reason=%s retry_at=%s",
+        reason,
+        _client_disabled_until.isoformat(),
+    )
+
+
+def _client_is_available() -> bool:
+    global _client_disabled, _client_disabled_until, _client_last_error
+
+    if not _client_disabled:
+        return True
+    if _client_disabled_until is None:
+        return False
+    if datetime.now(timezone.utc) >= _client_disabled_until:
+        _client_disabled = False
+        _client_disabled_until = None
+        _client_last_error = ""
+        logger.info("qdrant_reenabled_after_cooldown")
+        return True
+    return False
 
 
 def _get_client() -> QdrantClient | None:
     global _client, _client_disabled
 
-    if _client_disabled:
+    if not _client_is_available():
         return None
     if _client is not None:
         return _client
@@ -33,9 +66,9 @@ def _get_client() -> QdrantClient | None:
         _client.get_collections()
         return _client
     except Exception as exc:
+        _mark_client_unavailable(str(exc))
         logger.warning("Qdrant unavailable; vector operations are running in no-op mode", exc_info=exc)
         log_metric("error", source="qdrant", kind="connection_unavailable")
-        _client_disabled = True
         return None
 
 
@@ -51,6 +84,7 @@ def ensure_collection(name: str) -> None:
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
     except Exception as exc:
+        _mark_client_unavailable(str(exc))
         logger.warning("Failed to ensure Qdrant collection '%s'", name, exc_info=exc)
 
 
@@ -70,6 +104,7 @@ def delete_job_vectors(job_id: str) -> None:
             points_selector=Filter(must=[FieldCondition(key="jobId", match=MatchValue(value=job_id))]),
         )
     except Exception as exc:
+        _mark_client_unavailable(str(exc))
         logger.warning("Failed to delete job vectors for jobId=%s", job_id, exc_info=exc)
 
 
@@ -91,6 +126,7 @@ def upsert_job_chunks(job_id: str, vectors: list[list[float]], chunks: list[str]
         try:
             client.upsert(collection_name=JOB_COLLECTION_NAME, points=points, wait=True)
         except Exception as exc:
+            _mark_client_unavailable(str(exc))
             logger.warning("Failed to upsert job vectors for jobId=%s", job_id, exc_info=exc)
 
 
@@ -105,6 +141,7 @@ def delete_candidate_vectors(job_id: str) -> None:
             points_selector=Filter(must=[FieldCondition(key="jobId", match=MatchValue(value=job_id))]),
         )
     except Exception as exc:
+        _mark_client_unavailable(str(exc))
         logger.warning("Failed to delete candidate vectors for jobId=%s", job_id, exc_info=exc)
 
 
@@ -133,6 +170,7 @@ def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[f
         try:
             client.upsert(collection_name=CANDIDATE_COLLECTION_NAME, points=points, wait=True)
         except Exception as exc:
+            _mark_client_unavailable(str(exc))
             logger.warning(
                 "Failed to upsert candidate vectors for jobId=%s candidateId=%s",
                 job_id,
@@ -151,10 +189,9 @@ def _metadata_filter(metadata_filters: dict[str, Any] | None) -> Filter | None:
     if not metadata_filters:
         return None
 
-    must: list[FieldCondition] = []
-    role = _normalize_filter_value(metadata_filters.get("role"))
-    company = _normalize_filter_value(metadata_filters.get("company"))
-    location = _normalize_filter_value(metadata_filters.get("location"))
+    embedding_version = _normalize_filter_value(
+        str(metadata_filters.get("embeddingVersion") or metadata_filters.get("embedding_version") or "")
+    )
     preferred_skills = [
         _normalize_filter_value(str(item))
         for item in (metadata_filters.get("preferredSkills") or [])
@@ -165,22 +202,21 @@ def _metadata_filter(metadata_filters: dict[str, Any] | None) -> Filter | None:
         for item in (metadata_filters.get("preferredRoles") or [])
         if _normalize_filter_value(str(item))
     ]
+    must: list[FieldCondition] = []
     should: list[FieldCondition] = []
 
-    if role:
-        must.append(FieldCondition(key="roleNorm", match=MatchValue(value=role)))
-    if company:
-        must.append(FieldCondition(key="companyNorm", match=MatchValue(value=company)))
-    if location:
-        must.append(FieldCondition(key="locationNorm", match=MatchValue(value=location)))
+    if embedding_version:
+        must.append(FieldCondition(key="embeddingVersion", match=MatchValue(value=embedding_version)))
+
     for skill in preferred_skills[:4]:
         should.append(FieldCondition(key="skillTokens", match=MatchValue(value=skill)))
     for preferred_role in preferred_roles[:2]:
         should.append(FieldCondition(key="rolePattern", match=MatchValue(value=preferred_role)))
 
-    if not must and not should:
+    # Only apply filter when we have soft signals; otherwise do pure vector search.
+    if not should and not must:
         return None
-    return Filter(must=must, should=should)
+    return Filter(must=must or None, should=should or None)
 
 
 def _mark_search_error(message: str) -> None:
@@ -204,6 +240,24 @@ def is_qdrant_search_error_active() -> bool:
 
 def last_qdrant_search_error() -> str:
     return _last_search_error_message
+
+
+def qdrant_health_snapshot() -> dict[str, str]:
+    if _client_disabled and _client_disabled_until and datetime.now(timezone.utc) < _client_disabled_until:
+        status = "down"
+        retry_at = _client_disabled_until.isoformat()
+    elif is_qdrant_search_error_active():
+        status = "degraded"
+        retry_at = ""
+    else:
+        status = "ok"
+        retry_at = ""
+    return {
+        "status": status,
+        "last_error": _client_last_error or _last_search_error_message,
+        "retry_at": retry_at,
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _normalize_points(response: Any) -> list[Any]:
@@ -241,6 +295,18 @@ def search_candidate_chunks(
         bool(query_filter),
     )
 
+    # Log total points in collection to diagnose empty-collection issues.
+    try:
+        collection_info = client.get_collection(CANDIDATE_COLLECTION_NAME)
+        total_points = getattr(collection_info, "points_count", None)
+        logger.info(
+            "qdrant_collection_state collection=%s total_points=%s",
+            CANDIDATE_COLLECTION_NAME,
+            total_points,
+        )
+    except Exception:
+        pass
+
     results: list[Any] = []
     try:
         try:
@@ -277,11 +343,13 @@ def search_candidate_chunks(
         except Exception as exc:
             log_metric("error", source="qdrant", kind="search_failed_fallback_path")
             _mark_search_error(str(exc))
+            _mark_client_unavailable(str(exc))
             logger.warning("Qdrant search failed (fallback path)", exc_info=exc)
             return []
     except Exception as exc:
         log_metric("error", source="qdrant", kind="search_failed")
         _mark_search_error(str(exc))
+        _mark_client_unavailable(str(exc))
         logger.warning("Qdrant search failed", exc_info=exc)
         return []
 
@@ -309,6 +377,7 @@ def search_candidate_chunks(
         except Exception as exc:
             log_metric("error", source="qdrant", kind="search_failed_without_filters")
             _mark_search_error(str(exc))
+            _mark_client_unavailable(str(exc))
             logger.warning("Qdrant search failed without metadata filters", exc_info=exc)
             return []
 

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import OPENAI_API_KEY, OPENAI_MODEL
 from app.db.repositories import CompanyRepository, JobRepository
-from app.services.candidate_service import fetch_ranked_candidates
+from app.services.candidate_service import build_job_text
 from app.services.embedding_service import get_embedding
 from app.services.metrics_service import log_metric
 from app.services.openai_service import refine_description
@@ -19,6 +19,74 @@ from app.utils.exceptions import APIError
 from app.utils.text import chunk_text
 
 logger = logging.getLogger(__name__)
+
+ROLE_KEYWORDS = [
+    "backend engineer",
+    "backend developer",
+    "frontend engineer",
+    "frontend developer",
+    "full stack engineer",
+    "full stack developer",
+    "data engineer",
+    "machine learning engineer",
+    "ml engineer",
+    "devops engineer",
+    "platform engineer",
+    "product manager",
+    "product designer",
+    "qa engineer",
+    "security engineer",
+    "cloud engineer",
+    "mobile engineer",
+    "ios engineer",
+    "android engineer",
+    "recruiter",
+]
+
+SKILL_KEYWORDS = [
+    "python",
+    "fastapi",
+    "django",
+    "flask",
+    "java",
+    "javascript",
+    "typescript",
+    "react",
+    "node",
+    "node.js",
+    "postgres",
+    "postgresql",
+    "mysql",
+    "mongodb",
+    "redis",
+    "aws",
+    "amazon web services",
+    "gcp",
+    "azure",
+    "docker",
+    "kubernetes",
+    "terraform",
+    "spark",
+    "airflow",
+    "sql",
+    "nosql",
+    "machine learning",
+    "ml",
+    "llm",
+    "rag",
+    "pytorch",
+    "tensorflow",
+    "scikit-learn",
+    "go",
+    "rust",
+    "ruby",
+    "rails",
+    "php",
+    "c#",
+    "c++",
+    "linux",
+    "git",
+]
 
 
 def _normalize_text(value: Any) -> str:
@@ -46,6 +114,17 @@ def _normalize_list(values: Any, *, max_items: int = 20) -> list[str]:
     return normalized
 
 
+def _contains_keyword(text: str, keyword: str) -> bool:
+    if not text or not keyword:
+        return False
+    escaped = re.escape(keyword)
+    if keyword.isalnum() and len(keyword) > 1:
+        pattern = rf"\b{escaped}\b"
+    else:
+        pattern = escaped
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
 def _extract_json_object(raw: str) -> dict[str, Any] | None:
     text = raw.strip()
     if not text:
@@ -66,6 +145,28 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def extract_structured_data_fallback(transcript: str) -> dict[str, Any]:
+    text = _normalize_text(transcript)
+    lowered = text.lower()
+
+    role = ""
+    for keyword in ROLE_KEYWORDS:
+        if _contains_keyword(lowered, keyword):
+            role = keyword
+            break
+
+    skills = [skill for skill in SKILL_KEYWORDS if _contains_keyword(lowered, skill)]
+    experience_match = re.search(r"\b\d+\s*[-\u2013]\s*\d+\s+years\b", text, flags=re.IGNORECASE)
+    if not experience_match:
+        experience_match = re.search(r"\b\d+\+?\s+years\b", text, flags=re.IGNORECASE)
+
+    return {
+        "role": role,
+        "skills": skills,
+        "experience": experience_match.group(0) if experience_match else "",
+    }
 
 
 def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None:
@@ -191,6 +292,18 @@ def _build_job_vector_source(job) -> str:
 def _sanitize_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
     job_raw = payload.get("job") if isinstance(payload.get("job"), dict) else {}
     company_raw = payload.get("company") if isinstance(payload.get("company"), dict) else {}
+    if not job_raw and any(key in payload for key in ("role", "skills", "experience")):
+        job_raw = {
+            "title": payload.get("role", ""),
+            "skills_required": payload.get("skills", []),
+            "experience_level": payload.get("experience", ""),
+        }
+    if not company_raw and any(key in payload for key in ("companyName", "industry")):
+        company_raw = {
+            "name": payload.get("companyName", ""),
+            "industry": payload.get("industry", ""),
+            "description": payload.get("companyDescription", ""),
+        }
     confidence_raw = payload.get("confidence")
 
     confidence = 0.0
@@ -217,7 +330,7 @@ def _sanitize_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str]) -> dict:
+def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], transcript: str = "") -> dict:
     jobs = JobRepository(db)
     companies = CompanyRepository(db)
 
@@ -225,14 +338,23 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str]) -
     if not job:
         raise APIError("Job not found", status_code=404)
 
-    transcript_parts = [_normalize_text(note) for note in voice_notes if _normalize_text(note)]
-    transcript = "\n".join(transcript_parts).strip()
-    if not transcript:
+    # Prefer the full structured transcript if provided; fall back to voice_notes list.
+    if transcript.strip():
+        raw_text = transcript.strip()
+    else:
+        transcript_parts = [_normalize_text(note) for note in voice_notes if _normalize_text(note)]
+        raw_text = "\n".join(transcript_parts).strip()
+
+    if not raw_text:
         raise APIError("voiceNotes must include at least one non-empty transcript", status_code=400)
 
-    extraction_raw = _extract_structured_hiring_data(transcript=transcript)
-    extraction_ok = extraction_raw is not None
-    structured = _sanitize_structured_payload(extraction_raw or {})
+    logger.info("voice_refine_start job_id=%s transcript_length=%s", job_id, len(raw_text))
+
+    extraction_raw = _extract_structured_hiring_data(transcript=raw_text)
+    used_fallback = extraction_raw is None
+    fallback_raw = extract_structured_data_fallback(raw_text)
+    structured_payload = extraction_raw or fallback_raw
+    structured = _sanitize_structured_payload(structured_payload or {})
 
     extracted_job = structured["job"]
     extracted_company = structured["company"]
@@ -255,7 +377,9 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str]) -
     merged_company_industry = existing_company_industry or extracted_company["industry"]
     merged_company_description = existing_company_description or extracted_company["description"]
 
-    refined_description = refine_description(description=job.description, voice_notes=voice_notes)
+    # Use the full transcript (both sides) for richer description refinement.
+    notes_for_refinement = [raw_text] if raw_text else voice_notes
+    refined_description = refine_description(description=job.description, voice_notes=notes_for_refinement)
     enriched_description = _enhance_description(
         refined_description=refined_description,
         responsibilities=merged_responsibilities,
@@ -265,8 +389,24 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str]) -
         company_description=merged_company_description,
     )
 
-    if not extraction_ok:
-        log_metric("fallback", source="voice_structured_extraction", reason="extraction_failed")
+    if used_fallback:
+        log_metric("fallback", source="voice_structured_extraction", reason="fallback_extraction_used")
+        fallback_fields = [
+            name
+            for name, value in {
+                "role": fallback_raw.get("role"),
+                "skills": fallback_raw.get("skills"),
+                "experience": fallback_raw.get("experience"),
+            }.items()
+            if value
+        ]
+        logger.info(
+            "fallback_extraction_used job_id=%s role=%s skills=%s experience=%s",
+            job_id,
+            fallback_raw.get("role") or "unknown",
+            "|".join(fallback_raw.get("skills") or []) or "none",
+            fallback_raw.get("experience") or "none",
+        )
     else:
         extracted_fields = [
             name
@@ -308,11 +448,15 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str]) -
         compensation=merged_compensation,
         structured_data={
             "voiceExtraction": {
+                "source": "fallback" if used_fallback else "openai",
                 "job": extracted_job,
                 "company": extracted_company,
                 "confidence": confidence,
-                "success": extraction_ok,
-            }
+                "success": True,
+                "transcript": raw_text,
+                "fallback": fallback_raw,
+            },
+            "voiceTranscript": raw_text,
         },
     )
     if not updated:
@@ -327,22 +471,39 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str]) -
     db.commit()
     db.refresh(updated)
 
-    vector_source = _build_job_vector_source(updated)
+    # Re-embed the enriched job and upsert to Qdrant.
+    # Do NOT call fetch_ranked_candidates here — frontend triggers that separately with refresh=true.
+    vector_source = build_job_text(updated, structured_data=updated.structured_data, transcript=raw_text)
     chunks = chunk_text(vector_source)
     vectors = [get_embedding(chunk) for chunk in chunks]
     ensure_all_collections()
     delete_job_vectors(job_id)
     upsert_job_chunks(job_id, vectors, chunks)
 
-    candidates = fetch_ranked_candidates(db=db, job_id=job_id)
+    logger.info(
+        "voice_refine_complete job_id=%s chunks=%s skills=%s responsibilities=%s",
+        job_id,
+        len(chunks),
+        len(merged_skills),
+        len(merged_responsibilities),
+    )
+
     return {
         "refined": True,
-        "candidateCount": len(candidates),
+        "job": {
+            "title": updated.title,
+            "description": updated.description,
+            "location": updated.location,
+            "compensation": updated.compensation,
+            "skills_required": updated.skills_required or [],
+            "responsibilities": updated.responsibilities or [],
+            "experience_level": updated.experience_level or "",
+        },
         "extraction": {
-            "success": extraction_ok,
+            "success": True,
+            "usedFallback": used_fallback,
             "confidence": confidence,
-            "job": extracted_job,
-            "company": extracted_company,
+            "fields": extracted_fields if not used_fallback else fallback_fields,
         },
     }
 

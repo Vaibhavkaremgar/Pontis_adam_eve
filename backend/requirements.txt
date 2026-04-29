@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+python-multipart
 qdrant-client
 sentence-transformers
 openai
@@ -10,3 +11,5 @@ psycopg2-binary
 PyJWT
 redis
 google-auth
+resend
+slack_sdk
