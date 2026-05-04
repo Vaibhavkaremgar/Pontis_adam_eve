@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import CHAR, TypeDecorator
@@ -168,10 +168,105 @@ class CandidateFeedbackEntity(Base):
     feedback: Mapped[str] = mapped_column(String(16), nullable=False)  # accept | reject
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    session_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("candidate_selection_sessions.id"), nullable=True, index=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="feedback_items")
+
+
+class RankingExplanationEntity(Base):
+    __tablename__ = "ranking_explanations"
+    __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_ranking_explanations_job_candidate"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    existing_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    recruiter_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    session_signal: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    recruiter_capped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class RankingRunEntity(Base):
+    __tablename__ = "ranking_runs"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    run_type: Mapped[str] = mapped_column(String(32), nullable=False, default="initial")
+    avg_existing_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_final_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_recruiter_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    percent_recruiter_capped: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    drift_delta: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class RecruiterExperiencePreferenceEntity(Base):
+    __tablename__ = "recruiter_experience_preferences"
+    __table_args__ = (UniqueConstraint("recruiter_id", "experience_bucket", name="uq_recruiter_experience_preferences_recruiter_bucket"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    recruiter_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    experience_bucket: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class RecruiterSkillPreferenceEntity(Base):
+    __tablename__ = "recruiter_skill_preferences"
+    __table_args__ = (UniqueConstraint("recruiter_id", "skill", name="uq_recruiter_skill_preferences_recruiter_skill"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    recruiter_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    skill: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    positive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    negative_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class RecruiterRolePreferenceEntity(Base):
+    __tablename__ = "recruiter_role_preferences"
+    __table_args__ = (UniqueConstraint("recruiter_id", "role", name="uq_recruiter_role_preferences_recruiter_role"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    recruiter_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    positive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    negative_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class CandidateSelectionSessionEntity(Base):
+    __tablename__ = "candidate_selection_sessions"
+    __table_args__ = (UniqueConstraint("job_id", name="uq_candidate_selection_sessions_job"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    current_batch_index: Mapped[int] = mapped_column(nullable=False, default=0)
+    batch_size: Mapped[int] = mapped_column(nullable=False, default=2)
+    total_batches: Mapped[int] = mapped_column(nullable=False, default=3)
+    candidate_pool_snapshot: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    batch_plan: Mapped[list[list[str]]] = mapped_column(JSON, nullable=False, default=list)
+    selected_candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    rejected_candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    batch_history: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    selection_analysis: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    final_candidate_snapshot: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class ATSExportEntity(Base):
@@ -220,6 +315,7 @@ class OutreachEventEntity(Base):
     message_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     resume_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    learning_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 

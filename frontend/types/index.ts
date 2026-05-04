@@ -39,6 +39,7 @@ export type Job = {
   workAuthorization: "required" | "preferred" | "not-required";
   remotePolicy?: string;
   experienceRequired?: string;
+  vettingMode?: "volume" | "elite";
   autoExportToAts?: boolean;
 };
 
@@ -82,7 +83,15 @@ export type Candidate = {
     };
   };
   strategy: "HIGH" | "MEDIUM" | "LOW";
-  status: "new" | "contacted" | "shortlisted" | "interview_scheduled" | "booked" | "rejected" | "exported";
+  status:
+    | "new"
+    | "contacted"
+    | "shortlisted"
+    | "interview_scheduled"
+    | "interview_invited"
+    | "booked"
+    | "rejected"
+    | "exported";
   outreachStatus?: "pending" | "dry_run" | "sent" | "failed" | string;
   exportStatus?: "pending" | "queued" | "exported" | "failed" | string;
   ats_export_status?: "sent" | "failed" | "not_sent" | string;
@@ -92,5 +101,51 @@ export type Candidate = {
 export type InterviewStatus = {
   candidateId: string;
   name: string;
-  status: "shortlisted" | "contacted" | "interview_scheduled" | "rejected" | "exported" | "new" | "booked";
+  status:
+    | "shortlisted"
+    | "contacted"
+    | "interview_scheduled"
+    | "interview_invited"
+    | "rejected"
+    | "exported"
+    | "new"
+    | "booked";
+};
+
+export type CandidateSelectionAnalysis = {
+  skillsOverlap: Array<{ skill: string; count: number }>;
+  experienceTrends: {
+    averageYears: number;
+    minimumYears: number;
+    maximumYears: number;
+    sampleSize: number;
+  };
+  companySimilarities: {
+    topCompanies: Array<{ company: string; count: number }>;
+  };
+  roleAlignment: {
+    topRoles: Array<{ role: string; count: number }>;
+  };
+  preferenceSignals: {
+    sharedSkills: string[];
+    sharedRoles: string[];
+    sharedCompanies: string[];
+  };
+  summary: string;
+};
+
+export type CandidateSelectionSession = {
+  sessionId: string;
+  jobId: string;
+  status: string;
+  currentBatchIndex: number;
+  totalBatches: number;
+  batchSize: number;
+  selectedCandidateIds: string[];
+  rejectedCandidateIds: string[];
+  currentBatch: Candidate[];
+  analysis?: CandidateSelectionAnalysis | null;
+  completed: boolean;
+  finalCandidates: Candidate[];
+  topCandidates?: Candidate[];
 };

@@ -7,7 +7,7 @@
  * - Captures BOTH assistant and user turns as structured VoiceTurn[]
  * - On call-end: auto-triggers POST /voice/refine with full conversation transcript
  * - Then auto-triggers GET /candidates?refresh=true
- * - Navigates to /outreach on success, shows retry on failure
+ * - Navigates to /review on success, shows retry on failure
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
@@ -52,7 +52,7 @@ function toErrorMessage(error: unknown): string {
 
 function buildFullTranscript(turns: VoiceTurn[]): string {
   return turns
-    .map((t) => `${t.role === "assistant" ? "Maya" : "Recruiter"}: ${t.text}`)
+    .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${t.text}`)
     .join("\n");
 }
 
@@ -144,7 +144,11 @@ export function VoiceUi() {
     }
 
     setPipelineStatus("fetching");
-    const candidatesResult = await getCandidatesWithMode({ jobId, mode: "volume", refresh: true });
+    const candidatesResult = await getCandidatesWithMode({
+      jobId,
+      mode: job.vettingMode || "volume",
+      refresh: true,
+    });
 
     if (!candidatesResult.success || !candidatesResult.data) {
       setPipelineStatus("error");
@@ -157,8 +161,8 @@ export function VoiceUi() {
     setPipelineStatus("done");
     terminalStateRef.current = "done";
 
-    // Auto-navigate to outreach after a short pause so recruiter sees "done"
-    setTimeout(() => router.push("/outreach"), 1200);
+    // Auto-navigate to review after a short pause so recruiter sees "done"
+    setTimeout(() => router.push("/review"), 1200);
   }, [jobId, router, setCandidates, setIsRefined, setVoiceNotes]);
 
   // ── Vapi instance (created once per session) ───────────────────────────────
@@ -284,6 +288,24 @@ export function VoiceUi() {
     const jobDescription = job.description || "";
     const location = job.location || "";
     const recruiterName = user?.name || user?.email || "Recruiter";
+    const jobContext = {
+      title: job.title || "",
+      description: job.description || "",
+      location: job.location || "",
+      compensation: job.compensation || "",
+      workAuthorization: job.workAuthorization || "",
+      remotePolicy: job.remotePolicy || "",
+      experienceRequired: job.experienceRequired || "",
+      autoExportToAts: Boolean(job.autoExportToAts),
+    };
+    const companyContext = {
+      name: company.name || "",
+      website: company.website || "",
+      description: company.description || "",
+      industry: company.industry || "",
+      atsProvider: company.atsProvider || "",
+      atsConnected: Boolean(company.atsConnected),
+    };
 
     const firstMessage = companyName && jobTitle
       ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's refine the requirements — what's the most important thing you're looking for in this candidate?`
@@ -298,6 +320,13 @@ export function VoiceUi() {
           companyName,
           jobDescription: jobDescription.slice(0, 500), // keep prompt size reasonable
           location,
+          compensation: jobContext.compensation,
+          workAuthorization: jobContext.workAuthorization,
+          remotePolicy: jobContext.remotePolicy,
+          experienceRequired: jobContext.experienceRequired,
+          autoExportToAts: String(jobContext.autoExportToAts),
+          jobContext: JSON.stringify(jobContext),
+          companyContext: JSON.stringify(companyContext),
           recruiterName,
         },
         firstMessage,
@@ -355,14 +384,14 @@ export function VoiceUi() {
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 overflow-hidden rounded-full">
-              <img src="/images/maya.png" alt="Maya" className="h-full w-full object-cover" />
+              <img src="/images/adam.png" alt="Adam" className="h-full w-full object-cover" />
             </div>
-            <p className="font-heading text-2xl leading-none text-[#111111]">Maya</p>
+            <p className="font-heading text-2xl leading-none text-[#111111]">Adam</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">Discovery</span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Calibration</span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Summary</span>
+            {/* <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Calibration</span>
+            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Summary</span> */}
           </div>
         </div>
 
@@ -408,12 +437,12 @@ export function VoiceUi() {
               className="max-h-[320px] space-y-3 overflow-y-auto rounded-xl bg-[#F8FAFC] p-3 md:max-h-[360px]"
             >
               {chatMessages.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
-                <p className="text-center text-xs text-gray-400">Waiting for Maya...</p>
+                <p className="text-center text-xs text-gray-400">Waiting for Adam...</p>
               )}
               {chatMessages.map((msg, i) => (
                 <ChatBubble key={`${msg.role}-${i}-${msg.text.slice(0, 12)}`} message={msg} />
               ))}
-              {/* "Maya is thinking..." indicator — shown when assistant speech just ended and user hasn't spoken */}
+              {/* "Adam is thinking..." indicator — shown when assistant speech just ended and user hasn't spoken */}
               {callStatus === "listening" && chatMessages[chatMessages.length - 1]?.role === "assistant" && (
                 <div className="flex items-center gap-2 px-2 py-1">
                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />

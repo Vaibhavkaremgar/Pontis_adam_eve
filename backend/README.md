@@ -39,6 +39,7 @@ Required:
 - Optional outreach/ATS keys: SENDGRID_API_KEY / POSTMARK_SERVER_TOKEN / MERGE_API_KEY / MERGE_ACCOUNT_TOKEN
 - Slack integration: SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
 - AUTO_RECREATE_SCHEMA=false (recommended; destructive runtime schema changes are disabled)
+- Booking/interview plugins: BOOKING_PROVIDER, BOOKING_PROVIDER_URL, INTERVIEW_PROVIDER, INTERVIEW_PROVIDER_URL
 
 ## Architecture
 

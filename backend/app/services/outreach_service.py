@@ -34,6 +34,7 @@ from app.db.repositories import (
 from app.db.session import SessionLocal
 from app.models.entities import OutreachEventEntity
 from app.services.metrics_service import log_metric
+from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.slack_integration import post_slack_message
 from app.services.slack_service import notify_slack
 from app.services.state_machine import assert_valid_transition
@@ -582,6 +583,34 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
         if interview_row:
             interview_row.status = "replied"
 
+        recruiter_id = JobRepository(db).get_recruiter_id(row.job_id)
+        candidate_profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
+        if recruiter_id and candidate_profile:
+            if intent == "interested":
+                update_recruiter_preferences(
+                    db,
+                    recruiter_id,
+                    candidate_profile,
+                    [],
+                    signal_multiplier=2.5,
+                )
+            elif intent == "not_interested":
+                update_recruiter_preferences(
+                    db,
+                    recruiter_id,
+                    None,
+                    [candidate_profile],
+                    signal_multiplier=0.5,
+                )
+            else:
+                update_recruiter_preferences(
+                    db,
+                    recruiter_id,
+                    candidate_profile,
+                    [],
+                    signal_multiplier=1.5,
+                )
+
         try:
             db.commit()
         except Exception as exc:
@@ -608,12 +637,13 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
                 from app.services.interview_session_service import create_interview_session
 
                 session = create_interview_session(db=db, job_id=row.job_id, candidate_id=row.candidate_id)
+                booking_link = session.get("bookingLink", session.get("bookingUrl", ""))
                 logger.info(
                     "decision_taken interview_session_created job_id=%s candidate_id=%s token=%s booking_url=%s",
                     row.job_id,
                     row.candidate_id,
                     session.get("token", ""),
-                    session.get("bookingUrl", ""),
+                    booking_link,
                 )
             except Exception as exc:
                 logger.warning(

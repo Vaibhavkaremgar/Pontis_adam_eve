@@ -160,6 +160,54 @@ def _ensure_optional_schema_columns() -> None:
             if "ats_job_id" not in job_columns:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN ats_job_id VARCHAR(128) NULL DEFAULT NULL"))
 
+        if "candidate_feedback" in table_names:
+            feedback_columns = {column["name"] for column in inspector.get_columns("candidate_feedback")}
+            if "recruiter_id" not in feedback_columns:
+                conn.execute(text("ALTER TABLE candidate_feedback ADD COLUMN recruiter_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "session_id" not in feedback_columns:
+                conn.execute(text("ALTER TABLE candidate_feedback ADD COLUMN session_id VARCHAR(36) NULL DEFAULT NULL"))
+
+        if "ranking_explanations" in table_names:
+            ranking_columns = {column["name"] for column in inspector.get_columns("ranking_explanations")}
+            if "existing_score" not in ranking_columns:
+                conn.execute(text("ALTER TABLE ranking_explanations ADD COLUMN existing_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "recruiter_score" not in ranking_columns:
+                conn.execute(text("ALTER TABLE ranking_explanations ADD COLUMN recruiter_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "session_signal" not in ranking_columns:
+                conn.execute(text("ALTER TABLE ranking_explanations ADD COLUMN session_signal DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "final_score" not in ranking_columns:
+                conn.execute(text("ALTER TABLE ranking_explanations ADD COLUMN final_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "recruiter_capped" not in ranking_columns:
+                conn.execute(text("ALTER TABLE ranking_explanations ADD COLUMN recruiter_capped BOOLEAN NOT NULL DEFAULT FALSE"))
+
+        if "ranking_runs" in table_names:
+            run_columns = {column["name"] for column in inspector.get_columns("ranking_runs")}
+            if "recruiter_id" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN recruiter_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "run_type" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN run_type VARCHAR(32) NOT NULL DEFAULT 'initial'"))
+            if "avg_existing_score" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN avg_existing_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "avg_final_score" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN avg_final_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "avg_recruiter_score" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN avg_recruiter_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "percent_recruiter_capped" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN percent_recruiter_capped DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "candidate_count" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN candidate_count INTEGER NOT NULL DEFAULT 0"))
+            if "drift_delta" not in run_columns:
+                conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN drift_delta DOUBLE PRECISION NOT NULL DEFAULT 0"))
+
+        if "recruiter_experience_preferences" in table_names:
+            exp_columns = {column["name"] for column in inspector.get_columns("recruiter_experience_preferences")}
+            if "experience_bucket" not in exp_columns:
+                conn.execute(text("ALTER TABLE recruiter_experience_preferences ADD COLUMN experience_bucket VARCHAR(16) NOT NULL DEFAULT ''"))
+            if "weight" not in exp_columns:
+                conn.execute(text("ALTER TABLE recruiter_experience_preferences ADD COLUMN weight DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "updated_at" not in exp_columns:
+                conn.execute(text("ALTER TABLE recruiter_experience_preferences ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+
         if "companies" in table_names:
             company_columns = {column["name"] for column in inspector.get_columns("companies")}
             if "industry" not in company_columns:
@@ -196,6 +244,8 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN resume_url VARCHAR(500) NOT NULL DEFAULT ''"))
             if "responded_at" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN responded_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "learning_applied" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN learning_applied BOOLEAN NOT NULL DEFAULT FALSE"))
             if dialect == "postgresql":
                 conn.execute(
                     text(

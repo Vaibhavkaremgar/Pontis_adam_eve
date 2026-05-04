@@ -19,6 +19,18 @@ class CandidateExplanation(BaseModel):
     aiReasoning: str = ""
 
 
+class CandidateRankingDebug(BaseModel):
+    existing_score: float
+    recruiter_score_raw: float
+    recruiter_score_adjusted: float
+    session_signal: float
+    weights: dict[str, float]
+    final_score: float
+    recruiter_capped: bool
+    experience_bucket: str = ""
+    experience_score: float = 0.0
+
+
 class CandidateResult(BaseModel):
     id: str
     name: str
@@ -33,6 +45,7 @@ class CandidateResult(BaseModel):
     explanation: CandidateExplanation
     strategy: str
     status: str = "new"
+    debug: CandidateRankingDebug | None = None
     outreachStatus: str = "pending"
     exportStatus: str = "pending"
     ats_export_status: str = "not_sent"
@@ -95,6 +108,45 @@ class CandidateExportData(BaseModel):
     reference: str
 
 
+class CandidateSelectionRequest(BaseModel):
+    jobId: str
+    candidateId: str
+
+
+class CandidateSelectionAnalysis(BaseModel):
+    skillsOverlap: list[dict] = Field(default_factory=list)
+    experienceTrends: dict = Field(default_factory=dict)
+    companySimilarities: dict = Field(default_factory=dict)
+    roleAlignment: dict = Field(default_factory=dict)
+    preferenceSignals: dict = Field(default_factory=dict)
+    summary: str = ""
+
+
+class CandidateSelectionSessionData(BaseModel):
+    sessionId: str
+    jobId: str
+    status: str
+    currentBatchIndex: int
+    totalBatches: int
+    batchSize: int
+    selectedCandidateIds: list[str] = Field(default_factory=list)
+    rejectedCandidateIds: list[str] = Field(default_factory=list)
+    currentBatch: list[CandidateResult] = Field(default_factory=list)
+    analysis: CandidateSelectionAnalysis | None = None
+    completed: bool = False
+    finalCandidates: list[CandidateResult] = Field(default_factory=list)
+
+
+class CandidateSelectionBatchData(BaseModel):
+    session: CandidateSelectionSessionData
+
+
+class CandidateSelectionFinalData(BaseModel):
+    session: CandidateSelectionSessionData
+    topCandidates: list[CandidateResult] = Field(default_factory=list)
+    analysis: CandidateSelectionAnalysis | None = None
+
+
 class InterviewSessionRequest(BaseModel):
     jobId: str
     candidateId: str
@@ -109,6 +161,7 @@ class InterviewSessionData(BaseModel):
     status: str
     expiresAt: str
     bookedAt: str | None = None
+    bookingLink: str = ""
     bookingUrl: str = ""
 
 
@@ -122,3 +175,4 @@ class InterviewBookingData(BaseModel):
     status: str
     jobId: str
     candidateId: str
+    meetingLink: str = ""

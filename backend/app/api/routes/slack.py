@@ -15,6 +15,7 @@ from app.db.repositories import CandidateFeedbackRepository, UserRepository
 from app.db.session import SessionLocal
 from app.services.candidate_service import apply_feedback, fetch_ranked_candidates
 from app.services.hiring_service import create_hiring_job
+from app.services.interview_invite_service import send_interview_invite
 from app.services.outreach_service import trigger_candidate_outreach
 from app.services.slack_integration import (
     build_candidate_blocks,
@@ -225,10 +226,8 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         action, candidate_id, job_id = value.split(":")
         message = payload.get("message") or {}
         message_ts = str(message.get("ts") or "").strip()
-        if not message_ts:
-            raise HTTPException(status_code=400, detail="Missing message timestamp")
         action = action.strip().lower()
-        if action not in {"shortlist", "reject"}:
+        if action not in {"shortlist", "reject", "schedule"}:
             raise HTTPException(status_code=400, detail="Unsupported action")
 
         logger.info(
@@ -238,6 +237,24 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             job_id,
             channel_id,
         )
+
+        if action == "schedule":
+            background_tasks.add_task(
+                send_interview_invite,
+                candidate_id,
+                job_id,
+                channel_id=channel_id,
+            )
+            logger.info(
+                "slack_schedule_requested job_id=%s candidate_id=%s channel_id=%s",
+                job_id,
+                candidate_id,
+                channel_id,
+            )
+            return {"ok": True}
+
+        if not message_ts:
+            raise HTTPException(status_code=400, detail="Missing message timestamp")
 
         with SessionLocal() as db:
             existing_feedback = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id)

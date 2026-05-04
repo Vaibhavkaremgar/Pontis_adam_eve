@@ -69,6 +69,7 @@ const initialJob: Job = {
   workAuthorization: "required",
   remotePolicy: "hybrid",
   experienceRequired: "",
+  vettingMode: "volume",
   autoExportToAts: false
 };
 

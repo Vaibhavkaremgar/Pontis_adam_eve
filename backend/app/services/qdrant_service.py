@@ -8,7 +8,14 @@ from typing import Any
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
 
-from app.core.config import CANDIDATE_COLLECTION_NAME, JOB_COLLECTION_NAME, QDRANT_API_KEY, QDRANT_URL, VECTOR_SIZE
+from app.core.config import (
+    CANDIDATE_COLLECTION_NAME,
+    JOB_COLLECTION_NAME,
+    QDRANT_API_KEY,
+    QDRANT_URL,
+    RECRUITER_PREFERENCES_COLLECTION_NAME,
+    VECTOR_SIZE,
+)
 from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
@@ -91,6 +98,7 @@ def ensure_collection(name: str) -> None:
 def ensure_all_collections() -> None:
     ensure_collection(JOB_COLLECTION_NAME)
     ensure_collection(CANDIDATE_COLLECTION_NAME)
+    ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
 
 
 def delete_job_vectors(job_id: str) -> None:
@@ -177,6 +185,63 @@ def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[f
                 candidate_id,
                 exc_info=exc,
             )
+
+
+def upsert_recruiter_preferences(
+    recruiter_id: str,
+    vector: list[float],
+    payload: dict[str, Any] | None = None,
+) -> None:
+    client = _get_client()
+    if not client:
+        return
+    recruiter_id = (recruiter_id or "").strip()
+    if not recruiter_id or not vector:
+        return
+    ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
+    point_payload = {
+        "recruiterId": recruiter_id,
+        **(payload or {}),
+    }
+    point = PointStruct(
+        id=_stable_point_id(f"recruiter:{recruiter_id}"),
+        vector=vector,
+        payload=point_payload,
+    )
+    try:
+        client.upsert(collection_name=RECRUITER_PREFERENCES_COLLECTION_NAME, points=[point], wait=True)
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        logger.warning("Failed to upsert recruiter preferences for recruiterId=%s", recruiter_id, exc_info=exc)
+
+
+def load_recruiter_preferences(recruiter_id: str) -> dict[str, Any] | None:
+    client = _get_client()
+    recruiter_id = (recruiter_id or "").strip()
+    if not client or not recruiter_id:
+        return None
+    ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
+    try:
+        response = client.scroll(
+            collection_name=RECRUITER_PREFERENCES_COLLECTION_NAME,
+            scroll_filter=Filter(must=[FieldCondition(key="recruiterId", match=MatchValue(value=recruiter_id))]),
+            limit=1,
+            with_payload=True,
+            with_vectors=True,
+        )
+        points = response[0] if isinstance(response, tuple) else response
+        if not points:
+            return None
+        point = points[0]
+        vector = getattr(point, "vector", None) or []
+        payload = getattr(point, "payload", None) or {}
+        return {
+            "vector": [float(value) for value in vector],
+            "payload": payload,
+        }
+    except Exception as exc:
+        logger.warning("Failed to load recruiter preferences for recruiterId=%s", recruiter_id, exc_info=exc)
+        return None
 
 
 def _normalize_filter_value(value: str | None) -> str:

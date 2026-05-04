@@ -8,6 +8,8 @@ from app.core.config import (
     ATS_RETRY_INTERVAL_MINUTES,
     ENABLE_FOLLOWUPS,
     ENABLE_REPLY_POLLING,
+    OUTREACH_LEARNING_INTERVAL_MINUTES,
+    OUTREACH_LEARNING_BATCH_LIMIT,
     NO_CANDIDATES_COOLDOWN_MINUTES,
     REPLY_POLL_INTERVAL_MINUTES,
     REFRESH_CANDIDATE_LIMIT,
@@ -32,6 +34,7 @@ _status_lock = threading.Lock()
 _last_candidate_refresh_at: datetime | None = None
 _last_candidate_flywheel_at: datetime | None = None
 _last_followup_cycle_at: datetime | None = None
+_last_outreach_learning_cycle_at: datetime | None = None
 _last_ats_retry_cycle_at: datetime | None = None
 _last_reply_poll_cycle_at: datetime | None = None
 _last_cycle_jobs_attempted = 0
@@ -138,6 +141,32 @@ def _run_followup_cycle() -> None:
             db.rollback()
 
 
+def _run_outreach_learning_cycle() -> None:
+    """Apply weak negative learning to silent candidates after follow-up exhaustion."""
+    global _last_outreach_learning_cycle_at
+
+    with _status_lock:
+        _last_outreach_learning_cycle_at = _utcnow()
+
+    with SessionLocal() as db:
+        try:
+            from app.services.outreach_learning_service import run_outreach_learning_cycle
+
+            result = run_outreach_learning_cycle(
+                db,
+                batch_limit=OUTREACH_LEARNING_BATCH_LIMIT,
+            )
+            logger.info(
+                "outreach_learning_cycle_complete processed=%s applied=%s skipped=%s",
+                result.get("processed", 0),
+                result.get("applied", 0),
+                result.get("skipped", 0),
+            )
+        except Exception as exc:
+            logger.error("outreach_learning_cycle_failed error=%s", str(exc), exc_info=exc)
+            db.rollback()
+
+
 def _run_ats_retry_cycle() -> None:
     """Retry failed ATS exports."""
     global _last_ats_retry_cycle_at
@@ -208,6 +237,14 @@ def _run_loop() -> None:
             except Exception as exc:
                 logger.warning("followup_cycle_exception error=%s", str(exc), exc_info=exc)
 
+        try:
+            last_learning = _last_outreach_learning_cycle_at
+            learning_interval = timedelta(minutes=max(1, OUTREACH_LEARNING_INTERVAL_MINUTES))
+            if not last_learning or (_utcnow() - last_learning) >= learning_interval:
+                _run_outreach_learning_cycle()
+        except Exception as exc:
+            logger.warning("outreach_learning_cycle_exception error=%s", str(exc), exc_info=exc)
+
         if ENABLE_REPLY_POLLING:
             try:
                 last_poll = _last_reply_poll_cycle_at
@@ -260,9 +297,11 @@ def scheduler_status() -> dict:
             "last_candidate_refresh_at": _last_candidate_refresh_at.isoformat() if _last_candidate_refresh_at else None,
             "last_candidate_flywheel_at": _last_candidate_flywheel_at.isoformat() if _last_candidate_flywheel_at else None,
             "last_followup_cycle_at": _last_followup_cycle_at.isoformat() if _last_followup_cycle_at else None,
+            "last_outreach_learning_cycle_at": _last_outreach_learning_cycle_at.isoformat() if _last_outreach_learning_cycle_at else None,
             "last_ats_retry_cycle_at": _last_ats_retry_cycle_at.isoformat() if _last_ats_retry_cycle_at else None,
             "last_reply_poll_cycle_at": _last_reply_poll_cycle_at.isoformat() if _last_reply_poll_cycle_at else None,
             "last_cycle_jobs_attempted": _last_cycle_jobs_attempted,
             "last_cycle_jobs_refreshed": _last_cycle_jobs_refreshed,
             "reply_poll_interval_minutes": REPLY_POLL_INTERVAL_MINUTES,
+            "outreach_learning_interval_minutes": OUTREACH_LEARNING_INTERVAL_MINUTES,
         }

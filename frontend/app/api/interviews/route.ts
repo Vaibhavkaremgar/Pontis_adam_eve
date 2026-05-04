@@ -44,6 +44,11 @@ export async function GET(request: Request) {
       candidateId: `${jobId}_cand_3`,
       name: "Candidate Three",
       status: "interview_scheduled"
+    },
+    {
+      candidateId: `${jobId}_cand_4`,
+      name: "Candidate Four",
+      status: "interview_invited"
     }
   ];
 

@@ -6,7 +6,7 @@
  * or if the auto-pipeline in voice-ui.tsx failed and they need to retry.
  *
  * Normal flow: voice-ui.tsx auto-triggers refine + candidates and navigates
- * directly to /outreach. This page is a safety net.
+ * directly to /review. This page is a safety net.
  *
  * What API it connects to:
  * POST /voice/refine  and  GET /candidates?refresh=true
@@ -88,7 +88,7 @@ export default function VoiceProcessingPage() {
   const noTranscript = jobId && voiceNotes.length === 0;
 
   return (
-    <AppShell activeStep={4}>
+    <AppShell activeStep={3}>
       <div className="mx-auto w-full max-w-[560px]">
         <Card>
           <CardHeader className="text-center">

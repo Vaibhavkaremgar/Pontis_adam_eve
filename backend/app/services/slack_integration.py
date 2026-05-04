@@ -148,6 +148,12 @@ def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[di
                         "style": "danger",
                         "value": f"reject:{candidate_id}:{job_id}",
                     },
+                    {
+                        "type": "button",
+                        "action_id": "schedule",
+                        "text": {"type": "plain_text", "text": "Schedule Interview"},
+                        "value": f"schedule:{candidate_id}:{job_id}",
+                    },
                 ],
             }
         )

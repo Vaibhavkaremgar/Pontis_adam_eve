@@ -11,7 +11,7 @@
  * POST /outreach               — sends outreach with optional recruiter-edited body
  */
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,9 @@ import type { Candidate } from "@/types";
 
 export default function OutreachPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
+  const skipVoice = searchParams.get("skipVoice") === "1" || searchParams.get("skipVoice") === "true";
 
   const [shortlisted, setShortlisted] = useState<Candidate[]>([]);
   const [isLoadingCandidates, setIsLoadingCandidates] = useState(false);
@@ -47,11 +49,11 @@ export default function OutreachPage() {
     if (!isSessionReady) return;
     if (!user) { router.replace("/login"); return; }
     if (!jobId) { router.replace("/job"); return; }
-    if (!isRefined) {
+    if (!isRefined && !skipVoice) {
       router.replace(`/voice?jobId=${encodeURIComponent(jobId)}`);
       return;
     }
-  }, [isRefined, isSessionReady, jobId, router, user]);
+  }, [isRefined, isSessionReady, jobId, router, skipVoice, user]);
 
   // Fetch shortlisted candidates server-side on mount
   useEffect(() => {
@@ -163,6 +165,11 @@ export default function OutreachPage() {
           {isRefined && (
             <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-800">
               Refined based on your input
+            </div>
+          )}
+          {!isRefined && skipVoice && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Skipping voice intake and going straight to outreach.
             </div>
           )}
 

@@ -6,8 +6,10 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.utils.exceptions import APIError
@@ -17,11 +19,17 @@ from app.models.entities import (
     CandidateFeedbackEntity,
     CandidateProfileEntity,
     CompanyEntity,
+    CandidateSelectionSessionEntity,
     InterviewEntity,
     InterviewSessionEntity,
     JobEntity,
     OtpEntity,
     OutreachEventEntity,
+    RankingExplanationEntity,
+    RankingRunEntity,
+    RecruiterExperiencePreferenceEntity,
+    RecruiterRolePreferenceEntity,
+    RecruiterSkillPreferenceEntity,
     ScoringProfileEntity,
     UserEntity,
 )
@@ -284,6 +292,15 @@ class JobRepository:
 
     def get(self, job_id: str) -> JobEntity | None:
         return self.db.scalar(select(JobEntity).where(JobEntity.id == job_id))
+
+    def get_recruiter_id(self, job_id: str) -> str | None:
+        job = self.get(job_id)
+        if not job:
+            return None
+        company = CompanyRepository(self.db).get_by_id(job.company_id)
+        if not company:
+            return None
+        return str(company.user_id or "").strip() or None
 
     def update_candidate_sourcing_state(
         self,
@@ -677,7 +694,15 @@ class CandidateFeedbackRepository:
             )
         )
 
-    def upsert(self, *, job_id: str, candidate_id: str, feedback: str) -> CandidateFeedbackEntity:
+    def upsert(
+        self,
+        *,
+        job_id: str,
+        candidate_id: str,
+        feedback: str,
+        recruiter_id: str | None = None,
+        session_id: str | None = None,
+    ) -> CandidateFeedbackEntity:
         feedback = feedback.strip().lower()
         row = self.get(job_id=job_id, candidate_id=candidate_id)
         now = datetime.now(timezone.utc)
@@ -687,6 +712,8 @@ class CandidateFeedbackRepository:
                 job_id=job_id,
                 candidate_id=candidate_id,
                 feedback=feedback,
+                recruiter_id=(recruiter_id or "").strip() or None,
+                session_id=(session_id or "").strip() or None,
                 created_at=now,
             )
             try:
@@ -702,6 +729,8 @@ class CandidateFeedbackRepository:
         row.feedback = feedback
         row.accepted = feedback == "accept"
         row.rejected = feedback == "reject"
+        row.recruiter_id = (recruiter_id or row.recruiter_id or "").strip() or None
+        row.session_id = (session_id or row.session_id or "").strip() or None
         row.updated_at = now
         self.db.flush()
         return row
@@ -731,6 +760,372 @@ class CandidateFeedbackRepository:
     def count_for_job(self, job_id: str) -> int:
         count = self.db.scalar(
             select(func.count()).select_from(CandidateFeedbackEntity).where(CandidateFeedbackEntity.job_id == job_id)
+        )
+        return int(count or 0)
+
+    def count_for_recruiter(self, recruiter_id: str) -> int:
+        recruiter_id = (recruiter_id or "").strip()
+        if not recruiter_id:
+            return 0
+        count = self.db.scalar(
+            select(func.count()).select_from(CandidateFeedbackEntity).where(CandidateFeedbackEntity.recruiter_id == recruiter_id)
+        )
+        return int(count or 0)
+
+    def get_learning_summary_for_recruiter(self, recruiter_id: str) -> dict[str, int]:
+        recruiter_id = (recruiter_id or "").strip()
+        if not recruiter_id:
+            return {"feedback_count": 0, "selection_count": 0, "rejection_count": 0}
+
+        row = self.db.execute(
+            select(
+                func.count().label("feedback_count"),
+                func.sum(case((CandidateFeedbackEntity.accepted.is_(True), 1), else_=0)).label("selection_count"),
+                func.sum(case((CandidateFeedbackEntity.rejected.is_(True), 1), else_=0)).label("rejection_count"),
+            ).where(CandidateFeedbackEntity.recruiter_id == recruiter_id)
+        ).one()
+
+        return {
+            "feedback_count": int(getattr(row, "feedback_count", 0) or 0),
+            "selection_count": int(getattr(row, "selection_count", 0) or 0),
+            "rejection_count": int(getattr(row, "rejection_count", 0) or 0),
+        }
+
+
+class RankingExplanationRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def store_bulk(self, rows: list[dict[str, float | str]]) -> None:
+        cleaned = [
+            {
+                "id": str(uuid4()),
+                "job_id": str(row.get("job_id") or "").strip(),
+                "candidate_id": str(row.get("candidate_id") or "").strip(),
+                "existing_score": float(row.get("existing_score") or 0.0),
+                "recruiter_score": float(row.get("recruiter_score") or 0.0),
+                "session_signal": float(row.get("session_signal") or 0.0),
+                "final_score": float(row.get("final_score") or 0.0),
+                "recruiter_capped": bool(row.get("recruiter_capped") or False),
+                "updated_at": datetime.now(timezone.utc),
+                "created_at": datetime.now(timezone.utc),
+            }
+            for row in rows
+            if str(row.get("job_id") or "").strip() and str(row.get("candidate_id") or "").strip()
+        ]
+        if not cleaned:
+            return
+
+        table = RankingExplanationEntity.__table__
+        dialect_name = getattr(getattr(self.db.get_bind(), "dialect", None), "name", "") or ""
+        if dialect_name in {"postgresql", "sqlite"}:
+            insert_stmt = pg_insert(table) if dialect_name == "postgresql" else sqlite_insert(table)
+            stmt = insert_stmt.values(cleaned)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["job_id", "candidate_id"],
+                set_={
+                    "existing_score": stmt.excluded.existing_score,
+                    "recruiter_score": stmt.excluded.recruiter_score,
+                    "session_signal": stmt.excluded.session_signal,
+                    "final_score": stmt.excluded.final_score,
+                    "recruiter_capped": stmt.excluded.recruiter_capped,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            )
+            self.db.execute(stmt)
+            self.db.flush()
+            return
+
+        for row in cleaned:
+            existing = self.db.scalar(
+                select(RankingExplanationEntity).where(
+                    RankingExplanationEntity.job_id == row["job_id"],
+                    RankingExplanationEntity.candidate_id == row["candidate_id"],
+                )
+            )
+            if not existing:
+                existing = RankingExplanationEntity(
+                    id=row["id"],
+                    job_id=row["job_id"],
+                    candidate_id=row["candidate_id"],
+                    existing_score=float(row["existing_score"]),
+                    recruiter_score=float(row["recruiter_score"]),
+                    session_signal=float(row["session_signal"]),
+                    final_score=float(row["final_score"]),
+                    recruiter_capped=bool(row["recruiter_capped"]),
+                )
+                self.db.add(existing)
+            else:
+                existing.existing_score = float(row["existing_score"])
+                existing.recruiter_score = float(row["recruiter_score"])
+                existing.session_signal = float(row["session_signal"])
+                existing.final_score = float(row["final_score"])
+                existing.recruiter_capped = bool(row["recruiter_capped"])
+                existing.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
+
+
+class RankingRunRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def create(
+        self,
+        *,
+        job_id: str,
+        recruiter_id: str | None,
+        run_type: str,
+        avg_existing_score: float,
+        avg_final_score: float,
+        avg_recruiter_score: float,
+        percent_recruiter_capped: float,
+        candidate_count: int,
+        drift_delta: float,
+    ) -> RankingRunEntity:
+        row = RankingRunEntity(
+            id=str(uuid4()),
+            job_id=job_id,
+            recruiter_id=(recruiter_id or "").strip() or None,
+            run_type=(run_type or "initial").strip().lower() or "initial",
+            avg_existing_score=float(avg_existing_score),
+            avg_final_score=float(avg_final_score),
+            avg_recruiter_score=float(avg_recruiter_score),
+            percent_recruiter_capped=float(percent_recruiter_capped),
+            candidate_count=int(candidate_count),
+            drift_delta=float(drift_delta),
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def list_for_recruiter(
+        self,
+        *,
+        recruiter_id: str,
+        job_id: str | None = None,
+        limit: int = 20,
+    ) -> list[RankingRunEntity]:
+        recruiter_id = (recruiter_id or "").strip()
+        if not recruiter_id:
+            return []
+
+        stmt = select(RankingRunEntity).where(RankingRunEntity.recruiter_id == recruiter_id)
+        if job_id:
+            stmt = stmt.where(RankingRunEntity.job_id == job_id)
+        rows = self.db.scalars(
+            stmt.order_by(RankingRunEntity.created_at.desc()).limit(max(1, limit))
+        ).all()
+        return list(rows)
+
+
+class RecruiterPreferenceRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def _dialect_name(self) -> str:
+        bind = self.db.get_bind()
+        return getattr(getattr(bind, "dialect", None), "name", "") or ""
+
+    def _upsert_weighted_preference(
+        self,
+        *,
+        entity,
+        value_field: str,
+        recruiter_id: str,
+        value: str,
+        delta: float,
+        track_counts: bool = True,
+    ):
+        normalized_value = (value or "").strip().lower()
+        recruiter_id = (recruiter_id or "").strip()
+        if not recruiter_id or not normalized_value:
+            return None
+
+        now = datetime.now(timezone.utc)
+        table = entity.__table__
+        existing = self.db.scalar(
+            select(entity).where(
+                entity.recruiter_id == recruiter_id,
+                getattr(entity, value_field) == normalized_value,
+            )
+        )
+        old_weight = float(getattr(existing, "weight", 0.0) or 0.0)
+        if existing and existing.updated_at:
+            age_days = max(0.0, (now - existing.updated_at).total_seconds() / 86400.0)
+            if age_days > 30:
+                decay_multiplier = max(0.75, 0.95 ** (age_days / 30.0))
+                old_weight *= decay_multiplier
+        updated_weight = (old_weight * 0.9) + (float(delta) * 0.1)
+        table_columns = set(table.c.keys())
+        insert_values = {
+            "id": str(uuid4()),
+            "recruiter_id": recruiter_id,
+            value_field: normalized_value,
+            "weight": max(0.0, updated_weight),
+            "updated_at": now,
+        }
+        if "created_at" in table_columns:
+            insert_values["created_at"] = now
+        if track_counts:
+            if "positive_count" in table_columns:
+                insert_values["positive_count"] = int(getattr(existing, "positive_count", 0) or 0) + (1 if delta > 0 else 0)
+            if "negative_count" in table_columns:
+                insert_values["negative_count"] = int(getattr(existing, "negative_count", 0) or 0) + (1 if delta < 0 else 0)
+
+        dialect_name = self._dialect_name()
+        if dialect_name == "postgresql":
+            stmt = pg_insert(table).values(**insert_values)
+            excluded = stmt.excluded
+            if track_counts:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["recruiter_id", value_field],
+                    set_={
+                        "weight": excluded.weight,
+                        "positive_count": excluded.positive_count,
+                        "negative_count": excluded.negative_count,
+                        "updated_at": now,
+                    },
+                )
+            else:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["recruiter_id", value_field],
+                    set_={
+                        "weight": excluded.weight,
+                        "updated_at": now,
+                    },
+                )
+            self.db.execute(stmt)
+            self.db.flush()
+            return self.db.scalar(select(entity).where(entity.recruiter_id == recruiter_id, getattr(entity, value_field) == normalized_value))
+
+        if dialect_name == "sqlite":
+            stmt = sqlite_insert(table).values(**insert_values)
+            excluded = stmt.excluded
+            if track_counts:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["recruiter_id", value_field],
+                    set_={
+                        "weight": excluded.weight,
+                        "positive_count": excluded.positive_count,
+                        "negative_count": excluded.negative_count,
+                        "updated_at": now,
+                    },
+                )
+            else:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["recruiter_id", value_field],
+                    set_={
+                        "weight": excluded.weight,
+                        "updated_at": now,
+                    },
+                )
+            self.db.execute(stmt)
+            self.db.flush()
+            return self.db.scalar(select(entity).where(entity.recruiter_id == recruiter_id, getattr(entity, value_field) == normalized_value))
+
+        row = existing
+        if not row:
+            row = entity(
+                id=str(uuid4()),
+                recruiter_id=recruiter_id,
+                **{
+                    value_field: normalized_value,
+                    "weight": max(0.0, updated_weight),
+                    "positive_count": 1 if delta > 0 else 0,
+                    "negative_count": 1 if delta < 0 else 0,
+                },
+            )
+            self.db.add(row)
+        else:
+            row.weight = max(0.0, updated_weight)
+            if track_counts:
+                row.positive_count = int(row.positive_count or 0) + (1 if delta > 0 else 0)
+                row.negative_count = int(row.negative_count or 0) + (1 if delta < 0 else 0)
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def upsert_skill_preference(self, *, recruiter_id: str, skill: str, delta: float) -> RecruiterSkillPreferenceEntity | None:
+        return self._upsert_weighted_preference(
+            entity=RecruiterSkillPreferenceEntity,
+            value_field="skill",
+            recruiter_id=recruiter_id,
+            value=skill,
+            delta=delta,
+        )
+
+    def upsert_role_preference(self, *, recruiter_id: str, role: str, delta: float) -> RecruiterRolePreferenceEntity | None:
+        return self._upsert_weighted_preference(
+            entity=RecruiterRolePreferenceEntity,
+            value_field="role",
+            recruiter_id=recruiter_id,
+            value=role,
+            delta=delta,
+        )
+
+    def list_skill_preferences(self, *, recruiter_id: str, limit: int = 8) -> list[RecruiterSkillPreferenceEntity]:
+        rows = self.db.scalars(
+            select(RecruiterSkillPreferenceEntity)
+            .where(RecruiterSkillPreferenceEntity.recruiter_id == recruiter_id)
+            .order_by(
+                RecruiterSkillPreferenceEntity.weight.desc(),
+                RecruiterSkillPreferenceEntity.positive_count.desc(),
+                RecruiterSkillPreferenceEntity.updated_at.desc(),
+            )
+            .limit(max(1, limit))
+        ).all()
+        return list(rows)
+
+    def list_role_preferences(self, *, recruiter_id: str, limit: int = 6) -> list[RecruiterRolePreferenceEntity]:
+        rows = self.db.scalars(
+            select(RecruiterRolePreferenceEntity)
+            .where(RecruiterRolePreferenceEntity.recruiter_id == recruiter_id)
+            .order_by(
+                RecruiterRolePreferenceEntity.weight.desc(),
+                RecruiterRolePreferenceEntity.positive_count.desc(),
+                RecruiterRolePreferenceEntity.updated_at.desc(),
+            )
+            .limit(max(1, limit))
+        ).all()
+        return list(rows)
+
+    def upsert_experience_preference(self, *, recruiter_id: str, experience_bucket: str, delta: float) -> RecruiterExperiencePreferenceEntity | None:
+        return self._upsert_weighted_preference(
+            entity=RecruiterExperiencePreferenceEntity,
+            value_field="experience_bucket",
+            recruiter_id=recruiter_id,
+            value=experience_bucket,
+            delta=delta,
+            track_counts=False,
+        )
+
+    def list_experience_preferences(self, *, recruiter_id: str, limit: int = 4) -> list[RecruiterExperiencePreferenceEntity]:
+        rows = self.db.scalars(
+            select(RecruiterExperiencePreferenceEntity)
+            .where(RecruiterExperiencePreferenceEntity.recruiter_id == recruiter_id)
+            .order_by(
+                RecruiterExperiencePreferenceEntity.weight.desc(),
+                RecruiterExperiencePreferenceEntity.updated_at.desc(),
+            )
+            .limit(max(1, limit))
+        ).all()
+        return list(rows)
+
+    def count_silent_learning_events(self, recruiter_id: str) -> int:
+        recruiter_id = (recruiter_id or "").strip()
+        if not recruiter_id:
+            return 0
+        count = self.db.scalar(
+            select(func.count())
+            .select_from(OutreachEventEntity)
+            .join(JobEntity, JobEntity.id == OutreachEventEntity.job_id)
+            .join(CompanyEntity, CompanyEntity.id == JobEntity.company_id)
+            .where(
+                OutreachEventEntity.learning_applied.is_(True),
+                OutreachEventEntity.responded_at.is_(None),
+                OutreachEventEntity.status.in_(("sent", "delivered")),
+                CompanyEntity.user_id == recruiter_id,
+            )
         )
         return int(count or 0)
 
@@ -790,6 +1185,113 @@ class ScoringProfileRepository:
         )
 
         row.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
+        return row
+
+
+class CandidateSelectionSessionRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_job(self, job_id: str) -> CandidateSelectionSessionEntity | None:
+        return self.db.scalar(
+            select(CandidateSelectionSessionEntity).where(CandidateSelectionSessionEntity.job_id == job_id)
+        )
+
+    def create(
+        self,
+        *,
+        job_id: str,
+        candidate_pool_snapshot: list[dict],
+        batch_plan: list[list[str]],
+        batch_size: int = 2,
+        total_batches: int = 3,
+    ) -> CandidateSelectionSessionEntity:
+        row = CandidateSelectionSessionEntity(
+            id=str(uuid4()),
+            job_id=job_id,
+            status="active",
+            current_batch_index=0,
+            batch_size=batch_size,
+            total_batches=total_batches,
+            candidate_pool_snapshot=candidate_pool_snapshot,
+            batch_plan=batch_plan,
+            selected_candidate_ids=[],
+            rejected_candidate_ids=[],
+            batch_history=[],
+            selection_analysis={},
+            final_candidate_snapshot=[],
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def get_or_create(
+        self,
+        *,
+        job_id: str,
+        candidate_pool_snapshot: list[dict] | None = None,
+        batch_plan: list[list[str]] | None = None,
+        batch_size: int = 2,
+        total_batches: int = 3,
+    ) -> tuple[CandidateSelectionSessionEntity, bool]:
+        existing = self.get_by_job(job_id)
+        if existing:
+            return existing, False
+        if candidate_pool_snapshot is None or batch_plan is None:
+            raise APIError("candidate selection session is not initialized", status_code=409)
+        return (
+            self.create(
+                job_id=job_id,
+                candidate_pool_snapshot=candidate_pool_snapshot,
+                batch_plan=batch_plan,
+                batch_size=batch_size,
+                total_batches=total_batches,
+            ),
+            True,
+        )
+
+    def mark_selection(
+        self,
+        row: CandidateSelectionSessionEntity,
+        *,
+        selected_candidate_id: str,
+        rejected_candidate_ids: list[str],
+        batch_index: int,
+        history_entry: dict,
+    ) -> CandidateSelectionSessionEntity:
+        selected_ids = [str(candidate_id).strip() for candidate_id in (row.selected_candidate_ids or []) if str(candidate_id).strip()]
+        rejected_ids = [str(candidate_id).strip() for candidate_id in (row.rejected_candidate_ids or []) if str(candidate_id).strip()]
+
+        if selected_candidate_id and selected_candidate_id not in selected_ids:
+            selected_ids.append(selected_candidate_id)
+        for candidate_id in rejected_candidate_ids:
+            if candidate_id and candidate_id not in rejected_ids:
+                rejected_ids.append(candidate_id)
+
+        history = list(row.batch_history or [])
+        history.append(history_entry)
+
+        row.selected_candidate_ids = selected_ids
+        row.rejected_candidate_ids = rejected_ids
+        row.batch_history = history
+        row.current_batch_index = max(0, int(batch_index))
+        row.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
+        return row
+
+    def complete(
+        self,
+        row: CandidateSelectionSessionEntity,
+        *,
+        selection_analysis: dict,
+        final_candidate_snapshot: list[dict],
+    ) -> CandidateSelectionSessionEntity:
+        row.status = "completed"
+        row.selection_analysis = selection_analysis
+        row.final_candidate_snapshot = final_candidate_snapshot
+        row.completed_at = datetime.now(timezone.utc)
+        row.updated_at = row.completed_at
         self.db.flush()
         return row
 
@@ -1120,6 +1622,33 @@ class OutreachEventRepository:
                 OutreachEventEntity.follow_up_count < max_follow_up_count,
                 OutreachEventEntity.to_email != "",
             )
+            .with_for_update(skip_locked=True)
+        )
+        rows = self.db.scalars(stmt).all()
+        return list(rows)
+
+    def list_stale_for_learning_locked(
+        self,
+        *,
+        now: datetime,
+        max_follow_up_count: int,
+        limit: int,
+    ) -> list[OutreachEventEntity]:
+        stmt = (
+            select(OutreachEventEntity)
+            .where(
+                OutreachEventEntity.status.in_(("sent", "delivered")),
+                OutreachEventEntity.follow_up_count >= max_follow_up_count,
+                OutreachEventEntity.responded_at.is_(None),
+                OutreachEventEntity.learning_applied.is_(False),
+                OutreachEventEntity.to_email != "",
+                or_(
+                    OutreachEventEntity.next_follow_up_at.is_(None),
+                    OutreachEventEntity.next_follow_up_at <= now,
+                ),
+            )
+            .order_by(OutreachEventEntity.updated_at.asc(), OutreachEventEntity.created_at.asc())
+            .limit(max(1, int(limit)))
             .with_for_update(skip_locked=True)
         )
         rows = self.db.scalars(stmt).all()

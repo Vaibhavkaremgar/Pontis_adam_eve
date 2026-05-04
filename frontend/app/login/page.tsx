@@ -13,9 +13,9 @@
 import Image from "next/image";
 import { GoogleLogin, GoogleOAuthProvider } from "@react-oauth/google";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAppContext } from "@/context/AppContext";
@@ -27,6 +27,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export default function LoginPage() {
   const router = useRouter();
   const { setUser, setToken } = useAppContext();
+  const googleButtonContainerRef = useRef<HTMLDivElement | null>(null);
 
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
@@ -40,6 +41,14 @@ export default function LoginPage() {
 
   const emailTrimmed = email.trim();
   const hasValidEmail = EMAIL_REGEX.test(emailTrimmed);
+
+  const triggerGoogleLogin = useCallback(() => {
+    const container = googleButtonContainerRef.current;
+    if (!container) return;
+
+    const target = container.querySelector("button, div[role='button']") as HTMLElement | null;
+    target?.click();
+  }, []);
 
   const handleRequestOtp = async () => {
     if (!hasValidEmail) {
@@ -87,7 +96,7 @@ export default function LoginPage() {
       <div className="w-full max-w-xl space-y-6 text-center">
         <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] text-xl font-semibold text-gray-900 shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
           <Image
-            src="/images/Maya.jpg.jpeg"
+            src="/images/adam.png"
             alt="Maya avatar"
             width={96}
             height={96}
@@ -97,7 +106,7 @@ export default function LoginPage() {
         </div>
 
         <div className="space-y-2">
-          <h1 className="text-3xl font-semibold text-gray-900">Meet Maya</h1>
+          <h1 className="text-3xl font-semibold text-gray-900">Meet Adam</h1>
           <p className="text-sm text-gray-600">Land the perfect hire for your team</p>
         </div>
 
@@ -107,39 +116,70 @@ export default function LoginPage() {
           </CardHeader>
           <CardContent className="space-y-5">
             {isGoogleConfigured ? (
-              <div className={cn(buttonVariants({ variant: "outline" }), "w-full justify-center p-0")}>
+              <div className="relative w-full">
+                <button
+                  type="button"
+                  onClick={triggerGoogleLogin}
+                  className={cn(
+                    "group flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-[rgba(120,100,80,0.14)] bg-[#F3EDE3] px-4 text-sm font-medium text-gray-700 shadow-[0_1px_0_rgba(255,255,255,0.65)_inset] transition-all duration-200 hover:-translate-y-[1px] hover:border-[rgba(120,100,80,0.2)] hover:bg-[#EFE6D8] hover:shadow-[0_6px_16px_rgba(0,0,0,0.04)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-900/15 focus-visible:ring-offset-2"
+                  )}
+                  aria-label="Continue with Google"
+                >
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#EFE6D8] ring-1 ring-[rgba(120,100,80,0.08)]">
+                    <Image
+                      src="/images/google-g-logo.svg"
+                      alt=""
+                      width={16}
+                      height={16}
+                      className="h-4 w-4 opacity-90"
+                    />
+                  </span>
+                  <span className="leading-none">Continue with Google</span>
+                </button>
                 <GoogleOAuthProvider clientId={googleClientId}>
-                  <GoogleLogin
-                    onSuccess={async (credentialResponse) => {
-                      const idToken = credentialResponse.credential;
-                      if (!idToken) {
-                        setError("Google login failed: missing credential.");
-                        return;
-                      }
-                      setIsGoogleLoading(true);
-                      setError("");
-                      const result = await loginWithGoogle({ token: idToken });
-                      if (!result.success || !result.data) {
-                        setError(result.error || "Google login failed. Please try again.");
+                  <div ref={googleButtonContainerRef} className="pointer-events-none absolute inset-0 opacity-0">
+                    <GoogleLogin
+                      width="100%"
+                      theme="outline"
+                      size="large"
+                      shape="rectangular"
+                      text="continue_with"
+                      logo_alignment="left"
+                      onSuccess={async (credentialResponse) => {
+                        const idToken = credentialResponse.credential;
+                        if (!idToken) {
+                          setError("Google login failed: missing credential.");
+                          return;
+                        }
+                        setIsGoogleLoading(true);
+                        setError("");
+                        const result = await loginWithGoogle({ token: idToken });
+                        if (!result.success || !result.data) {
+                          setError(result.error || "Google login failed. Please try again.");
+                          setIsGoogleLoading(false);
+                          return;
+                        }
+                        setToken(result.data.access_token || result.data.token);
+                        setUser(result.data.user);
                         setIsGoogleLoading(false);
-                        return;
-                      }
-                      setToken(result.data.access_token || result.data.token);
-                      setUser(result.data.user);
-                      setIsGoogleLoading(false);
-                      router.push("/company");
-                    }}
-                    onError={() => setError("Login failed. Please try again.")}
-                  />
+                        router.push("/company");
+                      }}
+                      onError={() => setError("Login failed. Please try again.")}
+                    />
+                  </div>
                 </GoogleOAuthProvider>
               </div>
             ) : (
               <button
                 type="button"
                 disabled
-                className={cn(buttonVariants({ variant: "outline" }), "w-full justify-center gap-2 opacity-70")}
+                className={cn(
+                  "flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-[rgba(120,100,80,0.12)] bg-[#F3EDE3] px-4 text-sm font-medium text-gray-500 opacity-70"
+                )}
               >
-                <Image src="/images/google-g-logo.svg" alt="Google logo" width={18} height={18} />
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#EFE6D8] ring-1 ring-[rgba(120,100,80,0.08)]">
+                  <Image src="/images/google-g-logo.svg" alt="" width={16} height={16} className="h-4 w-4 opacity-90" />
+                </span>
                 Google sign-in unavailable
               </button>
             )}

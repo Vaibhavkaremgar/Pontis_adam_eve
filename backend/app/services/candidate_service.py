@@ -31,18 +31,27 @@ from app.db.repositories import (
     ATSExportRepository,
     CandidateFeedbackRepository,
     CandidateProfileRepository,
+    CandidateSelectionSessionRepository,
     InterviewRepository,
     JobRepository,
     OutreachEventRepository,
+    RankingExplanationRepository,
+    RankingRunRepository,
     ScoringProfileRepository,
 )
-from app.schemas.candidate import CandidateExplanation, CandidateResult
+from app.schemas.candidate import CandidateExplanation, CandidateRankingDebug, CandidateResult
 from app.services.candidate_text import build_candidate_text
 from app.services.ats.service import export_candidate_to_ats
 from app.services.embedding_service import embed, preload_sample_candidate_embeddings
 from app.services.evaluation_service import record_candidate_fetch, record_shortlist_event
 from app.services.metrics_service import log_metric
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
+from app.services.recruiter_preference_service import (
+    compute_recruiter_score_details,
+    map_experience_to_bucket,
+    load_recruiter_preference_profile,
+    update_recruiter_preferences,
+)
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
     delete_candidate_vectors,
@@ -961,6 +970,219 @@ def _candidate_rejection_penalty(candidate_id: str, feedback_learning: FeedbackL
     return max(0.0, min(0.25, rejection_ratio * confidence * 0.25))
 
 
+def _selection_session_signal(session, candidate_id: str) -> float:
+    if not session:
+        return 0.0
+
+    selected_ids = {str(value).strip() for value in (session.selected_candidate_ids or []) if str(value).strip()}
+    rejected_ids = {str(value).strip() for value in (session.rejected_candidate_ids or []) if str(value).strip()}
+    if candidate_id in selected_ids:
+        return 1.0
+    if candidate_id in rejected_ids:
+        return -0.5
+
+    for entry in reversed(list(session.batch_history or [])):
+        if str(entry.get("selectedCandidateId") or "").strip() == candidate_id:
+            return 1.0
+        rejected_batch = {str(value).strip() for value in (entry.get("rejectedCandidateIds") or []) if str(value).strip()}
+        if candidate_id in rejected_batch:
+            return -0.5
+    return 0.0
+
+
+def _recruiter_feedback_count(db: Session, recruiter_id: str | None) -> int:
+    recruiter_id = (recruiter_id or "").strip()
+    if not recruiter_id:
+        return 0
+    return CandidateFeedbackRepository(db).count_for_recruiter(recruiter_id)
+
+
+def _dynamic_ranking_weights(*, recruiter_feedback_count: int) -> tuple[float, float, float, float]:
+    session_weight = 0.1
+    raw_recruiter_weight = min(0.3, 0.05 * max(0, recruiter_feedback_count))
+    recruiter_signal_strength = min(1.0, max(0, recruiter_feedback_count) / 5.0)
+    effective_recruiter_weight = raw_recruiter_weight * recruiter_signal_strength
+    existing_weight = max(0.0, 1.0 - (effective_recruiter_weight + session_weight))
+    total = existing_weight + effective_recruiter_weight + session_weight
+    if total <= 0:
+        return 0.9, 0.0, 0.1, 0.0
+    return (
+        existing_weight / total,
+        effective_recruiter_weight / total,
+        session_weight / total,
+        recruiter_signal_strength,
+    )
+
+
+def _apply_recruiter_safety_caps(*, existing_score: float, recruiter_score: float, recruiter_weight: float) -> tuple[float, bool]:
+    """
+    Safety cap for recruiter influence.
+    This does not change how recruiter_score is originally computed.
+    """
+    capped = False
+    if existing_score <= 0:
+        return recruiter_score, capped
+
+    capped_recruiter_score = recruiter_score
+    primary_cap = existing_score * 1.2
+    if capped_recruiter_score > primary_cap:
+        capped_recruiter_score = primary_cap
+        capped = True
+
+    if recruiter_weight > 0:
+        max_recruiter_contribution = existing_score * 0.5
+        actual_recruiter_contribution = capped_recruiter_score * recruiter_weight
+        if actual_recruiter_contribution > max_recruiter_contribution:
+            capped_recruiter_score = max_recruiter_contribution / recruiter_weight
+            capped = True
+
+    return capped_recruiter_score, capped
+
+
+def _candidate_debug_payload(
+    *,
+    existing_score: float,
+    recruiter_score_raw: float,
+    recruiter_score_adjusted: float,
+    session_signal: float,
+    existing_weight: float,
+    recruiter_weight: float,
+    session_weight: float,
+    final_score: float,
+    recruiter_capped: bool,
+    experience_bucket: str = "",
+    experience_score: float = 0.0,
+) -> CandidateRankingDebug:
+    return CandidateRankingDebug(
+        existing_score=round(existing_score, 4),
+        recruiter_score_raw=round(recruiter_score_raw, 4),
+        recruiter_score_adjusted=round(recruiter_score_adjusted, 4),
+        session_signal=round(session_signal, 4),
+        weights={
+            "existing": round(existing_weight, 4),
+            "recruiter": round(recruiter_weight, 4),
+            "session": round(session_weight, 4),
+        },
+        final_score=round(final_score, 4),
+        recruiter_capped=bool(recruiter_capped),
+        experience_bucket=experience_bucket,
+        experience_score=round(experience_score, 4),
+    )
+
+
+def _blend_final_score(*, existing_score: float, recruiter_score: float, session_signal: float, recruiter_feedback_count: int) -> tuple[float, dict[str, float | bool], float]:
+    existing_weight, recruiter_weight, session_weight, recruiter_signal_strength = _dynamic_ranking_weights(
+        recruiter_feedback_count=recruiter_feedback_count
+    )
+    adjusted_recruiter_score, recruiter_capped = _apply_recruiter_safety_caps(
+        existing_score=existing_score,
+        recruiter_score=recruiter_score,
+        recruiter_weight=recruiter_weight,
+    )
+    if recruiter_capped:
+        logger.debug(
+            "recruiter_score_capped existing_score=%s original_recruiter_score=%s adjusted_recruiter_score=%s recruiter_weight=%s",
+            round(existing_score, 4),
+            round(recruiter_score, 4),
+            round(adjusted_recruiter_score, 4),
+            round(recruiter_weight, 4),
+        )
+    final_score = max(
+        0.0,
+        min(
+            1.0,
+            (existing_score * existing_weight) + (adjusted_recruiter_score * recruiter_weight) + (session_signal * session_weight),
+        ),
+    )
+    return final_score, {
+        "existingWeight": round(existing_weight, 4),
+        "recruiterWeight": round(recruiter_weight, 4),
+        "sessionWeight": round(session_weight, 4),
+        "recruiterSignalStrength": round(recruiter_signal_strength, 4),
+        "recruiterCapped": recruiter_capped,
+    }, adjusted_recruiter_score
+
+
+def _record_ranking_run(
+    *,
+    db: Session,
+    job_id: str,
+    recruiter_id: str | None,
+    run_type: str,
+    metrics: list[dict[str, float | bool]],
+) -> None:
+    candidate_count = len(metrics)
+    if candidate_count:
+        avg_existing_score = sum(float(item.get("existing_score") or 0.0) for item in metrics) / candidate_count
+        avg_final_score = sum(float(item.get("final_score") or 0.0) for item in metrics) / candidate_count
+        avg_recruiter_score = sum(float(item.get("recruiter_score") or 0.0) for item in metrics) / candidate_count
+        percent_recruiter_capped = (
+            sum(1 for item in metrics if bool(item.get("recruiter_capped"))) / candidate_count
+        ) * 100.0
+    else:
+        avg_existing_score = 0.0
+        avg_final_score = 0.0
+        avg_recruiter_score = 0.0
+        percent_recruiter_capped = 0.0
+
+    drift_delta = avg_final_score - avg_existing_score
+    RankingRunRepository(db).create(
+        job_id=job_id,
+        recruiter_id=recruiter_id,
+        run_type=run_type,
+        avg_existing_score=avg_existing_score,
+        avg_final_score=avg_final_score,
+        avg_recruiter_score=avg_recruiter_score,
+        percent_recruiter_capped=percent_recruiter_capped,
+        candidate_count=candidate_count,
+        drift_delta=drift_delta,
+    )
+    if drift_delta < -0.05:
+        logger.warning("Negative drift detected for recruiter %s", recruiter_id or "")
+
+
+def _infer_ranking_run_type(*, refresh: bool, selection_session: CandidateSelectionSessionEntity | None) -> str:
+    if refresh:
+        return "refresh"
+    if selection_session and (
+        (selection_session.selected_candidate_ids or [])
+        or (selection_session.rejected_candidate_ids or [])
+        or (selection_session.completed_at is not None)
+    ):
+        return "post_selection"
+    return "initial"
+
+
+def _ranking_run_metrics_for_candidates(
+    candidates: list[CandidateResult],
+    metrics_by_candidate_id: dict[str, dict[str, float | bool]],
+) -> list[dict[str, float | bool]]:
+    metrics: list[dict[str, float | bool]] = []
+    for candidate in candidates:
+        candidate_metrics = metrics_by_candidate_id.get(candidate.id)
+        if candidate_metrics is None:
+            final_score = float(getattr(candidate.explanation, "finalScore", 0.0) or 0.0)
+            candidate_metrics = {
+                "existing_score": final_score,
+                "final_score": final_score,
+                "recruiter_score": 0.0,
+                "recruiter_capped": False,
+            }
+        metrics.append(candidate_metrics)
+    return metrics
+
+
+def store_ranking_explanation(
+    db: Session,
+    *,
+    rows: list[dict[str, float | str]],
+) -> None:
+    try:
+        RankingExplanationRepository(db).store_bulk(rows)
+    except Exception as exc:
+        logger.info("ranking_explanations_store_skipped error=%s", str(exc))
+
+
 def _build_embedding_boost_suffix(
     *,
     feedback_learning: FeedbackLearningContext,
@@ -1342,6 +1564,8 @@ def _build_local_candidates(
     mode_config: ModeConfig,
     feedback_learning: FeedbackLearningContext,
     exploration: ExplorationContext,
+    debug: bool = False,
+    run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
 ) -> list[CandidateResult]:
     ensure_all_collections()
     job_vec = _job_vector(job, feedback_learning)
@@ -1498,6 +1722,7 @@ def _build_local_candidates(
         skills = row["skills"]
         candidate_experience = row["candidate_experience"]
         profile = row["profile"]
+        candidate_experience_years = row["candidate_experience_years"]
 
         skill_overlap = _skill_overlap(job_skills, skills or [])
         experience_match = _experience_match(candidate_experience, job_experience)
@@ -1549,6 +1774,22 @@ def _build_local_candidates(
             stored_raw_data["email_source"] = "generated"
 
         strategy = _strategy_from_score(fit_score)
+        debug_payload = None
+        if debug:
+            experience_bucket = map_experience_to_bucket(candidate_experience_years) if candidate_experience else ""
+            debug_payload = _candidate_debug_payload(
+                existing_score=final,
+                recruiter_score_raw=0.0,
+                recruiter_score_adjusted=0.0,
+                session_signal=0.0,
+                existing_weight=1.0,
+                recruiter_weight=0.0,
+                session_weight=0.0,
+                final_score=final,
+                recruiter_capped=False,
+                experience_bucket=experience_bucket,
+                experience_score=0.0,
+            )
         result = CandidateResult(
             id=candidate_id,
             name=name,
@@ -1579,6 +1820,7 @@ def _build_local_candidates(
             ),
             strategy=strategy,
             status="new",
+            debug=debug_payload,
         )
         # Persist profile so swipe/feedback can find this candidate by job_id + candidate_id.
         if candidate_id not in upserted_ids:
@@ -1597,6 +1839,13 @@ def _build_local_candidates(
             )
             upserted_ids.add(candidate_id)
         local_results.append(result)
+        if run_metrics_by_candidate_id is not None:
+            run_metrics_by_candidate_id[candidate_id] = {
+                "existing_score": final,
+                "final_score": final,
+                "recruiter_score": 0.0,
+                "recruiter_capped": False,
+            }
         _update_diversity_counts(company=company, role=role, company_counts=company_counts, role_counts=role_counts)
 
     if mode == "elite":
@@ -1627,6 +1876,7 @@ def _build_ranked_candidates_from_pdl(
     mode_config: ModeConfig,
     feedback_learning: FeedbackLearningContext,
     exploration: ExplorationContext,
+    run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
 ) -> list[CandidateResult]:
     filters = _normalize_job_filters(
         job,
@@ -1738,6 +1988,7 @@ def _build_ranked_candidates_from_pdl(
         filtered_candidates = candidates
 
     scored: list[tuple[CandidateResult, float]] = []
+    ranking_explanation_rows: list[dict[str, float | str]] = []
     total_candidates = len(filtered_candidates)
     for index, item in enumerate(filtered_candidates):
         if not isinstance(item, dict):
@@ -1801,13 +2052,16 @@ def _build_ranked_candidates_from_pdl(
         )
         exploration_bonus = _exploration_bonus(exploration)
         rejection_penalty = _candidate_rejection_penalty(candidate_id, feedback_learning)
+        recruiter_score_details = compute_recruiter_score_details(candidate, recruiter_preferences, candidate_vector=candidate_vec)
+        recruiter_score = float(recruiter_score_details["score"])
+        session_signal = _selection_session_signal(selection_session, candidate_id)
         log_metric(
             "candidate_penalty",
             job_id=job.id,
             candidate_id=candidate_id,
             penalty=round(rejection_penalty, 4),
         )
-        final_score = compute_final_score(
+        existing_score = compute_final_score(
             semantic_similarity=semantic_similarity,
             skill_overlap=skill_overlap,
             experience_match=experience_match,
@@ -1820,9 +2074,30 @@ def _build_ranked_candidates_from_pdl(
             semantic_penalty=semantic_penalty,
             missing_skills_penalty=missing_skills_penalty,
         )
+        final_score, weight_snapshot, adjusted_recruiter_score = _blend_final_score(
+            existing_score=existing_score,
+            recruiter_score=recruiter_score,
+            session_signal=session_signal,
+            recruiter_feedback_count=recruiter_feedback_count,
+        )
 
         fit_score = round(final_score * 5, 2)
         decision = _decision_from_score(final_score)
+        debug_payload = None
+        if debug:
+            debug_payload = _candidate_debug_payload(
+                existing_score=existing_score,
+                recruiter_score_raw=recruiter_score,
+                recruiter_score_adjusted=adjusted_recruiter_score,
+                session_signal=session_signal,
+                existing_weight=float(weight_snapshot["existingWeight"]),
+                recruiter_weight=float(weight_snapshot["recruiterWeight"]),
+                session_weight=float(weight_snapshot["sessionWeight"]),
+                final_score=final_score,
+                recruiter_capped=bool(weight_snapshot["recruiterCapped"]),
+                experience_bucket=str(recruiter_score_details.get("experience_bucket") or ""),
+                experience_score=float(recruiter_score_details.get("experience_score") or 0.0),
+            )
 
         result = CandidateResult(
             id=candidate_id,
@@ -1856,6 +2131,7 @@ def _build_ranked_candidates_from_pdl(
             ),
             strategy=_strategy_from_score(fit_score),
             status="new",
+            debug=debug_payload,
         )
         _update_diversity_counts(
             company=candidate_company,
@@ -1905,6 +2181,26 @@ def _build_ranked_candidates_from_pdl(
         )
 
         scored.append((result, final_score))
+        if run_metrics_by_candidate_id is not None:
+            run_metrics_by_candidate_id[candidate_id] = {
+                "existing_score": existing_score,
+                "final_score": final_score,
+                "recruiter_score": recruiter_score,
+                "recruiter_capped": bool(weight_snapshot["recruiterCapped"]),
+            }
+        ranking_explanation_rows.append(
+            {
+                "job_id": job.id,
+                "candidate_id": candidate_id,
+                "existing_score": existing_score,
+                "recruiter_score": recruiter_score,
+                "session_signal": session_signal,
+                "final_score": final_score,
+                "recruiter_capped": bool(weight_snapshot["recruiterCapped"]),
+            }
+        )
+
+    store_ranking_explanation(db, rows=ranking_explanation_rows)
 
     ranked = sorted(scored, key=lambda row: row[1], reverse=True)
     diverse = diversify_candidates(ranked, limit=mode_config.top_k)
@@ -2096,7 +2392,7 @@ def _fallback_stored_candidates(
     return fallback_candidates
 
 
-def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False) -> list[CandidateResult]:
+def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False, debug: bool = False) -> list[CandidateResult]:
     jobs = JobRepository(db)
     job = jobs.get(job_id)
     if not job:
@@ -2118,6 +2414,13 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
     # Load swiped IDs once — used to exclude already-decided candidates server-side.
     swiped_ids = _get_swiped_candidate_ids(db, job_id=job.id)
     feedback_learning = _build_feedback_learning_context(db, job_id=job.id)
+    recruiter_id = jobs.get_recruiter_id(job.id)
+    recruiter_preferences = load_recruiter_preference_profile(db, recruiter_id) if recruiter_id else {}
+    recruiter_feedback_count = _recruiter_feedback_count(db, recruiter_id)
+    selection_session = CandidateSelectionSessionRepository(db).get_by_job(job.id)
+    run_type = _infer_ranking_run_type(refresh=refresh, selection_session=selection_session)
+    local_run_metrics: dict[str, dict[str, float | bool]] = {}
+    pdl_run_metrics: dict[str, dict[str, float | bool]] = {}
     local_diversity_seed = 0.0
     seed_confidence = _compute_system_confidence(
         similarity=0.0,
@@ -2155,6 +2458,8 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             mode_config=mode_config,
             feedback_learning=feedback_learning,
             exploration=exploration,
+            debug=debug,
+            run_metrics_by_candidate_id=local_run_metrics,
         )
     except Exception as exc:
         logger.exception("local_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
@@ -2284,6 +2589,13 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             )
             if stored_candidates:
                 record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+                _record_ranking_run(
+                    db=db,
+                    job_id=job.id,
+                    recruiter_id=recruiter_id,
+                    run_type=run_type,
+                    metrics=_ranking_run_metrics_for_candidates(stored_candidates, local_run_metrics),
+                )
                 logger.info("candidates_returned count=%s", len(stored_candidates))
                 return stored_candidates
             jobs.update_candidate_sourcing_state(
@@ -2301,10 +2613,24 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
                 job_id=job.id,
                 local_count=len(local_results),
                 pdl_count=0,
-            )
+                )
             _safe_commit(db, context="candidate_fetch_no_candidates_local", job_id=job.id)
+            _record_ranking_run(
+                db=db,
+                job_id=job.id,
+                recruiter_id=recruiter_id,
+                run_type=run_type,
+                metrics=[],
+            )
             return []
         record_candidate_fetch(job_id=job.id, candidates=final_local)
+        _record_ranking_run(
+            db=db,
+            job_id=job.id,
+            recruiter_id=recruiter_id,
+            run_type=run_type,
+            metrics=_ranking_run_metrics_for_candidates(final_local, local_run_metrics),
+        )
         logger.info("candidates_returned count=%s", len(final_local))
         return final_local
 
@@ -2332,6 +2658,13 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             )
             if stored_candidates:
                 record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+                _record_ranking_run(
+                    db=db,
+                    job_id=job.id,
+                    recruiter_id=recruiter_id,
+                    run_type=run_type,
+                    metrics=_ranking_run_metrics_for_candidates(stored_candidates, local_run_metrics),
+                )
                 logger.info("candidates_returned count=%s", len(stored_candidates))
                 return stored_candidates
             jobs.update_candidate_sourcing_state(
@@ -2351,8 +2684,22 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
                 pdl_count=0,
             )
             _safe_commit(db, context="candidate_fetch_no_candidates_suppressed", job_id=job.id)
+            _record_ranking_run(
+                db=db,
+                job_id=job.id,
+                recruiter_id=recruiter_id,
+                run_type=run_type,
+                metrics=[],
+            )
             return []
         record_candidate_fetch(job_id=job.id, candidates=final_suppressed)
+        _record_ranking_run(
+            db=db,
+            job_id=job.id,
+            recruiter_id=recruiter_id,
+            run_type=run_type,
+            metrics=_ranking_run_metrics_for_candidates(final_suppressed, local_run_metrics),
+        )
         logger.info("candidates_returned count=%s", len(final_suppressed))
         return final_suppressed
 
@@ -2375,6 +2722,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             mode_config=mode_config,
             feedback_learning=feedback_learning,
             exploration=exploration,
+            run_metrics_by_candidate_id=pdl_run_metrics,
         )
     except Exception as exc:
         logger.exception("pdl_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
@@ -2431,6 +2779,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         candidates = filtered_local
         log_metric("candidate_count", job_id=job.id, count=len(candidates), mode=resolved_mode, source="local_fallback")
 
+    combined_run_metrics = {**local_run_metrics, **pdl_run_metrics}
     now = datetime.now(timezone.utc)
     if not candidates:
         stored_candidates = _fallback_stored_candidates(
@@ -2448,6 +2797,13 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             )
             _safe_commit(db, context="candidate_fetch_pdl_fallback_active", job_id=job.id)
             record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+            _record_ranking_run(
+                db=db,
+                job_id=job.id,
+                recruiter_id=recruiter_id,
+                run_type=run_type,
+                metrics=_ranking_run_metrics_for_candidates(stored_candidates, combined_run_metrics),
+            )
             logger.info("candidates_returned count=%s", len(stored_candidates))
             return stored_candidates
         jobs.update_candidate_sourcing_state(
@@ -2468,6 +2824,13 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             pdl_count=len(pdl_results) if pdl_results else 0,
         )
         _safe_commit(db, context="candidate_fetch_pdl_no_candidates", job_id=job.id)
+        _record_ranking_run(
+            db=db,
+            job_id=job.id,
+            recruiter_id=recruiter_id,
+            run_type=run_type,
+            metrics=[],
+        )
         return []
 
     jobs.update_candidate_sourcing_state(
@@ -2500,6 +2863,13 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         job_id=job.id,
     )
     record_candidate_fetch(job_id=job.id, candidates=final_candidates)
+    _record_ranking_run(
+        db=db,
+        job_id=job.id,
+        recruiter_id=recruiter_id,
+        run_type=run_type,
+        metrics=_ranking_run_metrics_for_candidates(final_candidates, combined_run_metrics),
+    )
     logger.info("candidates_returned count=%s", len(final_candidates))
     return final_candidates
 
@@ -2576,6 +2946,9 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
 
     scoring_repo = ScoringProfileRepository(db)
     before_profile = scoring_repo.get_or_create(job_id=job_id)
+    recruiter_id = jobs.get_recruiter_id(job_id)
+    selection_session = CandidateSelectionSessionRepository(db).get_by_job(job_id)
+    session_id = selection_session.id if selection_session else None
     before_weights = {
         "pdl": round(float(before_profile.weight_pdl), 6),
         "semantic": round(float(before_profile.weight_semantic), 6),
@@ -2584,7 +2957,21 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
         "feedback_bias": round(float(before_profile.feedback_bias), 6),
     }
 
-    CandidateFeedbackRepository(db).upsert(job_id=job_id, candidate_id=candidate_id, feedback=action)
+    CandidateFeedbackRepository(db).upsert(
+        job_id=job_id,
+        candidate_id=candidate_id,
+        feedback=action,
+        recruiter_id=recruiter_id,
+        session_id=session_id,
+    )
+    if is_new_feedback and recruiter_id:
+        update_recruiter_preferences(
+            db,
+            recruiter_id,
+            profile if action == "accept" else None,
+            [] if action == "accept" else [profile],
+            signal_multiplier=2.0 if action == "accept" else 0.5,
+        )
 
     # Only run RLHF weight update for genuinely new feedback signals.
     # Re-submitting the same action is already handled by idempotency above.

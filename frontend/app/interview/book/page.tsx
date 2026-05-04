@@ -10,6 +10,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { getSession, bookSession, type InterviewSession } from "@/lib/api/interviews";
 
+function resolveBookingLink(session: InterviewSession | null): string {
+  return session?.bookingLink || session?.bookingUrl || "#";
+}
+
+function openExternalLink(href: string) {
+  if (!href || href === "#") return;
+  window.open(href, "_blank", "noopener,noreferrer");
+}
+
 function InterviewBookingContent() {
   const searchParams = useSearchParams();
   const token = useMemo(() => searchParams.get("token") || "", [searchParams]);
@@ -34,6 +43,9 @@ function InterviewBookingContent() {
   }, [token]);
 
   const canBook = Boolean(session && token && !booking && !loading);
+  const bookingLink = resolveBookingLink(session);
+  const canOpenBookingLink = bookingLink !== "#";
+  const canJoinInterview = Boolean(session?.meetingLink && session.meetingLink !== "#");
 
   const handleBook = async () => {
     if (!canBook) return;
@@ -45,9 +57,20 @@ function InterviewBookingContent() {
       setBooking(false);
       return;
     }
+    const bookedSession = result.data;
     setStatus("Interview booked successfully.");
     setBooking(false);
-    setSession((prev) => (prev ? { ...prev, status: "booked", bookedAt: new Date().toISOString() } : prev));
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            ...bookedSession,
+            status: "booked",
+            bookedAt: new Date().toISOString(),
+            meetingLink: bookedSession.meetingLink || prev.meetingLink,
+          }
+        : prev
+    );
   };
 
   return (
@@ -76,9 +99,28 @@ function InterviewBookingContent() {
                   disabled={!canBook}
                 />
               </div>
-              <Button className="w-full justify-center" onClick={handleBook} disabled={!canBook}>
-                {booking ? "Booking..." : "Confirm Interview"}
-              </Button>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Button className="justify-center" onClick={handleBook} disabled={!canBook}>
+                  {booking ? "Booking..." : "Confirm Interview"}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="justify-center"
+                  onClick={() => openExternalLink(bookingLink)}
+                  disabled={!canOpenBookingLink}
+                >
+                  Book Interview
+                </Button>
+              </div>
+              {session.status === "booked" && session.meetingLink && (
+                <Button
+                  className="w-full justify-center"
+                  onClick={() => openExternalLink(session.meetingLink || "#")}
+                  disabled={!canJoinInterview}
+                >
+                  Join Interview
+                </Button>
+              )}
             </>
           )}
           {status && <p className="text-sm text-gray-700">{status}</p>}

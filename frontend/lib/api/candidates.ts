@@ -9,7 +9,7 @@
  * Frontend displays returned candidates; retrieval/ranking logic stays in backend.
  */
 import { API_BASE_URL } from "@/lib/config";
-import type { Candidate } from "@/types";
+import type { Candidate, CandidateSelectionSession } from "@/types";
 
 import { requestApi } from "./client";
 import type { ApiResponse } from "./types";
@@ -56,6 +56,13 @@ type ExportData = {
   }>;
 };
 
+type SelectionPayload = {
+  jobId: string;
+  candidateId: string;
+};
+
+type SelectionResponse = CandidateSelectionSession;
+
 /** This function calls backend API and returns structured response. */
 export async function getCandidates({ jobId, refined }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
   const params = new URLSearchParams({ jobId });
@@ -101,5 +108,34 @@ export async function exportCandidates(payload: ExportPayload): Promise<ApiRespo
     url: `${API_BASE_URL}/candidates/export`,
     method: "POST",
     payload: payload.provider ? payload : { jobId: payload.jobId, candidateIds: payload.candidateIds }
+  });
+}
+
+export async function getFirstSelectionBatch(jobId: string): Promise<ApiResponse<SelectionResponse>> {
+  return requestApi<SelectionResponse>({
+    url: `${API_BASE_URL}/candidates/selection/first?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET"
+  });
+}
+
+export async function getNextSelectionBatch(jobId: string): Promise<ApiResponse<SelectionResponse>> {
+  return requestApi<SelectionResponse>({
+    url: `${API_BASE_URL}/candidates/selection/next?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET"
+  });
+}
+
+export async function submitSelectionChoice(payload: SelectionPayload): Promise<ApiResponse<SelectionResponse>> {
+  return requestApi<SelectionResponse>({
+    url: `${API_BASE_URL}/candidates/selection`,
+    method: "POST",
+    payload
+  });
+}
+
+export async function getFinalSelectionResults(jobId: string): Promise<ApiResponse<SelectionResponse>> {
+  return requestApi<SelectionResponse>({
+    url: `${API_BASE_URL}/candidates/selection/final?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET"
   });
 }

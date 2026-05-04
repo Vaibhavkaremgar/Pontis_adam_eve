@@ -6,12 +6,11 @@
  * before creating the hiring session.
  *
  * What API it connects to:
- * POST /api/ats/connect, POST /api/jobs/parse, POST /api/hiring/create,
- * GET /api/candidates
+ * POST /api/ats/connect, POST /api/jobs/parse, POST /api/hiring/create
  *
  * How it fits in the pipeline:
  * This is the control panel that prepares the job, connects ATS, and launches
- * candidate generation for the review flow.
+ * voice intake for the review flow.
  */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -26,7 +25,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { connectAts, disconnectAts } from "@/lib/api/ats";
 import { getCompany } from "@/lib/api/company";
 import { parseJobPosting } from "@/lib/api/jobs";
-import { getCandidatesWithMode } from "@/lib/api/candidates";
 import { createHiring } from "@/lib/api/hiring";
 import { useAppContext } from "@/context/AppContext";
 
@@ -58,7 +56,7 @@ function formatAtsLabel(provider: string) {
 
 export default function JobPage() {
   const router = useRouter();
-  const { user, isSessionReady, company, job, setJob, setJobId, setCandidates, setIsRefined, setCompany } =
+  const { user, isSessionReady, company, job, setJob, setJobId, setCandidates, setVoiceNotes, setIsRefined, setCompany } =
     useAppContext();
 
   const [form, setForm] = useState(() => job);
@@ -218,10 +216,13 @@ export default function JobPage() {
       compensation: form.compensation.trim(),
       remotePolicy: (form.remotePolicy || "hybrid").trim(),
       experienceRequired: (form.experienceRequired || "").trim(),
+      vettingMode: scoringMode,
       autoExportToAts: Boolean(autoExport)
     };
 
     setJob(cleanJob);
+    setCandidates([]);
+    setVoiceNotes([]);
     setIsRefined(false);
 
     const createResult = await createHiring({ company, job: cleanJob });
@@ -233,19 +234,8 @@ export default function JobPage() {
 
     const { jobId } = createResult.data;
     setJobId(jobId);
-    setProgress(60);
-
-    const candidatesResult = await getCandidatesWithMode({ jobId, mode: scoringMode, refresh: true });
-    if (!candidatesResult.success || !candidatesResult.data) {
-      setShowLoading(false);
-      setSubmitError(candidatesResult.error || "Failed to load candidates.");
-      return;
-    }
-
-    setCandidates(candidatesResult.data);
     setProgress(100);
-    setShowLoading(false);
-    router.push("/review");
+    router.push("/voice");
   };
 
   return (

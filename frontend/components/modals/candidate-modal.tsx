@@ -22,6 +22,23 @@ type CandidateModalProps = {
 
 type PipelineTab = "all" | "shortlisted" | "rejected";
 
+const DECIDED_STATUSES = new Set(["rejected", "shortlisted", "contacted", "exported", "interview_scheduled", "interview_invited"]);
+
+function statusLabel(status: Candidate["status"] | string | null | undefined): string {
+  const normalized = (status || "Unknown").toString().trim();
+  if (!normalized) return "Unknown";
+  const map: Record<string, string> = {
+    shortlisted: "Shortlisted",
+    contacted: "Contacted",
+    exported: "Exported",
+    interview_scheduled: "Interview Scheduled",
+    interview_invited: "Interview Invited",
+    rejected: "Rejected",
+    new: "New"
+  };
+  return map[normalized] || normalized.replace(/_/g, " ");
+}
+
 const SWIPE_ACCEPT_THRESHOLD = 120;
 const SWIPE_REJECT_THRESHOLD = -120;
 
@@ -57,7 +74,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     () => ({
       all: uniqueCandidates.length,
       shortlisted: uniqueCandidates.filter((candidate) =>
-        ["shortlisted", "contacted", "exported", "interview_scheduled"].includes(candidate.status)
+        ["shortlisted", "contacted", "exported", "interview_scheduled", "interview_invited"].includes(candidate.status)
       ).length,
       rejected: uniqueCandidates.filter((candidate) => candidate.status === "rejected").length
     }),
@@ -65,7 +82,10 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   );
 
   const reviewQueue = useMemo(
-    () => uniqueCandidates.filter((candidate) => !["rejected", "shortlisted", "contacted", "exported", "interview_scheduled"].includes(candidate.status)),
+    () =>
+      uniqueCandidates.filter(
+        (candidate) => !DECIDED_STATUSES.has(candidate.status)
+      ),
     [uniqueCandidates]
   );
 
@@ -75,7 +95,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const tabCandidates = useMemo(() => {
     if (pipelineTab === "shortlisted") {
       return uniqueCandidates.filter((candidate) =>
-        ["shortlisted", "contacted", "exported", "interview_scheduled"].includes(candidate.status)
+        ["shortlisted", "contacted", "exported", "interview_scheduled", "interview_invited"].includes(candidate.status)
       );
     }
     if (pipelineTab === "rejected") {
@@ -299,13 +319,23 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
             {candidate.company ? ` @ ${candidate.company}` : ""}
           </p>
         </div>
-        <Badge variant={candidate.status === "rejected" ? "low" : candidate.status === "exported" ? "high" : "medium"}>
+        <Badge
+          variant={
+            candidate.status === "rejected"
+              ? "low"
+              : candidate.status === "exported"
+                ? "high"
+                : candidate.status === "interview_invited"
+                  ? "info"
+                  : "medium"
+          }
+        >
           {candidate.fitScore}/5
         </Badge>
       </div>
       {renderExplanation(candidate)}
       <div className="flex flex-wrap gap-2 text-xs text-gray-500">
-        <span>Status: {candidate.status}</span>
+        <span>Status: {statusLabel(candidate.status)}</span>
         <span>Outreach: {candidate.outreachStatus || "pending"}</span>
         <span>ATS: {candidate.ats_export_status || "not_sent"}</span>
       </div>

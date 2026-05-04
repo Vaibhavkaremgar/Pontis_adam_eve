@@ -1,5 +1,16 @@
 from app.schemas.ats import ATSConnectRequest, ATSExportRequest, ATSExportResponse
-from app.schemas.candidate import CandidateResult, InterviewItem, OutreachData, OutreachReplyData, OutreachReplyRequest, OutreachRequest
+from app.schemas.candidate import (
+    CandidateResult,
+    CandidateSelectionAnalysis,
+    CandidateSelectionFinalData,
+    CandidateSelectionRequest,
+    CandidateSelectionSessionData,
+    InterviewItem,
+    OutreachData,
+    OutreachReplyData,
+    OutreachReplyRequest,
+    OutreachRequest,
+)
 from app.schemas.company import CompanySaveRequest, CompanySaveResponse
 from app.schemas.job import (
     Company,
@@ -16,6 +27,10 @@ from app.schemas.user import LoginData, LoginRequest, UserProfile
 
 __all__ = [
     "CandidateResult",
+    "CandidateSelectionAnalysis",
+    "CandidateSelectionFinalData",
+    "CandidateSelectionRequest",
+    "CandidateSelectionSessionData",
     "ATSConnectRequest",
     "ATSExportRequest",
     "ATSExportResponse",

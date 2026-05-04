@@ -75,7 +75,7 @@ export async function GET(request: Request) {
         }
       },
       strategy,
-      status: index % 3 === 0 ? "interview_scheduled" : index % 2 === 0 ? "contacted" : "new"
+      status: index % 4 === 0 ? "interview_invited" : index % 3 === 0 ? "interview_scheduled" : index % 2 === 0 ? "contacted" : "new"
     };
   });
 

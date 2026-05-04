@@ -9,7 +9,7 @@
  * GET /interviews?jobId=...
  * POST /candidates/export
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
@@ -21,6 +21,22 @@ import { exportCandidates } from "@/lib/api/candidates";
 import { getInterviewStatuses } from "@/lib/api/interviews";
 import { getMetrics } from "@/lib/api/metrics";
 import type { InterviewStatus } from "@/types";
+
+const STATUS_LABELS: Record<string, string> = {
+  shortlisted: "Shortlisted",
+  contacted: "Contacted",
+  interview_scheduled: "Interview Scheduled",
+  interview_invited: "Interview Invited",
+  booked: "Booked",
+  rejected: "Rejected",
+  exported: "Exported"
+};
+
+function formatStatus(status: InterviewStatus["status"] | string | null | undefined): string {
+  const normalized = (status || "Unknown").toString().trim();
+  if (!normalized) return "Unknown";
+  return STATUS_LABELS[normalized] || normalized.replace(/_/g, " ");
+}
 
 export default function ReadyPage() {
   const router = useRouter();
@@ -36,6 +52,20 @@ export default function ReadyPage() {
     interviews_booked: number;
     conversion_rate: number;
   } | null>(null);
+  const orderedItems = useMemo(() => {
+    const priority: Record<string, number> = {
+      contacted: 0,
+      shortlisted: 1,
+      rejected: 2
+    };
+
+    return [...items].sort((a, b) => {
+      const aRank = priority[a.status] ?? 3;
+      const bRank = priority[b.status] ?? 3;
+      if (aRank !== bRank) return aRank - bRank;
+      return a.name.localeCompare(b.name) || a.candidateId.localeCompare(b.candidateId);
+    });
+  }, [items]);
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -69,7 +99,7 @@ export default function ReadyPage() {
     if (!jobId || isExporting) return;
     setIsExporting(true);
     setExportMessage("");
-    const candidateIds = items
+    const candidateIds = orderedItems
       .filter((item) => !["rejected"].includes(item.status))
       .map((item) => item.candidateId);
     const result = await exportCandidates({ jobId, candidateIds });
@@ -85,6 +115,7 @@ export default function ReadyPage() {
   };
 
   const statusVariant = (status: InterviewStatus["status"]) => {
+    if (status === "interview_invited") return "info";
     if (status === "interview_scheduled") return "high";
     if (status === "booked") return "high";
     if (status === "contacted") return "medium";
@@ -109,7 +140,7 @@ export default function ReadyPage() {
             </div>
           )}
 
-          {items.map((item) => (
+          {orderedItems.map((item) => (
             <div key={item.candidateId} className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
@@ -118,7 +149,7 @@ export default function ReadyPage() {
                   </p>
                   <p className="text-xs text-gray-500">{item.candidateId.slice(0, 12)}…</p>
                 </div>
-                <Badge variant={statusVariant(item.status)}>{item.status.replace("_", " ")}</Badge>
+                <Badge variant={statusVariant(item.status)}>{formatStatus(item.status)}</Badge>
               </div>
               <Button
                 className="w-full justify-center"
@@ -164,7 +195,7 @@ export default function ReadyPage() {
           <Button
             className="w-full justify-center"
             onClick={handleExport}
-            disabled={isLoading || isExporting || items.length === 0}
+          disabled={isLoading || isExporting || orderedItems.length === 0}
           >
             {isExporting ? "Exporting..." : "Export to ATS"}
           </Button>

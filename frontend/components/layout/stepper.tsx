@@ -1,14 +1,14 @@
 /**
  * What this file does:
- * Displays progress across Company, Job, Review, Voice, Outreach, and Ready steps.
+ * Displays progress across Company, Job, Voice, Review, Outreach, and Ready steps.
  */
 import { cn } from "@/lib/utils";
 
 const STEPS = [
   { id: 1, label: "Company" },
   { id: 2, label: "Job" },
-  { id: 3, label: "Review" },
-  { id: 4, label: "Voice" },
+  { id: 3, label: "Voice" },
+  { id: 4, label: "Review" },
   { id: 5, label: "Outreach" },
   { id: 6, label: "Ready" },
 ];

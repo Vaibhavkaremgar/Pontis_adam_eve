@@ -5,7 +5,7 @@
  * Renders the voice intake page inside the shared intake shell.
  *
  * What API it connects to:
- * No direct API calls in this page; conversation output is sent in /voice/processing via API layer.
+ * No direct API calls in this page; VoiceUi handles the Vapi session and candidate refresh.
  *
  * How it fits in the pipeline:
  * Uses the same navbar and stepper as the other intake steps for a consistent experience.
@@ -37,15 +37,15 @@ export default function VoicePage() {
   }, [isSessionReady, jobId, router, user]);
 
   return (
-    <AppShell activeStep={4}>
+    <AppShell activeStep={3}>
       <VoiceUi />
 
       <div className="mt-8 flex justify-end">
         <Button
-          onClick={() => router.push(`/outreach?jobId=${encodeURIComponent(jobId)}`)}
+          onClick={() => router.push("/review")}
           disabled={!isRefined || !jobId}
         >
-          Continue to Outreach
+          Continue to Review
         </Button>
       </div>
     </AppShell>

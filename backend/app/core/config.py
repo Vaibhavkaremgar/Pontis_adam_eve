@@ -10,6 +10,7 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 JOB_COLLECTION_NAME = os.getenv("JOB_COLLECTION_NAME", "job_chunks")
 CANDIDATE_COLLECTION_NAME = os.getenv("CANDIDATE_COLLECTION_NAME", "candidate_chunks")
+RECRUITER_PREFERENCES_COLLECTION_NAME = os.getenv("RECRUITER_PREFERENCES_COLLECTION_NAME", "recruiter_preferences")
 PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
@@ -36,6 +37,11 @@ OUTREACH_FROM_EMAIL = os.getenv("OUTREACH_FROM_EMAIL", "info@pontis.one").strip(
 FROM_EMAIL = os.getenv("FROM_EMAIL", OUTREACH_FROM_EMAIL).strip()
 OUTREACH_REPLY_TO_EMAIL = os.getenv("OUTREACH_REPLY_TO_EMAIL", "hiring@yourdomain.com").strip()
 OUTREACH_RESEND_FALLBACK_FROM_EMAIL = os.getenv("OUTREACH_RESEND_FALLBACK_FROM_EMAIL", "onboarding@resend.dev").strip()
+BOOKING_PROVIDER = os.getenv("BOOKING_PROVIDER", "placeholder").strip().lower() or "placeholder"
+INTERVIEW_PROVIDER = os.getenv("INTERVIEW_PROVIDER", "placeholder").strip().lower() or "placeholder"
+INTERVIEW_BOOKING_LINK = os.getenv("INTERVIEW_BOOKING_LINK", "").strip()
+BOOKING_PROVIDER_URL = os.getenv("BOOKING_PROVIDER_URL", INTERVIEW_BOOKING_LINK).strip()
+INTERVIEW_PROVIDER_URL = os.getenv("INTERVIEW_PROVIDER_URL", "").strip()
 OUTREACH_DRY_RUN = os.getenv("OUTREACH_DRY_RUN", "false").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_REAL_EMAIL_SENDING = os.getenv("ENABLE_REAL_EMAIL_SENDING", "false").strip().lower() in {"1", "true", "yes", "on"}
 MERGE_API_KEY = os.getenv("MERGE_API_KEY", "").strip()
@@ -55,6 +61,8 @@ RLHF_MIN_FEEDBACK_BIAS = float(os.getenv("RLHF_MIN_FEEDBACK_BIAS", "0.06"))
 OUTREACH_FOLLOWUP_DAYS = int(os.getenv("OUTREACH_FOLLOWUP_DAYS", "4"))
 OUTREACH_FOLLOWUP_MAX_ATTEMPTS = int(os.getenv("OUTREACH_FOLLOWUP_MAX_ATTEMPTS", "2"))
 OUTREACH_FOLLOWUP_INTERVAL_MINUTES = int(os.getenv("OUTREACH_FOLLOWUP_INTERVAL_MINUTES", "60"))
+OUTREACH_LEARNING_INTERVAL_MINUTES = int(os.getenv("OUTREACH_LEARNING_INTERVAL_MINUTES", "15"))
+OUTREACH_LEARNING_BATCH_LIMIT = int(os.getenv("OUTREACH_LEARNING_BATCH_LIMIT", "75"))
 ENABLE_FOLLOWUPS = os.getenv("ENABLE_FOLLOWUPS", "true").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_REPLY_DETECTION = os.getenv("ENABLE_REPLY_DETECTION", "true").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_REPLY_POLLING = os.getenv("ENABLE_REPLY_POLLING", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -128,6 +136,10 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("SLACK_SIGNING_SECRET is missing; Slack request verification will fail.")
     if SLACK_SKIP_SIGNATURE_VERIFICATION:
         warnings.append("Slack signature verification is disabled; re-enable it after debugging.")
+    if BOOKING_PROVIDER == "calendly" and not BOOKING_PROVIDER_URL:
+        warnings.append("BOOKING_PROVIDER is calendly but BOOKING_PROVIDER_URL is missing.")
+    if INTERVIEW_PROVIDER == "zoom" and not INTERVIEW_PROVIDER_URL:
+        warnings.append("INTERVIEW_PROVIDER is zoom but INTERVIEW_PROVIDER_URL is missing.")
     if ENABLE_REPLY_POLLING and REPLY_INBOX_PROVIDER == "imap":
         if not REPLY_IMAP_HOST:
             warnings.append("REPLY_IMAP_HOST is missing; reply polling will stay disabled.")
