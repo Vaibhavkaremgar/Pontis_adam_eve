@@ -1,4 +1,5 @@
 from logging.config import fileConfig
+import os
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -21,6 +22,11 @@ if config.config_file_name is not None:
 # target_metadata = None
 from app.models.entities import Base
 target_metadata = Base.metadata
+
+database_url = os.getenv("DATABASE_URL", "").strip()
+if not database_url:
+    raise RuntimeError("DATABASE_URL is required for Alembic migrations")
+config.set_main_option("sqlalchemy.url", database_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

@@ -6,9 +6,6 @@ const nextConfig: NextConfig = {
     cpus: 1,
     workerThreads: true
   },
-  typescript: {
-    ignoreBuildErrors: true
-  },
   webpack(config) {
     return config;
   }

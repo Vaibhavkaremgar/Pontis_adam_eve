@@ -24,13 +24,6 @@ services:
     volumes:
       - redis_data:/data
 
-  qdrant:
-    image: qdrant/qdrant:v1.12.4
-    ports:
-      - "6333:6333"
-    volumes:
-      - qdrant_data:/qdrant/storage
-
   backend:
     build:
       context: ./backend
@@ -39,8 +32,8 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/pontis
       REDIS_URL: redis://redis:6379/0
-      QDRANT_URL: http://qdrant:6333
-      CORS_ALLOW_ORIGINS: http://localhost:3000
+      QDRANT_URL: https://9b585462-89e2-4519-9fe0-f7fa0188a27a.us-east-1-1.aws.cloud.qdrant.io
+      CORS_ALLOW_ORIGINS: http://frontend:3000
     ports:
       - "8000:8000"
     depends_on:
@@ -48,19 +41,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      qdrant:
-        condition: service_started
 
   frontend:
     build:
       context: ./frontend
-      args:
+    args:
         NEXT_PUBLIC_API_URL: http://backend:8000/api
     env_file:
       - ./.env.production
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api
-      NEXT_PUBLIC_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_API_URL: http://backend:8000/api
+      NEXT_PUBLIC_PUBLIC_APP_URL: http://frontend:3000
     ports:
       - "3000:3000"
     depends_on:
@@ -70,4 +61,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  qdrant_data:

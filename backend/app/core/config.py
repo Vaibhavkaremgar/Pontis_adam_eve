@@ -1,7 +1,16 @@
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required")
+    return value
+
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
@@ -21,12 +30,12 @@ VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "384"))
 QDRANT_SEARCH_LIMIT = int(os.getenv("QDRANT_SEARCH_LIMIT", "5"))
 PDL_SEARCH_SIZE = int(os.getenv("PDL_SEARCH_SIZE", "5"))
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-JWT_SECRET = os.getenv("JWT_SECRET", "")
+DATABASE_URL = _required_env("DATABASE_URL")
+JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-CORS_ALLOW_ORIGINS = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if origin.strip()]
-PUBLIC_APP_URL = os.getenv("PUBLIC_APP_URL", "http://localhost:3000").strip().rstrip("/")
+CORS_ALLOW_ORIGINS = [origin.strip() for origin in _required_env("CORS_ALLOW_ORIGINS").split(",") if origin.strip()]
+PUBLIC_APP_URL = _required_env("PUBLIC_APP_URL").strip().rstrip("/")
 AUTO_RECREATE_SCHEMA = os.getenv("AUTO_RECREATE_SCHEMA", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCORING_DEFAULT_MODE = os.getenv("SCORING_DEFAULT_MODE", "volume").strip().lower()
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "").strip()
@@ -84,7 +93,7 @@ DEFAULT_ATS_PROVIDER = os.getenv("DEFAULT_ATS_PROVIDER", "mock").strip().lower()
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "").strip()
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "").strip()
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "").strip()
-SLACK_SKIP_SIGNATURE_VERIFICATION = os.getenv("SLACK_SKIP_SIGNATURE_VERIFICATION", "true").strip().lower() in {
+SLACK_SKIP_SIGNATURE_VERIFICATION = os.getenv("SLACK_SKIP_SIGNATURE_VERIFICATION", "false").strip().lower() in {
     "1",
     "true",
     "yes",
@@ -93,12 +102,12 @@ SLACK_SKIP_SIGNATURE_VERIFICATION = os.getenv("SLACK_SKIP_SIGNATURE_VERIFICATION
 # Disabled after Postgres migration: persistent sqlite cache backend is no longer active.
 PERSISTENT_CACHE_PATH = os.getenv("PERSISTENT_CACHE_PATH", "disabled").strip()
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
-INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "").strip()
+INTERNAL_API_KEY = _required_env("INTERNAL_API_KEY")
 RATE_LIMIT_AUTH_REQUEST_OTP_PER_MINUTE = int(os.getenv("RATE_LIMIT_AUTH_REQUEST_OTP_PER_MINUTE", "5"))
 RATE_LIMIT_AUTH_VERIFY_OTP_PER_MINUTE = int(os.getenv("RATE_LIMIT_AUTH_VERIFY_OTP_PER_MINUTE", "5"))
 RATE_LIMIT_CANDIDATES_PER_MINUTE = int(os.getenv("RATE_LIMIT_CANDIDATES_PER_MINUTE", "60"))
 ENABLE_MOCK_PDL = os.getenv("ENABLE_MOCK_PDL", "false").strip().lower() in {"1", "true", "yes", "on"}
-ENABLE_FAKE_EMAILS = os.getenv("ENABLE_FAKE_EMAILS", "true").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_FAKE_EMAILS = os.getenv("ENABLE_FAKE_EMAILS", "false").strip().lower() in {"1", "true", "yes", "on"}
 INTERVIEW_SESSION_TTL_MINUTES = int(os.getenv("INTERVIEW_SESSION_TTL_MINUTES", "120"))
 MIN_SKILL_MATCH_THRESHOLD = int(os.getenv("MIN_SKILL_MATCH_THRESHOLD", "1"))
 ENABLE_HARD_FILTERING = os.getenv("ENABLE_HARD_FILTERING", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -112,14 +121,9 @@ FEEDBACK_WEIGHTS = {
     "reject": float(os.getenv("FEEDBACK_WEIGHT_REJECT", "-0.25")),
 }
 
-if "http://localhost:3000" not in CORS_ALLOW_ORIGINS and "*" not in CORS_ALLOW_ORIGINS:
-    CORS_ALLOW_ORIGINS.append("http://localhost:3000")
-
 
 def missing_secret_warnings() -> list[str]:
     warnings: list[str] = []
-    if not JWT_SECRET.strip():
-        warnings.append("JWT_SECRET is missing; authentication is not production-safe.")
     if not OPENAI_API_KEY:
         warnings.append("OPENAI_API_KEY is missing; OpenAI features will use local fallback.")
     if not PDL_API_KEY:
@@ -128,8 +132,6 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("REDIS_URL is missing; cache will use in-memory fallback.")
     if not GOOGLE_OAUTH_CLIENT_ID:
         warnings.append("GOOGLE_OAUTH_CLIENT_ID is missing; Google login will be unavailable.")
-    if not INTERNAL_API_KEY:
-        warnings.append("INTERNAL_API_KEY is missing; /api/health and /metrics should rely on bearer auth only.")
     if not SLACK_BOT_TOKEN:
         warnings.append("SLACK_BOT_TOKEN is missing; Slack message delivery will be disabled.")
     if not SLACK_SIGNING_SECRET:

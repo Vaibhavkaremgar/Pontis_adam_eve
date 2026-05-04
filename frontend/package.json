@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "Multi-step hiring intake and candidate matching UI",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "dev": "next dev --webpack",
     "typecheck": "tsc --noEmit",

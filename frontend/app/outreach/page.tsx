@@ -10,7 +10,7 @@
  * GET /outreach/preview        — fetches auto-generated subject + body
  * POST /outreach               — sends outreach with optional recruiter-edited body
  */
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
@@ -24,7 +24,7 @@ import { getShortlistedCandidates } from "@/lib/api/candidates";
 import { getEmailPreview, getOutreachStatuses, queueOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
 import type { Candidate } from "@/types";
 
-export default function OutreachPage() {
+function OutreachContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
@@ -294,5 +294,13 @@ export default function OutreachPage() {
         </CardContent>
       </Card>
     </AppShell>
+  );
+}
+
+export default function OutreachPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto w-full max-w-[560px] p-6 text-sm text-gray-600">Loading outreach page...</div>}>
+      <OutreachContent />
+    </Suspense>
   );
 }

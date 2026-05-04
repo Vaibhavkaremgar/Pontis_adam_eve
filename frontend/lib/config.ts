@@ -11,4 +11,10 @@
  * This is the central API base URL. Replace this when backend server is available.
  * This allows switching between local mock API and real backend.
  */
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+
+if (!apiBaseUrl) {
+  throw new Error("NEXT_PUBLIC_API_URL is required");
+}
+
+export const API_BASE_URL = apiBaseUrl.replace(/\/$/, "");

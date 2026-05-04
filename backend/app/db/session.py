@@ -7,8 +7,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import AUTO_RECREATE_SCHEMA, DATABASE_URL
-from app.db.base import Base
-
 logger = logging.getLogger(__name__)
 
 if not DATABASE_URL:
@@ -19,10 +17,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    _ensure_optional_schema_columns()
-    _reconcile_legacy_schema_if_needed()
-    _cleanup_invalid_candidate_references()
+    _verify_database_connection()
+    _verify_migrated_schema()
 
 
 def get_db() -> Session:
@@ -40,6 +36,23 @@ def db_health_snapshot() -> dict:
         return {"status": "ok", "error": ""}
     except Exception as exc:
         return {"status": "down", "error": str(exc)}
+
+
+def _verify_database_connection() -> None:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+
+
+def _verify_migrated_schema() -> None:
+    with engine.begin() as conn:
+        inspector = inspect(conn)
+        table_names = set(inspector.get_table_names())
+        required_tables = {"users", "companies", "jobs", "candidate_profiles", "interviews"}
+        missing_tables = sorted(required_tables - table_names)
+        if missing_tables:
+            raise RuntimeError(
+                "Database schema is not migrated. Missing tables: " + ", ".join(missing_tables)
+            )
 
 
 def _reconcile_legacy_schema_if_needed() -> None:
