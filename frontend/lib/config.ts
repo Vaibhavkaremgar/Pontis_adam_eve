@@ -7,10 +7,13 @@
  * Provides base URL used by all /lib/api clients.
  *
  * How it fits in the pipeline:
- * One switch point for moving from local mock routes to real FastAPI backend.
- * This is the central API base URL. Replace this when backend server is available.
- * This allows switching between local mock API and real backend.
+ * One switch point for the production FastAPI backend URL.
+ * In Railway, this must be provided at build time as NEXT_PUBLIC_API_URL.
  */
-const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim() || "/api/backend";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+
+if (!apiBaseUrl) {
+  throw new Error("NEXT_PUBLIC_API_URL is required");
+}
 
 export const API_BASE_URL = apiBaseUrl.replace(/\/$/, "");
