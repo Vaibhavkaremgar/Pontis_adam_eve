@@ -13,7 +13,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 function getBackendBaseUrl() {
-  const url = process.env.BACKEND_API_URL?.trim() || process.env.NEXT_PUBLIC_API_URL?.trim();
+  const url = process.env.BACKEND_API_URL?.trim();
   if (!url) {
     throw new Error("BACKEND_API_URL is required");
   }
