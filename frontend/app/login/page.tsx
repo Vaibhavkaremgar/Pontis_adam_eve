@@ -11,9 +11,9 @@
  * Required entry gate before recruiter can access company/job/candidate pipeline.
  */
 import Image from "next/image";
-import { GoogleLogin, GoogleOAuthProvider } from "@react-oauth/google";
+import { GoogleLogin } from "@react-oauth/google";
 import { useRouter } from "next/navigation";
-import { useCallback, useRef, useState } from "react";
+import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,7 +27,6 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export default function LoginPage() {
   const router = useRouter();
   const { setUser, setToken } = useAppContext();
-  const googleButtonContainerRef = useRef<HTMLDivElement | null>(null);
 
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
@@ -41,14 +40,6 @@ export default function LoginPage() {
 
   const emailTrimmed = email.trim();
   const hasValidEmail = EMAIL_REGEX.test(emailTrimmed);
-
-  const triggerGoogleLogin = useCallback(() => {
-    const container = googleButtonContainerRef.current;
-    if (!container) return;
-
-    const target = container.querySelector("button, div[role='button']") as HTMLElement | null;
-    target?.click();
-  }, []);
 
   const handleRequestOtp = async () => {
     if (!hasValidEmail) {
@@ -116,58 +107,42 @@ export default function LoginPage() {
           </CardHeader>
           <CardContent className="space-y-5">
             {isGoogleConfigured ? (
-              <div className="relative w-full">
-                <button
-                  type="button"
-                  onClick={triggerGoogleLogin}
-                  className={cn(
-                    "group flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-[rgba(120,100,80,0.14)] bg-[#F3EDE3] px-4 text-sm font-medium text-gray-700 shadow-[0_1px_0_rgba(255,255,255,0.65)_inset] transition-all duration-200 hover:-translate-y-[1px] hover:border-[rgba(120,100,80,0.2)] hover:bg-[#EFE6D8] hover:shadow-[0_6px_16px_rgba(0,0,0,0.04)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-900/15 focus-visible:ring-offset-2"
-                  )}
-                  aria-label="Continue with Google"
-                >
-                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#EFE6D8] ring-1 ring-[rgba(120,100,80,0.08)]">
-                    <Image
-                      src="/images/google-g-logo.svg"
-                      alt=""
-                      width={16}
-                      height={16}
-                      className="h-4 w-4 opacity-90"
-                    />
-                  </span>
-                  <span className="leading-none">Continue with Google</span>
-                </button>
-                <GoogleOAuthProvider clientId={googleClientId}>
-                  <div ref={googleButtonContainerRef} className="pointer-events-none absolute inset-0 opacity-0">
-                    <GoogleLogin
-                      width={320}
-                      theme="outline"
-                      size="large"
-                      shape="rectangular"
-                      text="continue_with"
-                      logo_alignment="left"
-                      onSuccess={async (credentialResponse) => {
-                        const idToken = credentialResponse.credential;
-                        if (!idToken) {
-                          setError("Google login failed: missing credential.");
-                          return;
-                        }
-                        setIsGoogleLoading(true);
-                        setError("");
-                        const result = await loginWithGoogle({ token: idToken });
-                        if (!result.success || !result.data) {
-                          setError(result.error || "Google login failed. Please try again.");
-                          setIsGoogleLoading(false);
-                          return;
-                        }
-                        setToken(result.data.access_token || result.data.token);
-                        setUser(result.data.user);
-                        setIsGoogleLoading(false);
-                        router.push("/company");
-                      }}
-                      onError={() => setError("Login failed. Please try again.")}
-                    />
-                  </div>
-                </GoogleOAuthProvider>
+              <div className="flex w-full justify-center">
+                <GoogleLogin
+                  width={320}
+                  theme="outline"
+                  size="large"
+                  shape="rectangular"
+                  text="continue_with"
+                  logo_alignment="left"
+                  click_listener={() => {
+                    console.log("Google button clicked");
+                  }}
+                  onSuccess={async (credentialResponse) => {
+                    console.log("Google success", credentialResponse);
+                    const idToken = credentialResponse.credential;
+                    if (!idToken) {
+                      setError("Google login failed: missing credential.");
+                      return;
+                    }
+                    setIsGoogleLoading(true);
+                    setError("");
+                    const result = await loginWithGoogle({ token: idToken });
+                    if (!result.success || !result.data) {
+                      setError(result.error || "Google login failed. Please try again.");
+                      setIsGoogleLoading(false);
+                      return;
+                    }
+                    setToken(result.data.access_token || result.data.token);
+                    setUser(result.data.user);
+                    setIsGoogleLoading(false);
+                    router.push("/company");
+                  }}
+                  onError={() => {
+                    console.log("Google error", "Google OAuth button failed or was dismissed");
+                    setError("Login failed. Please try again.");
+                  }}
+                />
               </div>
             ) : (
               <button

@@ -173,6 +173,12 @@ export function VoiceUi() {
     if (!publicKey) throw new Error("NEXT_PUBLIC_VAPI_PUBLIC_KEY is not set.");
 
     const vapi = new Vapi(publicKey);
+    console.log("[vapi] instance created");
+
+    if (typeof window !== "undefined") {
+      (window as Window & { vapi?: Vapi }).vapi = vapi;
+      console.log("[vapi] instance attached to window.vapi");
+    }
 
     vapi.on("call-start", () => {
       terminalStateRef.current = "live";
@@ -267,6 +273,7 @@ export function VoiceUi() {
 
   // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
+    console.log("Start conversation clicked");
     const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
     if (!assistantId) {
       setCallStatus("error");
