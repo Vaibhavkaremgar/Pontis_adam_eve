@@ -20,6 +20,34 @@ from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
 
+QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
+    JOB_COLLECTION_NAME: {
+        "vector_size": VECTOR_SIZE,
+        "distance": Distance.COSINE,
+        "indexes": {
+            "jobId": PayloadSchemaType.KEYWORD,
+        },
+    },
+    CANDIDATE_COLLECTION_NAME: {
+        "vector_size": VECTOR_SIZE,
+        "distance": Distance.COSINE,
+        "indexes": {
+            "jobId": PayloadSchemaType.KEYWORD,
+            "recruiterId": PayloadSchemaType.UUID,
+            "embeddingVersion": PayloadSchemaType.KEYWORD,
+            "skillTokens": PayloadSchemaType.KEYWORD,
+            "rolePattern": PayloadSchemaType.KEYWORD,
+        },
+    },
+    RECRUITER_PREFERENCES_COLLECTION_NAME: {
+        "vector_size": VECTOR_SIZE,
+        "distance": Distance.COSINE,
+        "indexes": {
+            "recruiterId": PayloadSchemaType.UUID,
+        },
+    },
+}
+
 _client: QdrantClient | None = None
 _client_disabled = False
 _client_disabled_until: datetime | None = None
@@ -83,16 +111,51 @@ def ensure_collection(name: str) -> None:
     client = _get_client()
     if not client:
         return
-    try:
-        if client.collection_exists(name):
-            return
-        client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+    _ensure_collection(client=client, collection_name=name)
+
+
+def _is_collection_already_exists_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "already exists",
+            "collection already exists",
+            "conflict",
         )
+    )
+
+
+def _ensure_collection(*, client: QdrantClient, collection_name: str) -> bool:
+    spec = QDRANT_SCHEMA.get(collection_name, {})
+    vector_size = int(spec.get("vector_size") or VECTOR_SIZE)
+    distance = spec.get("distance") or Distance.COSINE
+    try:
+        if client.collection_exists(collection_name):
+            return True
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=vector_size, distance=distance),
+        )
+        logger.info(
+            "qdrant_collection_created collection=%s vector_size=%s distance=%s",
+            collection_name,
+            vector_size,
+            distance.value if hasattr(distance, "value") else str(distance),
+        )
+        return True
     except Exception as exc:
+        if _is_collection_already_exists_error(exc):
+            logger.info("qdrant_collection_exists collection=%s", collection_name)
+            return True
         _mark_client_unavailable(str(exc))
-        logger.warning("Failed to ensure Qdrant collection '%s'", name, exc_info=exc)
+        logger.warning(
+            "qdrant_collection_initialization_failed collection=%s error=%s",
+            collection_name,
+            str(exc),
+            exc_info=exc,
+        )
+        return False
 
 
 def _is_payload_index_already_exists_error(exc: Exception) -> bool:
@@ -153,44 +216,44 @@ def _ensure_payload_index(
 def ensure_qdrant_indexes() -> None:
     client = _get_client()
     if not client:
+        logger.warning("qdrant_index_initialization_failed reason=client_unavailable")
+        logger.info("qdrant_initialization_complete status=skipped")
         return
 
+    all_ok = True
     try:
-        ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
-        ensure_collection(CANDIDATE_COLLECTION_NAME)
+        for collection_name, spec in QDRANT_SCHEMA.items():
+            if not _ensure_collection(client=client, collection_name=collection_name):
+                all_ok = False
+                continue
 
-        index_results = [
-            _ensure_payload_index(
-                client=client,
-                collection_name=RECRUITER_PREFERENCES_COLLECTION_NAME,
-                field_name="recruiterId",
-                schema=PayloadSchemaType.UUID,
-            ),
-            _ensure_payload_index(
-                client=client,
-                collection_name=CANDIDATE_COLLECTION_NAME,
-                field_name="recruiterId",
-                schema=PayloadSchemaType.UUID,
-            ),
-            _ensure_payload_index(
-                client=client,
-                collection_name=CANDIDATE_COLLECTION_NAME,
-                field_name="embeddingVersion",
-                schema=PayloadSchemaType.KEYWORD,
-            ),
-        ]
-        if all(index_results):
+            indexes = spec.get("indexes") or {}
+            for field_name, schema in indexes.items():
+                if not _ensure_payload_index(
+                    client=client,
+                    collection_name=collection_name,
+                    field_name=field_name,
+                    schema=schema,
+                ):
+                    all_ok = False
+
+        if all_ok:
             logger.info("qdrant_indexes_initialised")
         else:
             logger.warning("qdrant_index_initialization_failed")
     except Exception as exc:
+        all_ok = False
         logger.warning("qdrant_index_initialization_failed error=%s", str(exc), exc_info=exc)
+    finally:
+        logger.info("qdrant_initialization_complete status=%s", "ok" if all_ok else "degraded")
 
 
 def ensure_all_collections() -> None:
-    ensure_collection(JOB_COLLECTION_NAME)
-    ensure_collection(CANDIDATE_COLLECTION_NAME)
-    ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
+    client = _get_client()
+    if not client:
+        return
+    for collection_name in QDRANT_SCHEMA:
+        _ensure_collection(client=client, collection_name=collection_name)
 
 
 def delete_job_vectors(job_id: str) -> None:

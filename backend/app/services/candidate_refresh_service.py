@@ -49,6 +49,7 @@ def refresh_candidate(db: Session, candidate) -> bool:
     try:
         with db.begin_nested():
             enrich_candidate(candidate)
+            recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             candidate_payload = _candidate_text_payload(candidate)
             normalized_text = build_candidate_text(candidate_payload)
             chunks = chunk_text(normalized_text)
@@ -68,6 +69,7 @@ def refresh_candidate(db: Session, candidate) -> bool:
                 vectors=vectors,
                 chunks=chunks,
                 payload={
+                    **({"recruiterId": recruiter_id} if recruiter_id else {}),
                     "role": getattr(candidate, "role", "") or "",
                     "summary": getattr(candidate, "summary", "") or "",
                     "name": getattr(candidate, "name", "") or "",

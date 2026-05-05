@@ -1568,6 +1568,7 @@ def _build_local_candidates(
     run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
 ) -> list[CandidateResult]:
     ensure_all_collections()
+    recruiter_id = JobRepository(db).get_recruiter_id(job.id)
     job_vec = _job_vector(job, feedback_learning)
     hits = search_candidate_chunks(
         query_vector=job_vec,
@@ -2146,6 +2147,7 @@ def _build_ranked_candidates_from_pdl(
             vectors=candidate_vectors,
             chunks=candidate_chunks,
             payload={
+                **({"recruiterId": recruiter_id} if recruiter_id else {}),
                 "role": candidate_role,
                 "summary": candidate_summary,
                 "name": candidate_name,
