@@ -11,15 +11,13 @@ from datetime import datetime, timedelta, timezone
 from uuid import NAMESPACE_URL, uuid5
 from typing import Any
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.core.config import (
     ENABLE_HARD_FILTERING,
     ENABLE_FAKE_EMAILS,
     FEEDBACK_WEIGHTS,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
+    GROQ_API_KEY,
     EMBEDDING_VERSION,
     MIN_SKILL_MATCH_THRESHOLD,
     PDL_SEARCH_SIZE,
@@ -44,6 +42,7 @@ from app.services.candidate_text import build_candidate_text
 from app.services.ats.service import export_candidate_to_ats
 from app.services.embedding_service import embed, preload_sample_candidate_embeddings
 from app.services.evaluation_service import record_candidate_fetch, record_shortlist_event
+from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
 from app.services.recruiter_preference_service import (
@@ -1326,14 +1325,13 @@ def _build_feedback_learning_context(db: Session, *, job_id: str) -> FeedbackLea
 
 
 def _elite_reasoning(job, candidate: CandidateResult) -> tuple[str, float]:
-    if not OPENAI_API_KEY:
+    if not GROQ_API_KEY:
         heuristic = (
             "Strong semantic and skill alignment." if candidate.explanation.semanticScore >= 0.7 else "Moderate alignment."
         )
         return heuristic, 0.03 if candidate.explanation.semanticScore >= 0.7 else 0.0
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
         prompt = (
             "Rate this candidate for the job on a 0-100 scale and explain in one short sentence. "
             "Return exactly: SCORE=<number>; REASON=<text>.\n\n"
@@ -1343,12 +1341,7 @@ def _elite_reasoning(job, candidate: CandidateResult) -> tuple[str, float]:
             f"CANDIDATE SUMMARY: {candidate.summary}\n"
             f"CANDIDATE SKILLS: {', '.join(candidate.skills)}"
         )
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = str(generate(prompt)).strip()
 
         score_match = re.search(r"SCORE\s*=\s*(\d{1,3})", text, re.IGNORECASE)
         reason_match = re.search(r"REASON\s*=\s*(.+)", text, re.IGNORECASE)

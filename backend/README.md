@@ -29,7 +29,9 @@ Production-ready backend for Next.js hiring flow:
 ## Environment Variables
 
 Required:
-- OPENAI_API_KEY
+- GROQ_API_KEY
+- GROQ_BASE_URL
+- GROQ_MODEL
 - QDRANT_URL
 - QDRANT_API_KEY
 - DATABASE_URL
@@ -65,7 +67,7 @@ source -> rank -> approve (swipe) -> learn (weight updates) -> outreach -> expor
 ## Production Hardening
 - RLHF stabilization: smoothed updates + decayed feedback influence + per-job normalization
 - Scheduler safety: job refresh locks + duplicate-window guard + PDL rate limiting
-- Observability: `/health` (DB, PDL, OpenAI, scheduler) + metrics logs (`candidate_count`, `feedback_count`, `outreach_sent`, `evaluation_metrics_updated`)
+- Observability: `/health` (DB, PDL, LLM, scheduler) + metrics logs (`candidate_count`, `feedback_count`, `outreach_sent`, `evaluation_metrics_updated`)
 - Slack: `/slack/commands` and `/slack/interactions` use signature verification and Slack SDK message posting
 - Flywheel: scheduler runs periodic candidate refresh + re-embedding for stale profiles
 - Cache layer: in-memory cache for embedding reuse within process lifetime (SQLite cache backend disabled after Postgres migration)

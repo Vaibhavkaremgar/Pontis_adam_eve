@@ -12,7 +12,9 @@ def _required_env(name: str) -> str:
     return value
 
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192").strip()
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
@@ -33,7 +35,6 @@ HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
 DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 CORS_ALLOW_ORIGINS = [origin.strip() for origin in _required_env("CORS_ALLOW_ORIGINS").split(",") if origin.strip()]
 PUBLIC_APP_URL = _required_env("PUBLIC_APP_URL").strip().rstrip("/")
 AUTO_RECREATE_SCHEMA = os.getenv("AUTO_RECREATE_SCHEMA", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -124,8 +125,8 @@ FEEDBACK_WEIGHTS = {
 
 def missing_secret_warnings() -> list[str]:
     warnings: list[str] = []
-    if not OPENAI_API_KEY:
-        warnings.append("OPENAI_API_KEY is missing; OpenAI features will use local fallback.")
+    if not GROQ_API_KEY:
+        warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
     if not PDL_API_KEY:
         warnings.append("PDL_API_KEY is missing; candidate enrichment will skip PDL.")
     if not REDIS_URL:

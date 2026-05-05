@@ -16,7 +16,7 @@ from app.core.security import verify_access_token
 from app.db.session import db_health_snapshot, init_db
 from app.services.candidate_service import warm_candidate_retrieval
 from app.services.metrics_service import get_metrics_snapshot
-from app.services.openai_service import openai_health_snapshot
+from app.services.llm_service import llm_health
 from app.services.qdrant_service import ensure_qdrant_indexes, qdrant_health_snapshot
 from app.services.pdl_service import pdl_health_snapshot, run_startup_connectivity_check
 from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
@@ -66,13 +66,13 @@ def health(request: Request):
     db_status = db_health_snapshot()
     pdl_status = pdl_health_snapshot()
     qdrant_status = qdrant_health_snapshot()
-    openai_status = openai_health_snapshot()
+    llm_status = llm_health()
     scheduler = scheduler_status()
 
     overall = "ok"
     if any(
-        value.get("status") in {"down", "degraded", "unconfigured"}
-        for value in [db_status, pdl_status, qdrant_status, openai_status]
+        value.get("status") in {"down", "degraded", "unconfigured", "error"}
+        for value in [db_status, pdl_status, qdrant_status, llm_status]
     ):
         overall = "degraded"
     if db_status.get("status") == "down":
@@ -85,7 +85,8 @@ def health(request: Request):
                 "db": db_status,
                 "pdl": pdl_status,
                 "qdrant": qdrant_status,
-                "openai": openai_status,
+                "llm": llm_status,
+                "openai": llm_status,
                 "scheduler": scheduler,
             },
         }

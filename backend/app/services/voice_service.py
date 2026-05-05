@@ -5,15 +5,14 @@ import logging
 import re
 from typing import Any
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
 
-from app.core.config import OPENAI_API_KEY, OPENAI_MODEL
+from app.core.config import GROQ_API_KEY
 from app.db.repositories import CompanyRepository, JobRepository
 from app.services.candidate_service import build_job_text
 from app.services.embedding_service import get_embedding
+from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
-from app.services.openai_service import refine_description
 from app.services.qdrant_service import delete_job_vectors, ensure_all_collections, upsert_job_chunks
 from app.utils.exceptions import APIError
 from app.utils.text import chunk_text
@@ -170,9 +169,9 @@ def extract_structured_data_fallback(transcript: str) -> dict[str, Any]:
 
 
 def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None:
-    if not OPENAI_API_KEY:
+    if not GROQ_API_KEY:
         log_metric("fallback", source="voice_structured_extraction", reason="unconfigured")
-        logger.info("voice_extraction_skipped reason=OPENAI_API_KEY_missing")
+        logger.info("voice_extraction_skipped reason=GROQ_API_KEY_missing")
         return None
 
     prompt = (
@@ -200,16 +199,14 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
     )
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.responses.create(
-            model=OPENAI_MODEL,
-            input=prompt,
-            temperature=0,
-        )
-        payload = _extract_json_object((response.output_text or "").strip())
+        payload = generate(prompt, expect_json=True)
+        if not isinstance(payload, dict):
+            payload = _extract_json_object(str(payload).strip())
         if payload is None:
             log_metric("error", source="voice_structured_extraction", kind="invalid_json")
             logger.warning("voice_extraction_failed reason=invalid_json")
+            return None
+        if not isinstance(payload, dict):
             return None
         return payload
     except Exception as exc:
@@ -379,7 +376,7 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
 
     # Use the full transcript (both sides) for richer description refinement.
     notes_for_refinement = [raw_text] if raw_text else voice_notes
-    refined_description = refine_description(description=job.description, voice_notes=notes_for_refinement)
+    refined_description = _refine_description(description=job.description, voice_notes=notes_for_refinement)
     enriched_description = _enhance_description(
         refined_description=refined_description,
         responsibilities=merged_responsibilities,
@@ -506,4 +503,37 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
             "fields": extracted_fields if not used_fallback else fallback_fields,
         },
     }
+
+
+def _fallback_refinement(description: str, voice_notes: list[str]) -> str:
+    cleaned_notes = [note.strip() for note in voice_notes if note and note.strip()]
+    if not cleaned_notes:
+        return description
+
+    notes_block = "\n".join(f"- {note}" for note in cleaned_notes)
+    base = description.strip() or "Role description provided by recruiter."
+    return f"{base}\n\nAdditional recruiter notes:\n{notes_block}"
+
+
+def _refine_description(*, description: str, voice_notes: list[str]) -> str:
+    if not GROQ_API_KEY:
+        logger.warning("GROQ_API_KEY is not configured; using local refinement fallback")
+        return _fallback_refinement(description, voice_notes)
+
+    notes_blob = "\n".join(f"- {note}" for note in voice_notes if note.strip())
+    prompt = (
+        "You are refining a hiring job description for candidate search.\n"
+        "Return only the refined description text.\n\n"
+        f"Current Description:\n{description}\n\n"
+        f"Voice Notes:\n{notes_blob}\n"
+    )
+
+    try:
+        refined = generate(prompt)
+        if isinstance(refined, str) and refined.strip():
+            return refined.strip()
+    except Exception as exc:
+        logger.warning("LLM refinement failed; using local refinement fallback", exc_info=exc)
+
+    return _fallback_refinement(description, voice_notes)
 

@@ -16,8 +16,7 @@ from app.core.config import (
     ENABLE_REAL_EMAIL_SENDING,
     ENABLE_REPLY_DETECTION,
     FOLLOW_UP_DELAY_MINUTES,
-    OPENAI_API_KEY,
-    OPENAI_MODEL,
+    GROQ_API_KEY,
     OUTREACH_DRY_RUN,
     OUTREACH_FROM_EMAIL,
     OUTREACH_REPLY_TO_EMAIL,
@@ -33,6 +32,7 @@ from app.db.repositories import (
 )
 from app.db.session import SessionLocal
 from app.models.entities import OutreachEventEntity
+from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.slack_integration import post_slack_message
@@ -135,16 +135,13 @@ def _build_heuristic_email(*, candidate_profile, job) -> tuple[str, str]:
 def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
     """
     Generate a personalized outreach email using the LLM.
-    Falls back to the heuristic template if OpenAI is unavailable or fails.
+    Falls back to the heuristic template if the LLM is unavailable or fails.
     Prompts are deterministic — no hallucinated claims about the candidate.
     """
-    if not OPENAI_API_KEY:
+    if not GROQ_API_KEY:
         return _build_heuristic_email(candidate_profile=candidate_profile, job=job)
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(api_key=OPENAI_API_KEY)
         skills_text = ", ".join((candidate_profile.skills or [])[:5]) or "not listed"
         prompt = (
             "Write a short, warm, personalized recruiting outreach email.\n"
@@ -169,13 +166,7 @@ def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
             "SUBJECT: <subject line>\n"
             "BODY:\n<email body>"
         )
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=300,
-        )
-        text = (response.choices[0].message.content or "").strip()
+        text = str(generate(prompt)).strip()
 
         subject = ""
         body = ""
