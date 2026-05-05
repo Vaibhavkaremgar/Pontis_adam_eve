@@ -139,7 +139,7 @@ export default function LoginPage() {
                 <GoogleOAuthProvider clientId={googleClientId}>
                   <div ref={googleButtonContainerRef} className="pointer-events-none absolute inset-0 opacity-0">
                     <GoogleLogin
-                      width="100%"
+                      width={320}
                       theme="outline"
                       size="large"
                       shape="rectangular"
