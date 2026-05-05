@@ -84,6 +84,14 @@ function classifyVoiceError(error: unknown): { kind: string; message: string } {
   return { kind: type || "unknown", message: message || "Voice assistant failed to connect." };
 }
 
+function debugVoice(event: string, details?: Record<string, unknown>) {
+  if (details) {
+    console.info(`[voice-debug] ${event}`, details);
+    return;
+  }
+  console.info(`[voice-debug] ${event}`);
+}
+
 // ─── component ────────────────────────────────────────────────────────────────
 
 export function VoiceUi() {
@@ -170,10 +178,14 @@ export function VoiceUi() {
     if (vapiRef.current) return vapiRef.current;
 
     const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+    debugVoice("ensureVapi called", {
+      hasPublicKey: Boolean(publicKey),
+      publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
+    });
     if (!publicKey) throw new Error("NEXT_PUBLIC_VAPI_PUBLIC_KEY is not set.");
 
     const vapi = new Vapi(publicKey);
-    console.log("[vapi] instance created");
+    debugVoice("vapi instance created");
 
     if (typeof window !== "undefined") {
       (window as Window & { vapi?: Vapi }).vapi = vapi;
@@ -185,16 +197,25 @@ export function VoiceUi() {
       if (!callStartedAtRef.current) {
         callStartedAtRef.current = Date.now();
       }
-      console.info("[vapi] call-start", {
+      debugVoice("call-start", {
         jobId,
       });
       setCallStatus("listening");
     });
 
-    vapi.on("speech-start", () => setCallStatus("speaking"));
-    vapi.on("speech-end", () => setCallStatus("listening"));
+    vapi.on("speech-start", () => {
+      debugVoice("speech-start");
+      setCallStatus("speaking");
+    });
+    vapi.on("speech-end", () => {
+      debugVoice("speech-end");
+      setCallStatus("listening");
+    });
 
     vapi.on("message", (message) => {
+      debugVoice("message received", {
+        type: typeof message === "object" && message ? String((message as Record<string, unknown>).type || "") : typeof message,
+      });
       const event = extractTranscriptEvent(message);
       if (!event) return;
 
@@ -226,7 +247,7 @@ export function VoiceUi() {
       const classified = classifyVoiceError(error);
       terminalStateRef.current = classified.kind === "ejected" ? "ejected" : "error";
       const endedAt = Date.now();
-      console.error("[vapi] error", {
+      debugVoice("error", {
         jobId,
         durationMs: callStartedAtRef.current ? endedAt - callStartedAtRef.current : null,
         kind: classified.kind,
@@ -239,7 +260,7 @@ export function VoiceUi() {
     });
     vapi.on("call-start-failed", (event) => {
       terminalStateRef.current = "error";
-      console.error("[vapi] call-start-failed", {
+      debugVoice("call-start-failed", {
         jobId,
         event,
       });
@@ -250,7 +271,7 @@ export function VoiceUi() {
 
     vapi.on("call-end", () => {
       const endedAt = Date.now();
-      console.info("[vapi] call-end", {
+      debugVoice("call-end", {
         jobId,
         durationMs: callStartedAtRef.current ? endedAt - callStartedAtRef.current : null,
         terminalState: terminalStateRef.current,
@@ -273,11 +294,23 @@ export function VoiceUi() {
 
   // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
-    console.log("Start conversation clicked");
+    debugVoice("start button clicked", {
+      hasJobId: Boolean(jobId),
+      hasJobTitle: Boolean(job.title),
+      hasCompany: Boolean(company.name),
+    });
     const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+    const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+    debugVoice("env snapshot", {
+      hasAssistantId: Boolean(assistantId),
+      hasPublicKey: Boolean(publicKey),
+      assistantIdPreview: assistantId ? `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}` : null,
+      publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
+    });
     if (!assistantId) {
       setCallStatus("error");
       setPipelineError("Voice assistant not configured. Add NEXT_PUBLIC_VAPI_ASSISTANT_ID.");
+      debugVoice("start aborted", { reason: "missing assistantId" });
       return;
     }
 
@@ -321,6 +354,10 @@ export function VoiceUi() {
     try {
       const vapi = ensureVapi();
       setCallStatus("connecting");
+      debugVoice("calling vapi.start", {
+        assistantIdPreview: `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}`,
+        jobId,
+      });
       await vapi.start(assistantId, {
         variableValues: {
           jobTitle,
@@ -338,9 +375,10 @@ export function VoiceUi() {
         },
         firstMessage,
       });
+      debugVoice("vapi.start resolved");
     } catch (error) {
       terminalStateRef.current = "error";
-      console.error("[voice] start_failed", {
+      debugVoice("start_failed", {
         jobId,
         error,
       });
@@ -397,8 +435,8 @@ export function VoiceUi() {
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">Discovery</span>
-            {/* <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Calibration</span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Summary</span> */}
+            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Calibration</span>
+            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Summary</span>
           </div>
         </div>
 
