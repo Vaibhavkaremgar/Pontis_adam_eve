@@ -92,6 +92,24 @@ function debugVoice(event: string, details?: Record<string, unknown>) {
   console.info(`[voice-debug] ${event}`);
 }
 
+function getRuntimeEnvSnapshot() {
+  if (typeof window === "undefined") {
+    return {
+      runtime: "server",
+      origin: null,
+      hostname: null,
+      href: null,
+    };
+  }
+
+  return {
+    runtime: process.env.NODE_ENV || "unknown",
+    origin: window.location.origin,
+    hostname: window.location.hostname,
+    href: window.location.href,
+  };
+}
+
 // ─── component ────────────────────────────────────────────────────────────────
 
 export function VoiceUi() {
@@ -299,6 +317,7 @@ export function VoiceUi() {
       hasJobTitle: Boolean(job.title),
       hasCompany: Boolean(company.name),
     });
+    debugVoice("runtime snapshot", getRuntimeEnvSnapshot());
     const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
     const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
     debugVoice("env snapshot", {
