@@ -17,7 +17,7 @@ from app.db.session import db_health_snapshot, init_db
 from app.services.candidate_service import warm_candidate_retrieval
 from app.services.metrics_service import get_metrics_snapshot
 from app.services.openai_service import openai_health_snapshot
-from app.services.qdrant_service import qdrant_health_snapshot
+from app.services.qdrant_service import ensure_qdrant_indexes, qdrant_health_snapshot
 from app.services.pdl_service import pdl_health_snapshot, run_startup_connectivity_check
 from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
 from app.utils.exceptions import APIError
@@ -111,6 +111,11 @@ def on_startup() -> None:
     except Exception as exc:
         logger.exception("database_initialization_failed error=%s", str(exc))
         raise
+
+    try:
+        ensure_qdrant_indexes()
+    except Exception as exc:
+        logger.warning("qdrant_index_initialization_failed error=%s", str(exc), exc_info=exc)
 
     for warning in missing_secret_warnings():
         logger.warning("configuration_warning %s", warning)

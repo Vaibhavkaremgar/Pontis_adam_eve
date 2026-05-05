@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PayloadSchemaType, PointStruct, VectorParams
 
 from app.core.config import (
     CANDIDATE_COLLECTION_NAME,
@@ -93,6 +93,98 @@ def ensure_collection(name: str) -> None:
     except Exception as exc:
         _mark_client_unavailable(str(exc))
         logger.warning("Failed to ensure Qdrant collection '%s'", name, exc_info=exc)
+
+
+def _is_payload_index_already_exists_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "already exists",
+            "index already exists",
+            "payload index already exists",
+            "payload index exists",
+            "conflict",
+        )
+    )
+
+
+def _ensure_payload_index(
+    *,
+    client: QdrantClient,
+    collection_name: str,
+    field_name: str,
+    schema: PayloadSchemaType,
+) -> bool:
+    try:
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=field_name,
+            field_schema=schema,
+            wait=True,
+        )
+        logger.info(
+            "qdrant_payload_index_ready collection=%s field=%s schema=%s",
+            collection_name,
+            field_name,
+            schema.value,
+        )
+        return True
+    except Exception as exc:
+        if _is_payload_index_already_exists_error(exc):
+            logger.info(
+                "qdrant_payload_index_exists collection=%s field=%s schema=%s",
+                collection_name,
+                field_name,
+                schema.value,
+            )
+            return True
+        logger.warning(
+            "qdrant_index_initialization_failed collection=%s field=%s schema=%s error=%s",
+            collection_name,
+            field_name,
+            schema.value,
+            str(exc),
+            exc_info=exc,
+        )
+        return False
+
+
+def ensure_qdrant_indexes() -> None:
+    client = _get_client()
+    if not client:
+        return
+
+    try:
+        ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
+        ensure_collection(CANDIDATE_COLLECTION_NAME)
+
+        index_results = [
+            _ensure_payload_index(
+                client=client,
+                collection_name=RECRUITER_PREFERENCES_COLLECTION_NAME,
+                field_name="recruiterId",
+                schema=PayloadSchemaType.UUID,
+            ),
+            _ensure_payload_index(
+                client=client,
+                collection_name=CANDIDATE_COLLECTION_NAME,
+                field_name="recruiterId",
+                schema=PayloadSchemaType.UUID,
+            ),
+            _ensure_payload_index(
+                client=client,
+                collection_name=CANDIDATE_COLLECTION_NAME,
+                field_name="embeddingVersion",
+                schema=PayloadSchemaType.KEYWORD,
+            ),
+        ]
+        if all(index_results):
+            logger.info("qdrant_indexes_initialised")
+        else:
+            logger.warning("qdrant_index_initialization_failed")
+    except Exception as exc:
+        logger.warning("qdrant_index_initialization_failed error=%s", str(exc), exc_info=exc)
 
 
 def ensure_all_collections() -> None:
