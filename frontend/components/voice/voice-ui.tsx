@@ -64,9 +64,27 @@ function mergeTranscriptFragments(previous: string, incoming: string): string {
 
   if (!prev) return next;
   if (!next) return prev;
-  if (next === prev) return next;
-  if (next.startsWith(prev)) return next;
-  if (prev.startsWith(next)) return prev;
+  const prevLower = prev.toLowerCase();
+  const nextLower = next.toLowerCase();
+
+  if (nextLower === prevLower) return next;
+  if (nextLower.startsWith(prevLower)) return next;
+  if (prevLower.startsWith(nextLower)) return prev;
+  if (prevLower.includes(nextLower)) return prev;
+  if (nextLower.includes(prevLower)) return next;
+
+  const prevWords = prev.split(" ");
+  const nextWords = next.split(" ");
+  const maxOverlap = Math.min(12, prevWords.length, nextWords.length);
+
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    const prevTail = prevWords.slice(-size).join(" ").toLowerCase();
+    const nextHead = nextWords.slice(0, size).join(" ").toLowerCase();
+    if (prevTail === nextHead) {
+      return [...prevWords, ...nextWords.slice(size)].join(" ");
+    }
+  }
+
   return `${prev} ${next}`.replace(/\s+/g, " ").trim();
 }
 
@@ -174,7 +192,9 @@ export function VoiceUi() {
   const router = useRouter();
   const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user } = useAppContext();
 
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [finalTranscript, setFinalTranscript] = useState<ChatMessage[]>([]);
+  const [interimTranscript, setInterimTranscript] = useState("");
+  const [interimRole, setInterimRole] = useState<TranscriptRole | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
   const [pipelineError, setPipelineError] = useState("");
 
@@ -185,6 +205,8 @@ export function VoiceUi() {
   const callStartedAtRef = useRef<number | null>(null);
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
   const transcriptBufferRef = useRef<Record<TranscriptRole, string>>({ assistant: "", user: "" });
+  const interimRoleRef = useRef<TranscriptRole | null>(null);
+  const interimTranscriptRef = useRef("");
   const transcriptFlushTimersRef = useRef<Record<TranscriptRole, ReturnType<typeof setTimeout> | null>>({
     assistant: null,
     user: null,
@@ -194,7 +216,7 @@ export function VoiceUi() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [chatMessages]);
+  }, [finalTranscript, interimTranscript, interimRole]);
 
   const clearTranscriptFlushTimer = useCallback((role: TranscriptRole) => {
     const timer = transcriptFlushTimersRef.current[role];
@@ -204,69 +226,125 @@ export function VoiceUi() {
     }
   }, []);
 
-  const commitTranscriptEntries = useCallback((role: TranscriptRole, entries: string[], isFinal: boolean) => {
-    if (!entries.length) return;
-
-    setChatMessages((prev) => {
-      const next = [...prev];
-      let startIndex = 0;
-      const last = next[next.length - 1];
-
-      if (last?.role === role && !last.isFinal) {
-        next[next.length - 1] = { role, text: entries[0], isFinal };
-        startIndex = 1;
-      }
-
-      for (let index = startIndex; index < entries.length; index += 1) {
-        next.push({ role, text: entries[index], isFinal });
-      }
-
-      return next;
-    });
+  const clearLiveTranscript = useCallback((role?: TranscriptRole) => {
+    if (role && interimRoleRef.current !== role) {
+      return;
+    }
+    interimRoleRef.current = null;
+    interimTranscriptRef.current = "";
+    setInterimRole(null);
+    setInterimTranscript("");
   }, []);
 
-  const schedulePartialFlush = useCallback((role: TranscriptRole) => {
+  const setLiveTranscript = useCallback((role: TranscriptRole, text: string) => {
+    const normalized = normalize(text);
+    if (!normalized) {
+      clearLiveTranscript(role);
+      return;
+    }
+
+    interimRoleRef.current = role;
+    interimTranscriptRef.current = normalized;
+    setInterimRole(role);
+    setInterimTranscript(normalized);
+  }, [clearLiveTranscript]);
+
+  const appendFinalSentence = useCallback((role: TranscriptRole, text: string) => {
+    const normalized = normalize(text);
+    if (!normalized) return;
+
+    setFinalTranscript((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      const lastText = last ? normalize(last.text).toLowerCase() : "";
+      const nextText = normalized.toLowerCase();
+
+      if (last?.role === role) {
+        if (lastText === nextText) {
+          return prev;
+        }
+        if (nextText.startsWith(lastText) || lastText.startsWith(nextText)) {
+          next[next.length - 1] = { role, text: normalized, isFinal: true };
+          return next;
+        }
+      }
+
+      next.push({ role, text: normalized, isFinal: true });
+      return next;
+    });
+
+    turnsRef.current = (() => {
+      const nextTurns = [...turnsRef.current];
+      const lastTurn = nextTurns[nextTurns.length - 1];
+      const lastText = lastTurn ? normalize(lastTurn.text).toLowerCase() : "";
+      const nextText = normalized.toLowerCase();
+
+      if (lastTurn?.role === role) {
+        if (lastText === nextText) {
+          return nextTurns;
+        }
+        if (nextText.startsWith(lastText) || lastText.startsWith(nextText)) {
+          nextTurns[nextTurns.length - 1] = { role, text: normalized };
+          return nextTurns;
+        }
+      }
+
+      nextTurns.push({ role, text: normalized });
+      return nextTurns;
+    })();
+  }, []);
+
+  const finalizeBufferedTranscript = useCallback((role: TranscriptRole, forceFinalize = false) => {
+    const buffered = normalize(transcriptBufferRef.current[role]);
     clearTranscriptFlushTimer(role);
+
+    if (!buffered) {
+      transcriptBufferRef.current[role] = "";
+      clearLiveTranscript(role);
+      return;
+    }
+
+    if (forceFinalize) {
+      appendFinalSentence(role, buffered);
+      transcriptBufferRef.current[role] = "";
+      clearLiveTranscript(role);
+      return;
+    }
+
+    const { sentences, remainder } = splitCompleteSentences(buffered);
+    if (sentences.length > 0) {
+      sentences.forEach((sentence) => appendFinalSentence(role, sentence));
+      transcriptBufferRef.current[role] = remainder;
+      if (remainder) {
+        setLiveTranscript(role, remainder);
+        transcriptFlushTimersRef.current[role] = setTimeout(() => {
+          finalizeBufferedTranscript(role, true);
+        }, 800);
+      } else {
+        clearLiveTranscript(role);
+      }
+      return;
+    }
+
+    setLiveTranscript(role, buffered);
     transcriptFlushTimersRef.current[role] = setTimeout(() => {
-      const buffered = normalize(transcriptBufferRef.current[role]);
-      if (!buffered) return;
-      commitTranscriptEntries(role, [buffered], false);
-    }, 700);
-  }, [clearTranscriptFlushTimer, commitTranscriptEntries]);
+      finalizeBufferedTranscript(role, true);
+    }, 800);
+  }, [appendFinalSentence, clearLiveTranscript, clearTranscriptFlushTimer, setLiveTranscript]);
 
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
     const role = event.role;
     const merged = mergeTranscriptFragments(transcriptBufferRef.current[role], event.text);
     transcriptBufferRef.current[role] = merged;
+    setLiveTranscript(role, merged);
 
     if (event.isFinal) {
-      clearTranscriptFlushTimer(role);
-      const { sentences, remainder } = splitCompleteSentences(merged);
-      const finalEntries = sentences.length > 0 ? sentences : (merged ? [merged] : []);
-      if (finalEntries.length) {
-        commitTranscriptEntries(role, finalEntries, true);
-      }
-      transcriptBufferRef.current[role] = "";
-      if (remainder) {
-        transcriptBufferRef.current[role] = remainder;
-        schedulePartialFlush(role);
-      }
+      finalizeBufferedTranscript(role, true);
       return;
     }
 
-    const { sentences, remainder } = splitCompleteSentences(merged);
-    if (sentences.length > 0) {
-      clearTranscriptFlushTimer(role);
-      commitTranscriptEntries(role, sentences, true);
-      transcriptBufferRef.current[role] = remainder;
-      if (remainder) {
-        schedulePartialFlush(role);
-      }
-      return;
-    }
-
-    schedulePartialFlush(role);
-  }, [clearTranscriptFlushTimer, commitTranscriptEntries, schedulePartialFlush]);
+    finalizeBufferedTranscript(role, false);
+  }, [finalizeBufferedTranscript, setLiveTranscript]);
 
   // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
   const runPipeline = useCallback(async (turns: VoiceTurn[]) => {
@@ -372,10 +450,6 @@ export function VoiceUi() {
       if (!event) return;
 
       processTranscriptEvent(event);
-
-      if (event.isFinal) {
-        turnsRef.current = [...turnsRef.current, { role: event.role, text: event.text }];
-      }
     });
 
     vapi.on("error", (error) => {
@@ -421,13 +495,15 @@ export function VoiceUi() {
       terminalStateRef.current = "done";
       clearTranscriptFlushTimer("assistant");
       clearTranscriptFlushTimer("user");
+      finalizeBufferedTranscript("assistant", true);
+      finalizeBufferedTranscript("user", true);
       // Auto-trigger pipeline with everything captured so far
       void runPipeline(turnsRef.current);
     });
 
     vapiRef.current = vapi;
     return vapi;
-  }, [runPipeline, setCallStatus]);
+  }, [finalizeBufferedTranscript, runPipeline, setCallStatus]);
 
   // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
@@ -476,7 +552,11 @@ export function VoiceUi() {
     }
 
     // Reset state
-    setChatMessages([]);
+    setFinalTranscript([]);
+    setInterimTranscript("");
+    setInterimRole(null);
+    interimRoleRef.current = null;
+    interimTranscriptRef.current = "";
     turnsRef.current = [];
     firedRef.current = false;
     callStartedAtRef.current = null;
@@ -555,6 +635,8 @@ export function VoiceUi() {
     terminalStateRef.current = "manual-stop";
     setCallStatus("processing");
     try {
+      finalizeBufferedTranscript("assistant", true);
+      finalizeBufferedTranscript("user", true);
       await vapiRef.current.stop();
     } catch {
       setCallStatus("error");
@@ -568,8 +650,9 @@ export function VoiceUi() {
       vapiRef.current?.stop().catch(() => undefined);
       clearTranscriptFlushTimer("assistant");
       clearTranscriptFlushTimer("user");
+      clearLiveTranscript();
     };
-  }, [clearTranscriptFlushTimer]);
+  }, [clearLiveTranscript, clearTranscriptFlushTimer]);
 
   // ── derived display state ──────────────────────────────────────────────────
   const isIdle = callStatus === "idle";
@@ -577,7 +660,7 @@ export function VoiceUi() {
   const isLive = callStatus === "connecting" || callStatus === "listening" || callStatus === "speaking";
   const isSpeaking = callStatus === "speaking";
   const isProcessingCall = callStatus === "processing" || callStatus === "completed";
-  const showChat = !isIdle || chatMessages.length > 0;
+  const showChat = !isIdle || finalTranscript.length > 0 || Boolean(interimTranscript);
 
   const pipelineLabel: Record<typeof pipelineStatus, string> = {
     idle: "",
@@ -634,7 +717,7 @@ export function VoiceUi() {
 
         <div className="space-y-6">
           {/* Empty state */}
-          {(isIdle || isErrorState) && chatMessages.length === 0 && (
+          {(isIdle || isErrorState) && finalTranscript.length === 0 && !interimTranscript && (
             <div className="flex min-h-[120px] items-center justify-center rounded-xl bg-[#F9FAFB]">
               <p className="font-body text-sm text-[#6B7280]">Click start to begin voice intake</p>
             </div>
@@ -646,19 +729,24 @@ export function VoiceUi() {
               ref={chatScrollRef}
               className="max-h-[320px] space-y-3 overflow-y-auto rounded-xl bg-[#F8FAFC] p-3 md:max-h-[360px]"
             >
-              {chatMessages.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
+              {finalTranscript.length === 0 && !interimTranscript && (callStatus === "connecting" || callStatus === "listening") && (
                 <p className="text-center text-xs text-gray-400">Waiting for Adam...</p>
               )}
-              {chatMessages.map((msg, i) => (
+              {finalTranscript.map((msg, i) => (
                 <ChatBubble key={`${msg.role}-${i}-${msg.text.slice(0, 12)}`} message={msg} />
               ))}
-              {/* "Adam is thinking..." indicator — shown when assistant speech just ended and user hasn't spoken */}
-              {callStatus === "listening" && chatMessages[chatMessages.length - 1]?.role === "assistant" && (
-                <div className="flex items-center gap-2 px-2 py-1">
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:0ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:150ms]" />
-                  <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:300ms]" />
-                </div>
+              {interimTranscript && interimRole && (
+                <motion.div
+                  key={`${interimRole}-live-caption`}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.16 }}
+                  className="space-y-2 pt-2"
+                >
+                  <p className="px-2 text-[11px] uppercase tracking-[0.18em] text-gray-400">Live caption</p>
+                  <ChatBubble message={{ role: interimRole, text: interimTranscript, isFinal: false }} isInterim />
+                </motion.div>
               )}
             </div>
           )}

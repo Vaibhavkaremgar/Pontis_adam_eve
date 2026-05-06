@@ -35,6 +35,7 @@ from app.services.slack_service import notify_slack
 logger = logging.getLogger(__name__)
 
 _EMAIL_PATTERN = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}$", re.IGNORECASE)
+_reply_polling_skip_logged = False
 
 
 @dataclass(frozen=True)
@@ -301,7 +302,10 @@ def _imap_is_configured() -> bool:
 
 def poll_candidate_replies(*, db: Session | None = None) -> dict[str, int]:
     if not _imap_is_configured():
-        logger.info("reply_polling_skipped provider=%s enabled=%s", REPLY_INBOX_PROVIDER, ENABLE_REPLY_POLLING)
+        global _reply_polling_skip_logged
+        if not _reply_polling_skip_logged:
+            logger.info("reply_polling_disabled provider=%s enabled=%s", REPLY_INBOX_PROVIDER, ENABLE_REPLY_POLLING)
+            _reply_polling_skip_logged = True
         return {"checked": 0, "matched": 0, "stored": 0, "ignored": 0, "failed": 0}
 
     owns_session = db is None
@@ -375,11 +379,11 @@ def poll_candidate_replies(*, db: Session | None = None) -> dict[str, int]:
                 except Exception as exc:
                     session.rollback()
                     summary["failed"] += 1
-                    logger.error("reply_poll_message_failed message_id=%s error=%s", message_id, str(exc), exc_info=exc)
+                    logger.error("reply_poll_message_failed message_id=%s error=%s", message_id, str(exc))
     except Exception as exc:
         if owns_session:
             session.rollback()
-        logger.error("reply_polling_failed error=%s", str(exc), exc_info=exc)
+        logger.error("reply_polling_failed error=%s", str(exc))
         summary["failed"] += 1
     finally:
         if owns_session:

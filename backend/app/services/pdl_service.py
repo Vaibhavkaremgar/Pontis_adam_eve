@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from app.core.config import ENABLE_MOCK_PDL, HTTP_TIMEOUT_SECONDS, PDL_API_KEY, PDL_MIN_REQUEST_INTERVAL_SECONDS, PDL_SEARCH_SIZE, PDL_URL
+from app.core.config import ENABLE_MOCK_PDL, HTTP_TIMEOUT_SECONDS, PDL_API_KEY, PDL_ENABLED, PDL_MIN_REQUEST_INTERVAL_SECONDS, PDL_SEARCH_SIZE, PDL_URL
 from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ _pdl_disabled = False
 _pdl_disabled_until: datetime | None = None
 _pdl_disable_reason = ""
 PDL_DISABLE_COOLDOWN_SECONDS = 300
+PDL_QUOTA_COOLDOWN_SECONDS = 1800
 
 
 def is_pdl_disabled() -> bool:
@@ -39,6 +40,9 @@ def is_pdl_disabled() -> bool:
 
 def _disable_pdl(reason: str, *, cooldown_seconds: int = PDL_DISABLE_COOLDOWN_SECONDS) -> None:
     global _pdl_disabled, _pdl_disabled_until, _pdl_disable_reason, _last_health_status, _last_health_error
+
+    if _pdl_disabled and _pdl_disable_reason == reason and _pdl_disabled_until and datetime.now(timezone.utc) < _pdl_disabled_until:
+        return
 
     _pdl_disabled = True
     _pdl_disabled_until = datetime.now(timezone.utc) + timedelta(seconds=max(1, cooldown_seconds))
@@ -134,6 +138,11 @@ def _respect_rate_limit() -> None:
 def _run_person_search(es_query: dict, size: int) -> dict:
     global _last_health_status, _last_health_error
 
+    if not PDL_ENABLED:
+        _last_health_status = "disabled"
+        _last_health_error = "PDL_ENABLED=false"
+        return {"data": []}
+
     if is_pdl_disabled():
         return {"data": []}
 
@@ -157,7 +166,7 @@ def _run_person_search(es_query: dict, size: int) -> dict:
     except requests.RequestException as exc:
         _disable_pdl(str(exc), cooldown_seconds=60)
         log_metric("error", source="pdl", kind="request_exception")
-        logger.exception("PDL request exception: %s", str(exc))
+        logger.warning("pdl_request_failed reason=%s", str(exc))
         return {"data": []}
 
     logger.info("PDL response.status_code=%s", response.status_code)
@@ -169,16 +178,17 @@ def _run_person_search(es_query: dict, size: int) -> dict:
         return {"data": []}
 
     if response.status_code != 200:
-        _disable_pdl(f"http_{response.status_code}")
+        cooldown = PDL_QUOTA_COOLDOWN_SECONDS if response.status_code == 402 else PDL_DISABLE_COOLDOWN_SECONDS
+        _disable_pdl(f"http_{response.status_code}", cooldown_seconds=cooldown)
         log_metric("error", source="pdl", kind=f"http_{response.status_code}")
         if response.status_code in {401, 403}:
-            logger.error("PDL auth failed with status=%s", response.status_code)
+            logger.warning("pdl_auth_failed status=%s", response.status_code)
         elif response.status_code == 402:
-            logger.error("PDL billing/quota check failed with status=%s", response.status_code)
+            logger.warning("pdl_quota_exhausted status=%s retry_after_seconds=%s", response.status_code, PDL_QUOTA_COOLDOWN_SECONDS)
         elif response.status_code >= 500:
-            logger.error("PDL server failure status=%s", response.status_code)
+            logger.warning("pdl_server_failure status=%s", response.status_code)
         else:
-            logger.warning("PDL non-success status=%s", response.status_code)
+            logger.warning("pdl_non_success status=%s", response.status_code)
         return {"data": []}
 
     try:
@@ -186,14 +196,14 @@ def _run_person_search(es_query: dict, size: int) -> dict:
     except ValueError as exc:
         _disable_pdl(f"json_parse:{exc}")
         log_metric("error", source="pdl", kind="json_parse")
-        logger.exception("PDL response JSON parse failed: %s", str(exc))
+        logger.warning("pdl_response_json_parse_failed reason=%s", str(exc))
         return {"data": []}
 
     _last_health_status = "ok"
     _last_health_error = ""
 
     if not isinstance(parsed, dict):
-        logger.error("PDL response is not a JSON object: %s", type(parsed).__name__)
+        logger.warning("pdl_response_invalid_shape type=%s", type(parsed).__name__)
         return {"data": []}
 
     return parsed
@@ -216,6 +226,10 @@ def fetch_candidates(query, size):
 
 def fetch_candidates_with_filters(filters: dict, size: int | None = None) -> dict:
     size = size or PDL_SEARCH_SIZE
+
+    if not PDL_ENABLED:
+        logger.info("PDL query skipped: feature disabled")
+        return {"data": []}
 
     if ENABLE_MOCK_PDL and not (PDL_API_KEY or "").strip():
         logger.info("PDL query replaced with mock candidates due to missing key")
@@ -319,6 +333,12 @@ def fetch_candidates_with_filters(filters: dict, size: int | None = None) -> dic
 def run_startup_connectivity_check() -> None:
     global _last_health_status, _last_health_error
 
+    if not PDL_ENABLED:
+        _last_health_status = "disabled"
+        _last_health_error = "PDL_ENABLED=false"
+        logger.info("Skipping PDL connectivity check because feature is disabled")
+        return
+
     if is_pdl_disabled():
         logger.info("Skipping PDL connectivity check because service is disabled")
         return
@@ -338,14 +358,14 @@ def run_startup_connectivity_check() -> None:
     try:
         response = requests.post(endpoint, headers=headers, json=payload, timeout=HTTP_TIMEOUT_SECONDS)
     except requests.RequestException as exc:
-        logger.warning("PDL connectivity check failed: %s", str(exc))
+        logger.warning("pdl_connectivity_check_failed reason=%s", str(exc))
         return
 
     logger.info("PDL connectivity check status=%s", response.status_code)
     if response.status_code != 200:
         _last_health_status = "degraded"
         _last_health_error = f"http_{response.status_code}"
-        logger.warning("PDL connectivity check failed with status=%s", response.status_code)
+        logger.warning("pdl_connectivity_check_failed status=%s", response.status_code)
 
 
 def pdl_health_snapshot() -> dict:
@@ -361,4 +381,5 @@ def pdl_health_snapshot() -> dict:
         "retry_at": retry_at,
         "last_checked_at": datetime.now(timezone.utc).isoformat(),
         "rate_limit_interval_seconds": PDL_MIN_REQUEST_INTERVAL_SECONDS,
+        "enabled": PDL_ENABLED,
     }

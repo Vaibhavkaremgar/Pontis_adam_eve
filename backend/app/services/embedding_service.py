@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import random
+from datetime import datetime, timedelta, timezone
 from typing import List
 from threading import Lock
 
@@ -12,8 +13,11 @@ from app.core.config import EMBEDDING_MODEL_NAME, VECTOR_SIZE
 from app.services.persistent_cache_service import get_json, set_json
 
 _model: SentenceTransformer | None = None
+_model_failed_until: datetime | None = None
+_model_failure_reason = ""
 _model_lock = Lock()
 logger = logging.getLogger(__name__)
+EMBEDDING_MODEL_RETRY_COOLDOWN_SECONDS = 1800
 _SAMPLE_EMBEDDING_TEXTS = [
     "Senior backend engineer with Python, FastAPI, PostgreSQL, and AWS experience.",
     "Machine learning engineer focused on recommendation systems and retrieval ranking.",
@@ -26,11 +30,21 @@ _SAMPLE_EMBEDDING_TEXTS = [
 def _get_model() -> SentenceTransformer:
     global _model
 
+    if _model_failed_until and datetime.now(timezone.utc) < _model_failed_until:
+        raise RuntimeError(_model_failure_reason or "embedding model unavailable")
+
     if _model is None:
         with _model_lock:
             if _model is None:
                 _model = SentenceTransformer(EMBEDDING_MODEL_NAME)
     return _model
+
+
+def _disable_model(reason: str) -> None:
+    global _model_failed_until, _model_failure_reason
+    _model_failed_until = datetime.now(timezone.utc) + timedelta(seconds=EMBEDDING_MODEL_RETRY_COOLDOWN_SECONDS)
+    _model_failure_reason = reason
+    logger.warning("embedding_model_disabled reason=%s retry_at=%s", reason, _model_failed_until.isoformat())
 
 
 def embed(text: str) -> List[float]:
@@ -46,7 +60,9 @@ def embed(text: str) -> List[float]:
         set_json("embeddings", cache_key, vector)
         return vector
     except Exception as exc:
-        logger.warning("Embedding model unavailable; using deterministic fallback vector", exc_info=exc)
+        if _model_failed_until is None or datetime.now(timezone.utc) >= _model_failed_until:
+            _disable_model(str(exc))
+        logger.warning("embedding_fallback_used reason=%s", str(exc))
         vector = _fallback_embedding(safe_text or " ")
         set_json("embeddings", cache_key, vector)
         return vector
@@ -73,6 +89,6 @@ def preload_sample_candidate_embeddings() -> int:
             embed(text)
             preloaded += 1
         except Exception as exc:
-            logger.warning("Failed preloading sample embedding", exc_info=exc)
+            logger.warning("embedding_preload_failed reason=%s", str(exc))
     logger.info("Preloaded sample candidate embeddings count=%s", preloaded)
     return preloaded

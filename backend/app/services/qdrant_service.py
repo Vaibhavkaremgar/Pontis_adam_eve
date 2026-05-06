@@ -102,7 +102,7 @@ def _get_client() -> QdrantClient | None:
         return _client
     except Exception as exc:
         _mark_client_unavailable(str(exc))
-        logger.warning("Qdrant unavailable; vector operations are running in no-op mode", exc_info=exc)
+        logger.warning("Qdrant unavailable; vector operations are running in no-op mode error=%s", str(exc))
         log_metric("error", source="qdrant", kind="connection_unavailable")
         return None
 
@@ -153,7 +153,6 @@ def _ensure_collection(*, client: QdrantClient, collection_name: str) -> bool:
             "qdrant_collection_initialization_failed collection=%s error=%s",
             collection_name,
             str(exc),
-            exc_info=exc,
         )
         return False
 
@@ -208,7 +207,6 @@ def _ensure_payload_index(
             field_name,
             schema.value,
             str(exc),
-            exc_info=exc,
         )
         return False
 
@@ -243,7 +241,7 @@ def ensure_qdrant_indexes() -> None:
             logger.warning("qdrant_index_initialization_failed")
     except Exception as exc:
         all_ok = False
-        logger.warning("qdrant_index_initialization_failed error=%s", str(exc), exc_info=exc)
+        logger.warning("qdrant_index_initialization_failed error=%s", str(exc))
     finally:
         logger.info("qdrant_initialization_complete status=%s", "ok" if all_ok else "degraded")
 
@@ -268,7 +266,7 @@ def delete_job_vectors(job_id: str) -> None:
         )
     except Exception as exc:
         _mark_client_unavailable(str(exc))
-        logger.warning("Failed to delete job vectors for jobId=%s", job_id, exc_info=exc)
+        logger.warning("Failed to delete job vectors for jobId=%s error=%s", job_id, str(exc))
 
 
 def upsert_job_chunks(job_id: str, vectors: list[list[float]], chunks: list[str]) -> None:
@@ -290,7 +288,7 @@ def upsert_job_chunks(job_id: str, vectors: list[list[float]], chunks: list[str]
             client.upsert(collection_name=JOB_COLLECTION_NAME, points=points, wait=True)
         except Exception as exc:
             _mark_client_unavailable(str(exc))
-            logger.warning("Failed to upsert job vectors for jobId=%s", job_id, exc_info=exc)
+            logger.warning("Failed to upsert job vectors for jobId=%s error=%s", job_id, str(exc))
 
 
 def delete_candidate_vectors(job_id: str) -> None:
@@ -305,7 +303,7 @@ def delete_candidate_vectors(job_id: str) -> None:
         )
     except Exception as exc:
         _mark_client_unavailable(str(exc))
-        logger.warning("Failed to delete candidate vectors for jobId=%s", job_id, exc_info=exc)
+        logger.warning("Failed to delete candidate vectors for jobId=%s error=%s", job_id, str(exc))
 
 
 def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[float]], chunks: list[str], payload: dict[str, Any]) -> None:
@@ -338,7 +336,6 @@ def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[f
                 "Failed to upsert candidate vectors for jobId=%s candidateId=%s",
                 job_id,
                 candidate_id,
-                exc_info=exc,
             )
 
 
@@ -367,7 +364,7 @@ def upsert_recruiter_preferences(
         client.upsert(collection_name=RECRUITER_PREFERENCES_COLLECTION_NAME, points=[point], wait=True)
     except Exception as exc:
         _mark_client_unavailable(str(exc))
-        logger.warning("Failed to upsert recruiter preferences for recruiterId=%s", recruiter_id, exc_info=exc)
+        logger.warning("Failed to upsert recruiter preferences for recruiterId=%s error=%s", recruiter_id, str(exc))
 
 
 def load_recruiter_preferences(recruiter_id: str) -> dict[str, Any] | None:
@@ -395,7 +392,7 @@ def load_recruiter_preferences(recruiter_id: str) -> dict[str, Any] | None:
             "payload": payload,
         }
     except Exception as exc:
-        logger.warning("Failed to load recruiter preferences for recruiterId=%s", recruiter_id, exc_info=exc)
+        logger.warning("Failed to load recruiter preferences for recruiterId=%s error=%s", recruiter_id, str(exc))
         return None
 
 
@@ -564,13 +561,13 @@ def search_candidate_chunks(
             log_metric("error", source="qdrant", kind="search_failed_fallback_path")
             _mark_search_error(str(exc))
             _mark_client_unavailable(str(exc))
-            logger.warning("Qdrant search failed (fallback path)", exc_info=exc)
+            logger.warning("Qdrant search failed (fallback path) error=%s", str(exc))
             return []
     except Exception as exc:
         log_metric("error", source="qdrant", kind="search_failed")
         _mark_search_error(str(exc))
         _mark_client_unavailable(str(exc))
-        logger.warning("Qdrant search failed", exc_info=exc)
+        logger.warning("Qdrant search failed error=%s", str(exc))
         return []
 
     if not results and query_filter is not None:
@@ -598,7 +595,7 @@ def search_candidate_chunks(
             log_metric("error", source="qdrant", kind="search_failed_without_filters")
             _mark_search_error(str(exc))
             _mark_client_unavailable(str(exc))
-            logger.warning("Qdrant search failed without metadata filters", exc_info=exc)
+            logger.warning("Qdrant search failed without metadata filters error=%s", str(exc))
             return []
 
     logger.debug("Qdrant search returned results_count=%s", len(results))

@@ -31,13 +31,14 @@ Production-ready backend for Next.js hiring flow:
 Required:
 - GROQ_API_KEY
 - GROQ_BASE_URL
-- GROQ_MODEL
+- GROQ_MODEL (defaults to `llama-3.3-70b-versatile`)
 - QDRANT_URL
 - QDRANT_API_KEY
 - DATABASE_URL
-- PDL_API_KEY
+- PDL_ENABLED=false by default; set PDL_API_KEY only when PDL is enabled
 - JWT_SECRET
 - REDIS_URL (recommended for multi-worker cache consistency)
+- HF_TOKEN (optional; enables HuggingFace-backed model loading when available)
 - Optional outreach/ATS keys: SENDGRID_API_KEY / POSTMARK_SERVER_TOKEN / MERGE_API_KEY / MERGE_ACCOUNT_TOKEN
 - Slack integration: SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
 - AUTO_RECREATE_SCHEMA=false (recommended; destructive runtime schema changes are disabled)

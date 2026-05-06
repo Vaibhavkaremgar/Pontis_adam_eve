@@ -14,7 +14,8 @@ def _required_env(name: str) -> str:
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
@@ -25,6 +26,7 @@ RECRUITER_PREFERENCES_COLLECTION_NAME = os.getenv("RECRUITER_PREFERENCES_COLLECT
 PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
+PDL_ENABLED = os.getenv("PDL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 PROXYCURL_URL = os.getenv("PROXYCURL_URL", "https://api.ninjapear.com/v1/person/search")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
 EMBEDDING_VERSION = os.getenv("EMBEDDING_VERSION", "v2_structured").strip()
@@ -78,6 +80,7 @@ ENABLE_REPLY_DETECTION = os.getenv("ENABLE_REPLY_DETECTION", "true").strip().low
 ENABLE_REPLY_POLLING = os.getenv("ENABLE_REPLY_POLLING", "true").strip().lower() in {"1", "true", "yes", "on"}
 REPLY_POLL_INTERVAL_MINUTES = int(os.getenv("REPLY_POLL_INTERVAL_MINUTES", "3"))
 REPLY_INBOX_PROVIDER = os.getenv("REPLY_INBOX_PROVIDER", "imap").strip().lower()
+ENABLE_PLAYWRIGHT_JOB_PARSER = os.getenv("ENABLE_PLAYWRIGHT_JOB_PARSER", "false").strip().lower() in {"1", "true", "yes", "on"}
 REPLY_IMAP_HOST = os.getenv("REPLY_IMAP_HOST", "").strip()
 REPLY_IMAP_PORT = int(os.getenv("REPLY_IMAP_PORT", "993"))
 REPLY_IMAP_USERNAME = os.getenv("REPLY_IMAP_USERNAME", "").strip()
@@ -127,7 +130,7 @@ def missing_secret_warnings() -> list[str]:
     warnings: list[str] = []
     if not GROQ_API_KEY:
         warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
-    if not PDL_API_KEY:
+    if PDL_ENABLED and not PDL_API_KEY:
         warnings.append("PDL_API_KEY is missing; candidate enrichment will skip PDL.")
     if not REDIS_URL:
         warnings.append("REDIS_URL is missing; cache will use in-memory fallback.")
@@ -143,11 +146,4 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("BOOKING_PROVIDER is calendly but BOOKING_PROVIDER_URL is missing.")
     if INTERVIEW_PROVIDER == "zoom" and not INTERVIEW_PROVIDER_URL:
         warnings.append("INTERVIEW_PROVIDER is zoom but INTERVIEW_PROVIDER_URL is missing.")
-    if ENABLE_REPLY_POLLING and REPLY_INBOX_PROVIDER == "imap":
-        if not REPLY_IMAP_HOST:
-            warnings.append("REPLY_IMAP_HOST is missing; reply polling will stay disabled.")
-        if not REPLY_IMAP_USERNAME:
-            warnings.append("REPLY_IMAP_USERNAME is missing; reply polling will stay disabled.")
-        if not REPLY_IMAP_PASSWORD:
-            warnings.append("REPLY_IMAP_PASSWORD is missing; reply polling will stay disabled.")
     return warnings

@@ -116,18 +116,18 @@ def on_startup() -> None:
     try:
         ensure_qdrant_indexes()
     except Exception as exc:
-        logger.warning("qdrant_index_initialization_failed error=%s", str(exc), exc_info=exc)
+        logger.warning("qdrant_index_initialization_failed error=%s", str(exc))
 
     for warning in missing_secret_warnings():
         logger.warning("configuration_warning %s", warning)
     try:
         run_startup_connectivity_check()
     except Exception as exc:
-        logger.warning("pdl_startup_connectivity_check_failed error=%s", str(exc), exc_info=exc)
+        logger.warning("pdl_startup_connectivity_check_failed error=%s", str(exc))
     try:
         warm_candidate_retrieval()
     except Exception as exc:
-        logger.warning("candidate_warmup_failed error=%s", str(exc), exc_info=exc)
+        logger.warning("candidate_warmup_failed error=%s", str(exc))
     finally:
         start_scheduler()
         logger.info("startup_scheduler_started")

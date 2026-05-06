@@ -42,6 +42,14 @@ def create_interview_session(*, db: Session, job_id: str, candidate_id: str) -> 
     if not job:
         raise APIError("Job not found", status_code=404)
 
+    session_repo = InterviewSessionRepository(db)
+    existing_session = session_repo.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+    if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
+        profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+        booking_link = get_booking_link(profile, job) if profile else _legacy_booking_url(existing_session.token)
+        logger.info("interview_session_duplicate_skipped job_id=%s candidate_id=%s token=%s", job_id, candidate_id, existing_session.token)
+        return _session_payload(row=existing_session, booking_link=booking_link)
+
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
         raise APIError("Candidate not found", status_code=404)
@@ -52,7 +60,7 @@ def create_interview_session(*, db: Session, job_id: str, candidate_id: str) -> 
 
     token = str(uuid4())
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=INTERVIEW_SESSION_TTL_MINUTES)
-    row = InterviewSessionRepository(db).create(
+    row = session_repo.create(
         job_id=job_id,
         candidate_id=candidate_id,
         email=email,

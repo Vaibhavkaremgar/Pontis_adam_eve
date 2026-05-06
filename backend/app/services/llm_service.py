@@ -4,13 +4,18 @@ import json
 import logging
 import re
 from functools import lru_cache
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from openai import OpenAI
 
 from app.core.config import GROQ_API_KEY, GROQ_BASE_URL, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
+_llm_disabled_until: datetime | None = None
+_llm_disable_reason = ""
+_llm_last_error = ""
+LLM_DISABLE_COOLDOWN_SECONDS = 300
 
 
 @lru_cache(maxsize=1)
@@ -18,6 +23,42 @@ def _client() -> OpenAI:
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY missing")
     return OpenAI(base_url=GROQ_BASE_URL, api_key=GROQ_API_KEY)
+
+
+def _llm_is_disabled() -> bool:
+    global _llm_disabled_until, _llm_disable_reason
+
+    if _llm_disabled_until is None:
+        return False
+    if datetime.now(timezone.utc) >= _llm_disabled_until:
+        _llm_disabled_until = None
+        _llm_disable_reason = ""
+        logger.info("llm_reenabled_after_cooldown")
+        return False
+    return True
+
+
+def _disable_llm(reason: str, *, cooldown_seconds: int = LLM_DISABLE_COOLDOWN_SECONDS) -> None:
+    global _llm_disabled_until, _llm_disable_reason, _llm_last_error
+
+    _llm_disabled_until = datetime.now(timezone.utc) + timedelta(seconds=max(1, cooldown_seconds))
+    _llm_disable_reason = reason
+    _llm_last_error = reason
+    logger.warning("llm_disabled reason=%s retry_at=%s", reason, _llm_disabled_until.isoformat())
+
+
+def _local_fallback(prompt: str, *, expect_json: bool) -> Any:
+    if expect_json:
+        return {}
+
+    prompt_text = (prompt or "").strip()
+    if not prompt_text:
+        return ""
+    lines = [line.strip("- ").strip() for line in prompt_text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    snippet = " ".join(lines[:2])[:220].strip()
+    return snippet or "Local fallback response."
 
 
 def _extract_json_payload(text: str) -> dict | list | None:
@@ -47,7 +88,17 @@ def _extract_json_payload(text: str) -> dict | list | None:
 
 
 def generate(prompt: str, expect_json: bool = False):
-    client = _client()
+    if _llm_is_disabled() or not GROQ_API_KEY:
+        if not _llm_disable_reason:
+            _disable_llm("GROQ_API_KEY missing" if not GROQ_API_KEY else "llm_disabled")
+        return _local_fallback(prompt, expect_json=expect_json)
+
+    try:
+        client = _client()
+    except Exception as exc:
+        _disable_llm(str(exc))
+        logger.warning("llm_client_unavailable reason=%s", str(exc))
+        return _local_fallback(prompt, expect_json=expect_json)
 
     def _run(instruction: str) -> str:
         response = client.chat.completions.create(
@@ -57,27 +108,40 @@ def generate(prompt: str, expect_json: bool = False):
         )
         return (response.choices[0].message.content or "").strip()
 
-    output = _run(prompt)
-    if not expect_json:
-        return output
+    try:
+        output = _run(prompt)
+        if not expect_json:
+            return output
 
-    parsed = _extract_json_payload(output)
-    if parsed is not None:
-        return parsed
+        parsed = _extract_json_payload(output)
+        if parsed is not None:
+            return parsed
 
-    retry_output = _run("Return ONLY valid JSON:\n" + prompt)
-    parsed = _extract_json_payload(retry_output)
-    if parsed is not None:
-        return parsed
-    return retry_output
+        retry_output = _run("Return ONLY valid JSON:\n" + prompt)
+        parsed = _extract_json_payload(retry_output)
+        if parsed is not None:
+            return parsed
+        return _local_fallback(prompt, expect_json=True)
+    except Exception as exc:
+        _disable_llm(str(exc))
+        logger.warning("llm_generation_failed model=%s reason=%s", GROQ_MODEL, str(exc))
+        return _local_fallback(prompt, expect_json=expect_json)
 
 
 def llm_health() -> dict:
     try:
-        generate("ping")
-        return {"status": "ok", "checked_at": datetime.now(timezone.utc).isoformat()}
+        status = "disabled" if _llm_is_disabled() or not GROQ_API_KEY else "ok"
+        if status == "ok":
+            generate("ping")
+        return {
+            "status": status,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "model": GROQ_MODEL,
+            "retry_at": _llm_disabled_until.isoformat() if _llm_disabled_until else None,
+            "last_error": _llm_last_error,
+        }
     except Exception as exc:
-        logger.warning("llm_health_check_failed error=%s", str(exc), exc_info=exc)
+        logger.warning("llm_health_check_failed error=%s", str(exc))
         return {
             "status": "error",
             "error": str(exc),

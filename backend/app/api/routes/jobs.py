@@ -48,8 +48,10 @@ def parse_job_posting(
             data.location,
         )
         return success_response(data.model_dump())
+    except APIError:
+        raise
     except Exception as exc:
-        logger.error("job_parse_failed url=%s error=%s", raw_url, str(exc), exc_info=exc)
+        logger.error("job_parse_failed url=%s error=%s", raw_url, str(exc))
         raise APIError("Failed to parse the URL", status_code=400)
 
 

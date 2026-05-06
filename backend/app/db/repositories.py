@@ -439,6 +439,18 @@ class InterviewSessionRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def get_by_job_and_candidate(self, *, job_id: str, candidate_id: str) -> InterviewSessionEntity | None:
+        normalized_job_id = (job_id or "").strip()
+        normalized_candidate_id = (candidate_id or "").strip()
+        if not normalized_job_id or not normalized_candidate_id:
+            return None
+        return self.db.scalar(
+            select(InterviewSessionEntity).where(
+                InterviewSessionEntity.job_id == normalized_job_id,
+                InterviewSessionEntity.candidate_id == normalized_candidate_id,
+            ).order_by(InterviewSessionEntity.expires_at.desc())
+        )
+
     def create(
         self,
         *,
@@ -449,6 +461,15 @@ class InterviewSessionRepository:
         expires_at: datetime,
         status: str = "pending",
     ) -> InterviewSessionEntity:
+        existing_session = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+        if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
+            existing_session.email = email
+            existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
+            existing_session.token = existing_session.token or token
+            existing_session.expires_at = expires_at if not existing_session.expires_at or existing_session.expires_at < expires_at else existing_session.expires_at
+            self.db.flush()
+            return existing_session
+
         existing = self.get_by_token(token)
         if existing:
             existing.job_id = job_id
@@ -478,6 +499,9 @@ class InterviewSessionRepository:
             existing = self.get_by_token(token)
             if existing:
                 return existing
+            existing_session = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+            if existing_session:
+                return existing_session
             raise
 
     def get_by_token(self, token: str) -> InterviewSessionEntity | None:
@@ -1222,9 +1246,17 @@ class CandidateSelectionSessionRepository:
             selection_analysis={},
             final_candidate_snapshot=[],
         )
-        self.db.add(row)
-        self.db.flush()
-        return row
+        try:
+            self.db.add(row)
+            self.db.flush()
+            return row
+        except IntegrityError:
+            existing = self.get_by_job(job_id)
+            if existing:
+                logger.info("candidate_selection_duplicate_skipped job_id=%s", job_id)
+                self.db.rollback()
+                return existing
+            raise
 
     def get_or_create(
         self,

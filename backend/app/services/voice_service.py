@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -211,7 +212,7 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
         return payload
     except Exception as exc:
         log_metric("error", source="voice_structured_extraction", kind="request_failed")
-        logger.warning("voice_extraction_failed reason=request_failed", exc_info=exc)
+        logger.warning("voice_extraction_failed reason=request_failed error=%s", str(exc))
         return None
 
 
@@ -327,6 +328,10 @@ def _sanitize_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _transcript_fingerprint(transcript: str) -> str:
+    return hashlib.sha256((transcript or "").strip().encode("utf-8")).hexdigest()
+
+
 def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], transcript: str = "") -> dict:
     jobs = JobRepository(db)
     companies = CompanyRepository(db)
@@ -346,6 +351,32 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         raise APIError("voiceNotes must include at least one non-empty transcript", status_code=400)
 
     logger.info("voice_refine_start job_id=%s transcript_length=%s", job_id, len(raw_text))
+
+    transcript_hash = _transcript_fingerprint(raw_text)
+    structured_data = getattr(job, "structured_data", None)
+    if isinstance(structured_data, dict):
+        voice_extraction = structured_data.get("voiceExtraction")
+        if isinstance(voice_extraction, dict) and voice_extraction.get("transcriptHash") == transcript_hash:
+            logger.info("voice_refine_duplicate_skipped job_id=%s transcript_hash=%s", job_id, transcript_hash[:12])
+            return {
+                "refined": True,
+                "duplicate": True,
+                "job": {
+                    "title": job.title,
+                    "description": job.description,
+                    "location": job.location,
+                    "compensation": job.compensation,
+                    "skills_required": job.skills_required or [],
+                    "responsibilities": job.responsibilities or [],
+                    "experience_level": job.experience_level or "",
+                },
+                "extraction": {
+                    "success": True,
+                    "usedFallback": False,
+                    "confidence": float(voice_extraction.get("confidence") or 0.0),
+                    "fields": list(voice_extraction.get("fields") or []),
+                },
+            }
 
     extraction_raw = _extract_structured_hiring_data(transcript=raw_text)
     used_fallback = extraction_raw is None
@@ -451,7 +482,9 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
                 "confidence": confidence,
                 "success": True,
                 "transcript": raw_text,
+                "transcriptHash": transcript_hash,
                 "fallback": fallback_raw,
+                "fields": extracted_fields if not used_fallback else fallback_fields,
             },
             "voiceTranscript": raw_text,
         },
@@ -533,7 +566,7 @@ def _refine_description(*, description: str, voice_notes: list[str]) -> str:
         if isinstance(refined, str) and refined.strip():
             return refined.strip()
     except Exception as exc:
-        logger.warning("LLM refinement failed; using local refinement fallback", exc_info=exc)
+        logger.warning("LLM refinement failed; using local refinement fallback error=%s", str(exc))
 
     return _fallback_refinement(description, voice_notes)
 

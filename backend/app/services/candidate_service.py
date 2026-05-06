@@ -143,7 +143,7 @@ def _safe_commit(db: Session, *, context: str, job_id: str) -> bool:
         return True
     except Exception as exc:
         db.rollback()
-        logger.warning("%s_commit_failed job_id=%s error=%s", context, job_id, str(exc), exc_info=exc)
+        logger.warning("%s_commit_failed job_id=%s error=%s", context, job_id, str(exc))
         log_metric(
             "db_commit_failed",
             context=context,
@@ -1351,7 +1351,7 @@ def _elite_reasoning(job, candidate: CandidateResult) -> tuple[str, float]:
         bonus = (score / 100.0) * 0.10
         return reason or "Elite review completed.", bonus
     except Exception as exc:
-        logger.warning("Elite reasoning failed; falling back to heuristic", exc_info=exc)
+        logger.warning("Elite reasoning failed; falling back to heuristic error=%s", str(exc))
         return "Elite reasoning unavailable; fallback scoring used.", 0.0
 
 
@@ -2457,7 +2457,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             run_metrics_by_candidate_id=local_run_metrics,
         )
     except Exception as exc:
-        logger.exception("local_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
+        logger.warning("local_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
         log_metric(
             "candidate_retrieval_error",
             job_id=job.id,
@@ -2720,7 +2720,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             run_metrics_by_candidate_id=pdl_run_metrics,
         )
     except Exception as exc:
-        logger.exception("pdl_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
+        logger.warning("pdl_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
         log_metric(
             "candidate_retrieval_error",
             job_id=job.id,
@@ -3009,7 +3009,6 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
                 job_id,
                 candidate_id,
                 str(exc),
-                exc_info=exc,
             )
 
     _safe_commit(db, context="candidate_feedback_commit", job_id=job_id)

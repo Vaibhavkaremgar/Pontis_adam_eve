@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 import logging
 import re
+from functools import lru_cache
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from app.core.config import HTTP_TIMEOUT_SECONDS, GROQ_API_KEY
+from app.core.config import ENABLE_PLAYWRIGHT_JOB_PARSER, HTTP_TIMEOUT_SECONDS, GROQ_API_KEY
 from app.services.llm_service import generate
+from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,30 @@ def _slug_title_from_url(url: str) -> str:
     slug = parsed.path.strip("/").split("/")[-1] if parsed.path.strip("/") else ""
     slug = slug.replace("-", " ").replace("_", " ").strip()
     return slug.title() if slug else ""
+
+
+def _source_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    return (parsed.netloc or "unknown").lower()
+
+
+@lru_cache(maxsize=1)
+def _http_session() -> requests.Session:
+    session = requests.Session()
+    retries = Retry(
+        total=2,
+        connect=2,
+        read=1,
+        status=2,
+        backoff_factor=0.5,
+        status_forcelist=(403, 429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
 
 
 def _best_meta(meta: dict[str, str], *keys: str) -> str:
@@ -351,15 +379,39 @@ def parse_job_posting_url(*, url: str) -> dict[str, str]:
     if not raw_url:
         raise ValueError("url is required")
 
-    response = requests.get(
-        raw_url,
-        timeout=HTTP_TIMEOUT_SECONDS,
-        headers={
-            "User-Agent": "Mozilla/5.0 (compatible; PontisBot/1.0; +https://pontis.one)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-    )
-    response.raise_for_status()
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1",
+        "Referer": raw_url,
+    }
+
+    try:
+        response = _http_session().get(raw_url, timeout=HTTP_TIMEOUT_SECONDS, headers=headers)
+    except requests.RequestException as exc:
+        source = _source_from_url(raw_url)
+        logger.warning("job_parse_http_failed source=%s error=%s", source, str(exc))
+        raise APIError(f"job_parse_failed source={source} reason=request_failed", status_code=400) from None
+
+    if response.status_code >= 400:
+        source = _source_from_url(raw_url)
+        if response.status_code == 403:
+            logger.warning("job_parse_blocked source=%s status=%s", source, response.status_code)
+        else:
+            logger.warning("job_parse_http_status source=%s status=%s", source, response.status_code)
+        if ENABLE_PLAYWRIGHT_JOB_PARSER:
+            logger.info("job_parse_playwright_enabled source=%s status=%s", source, response.status_code)
+        raise APIError(
+            f"job_parse_failed source={source} status={response.status_code} reason=http_error",
+            status_code=400,
+        )
 
     parser = _JobPageParser()
     parser.feed(response.text)
@@ -386,7 +438,7 @@ def parse_job_posting_url(*, url: str) -> dict[str, str]:
                     result["description"] = hints["description"] or parser.get_text()[:1200]
                 return result
         except Exception as exc:
-            logger.warning("job_parse_llm_failed url=%s error=%s", raw_url, str(exc), exc_info=exc)
+            logger.warning("job_parse_llm_failed url=%s error=%s", raw_url, str(exc))
 
     logger.info("job_parse_fallback_used url=%s", raw_url)
     return _fallback_parse(raw_url, parser)

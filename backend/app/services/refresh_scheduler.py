@@ -98,7 +98,7 @@ def _run_candidate_refresh_cycle() -> None:
                         _last_cycle_jobs_refreshed += 1
                     logger.info("candidate_refresh job_id=%s refreshed=%s", job.id, refreshed)
                 except Exception as exc:
-                    logger.warning("candidate_refresh_failed job_id=%s error=%s", job.id, str(exc), exc_info=exc)
+                    logger.warning("candidate_refresh_failed job_id=%s error=%s", job.id, str(exc))
                     db.rollback()
     finally:
         logger.info("refresh_completed")
@@ -120,7 +120,7 @@ def _run_candidate_flywheel_cycle() -> None:
             result.get("skipped", 0),
         )
     except Exception as exc:
-        logger.warning("candidate_flywheel_cycle_failed error=%s", str(exc), exc_info=exc)
+        logger.warning("candidate_flywheel_cycle_failed error=%s", str(exc))
 
 
 def _run_followup_cycle() -> None:
@@ -137,7 +137,7 @@ def _run_followup_cycle() -> None:
             result = run_followup_cycle(db)
             logger.info("followup_cycle_complete sent=%s skipped=%s", result.get("sent", 0), result.get("skipped", 0))
         except Exception as exc:
-            logger.error("followup_cycle_failed error=%s", str(exc), exc_info=exc)
+            logger.error("followup_cycle_failed error=%s", str(exc))
             db.rollback()
 
 
@@ -163,7 +163,7 @@ def _run_outreach_learning_cycle() -> None:
                 result.get("skipped", 0),
             )
         except Exception as exc:
-            logger.error("outreach_learning_cycle_failed error=%s", str(exc), exc_info=exc)
+            logger.error("outreach_learning_cycle_failed error=%s", str(exc))
             db.rollback()
 
 
@@ -184,7 +184,7 @@ def _run_ats_retry_cycle() -> None:
                 result.get("succeeded", 0), result.get("failed", 0), result.get("exhausted", 0),
             )
         except Exception as exc:
-            logger.error("ats_retry_cycle_failed error=%s", str(exc), exc_info=exc)
+            logger.error("ats_retry_cycle_failed error=%s", str(exc))
             db.rollback()
 
 
@@ -209,7 +209,7 @@ def _run_reply_poll_cycle() -> None:
                 result.get("failed", 0),
             )
     except Exception as exc:
-        logger.error("reply_poll_cycle_failed error=%s", str(exc), exc_info=exc)
+        logger.error("reply_poll_cycle_failed error=%s", str(exc))
 
 
 def _run_loop() -> None:
@@ -224,18 +224,18 @@ def _run_loop() -> None:
         try:
             _run_candidate_refresh_cycle()
         except Exception as exc:
-            logger.warning("candidate_refresh_cycle_exception error=%s", str(exc), exc_info=exc)
+            logger.warning("candidate_refresh_cycle_exception error=%s", str(exc))
 
         try:
             _run_candidate_flywheel_cycle()
         except Exception as exc:
-            logger.warning("candidate_flywheel_cycle_exception error=%s", str(exc), exc_info=exc)
+            logger.warning("candidate_flywheel_cycle_exception error=%s", str(exc))
 
         if ENABLE_FOLLOWUPS:
             try:
                 _run_followup_cycle()
             except Exception as exc:
-                logger.warning("followup_cycle_exception error=%s", str(exc), exc_info=exc)
+                logger.warning("followup_cycle_exception error=%s", str(exc))
 
         try:
             last_learning = _last_outreach_learning_cycle_at
@@ -243,7 +243,7 @@ def _run_loop() -> None:
             if not last_learning or (_utcnow() - last_learning) >= learning_interval:
                 _run_outreach_learning_cycle()
         except Exception as exc:
-            logger.warning("outreach_learning_cycle_exception error=%s", str(exc), exc_info=exc)
+            logger.warning("outreach_learning_cycle_exception error=%s", str(exc))
 
         if ENABLE_REPLY_POLLING:
             try:
@@ -252,12 +252,12 @@ def _run_loop() -> None:
                 if not last_poll or (_utcnow() - last_poll) >= poll_interval:
                     _run_reply_poll_cycle()
             except Exception as exc:
-                logger.warning("reply_poll_cycle_exception error=%s", str(exc), exc_info=exc)
+                logger.warning("reply_poll_cycle_exception error=%s", str(exc))
 
         try:
             _run_ats_retry_cycle()
         except Exception as exc:
-            logger.warning("ats_retry_cycle_exception error=%s", str(exc), exc_info=exc)
+            logger.warning("ats_retry_cycle_exception error=%s", str(exc))
 
         logger.info("scheduler_cycle_completed at=%s", _utcnow().isoformat())
         _scheduler_stop.wait(30)
