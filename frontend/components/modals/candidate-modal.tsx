@@ -260,6 +260,9 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   };
 
   const renderExplanation = (candidate: Candidate) => {
+    if (!candidate.explanation) {
+      return null;
+    }
     const signals = getSignals(candidate);
     return (
       <div className="space-y-2">
