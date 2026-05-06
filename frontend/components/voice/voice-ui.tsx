@@ -28,6 +28,8 @@ type VoiceTurn = {
   text: string;
 };
 
+type TranscriptRole = VoiceTurn["role"];
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function normalize(value: string) {
@@ -54,6 +56,34 @@ function buildFullTranscript(turns: VoiceTurn[]): string {
   return turns
     .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${t.text}`)
     .join("\n");
+}
+
+function mergeTranscriptFragments(previous: string, incoming: string): string {
+  const prev = normalize(previous);
+  const next = normalize(incoming);
+
+  if (!prev) return next;
+  if (!next) return prev;
+  if (next === prev) return next;
+  if (next.startsWith(prev)) return next;
+  if (prev.startsWith(next)) return prev;
+  return `${prev} ${next}`.replace(/\s+/g, " ").trim();
+}
+
+function splitCompleteSentences(text: string): { sentences: string[]; remainder: string } {
+  const normalized = normalize(text);
+  if (!normalized) {
+    return { sentences: [], remainder: "" };
+  }
+
+  const matches = normalized.match(/[^.!?]+[.!?]+(?:["')\]]+)?/g) || [];
+  const consumed = matches.join("").length;
+  const remainder = normalize(normalized.slice(consumed));
+
+  return {
+    sentences: matches.map(normalize).filter(Boolean),
+    remainder,
+  };
 }
 
 function extractTranscriptEvent(message: unknown): { role: "assistant" | "user"; text: string; isFinal: boolean } | null {
@@ -154,12 +184,89 @@ export function VoiceUi() {
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
+  const transcriptBufferRef = useRef<Record<TranscriptRole, string>>({ assistant: "", user: "" });
+  const transcriptFlushTimersRef = useRef<Record<TranscriptRole, ReturnType<typeof setTimeout> | null>>({
+    assistant: null,
+    user: null,
+  });
 
   // ── scroll chat to bottom on new messages ──────────────────────────────────
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
   }, [chatMessages]);
+
+  const clearTranscriptFlushTimer = useCallback((role: TranscriptRole) => {
+    const timer = transcriptFlushTimersRef.current[role];
+    if (timer) {
+      clearTimeout(timer);
+      transcriptFlushTimersRef.current[role] = null;
+    }
+  }, []);
+
+  const commitTranscriptEntries = useCallback((role: TranscriptRole, entries: string[], isFinal: boolean) => {
+    if (!entries.length) return;
+
+    setChatMessages((prev) => {
+      const next = [...prev];
+      let startIndex = 0;
+      const last = next[next.length - 1];
+
+      if (last?.role === role && !last.isFinal) {
+        next[next.length - 1] = { role, text: entries[0], isFinal };
+        startIndex = 1;
+      }
+
+      for (let index = startIndex; index < entries.length; index += 1) {
+        next.push({ role, text: entries[index], isFinal });
+      }
+
+      return next;
+    });
+  }, []);
+
+  const schedulePartialFlush = useCallback((role: TranscriptRole) => {
+    clearTranscriptFlushTimer(role);
+    transcriptFlushTimersRef.current[role] = setTimeout(() => {
+      const buffered = normalize(transcriptBufferRef.current[role]);
+      if (!buffered) return;
+      commitTranscriptEntries(role, [buffered], false);
+    }, 700);
+  }, [clearTranscriptFlushTimer, commitTranscriptEntries]);
+
+  const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
+    const role = event.role;
+    const merged = mergeTranscriptFragments(transcriptBufferRef.current[role], event.text);
+    transcriptBufferRef.current[role] = merged;
+
+    if (event.isFinal) {
+      clearTranscriptFlushTimer(role);
+      const { sentences, remainder } = splitCompleteSentences(merged);
+      const finalEntries = sentences.length > 0 ? sentences : (merged ? [merged] : []);
+      if (finalEntries.length) {
+        commitTranscriptEntries(role, finalEntries, true);
+      }
+      transcriptBufferRef.current[role] = "";
+      if (remainder) {
+        transcriptBufferRef.current[role] = remainder;
+        schedulePartialFlush(role);
+      }
+      return;
+    }
+
+    const { sentences, remainder } = splitCompleteSentences(merged);
+    if (sentences.length > 0) {
+      clearTranscriptFlushTimer(role);
+      commitTranscriptEntries(role, sentences, true);
+      transcriptBufferRef.current[role] = remainder;
+      if (remainder) {
+        schedulePartialFlush(role);
+      }
+      return;
+    }
+
+    schedulePartialFlush(role);
+  }, [clearTranscriptFlushTimer, commitTranscriptEntries, schedulePartialFlush]);
 
   // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
   const runPipeline = useCallback(async (turns: VoiceTurn[]) => {
@@ -264,27 +371,10 @@ export function VoiceUi() {
       const event = extractTranscriptEvent(message);
       if (!event) return;
 
-      if (event.isFinal) {
-        // Append final turn to structured log
-        turnsRef.current = [...turnsRef.current, { role: event.role, text: event.text }];
+      processTranscriptEvent(event);
 
-        // Update chat UI — replace last partial bubble of same role or append
-        setChatMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === event.role && !last.isFinal) {
-            return [...prev.slice(0, -1), { role: event.role, text: event.text, isFinal: true }];
-          }
-          return [...prev, { role: event.role, text: event.text, isFinal: true }];
-        });
-      } else {
-        // Live partial — update last bubble of same role in-place
-        setChatMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.role === event.role && !last.isFinal) {
-            return [...prev.slice(0, -1), { role: event.role, text: event.text, isFinal: false }];
-          }
-          return [...prev, { role: event.role, text: event.text, isFinal: false }];
-        });
+      if (event.isFinal) {
+        turnsRef.current = [...turnsRef.current, { role: event.role, text: event.text }];
       }
     });
 
@@ -329,6 +419,8 @@ export function VoiceUi() {
 
       setCallStatus("completed");
       terminalStateRef.current = "done";
+      clearTranscriptFlushTimer("assistant");
+      clearTranscriptFlushTimer("user");
       // Auto-trigger pipeline with everything captured so far
       void runPipeline(turnsRef.current);
     });
@@ -472,8 +564,12 @@ export function VoiceUi() {
 
   // ── cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
-    return () => { vapiRef.current?.stop().catch(() => undefined); };
-  }, []);
+    return () => {
+      vapiRef.current?.stop().catch(() => undefined);
+      clearTranscriptFlushTimer("assistant");
+      clearTranscriptFlushTimer("user");
+    };
+  }, [clearTranscriptFlushTimer]);
 
   // ── derived display state ──────────────────────────────────────────────────
   const isIdle = callStatus === "idle";

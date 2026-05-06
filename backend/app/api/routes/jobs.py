@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
+import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -11,8 +11,10 @@ from app.db.session import get_db
 from app.schemas.job import JobModeData, JobModeRequest, JobParseData, JobParseRequest
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
+from app.services.job_parser_service import parse_job_posting_url
 
 router = APIRouter(tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 
 def _strategy_for_mode(mode: str) -> str:
@@ -28,33 +30,27 @@ def parse_job_posting(
     if not raw_url:
         raise APIError("url is required", status_code=400)
 
-    parsed = urlparse(raw_url)
-    host = parsed.netloc or "job posting"
-    slug = parsed.path.strip("/").split("/")[-1] if parsed.path.strip("/") else ""
-    title = slug.replace("-", " ").replace("_", " ").strip().title() if slug else f"{host} role"
-    description = f"Imported from {host}. Replace this stub with real job parsing once the source parser is connected."
-    location = "Remote"
-    remote_policy = "remote"
-    if "hybrid" in raw_url.lower():
-        remote_policy = "hybrid"
-        location = "Hybrid"
-    elif "onsite" in raw_url.lower() or "on-site" in raw_url.lower():
-        remote_policy = "onsite"
-        location = "On-site"
-    compensation = ""
-    if any(token in raw_url.lower() for token in ("salary", "comp", "pay")):
-        compensation = "$120k - $180k"
-
-    data = JobParseData(
-        title=title,
-        description=description,
-        location=location,
-        compensation=compensation,
-        workAuthorization="required",
-        remotePolicy=remote_policy,
-        experienceRequired="3+ years",
-    )
-    return success_response(data.model_dump())
+    try:
+        parsed_job = parse_job_posting_url(url=raw_url)
+        data = JobParseData(
+            title=parsed_job.get("title", ""),
+            description=parsed_job.get("description", ""),
+            location=parsed_job.get("location", ""),
+            compensation=parsed_job.get("compensation", ""),
+            workAuthorization=parsed_job.get("workAuthorization", "required"),
+            remotePolicy=parsed_job.get("remotePolicy", "hybrid"),
+            experienceRequired=parsed_job.get("experienceRequired", ""),
+        )
+        logger.info(
+            "job_parse_success url=%s title=%s location=%s",
+            raw_url,
+            data.title,
+            data.location,
+        )
+        return success_response(data.model_dump())
+    except Exception as exc:
+        logger.error("job_parse_failed url=%s error=%s", raw_url, str(exc), exc_info=exc)
+        raise APIError("Failed to parse the URL", status_code=400)
 
 
 @router.post("/jobs/{job_id}/mode")
