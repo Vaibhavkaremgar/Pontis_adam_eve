@@ -110,6 +110,34 @@ function getRuntimeEnvSnapshot() {
   };
 }
 
+async function loadVapiConfig() {
+  const response = await fetch("/api/vapi/config", {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Unable to load Vapi config (${response.status})`);
+  }
+
+  const payload = (await response.json()) as {
+    success?: boolean;
+    data?: {
+      publicKey?: string;
+      assistantId?: string;
+      hasPublicKey?: boolean;
+      hasAssistantId?: boolean;
+    };
+    error?: string;
+  };
+
+  const publicKey = payload.data?.publicKey?.trim() || "";
+  const assistantId = payload.data?.assistantId?.trim() || "";
+  return { publicKey, assistantId };
+}
+
 // ─── component ────────────────────────────────────────────────────────────────
 
 export function VoiceUi() {
@@ -192,10 +220,9 @@ export function VoiceUi() {
   }, [jobId, router, setCandidates, setIsRefined, setVoiceNotes]);
 
   // ── Vapi instance (created once per session) ───────────────────────────────
-  const ensureVapi = useCallback(() => {
+  const ensureVapi = useCallback((publicKey: string) => {
     if (vapiRef.current) return vapiRef.current;
 
-    const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
     debugVoice("ensureVapi called", {
       hasPublicKey: Boolean(publicKey),
       publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
@@ -318,18 +345,41 @@ export function VoiceUi() {
       hasCompany: Boolean(company.name),
     });
     debugVoice("runtime snapshot", getRuntimeEnvSnapshot());
-    const assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
-    const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+    let assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
+    let publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
     debugVoice("env snapshot", {
       hasAssistantId: Boolean(assistantId),
       hasPublicKey: Boolean(publicKey),
       assistantIdPreview: assistantId ? `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}` : null,
       publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
     });
+
+    if (!assistantId || !publicKey) {
+      try {
+        const runtimeConfig = await loadVapiConfig();
+        assistantId = assistantId || runtimeConfig.assistantId;
+        publicKey = publicKey || runtimeConfig.publicKey;
+        debugVoice("runtime vapi config loaded", {
+          hasAssistantId: Boolean(assistantId),
+          hasPublicKey: Boolean(publicKey),
+          assistantIdPreview: assistantId ? `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}` : null,
+          publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
+        });
+      } catch (error) {
+        debugVoice("runtime vapi config failed", { error });
+      }
+    }
+
     if (!assistantId) {
       setCallStatus("error");
       setPipelineError("Voice assistant not configured. Add NEXT_PUBLIC_VAPI_ASSISTANT_ID.");
       debugVoice("start aborted", { reason: "missing assistantId" });
+      return;
+    }
+    if (!publicKey) {
+      setCallStatus("error");
+      setPipelineError("Voice public key not configured. Add NEXT_PUBLIC_VAPI_PUBLIC_KEY.");
+      debugVoice("start aborted", { reason: "missing publicKey" });
       return;
     }
 
@@ -371,7 +421,7 @@ export function VoiceUi() {
       : `Let's refine your job requirements. What's the most important thing you're looking for in this candidate?`;
 
     try {
-      const vapi = ensureVapi();
+      const vapi = ensureVapi(publicKey);
       setCallStatus("connecting");
       debugVoice("calling vapi.start", {
         assistantIdPreview: `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}`,
