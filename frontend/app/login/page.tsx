@@ -88,7 +88,7 @@ export default function LoginPage() {
         <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] text-xl font-semibold text-gray-900 shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
           <Image
             src="/images/adam.png"
-            alt="Maya avatar"
+            alt="Adam avatar"
             width={96}
             height={96}
             className="h-full w-full rounded-full object-cover"

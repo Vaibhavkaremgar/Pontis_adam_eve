@@ -16,7 +16,7 @@ export function ChatBubble({
   if (message.role === "assistant") {
     return (
       <div className={`flex items-start gap-2 animate-[fadeIn_220ms_ease-out] ${isInterim ? "opacity-70" : ""}`}>
-        <img src="/images/maya.png" alt="Maya" className="h-8 w-8 rounded-full object-cover" />
+        <img src="/images/adam.png" alt="Adam" className="h-8 w-8 rounded-full object-cover" />
         <div
           className={`max-w-[70%] rounded-xl px-4 py-2 text-sm shadow-sm ${
             isInterim

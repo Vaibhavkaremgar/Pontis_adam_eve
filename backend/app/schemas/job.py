@@ -70,7 +70,7 @@ class JobModeData(BaseModel):
 class VoiceRefineRequest(BaseModel):
     voiceNotes: list[str]
     jobId: str
-    transcript: str = ""  # full conversation string: "Maya: ...\nRecruiter: ..."
+    transcript: str = ""  # full conversation string: "Adam: ...\nRecruiter: ..."
 
 
 class VoiceRefineData(BaseModel):

@@ -6,7 +6,7 @@
  * POST /voice/refine
  *
  * How it fits in the pipeline:
- * Frontend sends the full structured conversation (both Maya and recruiter turns)
+ * Frontend sends the full structured conversation (both Adam and recruiter turns)
  * so backend has complete context for LLM extraction and job re-embedding.
  */
 import { API_BASE_URL } from "@/lib/config";
@@ -17,7 +17,7 @@ import type { ApiResponse } from "./types";
 type VoiceRefinePayload = {
   jobId: string;
   voiceNotes: string[];
-  transcript: string; // full "Maya: ...\nRecruiter: ..." conversation
+  transcript: string; // full "Adam: ...\nRecruiter: ..." conversation
 };
 
 type VoiceRefineData = {
