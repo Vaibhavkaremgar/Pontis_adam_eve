@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.core.config import GOOGLE_OAUTH_CLIENT_ID
-from app.core.config import AUTH_REQUIRE_OTP
+from app.core.config import AUTH_REQUIRE_OTP, ADMIN_EMAILS, OPS_EMAILS
 from app.core.security import create_access_token
 from app.db.repositories import OtpRepository, UserRepository
 from app.services.email_service import send_email
@@ -41,6 +41,15 @@ def _normalize_email(email: str) -> str:
     if not local or not domain or domain.startswith(".") or domain.endswith("."):
         return ""
     return normalized
+
+
+def _resolve_user_role(email: str) -> str:
+    normalized = _normalize_email(email)
+    if normalized in ADMIN_EMAILS:
+        return "admin"
+    if normalized in OPS_EMAILS:
+        return "internal_ops"
+    return "recruiter"
 
 
 def request_otp(*, db: Session, email: str) -> dict:
@@ -89,11 +98,11 @@ def verify_otp(*, db: Session, email: str, otp: str) -> LoginData:
     users = UserRepository(db)
     user = users.get_by_email(normalized_email)
     if not user:
-        user = users.create(normalized_email)
+        user = users.create(normalized_email, role=_resolve_user_role(normalized_email))
 
     db.commit()
 
-    token = create_access_token(user_id=user.id, email=user.email)
+    token = create_access_token(user_id=user.id, email=user.email, role=user.role)
     logger.info("otp_verified_success email=%s user_id=%s", normalized_email, user.id)
 
     return LoginData(
@@ -138,12 +147,12 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
     users = UserRepository(db)
     user = users.get_by_email(email)
     if not user:
-        user = users.create(email)
+        user = users.create(email, role=_resolve_user_role(email))
         db.commit()
     else:
         db.flush()
 
-    app_token = create_access_token(user_id=user.id, email=user.email)
+    app_token = create_access_token(user_id=user.id, email=user.email, role=user.role)
     return LoginData(
         user=UserProfile(
             id=user.id,

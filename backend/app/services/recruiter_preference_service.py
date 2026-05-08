@@ -28,6 +28,24 @@ _MIN_FEEDBACK_FOR_FULL_RECRUITER_WEIGHT = 5
 _EXPERIENCE_BUCKETS = ("0-2", "3-5", "6-9", "10+")
 
 
+def _infer_recruiter_archetype(*, top_skills: list[dict[str, Any]], top_roles: list[dict[str, Any]], average_experience: float | None) -> str:
+    signals = " ".join(
+        [
+            " ".join(str(item.get("skill") or "") for item in top_skills[:3]),
+            " ".join(str(item.get("role") or "") for item in top_roles[:3]),
+        ]
+    ).lower()
+    if any(token in signals for token in ("backend", "platform", "infra", "distributed")):
+        return "systems_builder"
+    if any(token in signals for token in ("ml", "ai", "data", "search", "ranking")):
+        return "ai_hiring_specialist"
+    if any(token in signals for token in ("product", "design", "ux")):
+        return "product_generalist"
+    if average_experience is not None and average_experience >= 8:
+        return "senior_generalist"
+    return "generalist"
+
+
 def _text_value(candidate: Any, *keys: str) -> str:
     if candidate is None:
         return ""
@@ -167,6 +185,8 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
             "vector": [],
             "feedback_count": 0,
             "signal_strength": 0.0,
+            "archetype": "generalist",
+            "cold_start": True,
         }
 
     repo = RecruiterPreferenceRepository(db)
@@ -231,6 +251,8 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
 
     feedback_count = CandidateFeedbackRepository(db).count_for_recruiter(recruiter_id)
     signal_strength = min(1.0, feedback_count / float(_MIN_FEEDBACK_FOR_FULL_RECRUITER_WEIGHT))
+    archetype = _infer_recruiter_archetype(top_skills=top_skills, top_roles=top_roles, average_experience=average_experience)
+    cold_start = feedback_count < 3
 
     return {
         "recruiter_id": recruiter_id,
@@ -245,6 +267,8 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
         "vector": vector,
         "feedback_count": feedback_count,
         "signal_strength": signal_strength,
+        "archetype": archetype,
+        "cold_start": cold_start,
     }
 
 

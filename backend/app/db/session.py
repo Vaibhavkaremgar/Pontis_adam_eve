@@ -6,7 +6,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import AUTO_RECREATE_SCHEMA, DATABASE_URL
+from app.core.config import AUTO_RECREATE_SCHEMA, DATABASE_URL, USE_INTERNAL_CANDIDATE_DB
 logger = logging.getLogger(__name__)
 
 if not DATABASE_URL:
@@ -18,6 +18,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 def init_db() -> None:
     _verify_database_connection()
+    _ensure_optional_schema_columns()
     _verify_migrated_schema()
 
 
@@ -48,6 +49,8 @@ def _verify_migrated_schema() -> None:
         inspector = inspect(conn)
         table_names = set(inspector.get_table_names())
         required_tables = {"users", "companies", "jobs", "candidate_profiles", "interviews"}
+        if USE_INTERNAL_CANDIDATE_DB:
+            required_tables.add("internal_candidate_resumes")
         missing_tables = sorted(required_tables - table_names)
         if missing_tables:
             raise RuntimeError(
@@ -172,6 +175,11 @@ def _ensure_optional_schema_columns() -> None:
                 )
             if "ats_job_id" not in job_columns:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN ats_job_id VARCHAR(128) NULL DEFAULT NULL"))
+
+        if "users" in table_names:
+            user_columns = {column["name"] for column in inspector.get_columns("users")}
+            if "role" not in user_columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'recruiter'"))
 
         if "candidate_feedback" in table_names:
             feedback_columns = {column["name"] for column in inspector.get_columns("candidate_feedback")}

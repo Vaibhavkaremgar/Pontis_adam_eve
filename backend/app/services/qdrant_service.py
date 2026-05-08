@@ -10,6 +10,7 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, P
 
 from app.core.config import (
     CANDIDATE_COLLECTION_NAME,
+    INTERNAL_CANDIDATE_COLLECTION_NAME,
     JOB_COLLECTION_NAME,
     QDRANT_API_KEY,
     QDRANT_URL,
@@ -37,6 +38,18 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
             "embeddingVersion": PayloadSchemaType.KEYWORD,
             "skillTokens": PayloadSchemaType.KEYWORD,
             "rolePattern": PayloadSchemaType.KEYWORD,
+        },
+    },
+    INTERNAL_CANDIDATE_COLLECTION_NAME: {
+        "vector_size": VECTOR_SIZE,
+        "distance": Distance.COSINE,
+        "indexes": {
+            "candidateId": PayloadSchemaType.KEYWORD,
+            "resumeFingerprint": PayloadSchemaType.KEYWORD,
+            "embeddingVersion": PayloadSchemaType.KEYWORD,
+            "skillTokens": PayloadSchemaType.KEYWORD,
+            "rolePattern": PayloadSchemaType.KEYWORD,
+            "sourceType": PayloadSchemaType.KEYWORD,
         },
     },
     RECRUITER_PREFERENCES_COLLECTION_NAME: {
@@ -89,10 +102,40 @@ def _client_is_available() -> bool:
 
 
 def _get_client() -> QdrantClient | None:
-    global _client, _client_disabled
+    global _client
 
     if not _client_is_available():
         return None
+    if _client is not None:
+        return _client
+
+    if not QDRANT_URL:
+        _mark_client_unavailable("QDRANT_URL missing")
+        return None
+
+    try:
+        _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY or None)
+        _client.get_collections()
+        return _client
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        logger.warning("Qdrant unavailable; vector operations are running in no-op mode error=%s", str(exc))
+        log_metric("error", source="qdrant", kind="connection_unavailable")
+        return None
+
+
+def close_qdrant_client() -> None:
+    global _client
+    if _client is None:
+        return
+    try:
+        close = getattr(_client, "close", None)
+        if callable(close):
+            close()
+    except Exception as exc:
+        logger.warning("qdrant_close_failed error=%s", str(exc))
+    finally:
+        _client = None
     if _client is not None:
         return _client
 
@@ -254,26 +297,73 @@ def ensure_all_collections() -> None:
         _ensure_collection(client=client, collection_name=collection_name)
 
 
-def delete_job_vectors(job_id: str) -> None:
+def ensure_collection_indexes(collection_name: str) -> None:
+    client = _get_client()
+    if not client:
+        return
+    spec = QDRANT_SCHEMA.get(collection_name)
+    if not spec:
+        return
+    if not _ensure_collection(client=client, collection_name=collection_name):
+        return
+    for field_name, schema in (spec.get("indexes") or {}).items():
+        _ensure_payload_index(client=client, collection_name=collection_name, field_name=field_name, schema=schema)
+
+
+def _upsert_points(
+    *,
+    collection_name: str,
+    points: list[PointStruct],
+    operation: str,
+    logger_fields: dict[str, Any] | None = None,
+) -> None:
+    client = _get_client()
+    if not client or not points:
+        return
+    ensure_collection(collection_name)
+    try:
+        client.upsert(collection_name=collection_name, points=points, wait=True)
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        logger.warning("%s_failed collection=%s error=%s", operation, collection_name, str(exc))
+        log_metric("error", source="qdrant", kind=f"{operation}_failed")
+    else:
+        if logger_fields:
+            logger.info("%s collection=%s %s", operation, collection_name, " ".join(f"{k}={v}" for k, v in logger_fields.items()))
+
+
+def _delete_by_filter(collection_name: str, *, field_name: str, value: str) -> None:
     client = _get_client()
     if not client:
         return
     try:
-        ensure_collection(JOB_COLLECTION_NAME)
+        ensure_collection(collection_name)
         client.delete(
-            collection_name=JOB_COLLECTION_NAME,
-            points_selector=Filter(must=[FieldCondition(key="jobId", match=MatchValue(value=job_id))]),
+            collection_name=collection_name,
+            points_selector=Filter(must=[FieldCondition(key=field_name, match=MatchValue(value=value))]),
         )
     except Exception as exc:
         _mark_client_unavailable(str(exc))
-        logger.warning("Failed to delete job vectors for jobId=%s error=%s", job_id, str(exc))
+        logger.warning("Failed to delete vectors collection=%s field=%s value=%s error=%s", collection_name, field_name, value, str(exc))
+
+
+def count_collection_points(collection_name: str) -> int:
+    client = _get_client()
+    if not client:
+        return 0
+    try:
+        info = client.get_collection(collection_name)
+        return int(getattr(info, "points_count", 0) or 0)
+    except Exception as exc:
+        logger.warning("qdrant_collection_count_failed collection=%s error=%s", collection_name, str(exc))
+        return 0
+
+
+def delete_job_vectors(job_id: str) -> None:
+    _delete_by_filter(JOB_COLLECTION_NAME, field_name="jobId", value=job_id)
 
 
 def upsert_job_chunks(job_id: str, vectors: list[list[float]], chunks: list[str]) -> None:
-    client = _get_client()
-    if not client:
-        return
-    ensure_collection(JOB_COLLECTION_NAME)
     points: list[PointStruct] = []
     for idx, (vector, chunk) in enumerate(zip(vectors, chunks)):
         points.append(
@@ -283,34 +373,14 @@ def upsert_job_chunks(job_id: str, vectors: list[list[float]], chunks: list[str]
                 payload={"jobId": job_id, "chunkIndex": idx, "text": chunk},
             )
         )
-    if points:
-        try:
-            client.upsert(collection_name=JOB_COLLECTION_NAME, points=points, wait=True)
-        except Exception as exc:
-            _mark_client_unavailable(str(exc))
-            logger.warning("Failed to upsert job vectors for jobId=%s error=%s", job_id, str(exc))
+    _upsert_points(collection_name=JOB_COLLECTION_NAME, points=points, operation="job_vector_upsert", logger_fields={"jobId": job_id, "count": len(points)})
 
 
 def delete_candidate_vectors(job_id: str) -> None:
-    client = _get_client()
-    if not client:
-        return
-    try:
-        ensure_collection(CANDIDATE_COLLECTION_NAME)
-        client.delete(
-            collection_name=CANDIDATE_COLLECTION_NAME,
-            points_selector=Filter(must=[FieldCondition(key="jobId", match=MatchValue(value=job_id))]),
-        )
-    except Exception as exc:
-        _mark_client_unavailable(str(exc))
-        logger.warning("Failed to delete candidate vectors for jobId=%s error=%s", job_id, str(exc))
+    _delete_by_filter(CANDIDATE_COLLECTION_NAME, field_name="jobId", value=job_id)
 
 
 def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[float]], chunks: list[str], payload: dict[str, Any]) -> None:
-    client = _get_client()
-    if not client:
-        return
-    ensure_collection(CANDIDATE_COLLECTION_NAME)
     points: list[PointStruct] = []
     for idx, (vector, chunk) in enumerate(zip(vectors, chunks)):
         point_payload = {
@@ -327,16 +397,43 @@ def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[f
                 payload=point_payload,
             )
         )
-    if points:
-        try:
-            client.upsert(collection_name=CANDIDATE_COLLECTION_NAME, points=points, wait=True)
-        except Exception as exc:
-            _mark_client_unavailable(str(exc))
-            logger.warning(
-                "Failed to upsert candidate vectors for jobId=%s candidateId=%s",
-                job_id,
-                candidate_id,
+    _upsert_points(
+        collection_name=CANDIDATE_COLLECTION_NAME,
+        points=points,
+        operation="candidate_vector_upsert",
+        logger_fields={"jobId": job_id, "candidateId": candidate_id, "count": len(points)},
+    )
+
+
+def upsert_internal_candidate_chunks(
+    candidate_id: str,
+    vectors: list[list[float]],
+    chunks: list[str],
+    payload: dict[str, Any],
+) -> None:
+    points: list[PointStruct] = []
+    fingerprint = str(payload.get("resumeFingerprint") or payload.get("fingerprint") or candidate_id or "").strip()
+    for idx, (vector, chunk) in enumerate(zip(vectors, chunks)):
+        point_payload = {
+            "candidateId": candidate_id,
+            "chunkIndex": idx,
+            "text": chunk,
+            "sourceType": "internal_resume",
+            **payload,
+        }
+        points.append(
+            PointStruct(
+                id=_stable_point_id(f"internal:{fingerprint}:{idx}"),
+                vector=vector,
+                payload=point_payload,
             )
+        )
+    _upsert_points(
+        collection_name=INTERNAL_CANDIDATE_COLLECTION_NAME,
+        points=points,
+        operation="internal_candidate_vector_upsert",
+        logger_fields={"candidateId": candidate_id, "count": len(points)},
+    )
 
 
 def upsert_recruiter_preferences(
@@ -496,17 +593,46 @@ def search_candidate_chunks(
     limit: int = 60,
     metadata_filters: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    return _search_chunks(
+        collection_name=CANDIDATE_COLLECTION_NAME,
+        query_vector=query_vector,
+        limit=limit,
+        metadata_filters=metadata_filters,
+    )
+
+
+def search_internal_candidate_chunks(
+    *,
+    query_vector: list[float],
+    limit: int = 60,
+    metadata_filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    return _search_chunks(
+        collection_name=INTERNAL_CANDIDATE_COLLECTION_NAME,
+        query_vector=query_vector,
+        limit=limit,
+        metadata_filters=metadata_filters,
+    )
+
+
+def _search_chunks(
+    *,
+    collection_name: str,
+    query_vector: list[float],
+    limit: int = 60,
+    metadata_filters: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     client = _get_client()
     if not client:
         return []
 
-    ensure_collection(CANDIDATE_COLLECTION_NAME)
+    ensure_collection(collection_name)
     resolved_limit = max(1, limit)
     query_filter = _metadata_filter(metadata_filters)
 
     logger.debug(
         "Qdrant search called collection=%s vector_length=%s limit=%s filter_enabled=%s",
-        CANDIDATE_COLLECTION_NAME,
+        collection_name,
         len(query_vector),
         resolved_limit,
         bool(query_filter),
@@ -514,13 +640,9 @@ def search_candidate_chunks(
 
     # Log total points in collection to diagnose empty-collection issues.
     try:
-        collection_info = client.get_collection(CANDIDATE_COLLECTION_NAME)
+        collection_info = client.get_collection(collection_name)
         total_points = getattr(collection_info, "points_count", None)
-        logger.info(
-            "qdrant_collection_state collection=%s total_points=%s",
-            CANDIDATE_COLLECTION_NAME,
-            total_points,
-        )
+        logger.info("qdrant_collection_state collection=%s total_points=%s", collection_name, total_points)
     except Exception:
         pass
 
@@ -528,7 +650,7 @@ def search_candidate_chunks(
     try:
         try:
             response = client.query_points(
-                collection_name=CANDIDATE_COLLECTION_NAME,
+                collection_name=collection_name,
                 query=query_vector,
                 limit=resolved_limit,
                 with_payload=True,
@@ -537,7 +659,7 @@ def search_candidate_chunks(
             )
         except TypeError:
             response = client.query_points(
-                collection_name=CANDIDATE_COLLECTION_NAME,
+                collection_name=collection_name,
                 query=query_vector,
                 limit=resolved_limit,
                 with_payload=True,
@@ -549,7 +671,7 @@ def search_candidate_chunks(
         try:
             results = list(
                 client.search(
-                    collection_name=CANDIDATE_COLLECTION_NAME,
+                    collection_name=collection_name,
                     query_vector=query_vector,
                     limit=resolved_limit,
                     with_payload=True,
@@ -574,7 +696,7 @@ def search_candidate_chunks(
         try:
             try:
                 response = client.query_points(
-                    collection_name=CANDIDATE_COLLECTION_NAME,
+                    collection_name=collection_name,
                     query=query_vector,
                     limit=resolved_limit,
                     with_payload=True,
@@ -584,7 +706,7 @@ def search_candidate_chunks(
             except AttributeError:
                 results = list(
                     client.search(
-                        collection_name=CANDIDATE_COLLECTION_NAME,
+                        collection_name=collection_name,
                         query_vector=query_vector,
                         limit=resolved_limit,
                         with_payload=True,

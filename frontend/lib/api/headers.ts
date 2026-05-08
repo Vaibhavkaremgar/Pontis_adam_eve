@@ -1,20 +1,15 @@
 /**
  * What this file does:
- * Builds API headers with auth token for backend requests.
+ * Builds shared API headers for backend requests.
  *
  * What API it connects to:
  * Applied across all /lib/api calls.
  *
  * How it fits in the pipeline:
- * Ensures every backend call carries recruiter session token after login.
+ * Keeps request header handling centralized while auth now rides on httpOnly cookies.
  */
-import { getStoredToken } from "@/lib/session";
-
 export function buildApiHeaders(extraHeaders?: Record<string, string>) {
-  const token = getStoredToken();
-
   return {
-    ...(extraHeaders || {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {})
+    ...(extraHeaders || {})
   };
 }

@@ -379,6 +379,10 @@ def parse_job_posting_url(*, url: str) -> dict[str, str]:
     if not raw_url:
         raise ValueError("url is required")
 
+    # SSRF protection: block private/internal URLs before fetching
+    from app.utils.ssrf import validate_public_url
+    raw_url = validate_public_url(raw_url)
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

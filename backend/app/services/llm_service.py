@@ -10,6 +10,7 @@ from typing import Any
 from openai import OpenAI
 
 from app.core.config import GROQ_API_KEY, GROQ_BASE_URL, GROQ_MODEL
+from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
 _llm_disabled_until: datetime | None = None
@@ -91,6 +92,7 @@ def generate(prompt: str, expect_json: bool = False):
     if _llm_is_disabled() or not GROQ_API_KEY:
         if not _llm_disable_reason:
             _disable_llm("GROQ_API_KEY missing" if not GROQ_API_KEY else "llm_disabled")
+        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
         return _local_fallback(prompt, expect_json=expect_json)
 
     try:
@@ -98,6 +100,7 @@ def generate(prompt: str, expect_json: bool = False):
     except Exception as exc:
         _disable_llm(str(exc))
         logger.warning("llm_client_unavailable reason=%s", str(exc))
+        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
         return _local_fallback(prompt, expect_json=expect_json)
 
     def _run(instruction: str) -> str:
@@ -110,6 +113,7 @@ def generate(prompt: str, expect_json: bool = False):
 
     try:
         output = _run(prompt)
+        log_metric("llm_usage", model=GROQ_MODEL, disabled=False, fallback=False, expect_json=expect_json)
         if not expect_json:
             return output
 
@@ -118,6 +122,7 @@ def generate(prompt: str, expect_json: bool = False):
             return parsed
 
         retry_output = _run("Return ONLY valid JSON:\n" + prompt)
+        log_metric("llm_usage", model=GROQ_MODEL, disabled=False, fallback=False, expect_json=expect_json, retry=True)
         parsed = _extract_json_payload(retry_output)
         if parsed is not None:
             return parsed
@@ -125,6 +130,7 @@ def generate(prompt: str, expect_json: bool = False):
     except Exception as exc:
         _disable_llm(str(exc))
         logger.warning("llm_generation_failed model=%s reason=%s", GROQ_MODEL, str(exc))
+        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
         return _local_fallback(prompt, expect_json=expect_json)
 
 

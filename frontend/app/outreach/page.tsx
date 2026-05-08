@@ -67,24 +67,29 @@ function OutreachContent() {
 
   useEffect(() => {
     if (!jobId || !isOutreachComplete) return;
-    let cancelled = false;
+    const controller = new AbortController();
+    let intervalId: number | null = null;
     const refresh = async () => {
+      if (controller.signal.aborted) return;
       const result = await getOutreachStatuses(jobId);
-      if (!cancelled && result.success && result.data) {
+      if (!controller.signal.aborted && result.success && result.data) {
         setOutreachStatuses(result.data);
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 3000);
+    intervalId = window.setInterval(() => void refresh(), 3000);
     return () => {
-      cancelled = true;
-      window.clearInterval(timer);
+      controller.abort();
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
     };
   }, [isOutreachComplete, jobId]);
 
   // When selection changes to exactly one candidate, fetch the real preview from backend.
   useEffect(() => {
     if (!jobId) return;
+    const controller = new AbortController();
 
     if (selectedCandidates.length === 0) {
       setEmailSubject("");
@@ -96,6 +101,7 @@ function OutreachContent() {
     if (selectedCandidates.length === 1) {
       setIsLoadingPreview(true);
       getEmailPreview(jobId, selectedCandidates[0]).then((result) => {
+        if (controller.signal.aborted) return;
         if (result.success && result.data) {
           setEmailSubject(result.data.subject);
           setEmailBody(result.data.body);
@@ -104,7 +110,7 @@ function OutreachContent() {
         }
         setIsLoadingPreview(false);
       });
-      return;
+      return () => controller.abort();
     }
 
     setEmailSubject("Personalised email per candidate");
@@ -113,6 +119,7 @@ function OutreachContent() {
       "Select a single candidate to preview and edit their specific email before sending."
     );
     setPreviewToEmail("");
+    return () => controller.abort();
   }, [selectedCandidates, jobId]);
 
   const canSubmit = useMemo(

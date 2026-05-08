@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.core.config import GROQ_API_KEY
 from app.db.repositories import CompanyRepository, JobRepository
-from app.services.candidate_service import build_job_text
 from app.services.embedding_service import get_embedding
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
+from app.services.job_text_service import build_job_text
+from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt_text
 from app.services.qdrant_service import delete_job_vectors, ensure_all_collections, upsert_job_chunks
 from app.utils.exceptions import APIError
 from app.utils.text import chunk_text
@@ -196,7 +197,7 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
         '  "confidence": 0.0\n'
         "}\n"
         "If a field is missing in transcript, use empty string or empty array.\n\n"
-        f"Transcript:\n{transcript}\n"
+        f"{sanitize_prompt_block('Transcript', transcript, max_length=12000)}\n"
     )
 
     try:
@@ -553,12 +554,12 @@ def _refine_description(*, description: str, voice_notes: list[str]) -> str:
         logger.warning("GROQ_API_KEY is not configured; using local refinement fallback")
         return _fallback_refinement(description, voice_notes)
 
-    notes_blob = "\n".join(f"- {note}" for note in voice_notes if note.strip())
+    notes_blob = sanitize_prompt_text("\n".join(f"- {note}" for note in voice_notes if note.strip()), max_length=12000)
     prompt = (
         "You are refining a hiring job description for candidate search.\n"
         "Return only the refined description text.\n\n"
-        f"Current Description:\n{description}\n\n"
-        f"Voice Notes:\n{notes_blob}\n"
+        f"{sanitize_prompt_block('Current Description', description, max_length=4000)}\n\n"
+        f"{sanitize_prompt_block('Voice Notes', notes_blob, max_length=12000)}\n"
     )
 
     try:

@@ -19,6 +19,50 @@ type RequestApiInput = {
   payload?: unknown;
 };
 
+let csrfToken: string | null = null;
+let csrfTokenPromise: Promise<string> | null = null;
+
+function requiresCsrf(method: RequestApiInput["method"], url: string): boolean {
+  if (method === "GET") return false;
+  const safeAuthPaths = ["/auth/request-otp", "/auth/verify-otp", "/auth/google", "/auth/csrf"];
+  return !safeAuthPaths.some((path) => url.includes(path));
+}
+
+function suppressUnauthorizedDispatch(url: string): boolean {
+  return ["/auth/me", "/auth/logout", "/auth/request-otp", "/auth/verify-otp", "/auth/google"].some((path) =>
+    url.includes(path)
+  );
+}
+
+async function fetchCsrfToken(url: string): Promise<string> {
+  if (csrfToken) return csrfToken;
+  if (csrfTokenPromise) return csrfTokenPromise;
+
+  const csrfUrl = new URL("/api/backend/auth/csrf", window.location.origin).toString();
+  csrfTokenPromise = fetch(csrfUrl, {
+    method: "GET",
+    credentials: "include",
+    headers: buildApiHeaders()
+  })
+    .then(async (response) => {
+      const parsed = (await response.json().catch(() => null)) as Partial<ApiResponse<{ token?: string }>> | null;
+      if (!response.ok || !parsed?.data?.token) {
+        throw new Error(parsed?.error || "Failed to load CSRF token");
+      }
+      csrfToken = parsed.data.token;
+      return csrfToken;
+    })
+    .finally(() => {
+      csrfTokenPromise = null;
+    });
+
+  return csrfTokenPromise;
+}
+
+export function clearCachedCsrfToken() {
+  csrfToken = null;
+}
+
 function dispatchUnauthorizedEvent() {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event("auth:unauthorized"));
@@ -34,11 +78,20 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
   logRequest({ url, method, payload, response: "request_started" });
 
   try {
+    const headers: Record<string, string> = {
+      ...buildApiHeaders({
+        ...(payload ? { "Content-Type": "application/json" } : {})
+      })
+    };
+
+    if (typeof window !== "undefined" && requiresCsrf(method, url)) {
+      headers["X-CSRF-Token"] = await fetchCsrfToken(url);
+    }
+
     const response = await fetch(url, {
       method,
-      headers: buildApiHeaders({
-        ...(payload ? { "Content-Type": "application/json" } : {})
-      }),
+      credentials: "include",
+      headers,
       ...(payload ? { body: JSON.stringify(payload) } : {})
     });
 
@@ -51,7 +104,10 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
     }
 
     if (response.status === 401) {
-      dispatchUnauthorizedEvent();
+      if (!suppressUnauthorizedDispatch(url)) {
+        dispatchUnauthorizedEvent();
+      }
+      clearCachedCsrfToken();
 
       const result: ApiResponse<T> = {
         success: false,
@@ -61,6 +117,10 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
 
       logRequest({ url, method, payload, response: result });
       return result;
+    }
+
+    if (response.status === 403 && requiresCsrf(method, url)) {
+      clearCachedCsrfToken();
     }
 
     if (!response.ok) {

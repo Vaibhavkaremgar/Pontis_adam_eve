@@ -26,6 +26,7 @@ from app.core.config import (
     REPLY_IMAP_PASSWORD,
     REPLY_IMAP_PORT,
     REPLY_IMAP_USERNAME,
+    REPLY_POLL_BATCH_SIZE,
     REPLY_INBOX_PROVIDER,
 )
 from app.db.repositories import CandidateProfileRepository, OutreachEventRepository
@@ -322,6 +323,8 @@ def poll_candidate_replies(*, db: Session | None = None) -> dict[str, int]:
                 return summary
 
             message_ids = (data[0] or b"").split()
+            if len(message_ids) > max(1, REPLY_POLL_BATCH_SIZE):
+                message_ids = message_ids[: max(1, REPLY_POLL_BATCH_SIZE)]
             for message_id in message_ids:
                 summary["checked"] += 1
                 try:
@@ -393,4 +396,8 @@ def poll_candidate_replies(*, db: Session | None = None) -> dict[str, int]:
 
 
 def resolve_attachment_path(reply_id: str, filename: str) -> Path:
-    return _reply_storage_path(reply_id, filename)
+    root = _reply_storage_root()
+    path = _reply_storage_path(reply_id, filename).resolve()
+    if root not in path.parents and path != root:
+        raise ValueError("invalid attachment path")
+    return path

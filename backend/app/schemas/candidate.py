@@ -17,6 +17,14 @@ class CandidateExplanation(BaseModel):
     candidateExperience: str = ""
     jobExperience: str = ""
     aiReasoning: str = ""
+    retrievalAttribution: dict = Field(default_factory=dict)
+    sourceBreakdown: dict = Field(default_factory=dict)
+    recruiterPreferenceInfluence: float = 0.0
+    voiceInterviewInfluence: float = 0.0
+    lexicalRetrievalInfluence: float = 0.0
+    vectorRetrievalInfluence: float = 0.0
+    freshnessInfluence: float = 0.0
+    selectionRoundInfluence: float = 0.0
 
 
 class CandidateRankingDebug(BaseModel):
@@ -135,6 +143,14 @@ class CandidateSelectionSessionData(BaseModel):
     analysis: CandidateSelectionAnalysis | None = None
     completed: bool = False
     finalCandidates: list[CandidateResult] = Field(default_factory=list)
+    stage: str = ""
+    recommendedQuestions: list[str] = Field(default_factory=list)
+    gapAnalysis: dict = Field(default_factory=dict)
+    intentProfile: dict = Field(default_factory=dict)
+    currentPair: dict = Field(default_factory=dict)
+    telemetry: dict = Field(default_factory=dict)
+    voiceSummary: str = ""
+    pairExplanation: dict = Field(default_factory=dict)
 
 
 class CandidateSelectionBatchData(BaseModel):

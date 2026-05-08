@@ -50,6 +50,7 @@ class UserEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="recruiter")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     companies: Mapped[list["CompanyEntity"]] = relationship(back_populates="user")
@@ -139,6 +140,40 @@ class CandidateProfileEntity(Base):
     last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="candidate_profiles")
+
+
+class InternalCandidateResumeEntity(Base):
+    __tablename__ = "internal_candidate_resumes"
+    __table_args__ = (
+        UniqueConstraint("resume_fingerprint", name="uq_internal_candidate_resumes_fingerprint"),
+        UniqueConstraint("candidate_id", name="uq_internal_candidate_resumes_candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    resume_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    source_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    source_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    headline: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    years_experience: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    companies: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    education: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    projects: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    certifications: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    domain_experience: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    raw_resume_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    parsed_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    embedding_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    vector_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    qdrant_point_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class ScoringProfileEntity(Base):
@@ -249,7 +284,7 @@ class RecruiterRolePreferenceEntity(Base):
 
 class CandidateSelectionSessionEntity(Base):
     __tablename__ = "candidate_selection_sessions"
-    __table_args__ = (UniqueConstraint("job_id", name="uq_candidate_selection_sessions_job"),)
+    __table_args__ = ()
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
@@ -293,7 +328,6 @@ class ATSExportEntity(Base):
 class OutreachEventEntity(Base):
     __tablename__ = "outreach_events"
     __table_args__ = (
-        UniqueConstraint("job_id", "candidate_id", name="uq_outreach_events_job_candidate"),
         ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
     )
 
@@ -362,3 +396,34 @@ class ATSExportRetryEntity(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")  # pending | exhausted
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class EmbeddingVersionRegistryEntity(Base):
+    __tablename__ = "embedding_version_registry"
+    __table_args__ = (UniqueConstraint("embedding_version", name="uq_embedding_version_registry_version"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    embedding_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    vector_size: Mapped[int] = mapped_column(Integer, nullable=False, default=384)
+    details: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class AuditEventEntity(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
+    action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    event_metadata: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    ip_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)

@@ -3,8 +3,8 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CompanyRepository, JobRepository
-from app.services.candidate_service import build_job_text
 from app.services.embedding_service import get_embedding
+from app.services.job_text_service import build_job_text
 from app.services.qdrant_service import delete_job_vectors, ensure_all_collections, upsert_job_chunks
 from app.utils.exceptions import APIError
 from app.utils.text import chunk_text

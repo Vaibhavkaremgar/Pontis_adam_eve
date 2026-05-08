@@ -21,8 +21,11 @@ def poll_replies(_: dict = Depends(get_current_user), db: Session = Depends(get_
 
 
 @router.get("/replies/attachments/{reply_id}/{filename}")
-def get_reply_attachment(reply_id: str, filename: str):
-    path = resolve_attachment_path(reply_id, filename)
+def get_reply_attachment(reply_id: str, filename: str, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        path = resolve_attachment_path(reply_id, filename)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid attachment path")
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment not found")
     return FileResponse(

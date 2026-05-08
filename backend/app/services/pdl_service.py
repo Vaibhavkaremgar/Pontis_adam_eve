@@ -229,18 +229,22 @@ def fetch_candidates_with_filters(filters: dict, size: int | None = None) -> dic
 
     if not PDL_ENABLED:
         logger.info("PDL query skipped: feature disabled")
+        log_metric("pdl_usage", enabled=False, fallback=True, size=size, count=0)
         return {"data": []}
 
     if ENABLE_MOCK_PDL and not (PDL_API_KEY or "").strip():
         logger.info("PDL query replaced with mock candidates due to missing key")
+        log_metric("pdl_usage", enabled=False, fallback=True, mock=True, size=size)
         return _mock_candidate_payload(filters=filters, size=size)
 
     if is_pdl_disabled() and ENABLE_MOCK_PDL:
         logger.info("PDL query replaced with mock candidates")
+        log_metric("pdl_usage", enabled=False, fallback=True, mock=True, size=size)
         return _mock_candidate_payload(filters=filters, size=size)
 
     if is_pdl_disabled():
         logger.info("PDL query skipped: service disabled")
+        log_metric("pdl_usage", enabled=False, fallback=True, size=size, count=0)
         return {"data": []}
 
     role = (filters.get("role") or "").strip()
@@ -296,17 +300,20 @@ def fetch_candidates_with_filters(filters: dict, size: int | None = None) -> dic
         response = _run_person_search(es_query=primary_query, size=size)
         candidates = response.get("data", []) if isinstance(response, dict) else []
         logger.info("PDL candidate count=%s fallback_used=%s", len(candidates), fallback_used)
+        log_metric("pdl_usage", enabled=True, fallback=fallback_used, size=size, count=len(candidates))
         if candidates:
             return response
     except Exception as exc:
         logger.exception("PDL primary search failed; returning no candidates error=%s", str(exc))
         log_metric("error", source="pdl", kind="primary_search_exception")
+        log_metric("pdl_usage", enabled=True, fallback=True, error=type(exc).__name__, size=size, count=0)
         return {"data": []}
 
     fallback_used = True
     if not role:
         logger.info("PDL fallback skipped: no role available")
         logger.info("PDL candidate count=%s fallback_used=%s", 0, fallback_used)
+        log_metric("pdl_usage", enabled=True, fallback=True, size=size, count=0)
         return {"data": []}
 
     fallback_query = {
@@ -323,10 +330,12 @@ def fetch_candidates_with_filters(filters: dict, size: int | None = None) -> dic
         fallback_response = _run_person_search(es_query=fallback_query, size=size)
         fallback_candidates = fallback_response.get("data", []) if isinstance(fallback_response, dict) else []
         logger.info("PDL candidate count=%s fallback_used=%s", len(fallback_candidates), fallback_used)
+        log_metric("pdl_usage", enabled=True, fallback=True, size=size, count=len(fallback_candidates))
         return fallback_response
     except Exception as exc:
         logger.exception("PDL fallback search failed; returning no candidates error=%s", str(exc))
         log_metric("error", source="pdl", kind="fallback_search_exception")
+        log_metric("pdl_usage", enabled=True, fallback=True, error=type(exc).__name__, size=size, count=0)
         return {"data": []}
 
 

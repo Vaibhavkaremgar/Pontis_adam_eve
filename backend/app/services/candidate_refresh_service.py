@@ -6,10 +6,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.core.config import EMBEDDING_VERSION, REFRESH_CANDIDATE_LIMIT, STALE_DAYS
+from app.core.config import REFRESH_CANDIDATE_LIMIT, STALE_DAYS
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
-from app.services.enrichment_service import enrich_candidate
+from app.services.embedding_registry_service import get_active_embedding_version
+from app.services.enrichment_service import enrich_candidate as run_candidate_enrichment
 from app.services.candidate_text import build_candidate_text
 from app.services.embedding_service import embed
 from app.services.metrics_service import log_metric
@@ -39,21 +40,26 @@ def _candidate_text_payload(candidate) -> dict[str, Any]:
     return payload
 
 
-def enrich_candidate(candidate) -> None:
-    """Future enrichment hook for LinkedIn/GitHub/other external refreshes."""
-    return None
+def _candidate_embedding_version(candidate) -> str:
+    raw_data = getattr(candidate, "raw_data", None) if candidate is not None else None
+    if isinstance(raw_data, dict):
+        version = raw_data.get("embedding_version") or raw_data.get("embeddingVersion")
+        if isinstance(version, str):
+            return version.strip()
+    return ""
 
 
 def refresh_candidate(db: Session, candidate) -> bool:
     now = _utcnow()
     try:
         with db.begin_nested():
-            enrich_candidate(candidate)
+            run_candidate_enrichment(candidate)
             recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             candidate_payload = _candidate_text_payload(candidate)
             normalized_text = build_candidate_text(candidate_payload)
             chunks = chunk_text(normalized_text)
             vectors = [embed(chunk) for chunk in chunks]
+            active_embedding_version = get_active_embedding_version(db)
             if not vectors:
                 logger.info(
                     "candidate_refresh_skipped job_id=%s candidate_id=%s reason=empty_embedding",
@@ -77,25 +83,27 @@ def refresh_candidate(db: Session, candidate) -> bool:
                     "skills": list(getattr(candidate, "skills", None) or []),
                     "decision": getattr(candidate, "decision", "") or "",
                     "finalScore": float(getattr(candidate, "fit_score", 0.0) or 0.0) / 5.0,
-                    "embeddingVersion": EMBEDDING_VERSION,
+                    "embeddingVersion": active_embedding_version,
                     "lastUpdated": now.isoformat(),
                 },
             )
             candidate.last_refreshed_at = now
+            raw_data = dict(getattr(candidate, "raw_data", {}) or {})
+            raw_data["embedding_version"] = active_embedding_version
+            candidate.raw_data = raw_data
             db.flush()
             logger.info(
                 "candidate_refreshed job_id=%s candidate_id=%s embedding_version=%s",
                 candidate.job_id,
                 candidate.candidate_id,
-                EMBEDDING_VERSION,
+                active_embedding_version,
             )
             log_metric(
                 "candidate_refreshed",
                 job_id=candidate.job_id,
                 candidate_id=candidate.candidate_id,
-                embedding_version=EMBEDDING_VERSION,
+                embedding_version=active_embedding_version,
             )
-            enrich_candidate(candidate)
             return True
     except Exception as exc:
         logger.warning(
@@ -110,7 +118,33 @@ def refresh_candidate(db: Session, candidate) -> bool:
 
 def get_stale_candidates(*, db: Session, limit: int = REFRESH_CANDIDATE_LIMIT, stale_days: int = STALE_DAYS):
     stale_before = _utcnow() - timedelta(days=max(1, stale_days))
-    return CandidateProfileRepository(db).list_stale(limit=max(1, limit), stale_before=stale_before)
+    active_embedding_version = get_active_embedding_version(db)
+    rows = CandidateProfileRepository(db).list_for_migration(limit=max(1, limit) * 5)
+    filtered = []
+    for row in rows:
+        version_mismatch = _candidate_embedding_version(row) != active_embedding_version
+        is_stale = (row.last_refreshed_at and row.last_refreshed_at < stale_before) or version_mismatch
+        if is_stale:
+            if version_mismatch:
+                log_metric(
+                    "embedding_drift",
+                    job_id=getattr(row, "job_id", ""),
+                    candidate_id=getattr(row, "candidate_id", ""),
+                    active_version=active_embedding_version,
+                    candidate_version=_candidate_embedding_version(row),
+                )
+            filtered.append(row)
+    def _priority(row) -> tuple[float, float]:
+        refreshed_at = getattr(row, "last_refreshed_at", None)
+        if isinstance(refreshed_at, datetime):
+            age_days = max(0.0, (_utcnow() - refreshed_at.astimezone(timezone.utc)).total_seconds() / 86400.0)
+        else:
+            age_days = float(stale_days)
+        quality = float(getattr(row, "fit_score", 0.0) or 0.0)
+        return (age_days, -quality)
+
+    filtered.sort(key=_priority, reverse=True)
+    return filtered[: max(1, limit)]
 
 
 def refresh_candidates(*, batch_size: int = 100, stale_days: int = STALE_DAYS) -> dict[str, int]:
@@ -120,9 +154,11 @@ def refresh_candidates(*, batch_size: int = 100, stale_days: int = STALE_DAYS) -
     processed = 0
     refreshed = 0
     skipped = 0
+    active_embedding_version = get_active_embedding_version()
 
     with SessionLocal() as db:
         try:
+            active_embedding_version = get_active_embedding_version(db)
             stale_candidates = get_stale_candidates(db=db, limit=batch_size, stale_days=stale_days)
             for candidate in stale_candidates:
                 processed += 1
@@ -162,5 +198,6 @@ def refresh_candidates(*, batch_size: int = 100, stale_days: int = STALE_DAYS) -
         processed=processed,
         refreshed=refreshed,
         skipped=skipped,
+        embedding_version=active_embedding_version,
     )
     return {"processed": processed, "refreshed": refreshed, "skipped": skipped}

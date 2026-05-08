@@ -8,7 +8,9 @@ from app.core.security import get_current_user
 from app.db.repositories import CandidateProfileRepository, CompanyRepository, JobRepository
 from app.db.session import get_db
 from app.schemas.ats import ATSConnectRequest, ATSExportRequest
+from app.services.audit_service import record_audit_event
 from app.services.ats.service import export_candidate_to_ats
+from app.services.ownership import assert_job_ownership
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
 
@@ -31,6 +33,16 @@ def connect_ats(
         company_id=company.id,
         ats_provider=payload.provider,
         ats_connected=True,
+    )
+    db.commit()
+    record_audit_event(
+        db=db,
+        actor_id=user_id,
+        action="ats_connect",
+        entity_type="company",
+        entity_id=company.id,
+        metadata={"provider": payload.provider},
+        request_id=str(getattr(request.state, "request_id", "") or ""),
     )
     db.commit()
     provider = company.ats_provider or DEFAULT_ATS_PROVIDER
@@ -61,15 +73,27 @@ def disconnect_ats(
         ats_connected=False,
     )
     db.commit()
+    record_audit_event(
+        db=db,
+        actor_id=user_id,
+        action="ats_disconnect",
+        entity_type="company",
+        entity_id=company.id,
+        metadata={},
+        request_id=str(getattr(request.state, "request_id", "") or ""),
+    )
+    db.commit()
     return success_response({"connected": False})
 
 
 @router.post("/ats/export")
 def export_to_ats(
     payload: ATSExportRequest,
+    request: Request,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_job_ownership(db=db, job_id=payload.job_id, user_id=request.state.user["id"])
     job = JobRepository(db).get(payload.job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
@@ -84,4 +108,14 @@ def export_to_ats(
         provider=None,
         db=db,
     )
+    record_audit_event(
+        db=db,
+        actor_id=request.state.user["id"],
+        action="ats_export",
+        entity_type="job",
+        entity_id=payload.job_id,
+        metadata={"candidate_id": payload.candidate_id},
+        request_id=str(getattr(request.state, "request_id", "") or ""),
+    )
+    db.commit()
     return success_response(result)

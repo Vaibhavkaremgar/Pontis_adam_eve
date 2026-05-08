@@ -18,11 +18,12 @@ from app.core.config import (
     REFRESH_CRON_ENABLED,
     REFRESH_JOB_SCAN_LIMIT,
     REFRESH_MIN_WINDOW_MINUTES,
+    STALE_DAYS,
 )
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
-from app.services.candidate_refresh_service import refresh_candidates
 from app.services.candidate_service import refresh_candidates_for_job
+from app.services.job_queue_service import enqueue_job
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,17 @@ def _should_skip_recent_refresh(db, *, job_id: str) -> bool:
 
 def _run_candidate_refresh_cycle() -> None:
     """Refresh candidate data for recent jobs."""
+    global _last_candidate_refresh_at, _last_cycle_jobs_attempted, _last_cycle_jobs_refreshed
+
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:candidate_refresh", ttl=300) as acquired:
+        if not acquired:
+            logger.info("scheduler_lock_skipped job=candidate_refresh reason=already_running")
+            return
+        _run_candidate_refresh_cycle_inner()
+
+
+def _run_candidate_refresh_cycle_inner() -> None:
     global _last_candidate_refresh_at, _last_cycle_jobs_attempted, _last_cycle_jobs_refreshed
 
     logger.info("refresh_started")
@@ -112,12 +124,19 @@ def _run_candidate_flywheel_cycle() -> None:
         _last_candidate_flywheel_at = _utcnow()
 
     try:
-        result = refresh_candidates(batch_size=REFRESH_CANDIDATE_LIMIT)
+        cycle_bucket = _utcnow().strftime("%Y%m%d%H%M")
+        result = enqueue_job(
+            "candidate_refresh",
+            {
+                "batch_size": REFRESH_CANDIDATE_LIMIT,
+                "stale_days": max(1, STALE_DAYS),
+            },
+            idempotency_key=f"candidate_refresh:{REFRESH_CANDIDATE_LIMIT}:{cycle_bucket}",
+        )
         logger.info(
-            "candidate_flywheel_cycle_complete processed=%s refreshed=%s skipped=%s",
-            result.get("processed", 0),
-            result.get("refreshed", 0),
-            result.get("skipped", 0),
+            "candidate_flywheel_cycle_queued job_id=%s queue_type=%s",
+            result.get("job_id"),
+            result.get("queue_type"),
         )
     except Exception as exc:
         logger.warning("candidate_flywheel_cycle_failed error=%s", str(exc))
@@ -127,18 +146,28 @@ def _run_followup_cycle() -> None:
     """Send follow-up emails to candidates who haven't replied."""
     global _last_followup_cycle_at
 
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:followup", ttl=120) as acquired:
+        if not acquired:
+            logger.info("scheduler_lock_skipped job=followup reason=already_running")
+            return
+
     with _status_lock:
         _last_followup_cycle_at = _utcnow()
 
-    with SessionLocal() as db:
-        try:
-            from app.services.outreach_service import run_followup_cycle
-
-            result = run_followup_cycle(db)
-            logger.info("followup_cycle_complete sent=%s skipped=%s", result.get("sent", 0), result.get("skipped", 0))
-        except Exception as exc:
-            logger.error("followup_cycle_failed error=%s", str(exc))
-            db.rollback()
+    try:
+        result = enqueue_job(
+            "outreach_followup",
+            {"requested_at": _utcnow().isoformat()},
+            idempotency_key=f"outreach_followup:{_utcnow().strftime('%Y%m%d%H%M')}",
+        )
+        logger.info(
+            "followup_cycle_queued job_id=%s queue_type=%s",
+            result.get("job_id"),
+            result.get("queue_type"),
+        )
+    except Exception as exc:
+        logger.error("followup_cycle_failed error=%s", str(exc))
 
 
 def _run_outreach_learning_cycle() -> None:
@@ -171,6 +200,12 @@ def _run_ats_retry_cycle() -> None:
     """Retry failed ATS exports."""
     global _last_ats_retry_cycle_at
 
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:ats_retry", ttl=120) as acquired:
+        if not acquired:
+            logger.info("scheduler_lock_skipped job=ats_retry reason=already_running")
+            return
+
     with _status_lock:
         _last_ats_retry_cycle_at = _utcnow()
 
@@ -192,24 +227,49 @@ def _run_reply_poll_cycle() -> None:
     """Poll the reply inbox for new candidate responses."""
     global _last_reply_poll_cycle_at
 
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:reply_poll", ttl=60) as acquired:
+        if not acquired:
+            logger.info("scheduler_lock_skipped job=reply_poll reason=already_running")
+            return
+
     with _status_lock:
         _last_reply_poll_cycle_at = _utcnow()
 
     try:
-        from app.services.reply_polling_service import poll_candidate_replies
-
-        with SessionLocal() as db:
-            result = poll_candidate_replies(db=db)
-            logger.info(
-                "reply_poll_cycle_complete checked=%s matched=%s stored=%s ignored=%s failed=%s",
-                result.get("checked", 0),
-                result.get("matched", 0),
-                result.get("stored", 0),
-                result.get("ignored", 0),
-                result.get("failed", 0),
-            )
+        result = enqueue_job(
+            "reply_processing",
+            {"requested_at": _utcnow().isoformat()},
+            idempotency_key=f"reply_processing:{_utcnow().strftime('%Y%m%d%H%M')}",
+        )
+        logger.info(
+            "reply_poll_cycle_queued job_id=%s queue_type=%s",
+            result.get("job_id"),
+            result.get("queue_type"),
+        )
     except Exception as exc:
         logger.error("reply_poll_cycle_failed error=%s", str(exc))
+
+
+def _run_db_cleanup_cycle() -> None:
+    """Remove expired OTPs, stale ranking runs, and expired interview sessions."""
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:db_cleanup", ttl=60) as acquired:
+        if not acquired:
+            return
+    with SessionLocal() as db:
+        try:
+            from app.services.db_cleanup_service import run_db_cleanup
+            result = run_db_cleanup(db)
+            logger.info(
+                "db_cleanup_cycle_complete otps=%s ranking_runs=%s sessions=%s",
+                result.get("otps_deleted", 0),
+                result.get("ranking_runs_deleted", 0),
+                result.get("interview_sessions_deleted", 0),
+            )
+        except Exception as exc:
+            logger.warning("db_cleanup_cycle_failed error=%s", str(exc))
+            db.rollback()
 
 
 def _run_loop() -> None:
@@ -258,6 +318,11 @@ def _run_loop() -> None:
             _run_ats_retry_cycle()
         except Exception as exc:
             logger.warning("ats_retry_cycle_exception error=%s", str(exc))
+
+        try:
+            _run_db_cleanup_cycle()
+        except Exception as exc:
+            logger.warning("db_cleanup_cycle_exception error=%s", str(exc))
 
         logger.info("scheduler_cycle_completed at=%s", _utcnow().isoformat())
         _scheduler_stop.wait(30)

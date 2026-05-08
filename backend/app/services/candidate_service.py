@@ -19,6 +19,7 @@ from app.core.config import (
     FEEDBACK_WEIGHTS,
     GROQ_API_KEY,
     EMBEDDING_VERSION,
+    USE_INTERNAL_CANDIDATE_DB,
     MIN_SKILL_MATCH_THRESHOLD,
     PDL_SEARCH_SIZE,
     RLHF_FEEDBACK_HALF_LIFE_DAYS,
@@ -41,10 +42,13 @@ from app.schemas.candidate import CandidateExplanation, CandidateRankingDebug, C
 from app.services.candidate_text import build_candidate_text
 from app.services.ats.service import export_candidate_to_ats
 from app.services.embedding_service import embed, preload_sample_candidate_embeddings
+from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt_text
 from app.services.evaluation_service import record_candidate_fetch, record_shortlist_event
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
+from app.services.ranking_service import build_match_explanation, compute_final_score, compute_match_score
+from app.services.retrieval_quality_service import rerank_candidates, retrieval_explanation
 from app.services.recruiter_preference_service import (
     compute_recruiter_score_details,
     map_experience_to_bucket,
@@ -58,6 +62,7 @@ from app.services.qdrant_service import (
     is_qdrant_search_error_active,
     last_qdrant_search_error,
     search_candidate_chunks,
+    search_internal_candidate_chunks,
     upsert_candidate_chunks,
 )
 from app.services.slack_service import notify_slack
@@ -389,6 +394,47 @@ def _candidate_experience(candidate: dict) -> str:
         r"\b\d+\+?\s+years\b", text, flags=re.IGNORECASE
     )
     return match.group(0) if match else ""
+
+
+def _candidate_freshness_score(candidate: Any) -> float:
+    if candidate is None:
+        return 0.0
+
+    raw_values: list[Any]
+    if isinstance(candidate, dict):
+        raw_values = [
+            candidate.get("last_refreshed_at"),
+            candidate.get("lastRefreshedAt"),
+            candidate.get("updated_at"),
+            candidate.get("updatedAt"),
+            candidate.get("last_updated"),
+            candidate.get("lastUpdated"),
+        ]
+    else:
+        raw_values = [
+            getattr(candidate, "last_refreshed_at", None),
+            getattr(candidate, "updated_at", None),
+            getattr(candidate, "last_updated", None),
+        ]
+
+    timestamps: list[datetime] = []
+    for value in raw_values:
+        if isinstance(value, datetime):
+            timestamps.append(value if value.tzinfo else value.replace(tzinfo=timezone.utc))
+        elif isinstance(value, str) and value.strip():
+            try:
+                parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            timestamps.append(parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc))
+
+    if not timestamps:
+        return 0.35
+
+    latest = max(timestamps)
+    age_days = max(0.0, (datetime.now(timezone.utc) - latest.astimezone(timezone.utc)).total_seconds() / 86400.0)
+    freshness = math.exp(-age_days / 21.0)
+    return max(0.0, min(1.0, freshness))
 
 
 def _job_experience(job) -> str:
@@ -989,6 +1035,27 @@ def _selection_session_signal(session, candidate_id: str) -> float:
     return 0.0
 
 
+def _explanation_source_breakdown(
+    *,
+    vector_score: float = 0.0,
+    lexical_score: float = 0.0,
+    structured_score: float = 0.0,
+    recruiter_score: float = 0.0,
+    recency_score: float = 0.0,
+    session_signal: float = 0.0,
+    voice_score: float = 0.0,
+) -> dict[str, float]:
+    return {
+        "vector": round(max(0.0, min(1.0, vector_score)), 4),
+        "lexical": round(max(0.0, min(1.0, lexical_score)), 4),
+        "structured": round(max(0.0, min(1.0, structured_score)), 4),
+        "recruiterPreference": round(max(0.0, min(1.0, recruiter_score)), 4),
+        "freshness": round(max(0.0, min(1.0, recency_score)), 4),
+        "selectionRound": round(max(-1.0, min(1.0, session_signal)), 4),
+        "voiceInterview": round(max(0.0, min(1.0, voice_score)), 4),
+    }
+
+
 def _recruiter_feedback_count(db: Session, recruiter_id: str | None) -> int:
     recruiter_id = (recruiter_id or "").strip()
     if not recruiter_id:
@@ -1335,11 +1402,11 @@ def _elite_reasoning(job, candidate: CandidateResult) -> tuple[str, float]:
         prompt = (
             "Rate this candidate for the job on a 0-100 scale and explain in one short sentence. "
             "Return exactly: SCORE=<number>; REASON=<text>.\n\n"
-            f"JOB TITLE: {job.title}\n"
-            f"JOB DESCRIPTION: {job.description}\n"
-            f"CANDIDATE ROLE: {candidate.role}\n"
-            f"CANDIDATE SUMMARY: {candidate.summary}\n"
-            f"CANDIDATE SKILLS: {', '.join(candidate.skills)}"
+            f"{sanitize_prompt_block('JOB TITLE', job.title, max_length=120)}\n"
+            f"{sanitize_prompt_block('JOB DESCRIPTION', job.description, max_length=4000)}\n"
+            f"{sanitize_prompt_block('CANDIDATE ROLE', candidate.role, max_length=120)}\n"
+            f"{sanitize_prompt_block('CANDIDATE SUMMARY', candidate.summary, max_length=2000)}\n"
+            f"{sanitize_prompt_block('CANDIDATE SKILLS', ', '.join(candidate.skills), max_length=1000)}"
         )
         text = str(generate(prompt)).strip()
 
@@ -1443,70 +1510,6 @@ def _update_diversity_counts(*, company: str, role: str, company_counts: dict[st
         role_counts[role_key] = role_counts.get(role_key, 0) + 1
 
 
-def compute_match_score(
-    *,
-    similarity: float,
-    skill_overlap: float,
-    experience_match: float,
-    weights: RankingWeights | None = None,
-) -> float:
-    resolved = weights or _normalize_weight_triplet({})
-    return max(
-        0.0,
-        min(
-            1.0,
-            (resolved.similarity * similarity)
-            + (resolved.skill_overlap * skill_overlap)
-            + (resolved.experience * experience_match),
-        ),
-    )
-
-
-def build_match_explanation(*, candidate, job_context, semantic_similarity: float) -> dict[str, Any]:
-    job_experience = _job_experience(job_context)
-    candidate_experience = _candidate_experience(candidate) if isinstance(candidate, dict) else str(
-        getattr(candidate, "experience", "") or getattr(candidate, "summary", "") or ""
-    ).strip()
-    candidate_skills = _candidate_skills(candidate) if isinstance(candidate, dict) else list(getattr(candidate, "skills", []) or [])
-    job_skills = _job_requirement_skills(job_context)
-    matched_skills = _matched_skills(job_skills, candidate_skills)
-    experience_match_value = _experience_match(candidate_experience, job_experience)
-
-    return {
-        "skills_matched": matched_skills,
-        "experience_match": _experience_match_summary(candidate_experience, job_experience),
-        "similarity_score": round(max(0.0, min(1.0, semantic_similarity)), 4),
-        "candidate_experience": candidate_experience,
-        "job_experience": job_experience,
-        "experience_match_value": round(experience_match_value, 4),
-    }
-
-
-def compute_final_score(
-    *,
-    semantic_similarity: float,
-    skill_overlap: float,
-    experience_match: float,
-    ranking_weights: RankingWeights,
-    pdl_component: float,
-    feedback_bias: float,
-    diversity_bonus: float,
-    exploration_bonus: float,
-    rejection_penalty: float,
-    semantic_penalty: float,
-    missing_skills_penalty: float,
-) -> float:
-    base_match = compute_match_score(
-        similarity=semantic_similarity,
-        skill_overlap=skill_overlap,
-        experience_match=experience_match,
-        weights=ranking_weights,
-    )
-    raw = base_match + pdl_component + feedback_bias + diversity_bonus + exploration_bonus - rejection_penalty
-    penalized = raw * semantic_penalty * missing_skills_penalty
-    return max(0.0, min(1.0, penalized))
-
-
 # fitScore is 0-5; threshold of 3/5 = 0.60 on the 0-1 similarity scale.
 LOW_SIMILARITY_PDL_THRESHOLD = 0.60
 
@@ -1556,6 +1559,7 @@ def _build_local_candidates(
     mode: str,
     mode_config: ModeConfig,
     feedback_learning: FeedbackLearningContext,
+    recruiter_preferences: dict,
     exploration: ExplorationContext,
     debug: bool = False,
     run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
@@ -1563,7 +1567,8 @@ def _build_local_candidates(
     ensure_all_collections()
     recruiter_id = JobRepository(db).get_recruiter_id(job.id)
     job_vec = _job_vector(job, feedback_learning)
-    hits = search_candidate_chunks(
+    search_fn = search_internal_candidate_chunks if USE_INTERNAL_CANDIDATE_DB else search_candidate_chunks
+    hits = search_fn(
         query_vector=job_vec,
         limit=LOCAL_SEARCH_LIMIT,
         metadata_filters=_local_metadata_filters(job, feedback_learning),
@@ -1644,6 +1649,24 @@ def _build_local_candidates(
             }
         )
 
+    recruiter_score_lookup: dict[str, float] = {}
+    if recruiter_preferences:
+        for row in candidate_rows:
+            candidate_id = row["candidate_id"]
+            candidate_profile = row["profile"] or row["payload"]
+            recruiter_score_lookup[candidate_id] = compute_recruiter_score_details(
+                candidate_profile,
+                recruiter_preferences,
+            ).get("score", 0.0)
+
+    candidate_rows = rerank_candidates(
+        job=job,
+        rows=candidate_rows,
+        recruiter_score_lookup=recruiter_score_lookup,
+        learned_tokens=feedback_learning.learned_query_tokens,
+        preferred_roles=feedback_learning.preferred_roles,
+    )
+
     filtered_candidate_rows = candidate_rows
     if mode_config.use_hard_filtering:
         filtered_candidate_rows = [
@@ -1717,6 +1740,8 @@ def _build_local_candidates(
         candidate_experience = row["candidate_experience"]
         profile = row["profile"]
         candidate_experience_years = row["candidate_experience_years"]
+        retrieval = row.get("retrieval")
+        semantic_similarity = float(row.get("hybrid_score") or semantic)
 
         skill_overlap = _skill_overlap(job_skills, skills or [])
         experience_match = _experience_match(candidate_experience, job_experience)
@@ -1732,6 +1757,7 @@ def _build_local_candidates(
         feedback_direct = row["feedback_direct"]
         feedback_bias = feedback_direct + global_skill_feedback + role_feedback
         rejection_penalty = _candidate_rejection_penalty(candidate_id, feedback_learning)
+        freshness_score = _candidate_freshness_score(profile or payload)
         log_metric(
             "candidate_penalty",
             job_id=job.id,
@@ -1739,10 +1765,11 @@ def _build_local_candidates(
             penalty=round(rejection_penalty, 4),
         )
         final = compute_final_score(
-            semantic_similarity=(0.70 * semantic) + (0.30 * historical),
+            semantic_similarity=(0.70 * semantic_similarity) + (0.30 * historical),
             skill_overlap=skill_overlap,
             experience_match=experience_match,
             ranking_weights=ranking_weights,
+            recency_score=freshness_score,
             pdl_component=0.0,
             feedback_bias=feedback_bias,
             diversity_bonus=diversity_bonus,
@@ -1796,11 +1823,11 @@ def _build_local_candidates(
             fitScore=fit_score,
             decision=decision,
             explanation=CandidateExplanation(
-                semanticScore=round((0.70 * semantic) + (0.30 * historical), 4),
+                semanticScore=round((0.70 * semantic_similarity) + (0.30 * historical), 4),
                 skillOverlap=round(skill_overlap, 4),
                 finalScore=round(final, 4),
                 pdlRelevance=0.0,
-                recencyScore=0.0,
+                recencyScore=round(freshness_score, 4),
                 skillsMatched=_matched_skills(job_skills, skills or []),
                 experienceMatch=_experience_match_summary(candidate_experience, job_experience),
                 candidateExperience=candidate_experience,
@@ -1811,6 +1838,23 @@ def _build_local_candidates(
                     "rejectionPenalty": round(rejection_penalty, 4),
                     "explorationBonus": round(exploration_bonus, 4),
                 },
+                retrievalAttribution=retrieval_explanation(retrieval) if retrieval else {},
+                sourceBreakdown=_explanation_source_breakdown(
+                    vector_score=semantic_similarity,
+                    lexical_score=historical,
+                    structured_score=skill_overlap,
+                    recruiter_score=0.0,
+                    recency_score=freshness_score,
+                    session_signal=0.0,
+                    voice_score=1.0 if getattr(job, "structured_data", None) else 0.0,
+                ),
+                recruiterPreferenceInfluence=0.0,
+                voiceInterviewInfluence=1.0 if getattr(job, "structured_data", None) else 0.0,
+                lexicalRetrievalInfluence=round(historical, 4),
+                vectorRetrievalInfluence=round(semantic_similarity, 4),
+                freshnessInfluence=round(freshness_score, 4),
+                selectionRoundInfluence=0.0,
+                aiReasoning="Local source blend combining semantic and historical candidate signals.",
             ),
             strategy=strategy,
             status="new",
@@ -1870,6 +1914,10 @@ def _build_ranked_candidates_from_pdl(
     mode_config: ModeConfig,
     feedback_learning: FeedbackLearningContext,
     exploration: ExplorationContext,
+    recruiter_preferences: dict,
+    recruiter_feedback_count: int,
+    selection_session: Any,
+    debug: bool = False,
     run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
 ) -> list[CandidateResult]:
     filters = _normalize_job_filters(
@@ -1908,11 +1956,13 @@ def _build_ranked_candidates_from_pdl(
     job_skills = _job_requirement_skills(job)
     min_experience_years = _job_min_experience_years(job)
     ensure_all_collections()
-    delete_candidate_vectors(job.id)
+    # Safe refresh: do NOT delete vectors here.
+    # Deletion happens AFTER all new vectors are upserted below.
 
     weights = _load_scoring_weights(db, job_id=job.id)
     ranking_weights = _resolve_ranking_weights(job, default_weights=mode_config.ranking_weights)
     profile_repo = CandidateProfileRepository(db)
+    recruiter_id = JobRepository(db).get_recruiter_id(job.id)
     company_counts: dict[str, int] = {}
     role_counts: dict[str, int] = {}
     job_experience = _job_experience(job)
@@ -1996,6 +2046,7 @@ def _build_ranked_candidates_from_pdl(
         candidate_skills = _candidate_skills(item)
         candidate_summary = _candidate_summary(item)
         candidate_experience = _candidate_experience(item)
+        freshness_score = _candidate_freshness_score(item)
         candidate_email = ensure_candidate_email(item)
         candidate_external_id = _extract_candidate_external_id(item)
         candidate_identity_key = _candidate_identity_key(item)
@@ -2022,7 +2073,15 @@ def _build_ranked_candidates_from_pdl(
         candidate_vec = average_vectors(candidate_vectors)
 
         cosine_score = cosine_similarity(job_vec, candidate_vec)
-        semantic_similarity = _normalize_similarity(cosine_score)
+        retrieval = hybrid_retrieval_score(
+            job=job,
+            candidate=item,
+            vector_score=_normalize_similarity(cosine_score),
+            recruiter_score=compute_recruiter_score_details(item, recruiter_preferences, candidate_vector=candidate_vec).get("score", 0.0),
+            learned_tokens=feedback_learning.learned_query_tokens,
+            preferred_roles=feedback_learning.preferred_roles,
+        )
+        semantic_similarity = retrieval.hybrid_score
         pdl_relevance = _pdl_relevance(item, index=index, total=total_candidates)
         skill_overlap = _skill_overlap(job_skills, candidate_skills)
         experience_match = _experience_match(candidate_experience, job_experience)
@@ -2060,6 +2119,7 @@ def _build_ranked_candidates_from_pdl(
             skill_overlap=skill_overlap,
             experience_match=experience_match,
             ranking_weights=ranking_weights,
+            recency_score=freshness_score,
             pdl_component=pdl_component,
             feedback_bias=feedback_bias,
             diversity_bonus=diversity_bonus,
@@ -2109,7 +2169,7 @@ def _build_ranked_candidates_from_pdl(
                 skillOverlap=round(skill_overlap, 4),
                 finalScore=round(final_score, 4),
                 pdlRelevance=round(pdl_relevance, 4),
-                recencyScore=round(recency_score, 4),
+                recencyScore=round(freshness_score, 4),
                 skillsMatched=_matched_skills(job_skills, candidate_skills),
                 experienceMatch=_experience_match_summary(candidate_experience, job_experience),
                 candidateExperience=candidate_experience,
@@ -2122,6 +2182,25 @@ def _build_ranked_candidates_from_pdl(
                     "explorationBonus": round(exploration_bonus, 4),
                     "rejectionPenalty": round(rejection_penalty, 4),
                 },
+                retrievalAttribution=retrieval_explanation(retrieval),
+                sourceBreakdown=_explanation_source_breakdown(
+                    vector_score=float(retrieval.vector_score if retrieval else semantic_similarity),
+                    lexical_score=float(retrieval.lexical_score if retrieval else 0.0),
+                    structured_score=float(retrieval.structured_score if retrieval else skill_overlap),
+                    recruiter_score=float(recruiter_score_details.get("score") or 0.0),
+                    recency_score=freshness_score,
+                    session_signal=session_signal,
+                    voice_score=1.0 if getattr(job, "structured_data", None) else 0.0,
+                ),
+                recruiterPreferenceInfluence=round(float(recruiter_score_details.get("score") or 0.0), 4),
+                voiceInterviewInfluence=1.0 if getattr(job, "structured_data", None) else 0.0,
+                lexicalRetrievalInfluence=round(float(retrieval.lexical_score if retrieval else 0.0), 4),
+                vectorRetrievalInfluence=round(float(retrieval.vector_score if retrieval else semantic_similarity), 4),
+                freshnessInfluence=round(freshness_score, 4),
+                selectionRoundInfluence=round(session_signal, 4),
+                aiReasoning=(
+                    "Hybrid ranking blends recruiter preference signals, retrieval evidence, and selection round feedback."
+                ),
             ),
             strategy=_strategy_from_score(fit_score),
             status="new",
@@ -2196,6 +2275,14 @@ def _build_ranked_candidates_from_pdl(
         )
 
     store_ranking_explanation(db, rows=ranking_explanation_rows)
+
+    # Safe vector refresh: only delete stale vectors AFTER all new ones are upserted.
+    if scored:
+        try:
+            delete_candidate_vectors(job.id)
+            logger.info('pdl_stale_vectors_deleted job_id=%s new_count=%s', job.id, len(scored))
+        except Exception as _del_exc:
+            logger.warning('pdl_stale_vector_deletion_failed job_id=%s error=%s', job.id, str(_del_exc))
 
     ranked = sorted(scored, key=lambda row: row[1], reverse=True)
     diverse = diversify_candidates(ranked, limit=mode_config.top_k)
@@ -2452,6 +2539,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             mode=resolved_mode,
             mode_config=mode_config,
             feedback_learning=feedback_learning,
+            recruiter_preferences=recruiter_preferences,
             exploration=exploration,
             debug=debug,
             run_metrics_by_candidate_id=local_run_metrics,
@@ -2525,6 +2613,9 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         feedback_success_rate=feedback_success,
         candidate_diversity=candidate_diversity,
     )
+    if USE_INTERNAL_CANDIDATE_DB:
+        switching_mode = "local"
+        switch_reason = "internal_candidate_db_enabled"
 
     logger.info(
         "switch_decision job_id=%s mode=%s reason=%s local_count=%s avg_similarity=%.4f top_semantic=%.4f diversity=%.4f feedback_success=%.4f confidence=%.4f threshold=%.4f refresh=%s",
@@ -2551,9 +2642,12 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         confidence=round(system_confidence, 4),
     )
     pdl_disabled = is_pdl_disabled()
+    if USE_INTERNAL_CANDIDATE_DB:
+        pdl_disabled = True
     if pdl_disabled:
-        logger.warning("pdl_disabled job_id=%s reason=service_disabled", job_id)
-        log_metric("pdl_disabled", job_id=job.id, mode=resolved_mode, reason="service_disabled")
+        reason = "internal_candidate_db_enabled" if USE_INTERNAL_CANDIDATE_DB else "service_disabled"
+        logger.warning("pdl_disabled job_id=%s reason=%s", job_id, reason)
+        log_metric("pdl_disabled", job_id=job.id, mode=resolved_mode, reason=reason)
     pdl_allowed = _allow_pdl_when_qdrant_is_unhealthy() and not pdl_disabled
     should_call_pdl = switching_mode in {"pdl", "pdl_with_local_fallback"} and not pdl_disabled
 
@@ -2717,6 +2811,10 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             mode_config=mode_config,
             feedback_learning=feedback_learning,
             exploration=exploration,
+            recruiter_preferences=recruiter_preferences,
+            recruiter_feedback_count=recruiter_feedback_count,
+            selection_session=selection_session,
+            debug=debug,
             run_metrics_by_candidate_id=pdl_run_metrics,
         )
     except Exception as exc:
@@ -3074,7 +3172,8 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
 def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateResult]:
     """Return only shortlisted candidates for a job — used by the outreach page."""
     jobs = JobRepository(db)
-    if not jobs.get(job_id):
+    job = jobs.get(job_id)
+    if not job:
         raise APIError("Job not found", status_code=404)
 
     interview_rows = InterviewRepository(db).list_for_job(job_id)
@@ -3099,6 +3198,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
         row.candidate_id: (row.status or "").strip().lower()
         for row in OutreachEventRepository(db).list_for_job(job_id)
     }
+    selection_session = CandidateSelectionSessionRepository(db).get_by_job(job_id)
 
     results: list[CandidateResult] = []
     interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
@@ -3131,6 +3231,22 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                     pdlRelevance=0.0,
                     recencyScore=0.0,
                     penalties={},
+                    sourceBreakdown=_explanation_source_breakdown(
+                        vector_score=0.0,
+                        lexical_score=0.0,
+                        structured_score=0.0,
+                        recruiter_score=0.0,
+                        recency_score=0.0,
+                        session_signal=_selection_session_signal(selection_session, candidate_id),
+                        voice_score=1.0 if getattr(job, "structured_data", None) else 0.0,
+                    ),
+                    recruiterPreferenceInfluence=0.0,
+                    voiceInterviewInfluence=1.0 if getattr(job, "structured_data", None) else 0.0,
+                    lexicalRetrievalInfluence=0.0,
+                    vectorRetrievalInfluence=0.0,
+                    freshnessInfluence=0.0,
+                    selectionRoundInfluence=_selection_session_signal(selection_session, candidate_id),
+                    aiReasoning="Final shortlist inherits recruiter preference and selection-round feedback.",
                 ),
                 strategy=profile.strategy,
                 status="shortlisted",

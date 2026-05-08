@@ -5,12 +5,12 @@
  * Provides global frontend orchestration state across all intake steps.
  *
  * What API it connects to:
- * Stores request/response state for /auth/login, /hiring/create, /candidates,
+ * Stores request/response state for /auth/me, /hiring/create, /candidates,
  * /voice/refine, /outreach, and /interviews.
  *
  * How it fits in the pipeline:
- * Frontend keeps only orchestration/session data (user token, forms, ids, results),
- * restores session from localStorage on app load, and never stores embeddings or AI logic.
+ * Frontend keeps only orchestration/session data (forms, ids, results),
+ * restores the recruiter profile from cookies on app load, and never stores tokens in localStorage.
  */
 import {
   createContext,
@@ -24,14 +24,21 @@ import {
 } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
-import { clearSession, getStoredToken, getStoredUser, storeSession } from "@/lib/session";
+import {
+  clearSession,
+  getStoredUser,
+  storeSession,
+  storePipelineState,
+  getStoredPipelineState,
+  clearPipelineState,
+} from "@/lib/session";
+import { getCurrentUser, logout as logoutApi } from "@/lib/api/auth";
 import type { Candidate, Company, Job, User } from "@/types";
 
 type CallStatus = "idle" | "connecting" | "listening" | "speaking" | "processing" | "completed" | "error";
 
 type AppContextValue = {
   user: User | null;
-  token: string;
   isSessionReady: boolean;
   company: Company;
   job: Job;
@@ -41,7 +48,6 @@ type AppContextValue = {
   isRefined: boolean;
   callStatus: CallStatus;
   setUser: (data: User | null) => void;
-  setToken: (token: string) => void;
   setCompany: (data: Company) => void;
   setJob: (data: Job) => void;
   setJobId: (id: string) => void;
@@ -80,7 +86,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
   const [user, setUserState] = useState<User | null>(null);
-  const [token, setTokenState] = useState("");
   const [isSessionReady, setIsSessionReady] = useState(false);
   const [company, setCompanyState] = useState<Company>(initialCompany);
   const [job, setJobState] = useState<Job>(initialJob);
@@ -93,7 +98,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [callStatus, setCallStatusState] = useState<CallStatus>("idle");
 
   const setUser = useCallback((data: User | null) => setUserState(data), []);
-  const setToken = useCallback((nextToken: string) => setTokenState(nextToken), []);
   const setCompany = useCallback((data: Company) => setCompanyState(data), []);
   const setJob = useCallback((data: Job) => setJobState(data), []);
   const setJobId = useCallback((id: string) => setJobIdState(id), []);
@@ -104,9 +108,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     // Fully reset session and flow state, then return recruiter to login screen.
+    void logoutApi().catch(() => undefined);
     clearSession();
+    clearPipelineState();
     setUserState(null);
-    setTokenState("");
     setCompanyState(initialCompany);
     setJobState(initialJob);
     setJobIdState("");
@@ -120,35 +125,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [pathname, router]);
 
-  // On app load, restore session from localStorage if token is present.
+  // On app load, restore recruiter profile from cookies + pipeline state from sessionStorage.
   useEffect(() => {
-    const storedToken = getStoredToken();
     const storedUser = getStoredUser();
+    const pipeline = getStoredPipelineState();
     let cancelled = false;
 
-    queueMicrotask(() => {
-      if (cancelled) return;
-      if (storedToken && storedUser) {
-        setTokenState(storedToken);
+    const restore = async () => {
+      if (storedUser) {
         setUserState(storedUser);
       }
+      try {
+        const currentUser = await getCurrentUser();
+        if (!cancelled && currentUser.success && currentUser.data?.user) {
+          setUserState(currentUser.data.user);
+        }
+      } catch {
+        // Ignore bootstrap auth failures and continue the flow shell.
+      }
+      if (cancelled) return;
+      if (pipeline.jobId) setJobIdState(pipeline.jobId);
+      if (pipeline.job) setJobState(pipeline.job);
+      if (pipeline.company) setCompanyState(pipeline.company);
+      if (pipeline.isRefined) setIsRefinedState(pipeline.isRefined);
       setIsSessionReady(true);
-    });
+    };
+
+    void restore();
 
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // Persist or clear session whenever user/token changes.
+  // Persist or clear the cached user profile whenever auth state changes.
   useEffect(() => {
-    if (user && token) {
-      storeSession(token, user);
+    if (user) {
+      storeSession(user);
       return;
     }
-
     clearSession();
-  }, [token, user]);
+  }, [user]);
+
+  // Persist pipeline state to sessionStorage whenever it changes.
+  useEffect(() => {
+    storePipelineState({ jobId, job, company, isRefined });
+  }, [jobId, job, company, isRefined]);
 
   // Global 401 handling: when API client emits unauthorized event, force logout.
   useEffect(() => {
@@ -168,7 +190,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       user,
-      token,
       isSessionReady,
       company,
       job,
@@ -178,7 +199,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isRefined,
       callStatus,
       setUser,
-      setToken,
       setCompany,
       setJob,
       setJobId,
@@ -190,7 +210,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }),
     [
       user,
-      token,
       isSessionReady,
       company,
       job,
@@ -200,7 +219,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isRefined,
       callStatus,
       setUser,
-      setToken,
       setCompany,
       setJob,
       setJobId,

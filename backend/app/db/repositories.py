@@ -19,6 +19,7 @@ from app.models.entities import (
     CandidateFeedbackEntity,
     CandidateProfileEntity,
     CompanyEntity,
+    InternalCandidateResumeEntity,
     CandidateSelectionSessionEntity,
     InterviewEntity,
     InterviewSessionEntity,
@@ -93,8 +94,8 @@ class UserRepository:
     def get_by_email(self, email: str) -> UserEntity | None:
         return self.db.scalar(select(UserEntity).where(UserEntity.email == email))
 
-    def create(self, email: str) -> UserEntity:
-        entity = UserEntity(id=str(uuid4()), email=email.lower().strip())
+    def create(self, email: str, *, role: str = "recruiter") -> UserEntity:
+        entity = UserEntity(id=str(uuid4()), email=email.lower().strip(), role=(role or "recruiter").strip().lower() or "recruiter")
         self.db.add(entity)
         self.db.flush()
         return entity
@@ -670,6 +671,14 @@ class CandidateProfileRepository:
         ).all()
         return list(rows)
 
+    def list_for_migration(self, *, limit: int) -> list[CandidateProfileEntity]:
+        rows = self.db.scalars(
+            select(CandidateProfileEntity)
+            .order_by(CandidateProfileEntity.last_refreshed_at.asc(), CandidateProfileEntity.last_scored_at.asc())
+            .limit(limit)
+        ).all()
+        return list(rows)
+
     def list_for_job(self, job_id: str) -> list[CandidateProfileEntity]:
         rows = self.db.scalars(
             select(CandidateProfileEntity)
@@ -704,6 +713,118 @@ class CandidateProfileRepository:
             if row.candidate_id not in latest:
                 latest[row.candidate_id] = row
         return latest
+
+
+class InternalCandidateResumeRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_fingerprint(self, fingerprint: str) -> InternalCandidateResumeEntity | None:
+        normalized = _normalize_text(fingerprint)
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(InternalCandidateResumeEntity).where(
+                InternalCandidateResumeEntity.resume_fingerprint == normalized,
+            )
+        )
+
+    def get_by_candidate_id(self, candidate_id: str) -> InternalCandidateResumeEntity | None:
+        normalized = _normalize_text(candidate_id)
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(InternalCandidateResumeEntity).where(
+                InternalCandidateResumeEntity.candidate_id == normalized,
+            )
+        )
+
+    def upsert(
+        self,
+        *,
+        candidate_id: str,
+        resume_fingerprint: str,
+        source_filename: str,
+        source_path: str,
+        source_metadata: dict,
+        full_name: str,
+        headline: str,
+        years_experience: float,
+        skills: list[str],
+        companies: list[str],
+        education: list[str],
+        projects: list[str],
+        certifications: list[str],
+        location: str,
+        summary: str,
+        domain_experience: list[str],
+        raw_resume_text: str,
+        parsed_data: dict,
+        embedding_version: str,
+        vector_version: str,
+        qdrant_point_id: str,
+    ) -> InternalCandidateResumeEntity:
+        now = datetime.now(timezone.utc)
+        normalized_fingerprint = _normalize_text(resume_fingerprint)
+        normalized_candidate_id = _normalize_text(candidate_id)
+        row = self.get_by_fingerprint(normalized_fingerprint) or self.get_by_candidate_id(normalized_candidate_id)
+        if not row:
+            row = InternalCandidateResumeEntity(
+                id=str(uuid4()),
+                candidate_id=normalized_candidate_id,
+                resume_fingerprint=normalized_fingerprint,
+            )
+            try:
+                with self.db.begin_nested():
+                    self.db.add(row)
+                    self.db.flush()
+            except IntegrityError:
+                logger.info(
+                    "internal_candidate_duplicate_skipped candidate_id=%s fingerprint=%s",
+                    normalized_candidate_id,
+                    normalized_fingerprint,
+                )
+                row = self.get_by_fingerprint(normalized_fingerprint) or self.get_by_candidate_id(normalized_candidate_id)
+                if not row:
+                    raise
+
+        row.candidate_id = normalized_candidate_id
+        row.resume_fingerprint = normalized_fingerprint
+        row.source_filename = source_filename.strip()
+        row.source_path = source_path.strip()
+        row.source_metadata = dict(source_metadata or {})
+        row.full_name = full_name.strip()
+        row.headline = headline.strip()
+        row.years_experience = float(years_experience or 0.0)
+        row.skills = list(skills or [])
+        row.companies = list(companies or [])
+        row.education = list(education or [])
+        row.projects = list(projects or [])
+        row.certifications = list(certifications or [])
+        row.location = location.strip()
+        row.summary = summary.strip()
+        row.domain_experience = list(domain_experience or [])
+        row.raw_resume_text = raw_resume_text
+        row.parsed_data = dict(parsed_data or {})
+        row.embedding_version = embedding_version.strip()
+        row.vector_version = vector_version.strip()
+        row.qdrant_point_id = qdrant_point_id.strip()
+        row.indexed_at = now
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def list_recent(self, limit: int = 100) -> list[InternalCandidateResumeEntity]:
+        rows = self.db.scalars(
+            select(InternalCandidateResumeEntity)
+            .order_by(InternalCandidateResumeEntity.updated_at.desc())
+            .limit(max(1, limit))
+        ).all()
+        return list(rows)
+
+    def count(self) -> int:
+        count = self.db.scalar(select(func.count()).select_from(InternalCandidateResumeEntity))
+        return int(count or 0)
 
 
 class CandidateFeedbackRepository:
@@ -1219,7 +1340,9 @@ class CandidateSelectionSessionRepository:
 
     def get_by_job(self, job_id: str) -> CandidateSelectionSessionEntity | None:
         return self.db.scalar(
-            select(CandidateSelectionSessionEntity).where(CandidateSelectionSessionEntity.job_id == job_id)
+            select(CandidateSelectionSessionEntity)
+            .where(CandidateSelectionSessionEntity.job_id == job_id)
+            .order_by(CandidateSelectionSessionEntity.created_at.desc())
         )
 
     def create(
@@ -1457,12 +1580,20 @@ class OutreachEventRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def get_by_id(self, event_id: str) -> OutreachEventEntity | None:
+        normalized = (event_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(OutreachEventEntity).where(OutreachEventEntity.id == normalized))
+
     def get(self, *, job_id: str, candidate_id: str) -> OutreachEventEntity | None:
         return self.db.scalar(
-            select(OutreachEventEntity).where(
+            select(OutreachEventEntity)
+            .where(
                 OutreachEventEntity.job_id == job_id,
                 OutreachEventEntity.candidate_id == candidate_id,
             )
+            .order_by(OutreachEventEntity.created_at.desc())
         )
 
     def get_by_provider_message_id(self, provider_message_id: str) -> OutreachEventEntity | None:

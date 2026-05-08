@@ -74,6 +74,20 @@ function analysisSummary(analysis: CandidateSelectionAnalysis | null | undefined
   ].filter(Boolean);
 }
 
+function intentSummaryLines(session: CandidateSelectionSession | null) {
+  if (!session?.intentProfile) return [];
+  const profile = session.intentProfile;
+  return [
+    profile.required_skills?.length ? `Required skills: ${profile.required_skills.slice(0, 5).join(", ")}` : "",
+    profile.preferred_skills?.length ? `Preferred skills: ${profile.preferred_skills.slice(0, 5).join(", ")}` : "",
+    profile.culture_preferences?.length ? `Culture: ${profile.culture_preferences.slice(0, 4).join(", ")}` : "",
+    typeof profile.startup_weight === "number" ? `Startup weight: ${(profile.startup_weight * 100).toFixed(0)}%` : "",
+    typeof profile.domain_weight === "number" ? `Domain weight: ${(profile.domain_weight * 100).toFixed(0)}%` : "",
+    typeof profile.leadership_weight === "number" ? `Leadership weight: ${(profile.leadership_weight * 100).toFixed(0)}%` : "",
+    typeof profile.infra_weight === "number" ? `Infra weight: ${(profile.infra_weight * 100).toFixed(0)}%` : "",
+  ].filter(Boolean);
+}
+
 export default function ReviewPage() {
   const router = useRouter();
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
@@ -129,6 +143,8 @@ export default function ReviewPage() {
   const finalCandidates = session?.finalCandidates ?? session?.topCandidates ?? [];
   const analysis = session?.analysis ?? null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
+  const intentLines = useMemo(() => intentSummaryLines(session), [session]);
+  const currentPair = session?.currentPair ?? null;
 
   const handleSelect = async (candidateId: string) => {
     if (!jobId || !session || isAdvancing || completed) return;
@@ -190,6 +206,43 @@ export default function ReviewPage() {
             </span>
           </div>
 
+          {intentLines.length > 0 && (
+            <Card className="border-[rgba(120,100,80,0.08)] bg-[#F8F5EF]">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Recruiter intent summary</CardTitle>
+                <CardDescription>The AI has normalized what you care about before the final shortlist rerun.</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2 text-xs text-gray-700">
+                {intentLines.map((line) => (
+                  <span key={line} className="rounded-full bg-white px-3 py-1">
+                    {line}
+                  </span>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {currentPair?.rationale && (
+            <Card className="border-[rgba(120,100,80,0.08)] bg-white">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Why this pair</CardTitle>
+                <CardDescription>{currentPair.rationale}</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2 text-xs text-gray-600">
+                {(currentPair.contrast_axes || []).map((axis) => (
+                  <span key={axis} className="rounded-full bg-[#F3EDE3] px-3 py-1">
+                    {axis.replace(/_/g, " ")}
+                  </span>
+                ))}
+                {typeof currentPair.signal_quality === "number" && (
+                  <span className="rounded-full bg-green-50 px-3 py-1 text-green-700">
+                    Signal quality {(currentPair.signal_quality * 100).toFixed(0)}%
+                  </span>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {isLoading && <p className="text-sm text-gray-500">Loading selection session...</p>}
           {error && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
@@ -240,6 +293,16 @@ export default function ReviewPage() {
 
                       {candidate.summary && <p className="text-sm leading-relaxed text-gray-700">{candidate.summary}</p>}
                       {renderSignals(candidate)}
+                      {candidate.explanation?.sourceBreakdown && (
+                        <div className="grid grid-cols-2 gap-2 rounded-xl bg-white/70 p-3 text-[11px] text-gray-600">
+                          <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
+                          <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
+                          <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
+                          <span>Selection: {(candidate.explanation.sourceBreakdown.selectionRound ?? 0).toFixed(2)}</span>
+                          <span>Voice: {(candidate.explanation.sourceBreakdown.voiceInterview ?? 0).toFixed(2)}</span>
+                          <span>Freshness: {(candidate.explanation.sourceBreakdown.freshness ?? 0).toFixed(2)}</span>
+                        </div>
+                      )}
 
                       <Button
                         className="w-full justify-center"
@@ -315,6 +378,16 @@ export default function ReviewPage() {
                         </div>
                         {candidate.explanation?.aiReasoning && (
                           <p className="text-xs italic text-gray-500">{candidate.explanation.aiReasoning}</p>
+                        )}
+                        {candidate.explanation?.sourceBreakdown && (
+                          <div className="grid grid-cols-2 gap-2 rounded-xl bg-[#F8FAFC] p-3 text-[11px] text-gray-600">
+                            <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
+                            <span>Voice: {(candidate.explanation.sourceBreakdown.voiceInterview ?? 0).toFixed(2)}</span>
+                            <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
+                            <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
+                            <span>Selection: {(candidate.explanation.sourceBreakdown.selectionRound ?? 0).toFixed(2)}</span>
+                            <span>Freshness: {(candidate.explanation.sourceBreakdown.freshness ?? 0).toFixed(2)}</span>
+                          </div>
                         )}
                       </CardContent>
                     </Card>

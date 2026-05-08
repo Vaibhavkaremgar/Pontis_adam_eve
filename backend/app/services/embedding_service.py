@@ -10,6 +10,7 @@ from threading import Lock
 from sentence_transformers import SentenceTransformer
 
 from app.core.config import EMBEDDING_MODEL_NAME, VECTOR_SIZE
+from app.services.metrics_service import log_metric
 from app.services.persistent_cache_service import get_json, set_json
 
 _model: SentenceTransformer | None = None
@@ -52,12 +53,14 @@ def embed(text: str) -> List[float]:
     cache_key = hashlib.sha256((safe_text or " ").encode("utf-8")).hexdigest()
     cached = get_json("embeddings", cache_key)
     if isinstance(cached, list) and cached:
+        log_metric("embedding_usage", cache_hit=True, vector_size=len(cached), model=EMBEDDING_MODEL_NAME)
         return [float(value) for value in cached]
 
     try:
         embedding = _get_model().encode(safe_text or " ")
         vector = embedding.tolist()
         set_json("embeddings", cache_key, vector)
+        log_metric("embedding_usage", cache_hit=False, vector_size=len(vector), model=EMBEDDING_MODEL_NAME)
         return vector
     except Exception as exc:
         if _model_failed_until is None or datetime.now(timezone.utc) >= _model_failed_until:
@@ -65,7 +68,48 @@ def embed(text: str) -> List[float]:
         logger.warning("embedding_fallback_used reason=%s", str(exc))
         vector = _fallback_embedding(safe_text or " ")
         set_json("embeddings", cache_key, vector)
+        log_metric("embedding_usage", cache_hit=False, vector_size=len(vector), model="fallback")
         return vector
+
+
+def embed_many(texts: list[str]) -> list[list[float]]:
+    cleaned = [text.strip() if text else "" for text in texts]
+    if not cleaned:
+        return []
+
+    results: list[list[float] | None] = [None] * len(cleaned)
+    missing_indices: list[int] = []
+    missing_texts: list[str] = []
+    for index, text in enumerate(cleaned):
+        cache_key = hashlib.sha256((text or " ").encode("utf-8")).hexdigest()
+        cached = get_json("embeddings", cache_key)
+        if isinstance(cached, list) and cached:
+            results[index] = [float(value) for value in cached]
+        else:
+            missing_indices.append(index)
+            missing_texts.append(text)
+
+    if missing_texts:
+        try:
+            embeddings = _get_model().encode([text or " " for text in missing_texts])
+            if getattr(embeddings, "ndim", 1) == 1:
+                embeddings = [embeddings]
+            for index, embedding in zip(missing_indices, embeddings):
+                vector = embedding.tolist()
+                results[index] = vector
+                cache_key = hashlib.sha256((cleaned[index] or " ").encode("utf-8")).hexdigest()
+                set_json("embeddings", cache_key, vector)
+                log_metric("embedding_usage", cache_hit=False, vector_size=len(vector), model=EMBEDDING_MODEL_NAME)
+        except Exception as exc:
+            logger.warning("embedding_batch_fallback_used reason=%s", str(exc))
+            for index in missing_indices:
+                vector = _fallback_embedding(cleaned[index] or " ")
+                results[index] = vector
+                cache_key = hashlib.sha256((cleaned[index] or " ").encode("utf-8")).hexdigest()
+                set_json("embeddings", cache_key, vector)
+                log_metric("embedding_usage", cache_hit=False, vector_size=len(vector), model="fallback")
+
+    return [vector if vector is not None else _fallback_embedding(cleaned[index] or " ") for index, vector in enumerate(results)]
 
 
 def get_embedding(text: str) -> list[float]:

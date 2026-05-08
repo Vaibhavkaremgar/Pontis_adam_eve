@@ -1,4 +1,7 @@
 import os
+from urllib.parse import urlparse
+from dataclasses import dataclass
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -22,11 +25,13 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 JOB_COLLECTION_NAME = os.getenv("JOB_COLLECTION_NAME", "job_chunks")
 CANDIDATE_COLLECTION_NAME = os.getenv("CANDIDATE_COLLECTION_NAME", "candidate_chunks")
+INTERNAL_CANDIDATE_COLLECTION_NAME = os.getenv("INTERNAL_CANDIDATE_COLLECTION_NAME", "internal_candidate_chunks")
 RECRUITER_PREFERENCES_COLLECTION_NAME = os.getenv("RECRUITER_PREFERENCES_COLLECTION_NAME", "recruiter_preferences")
 PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
 PDL_ENABLED = os.getenv("PDL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+USE_INTERNAL_CANDIDATE_DB = os.getenv("USE_INTERNAL_CANDIDATE_DB", "false").strip().lower() in {"1", "true", "yes", "on"}
 PROXYCURL_URL = os.getenv("PROXYCURL_URL", "https://api.ninjapear.com/v1/person/search")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
 EMBEDDING_VERSION = os.getenv("EMBEDDING_VERSION", "v2_structured").strip()
@@ -37,8 +42,28 @@ HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
 DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
-CORS_ALLOW_ORIGINS = [origin.strip() for origin in _required_env("CORS_ALLOW_ORIGINS").split(",") if origin.strip()]
 PUBLIC_APP_URL = _required_env("PUBLIC_APP_URL").strip().rstrip("/")
+APP_ENV = os.getenv("APP_ENV", os.getenv("NODE_ENV", "production")).strip().lower() or "production"
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", PUBLIC_APP_URL).strip().rstrip("/")
+if not FRONTEND_ORIGIN and PUBLIC_APP_URL:
+    FRONTEND_ORIGIN = PUBLIC_APP_URL
+if not FRONTEND_ORIGIN:
+    FRONTEND_ORIGIN = "https://adam.pontis.one"
+
+def _normalize_origin(value: str) -> str:
+    parsed = urlparse(value.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return value.strip().rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+CORS_ALLOW_ORIGINS = [_normalize_origin(FRONTEND_ORIGIN)]
+COOKIE_SECURE = APP_ENV not in {"development", "dev", "local", "test"}
+COOKIE_SAMESITE = "none"
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "pontis_auth").strip() or "pontis_auth"
+CSRF_COOKIE_NAME = os.getenv("CSRF_COOKIE_NAME", "pontis_csrf").strip() or "pontis_csrf"
+CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token").strip() or "X-CSRF-Token"
+CSRF_TOKEN_TTL_SECONDS = int(os.getenv("CSRF_TOKEN_TTL_SECONDS", "43200"))
 AUTO_RECREATE_SCHEMA = os.getenv("AUTO_RECREATE_SCHEMA", "false").strip().lower() in {"1", "true", "yes", "on"}
 SCORING_DEFAULT_MODE = os.getenv("SCORING_DEFAULT_MODE", "volume").strip().lower()
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "").strip()
@@ -55,7 +80,7 @@ INTERVIEW_BOOKING_LINK = os.getenv("INTERVIEW_BOOKING_LINK", "").strip()
 BOOKING_PROVIDER_URL = os.getenv("BOOKING_PROVIDER_URL", INTERVIEW_BOOKING_LINK).strip()
 INTERVIEW_PROVIDER_URL = os.getenv("INTERVIEW_PROVIDER_URL", "").strip()
 OUTREACH_DRY_RUN = os.getenv("OUTREACH_DRY_RUN", "false").strip().lower() in {"1", "true", "yes", "on"}
-ENABLE_REAL_EMAIL_SENDING = os.getenv("ENABLE_REAL_EMAIL_SENDING", "false").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_REAL_EMAIL_SENDING = os.getenv("ENABLE_REAL_EMAIL_SENDING", "true").strip().lower() in {"1", "true", "yes", "on"}
 MERGE_API_KEY = os.getenv("MERGE_API_KEY", "").strip()
 MERGE_ACCOUNT_TOKEN = os.getenv("MERGE_ACCOUNT_TOKEN", "").strip()
 MERGE_BASE_URL = os.getenv("MERGE_BASE_URL", "https://api.merge.dev/api/ats/v1").strip()
@@ -79,6 +104,7 @@ ENABLE_FOLLOWUPS = os.getenv("ENABLE_FOLLOWUPS", "true").strip().lower() in {"1"
 ENABLE_REPLY_DETECTION = os.getenv("ENABLE_REPLY_DETECTION", "true").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_REPLY_POLLING = os.getenv("ENABLE_REPLY_POLLING", "true").strip().lower() in {"1", "true", "yes", "on"}
 REPLY_POLL_INTERVAL_MINUTES = int(os.getenv("REPLY_POLL_INTERVAL_MINUTES", "3"))
+REPLY_POLL_BATCH_SIZE = int(os.getenv("REPLY_POLL_BATCH_SIZE", "50"))
 REPLY_INBOX_PROVIDER = os.getenv("REPLY_INBOX_PROVIDER", "imap").strip().lower()
 ENABLE_PLAYWRIGHT_JOB_PARSER = os.getenv("ENABLE_PLAYWRIGHT_JOB_PARSER", "false").strip().lower() in {"1", "true", "yes", "on"}
 REPLY_IMAP_HOST = os.getenv("REPLY_IMAP_HOST", "").strip()
@@ -107,6 +133,13 @@ SLACK_SKIP_SIGNATURE_VERIFICATION = os.getenv("SLACK_SKIP_SIGNATURE_VERIFICATION
 PERSISTENT_CACHE_PATH = os.getenv("PERSISTENT_CACHE_PATH", "disabled").strip()
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
 INTERNAL_API_KEY = _required_env("INTERNAL_API_KEY")
+WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "").strip()
+ADMIN_EMAILS = {item.strip().lower() for item in os.getenv("ADMIN_EMAILS", "").split(",") if item.strip()}
+OPS_EMAILS = {item.strip().lower() for item in os.getenv("OPS_EMAILS", "").split(",") if item.strip()}
+JOB_QUEUE_WORKERS_PER_TYPE = int(os.getenv("JOB_QUEUE_WORKERS_PER_TYPE", "1"))
+JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS = int(os.getenv("JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS", "120"))
+JOB_QUEUE_JOB_TTL_SECONDS = int(os.getenv("JOB_QUEUE_JOB_TTL_SECONDS", "604800"))
+JOB_QUEUE_BACKOFF_BASE_SECONDS = int(os.getenv("JOB_QUEUE_BACKOFF_BASE_SECONDS", "10"))
 RATE_LIMIT_AUTH_REQUEST_OTP_PER_MINUTE = int(os.getenv("RATE_LIMIT_AUTH_REQUEST_OTP_PER_MINUTE", "5"))
 RATE_LIMIT_AUTH_VERIFY_OTP_PER_MINUTE = int(os.getenv("RATE_LIMIT_AUTH_VERIFY_OTP_PER_MINUTE", "5"))
 RATE_LIMIT_CANDIDATES_PER_MINUTE = int(os.getenv("RATE_LIMIT_CANDIDATES_PER_MINUTE", "60"))
@@ -147,3 +180,79 @@ def missing_secret_warnings() -> list[str]:
     if INTERVIEW_PROVIDER == "zoom" and not INTERVIEW_PROVIDER_URL:
         warnings.append("INTERVIEW_PROVIDER is zoom but INTERVIEW_PROVIDER_URL is missing.")
     return warnings
+
+
+@dataclass(frozen=True)
+class ConfigIssue:
+    key: str
+    severity: str
+    message: str
+    value: str = ""
+
+
+def _is_valid_url(value: str) -> bool:
+    parsed = urlparse(value.strip())
+    return bool(parsed.scheme and parsed.netloc)
+
+
+def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str, Any]:
+    """Validate startup config once and surface a clear platform diagnostic."""
+    resolved_production = APP_ENV in {"production", "prod"} if production_mode is None else bool(production_mode)
+    issues: list[ConfigIssue] = []
+
+    critical_checks = {
+        "DATABASE_URL": DATABASE_URL,
+        "JWT_SECRET": JWT_SECRET,
+        "PUBLIC_APP_URL": PUBLIC_APP_URL,
+        "INTERNAL_API_KEY": INTERNAL_API_KEY,
+    }
+    for key, value in critical_checks.items():
+        if not str(value or "").strip():
+            issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required"))
+
+    if DATABASE_URL and not str(DATABASE_URL).startswith(("postgresql://", "postgres://", "sqlite:///")):
+        issues.append(ConfigIssue(key="DATABASE_URL", severity="critical", message="DATABASE_URL must be a valid database URL"))
+
+    if PUBLIC_APP_URL and not _is_valid_url(PUBLIC_APP_URL):
+        issues.append(ConfigIssue(key="PUBLIC_APP_URL", severity="critical", message="PUBLIC_APP_URL must be an absolute URL"))
+
+    if FRONTEND_ORIGIN and not _is_valid_url(FRONTEND_ORIGIN):
+        issues.append(ConfigIssue(key="FRONTEND_ORIGIN", severity="warning", message="FRONTEND_ORIGIN should be an absolute URL"))
+
+    if resolved_production:
+        if OUTREACH_DRY_RUN:
+            issues.append(ConfigIssue(key="OUTREACH_DRY_RUN", severity="warning", message="Outreach is running in dry-run mode"))
+        if not REDIS_URL:
+            issues.append(ConfigIssue(key="REDIS_URL", severity="warning", message="Redis is unavailable; fallback queue/cache modes will be used"))
+        if not COOKIE_SECURE:
+            issues.append(ConfigIssue(key="COOKIE_SECURE", severity="warning", message="Secure cookies are disabled in a production-like environment"))
+        if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
+            issues.append(ConfigIssue(key="RESEND_API_KEY", severity="warning", message="Real outreach is configured but RESEND_API_KEY is missing"))
+
+    return {
+        "environment": APP_ENV,
+        "production_mode": resolved_production,
+        "issues": [issue.__dict__ for issue in issues],
+        "has_critical_issues": any(issue.severity == "critical" for issue in issues),
+        "has_warnings": any(issue.severity == "warning" for issue in issues),
+        "missing_secrets": missing_secret_warnings(),
+    }
+
+
+def config_diagnostics() -> dict[str, Any]:
+    validation = validate_runtime_config()
+    return {
+        "environment": APP_ENV,
+        "production_mode": validation["production_mode"],
+        "critical": [item for item in validation["issues"] if item["severity"] == "critical"],
+        "warnings": [item for item in validation["issues"] if item["severity"] == "warning"],
+        "missing_secrets": validation["missing_secrets"],
+        "derived": {
+            "cookie_secure": COOKIE_SECURE,
+            "cookie_samesite": COOKIE_SAMESITE,
+            "cors_allow_origins": CORS_ALLOW_ORIGINS,
+            "queue_workers_per_type": JOB_QUEUE_WORKERS_PER_TYPE,
+            "queue_visibility_timeout_seconds": JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS,
+            "queue_job_ttl_seconds": JOB_QUEUE_JOB_TTL_SECONDS,
+        },
+    }

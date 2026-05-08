@@ -1,5 +1,7 @@
 import logging
 import secrets
+from time import perf_counter
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -10,15 +12,20 @@ from fastapi.responses import JSONResponse
 from app.api.routes import api_router
 from app.api.routes.slack import router as slack_router
 from app.core.auth_middleware import auth_middleware
-from app.core.config import CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, missing_secret_warnings
+from app.core.config import CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, config_diagnostics, missing_secret_warnings, validate_runtime_config
 from app.core.rate_limit_middleware import rate_limit_middleware
 from app.core.security import verify_access_token
 from app.db.session import db_health_snapshot, init_db
 from app.services.candidate_service import warm_candidate_retrieval
+from app.services.embedding_registry_service import ensure_embedding_version_registry
+from app.services.email_service import email_health_snapshot
+from app.services.job_queue_service import queue_health_snapshot, start_job_queue_workers, stop_job_queue_workers
 from app.services.metrics_service import get_metrics_snapshot
 from app.services.llm_service import llm_health
 from app.services.qdrant_service import ensure_qdrant_indexes, qdrant_health_snapshot
+from app.services.qdrant_service import close_qdrant_client
 from app.services.pdl_service import pdl_health_snapshot, run_startup_connectivity_check
+from app.services.redis_service import close_redis_client, get_redis
 from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
 from app.utils.exceptions import APIError
 from app.utils.responses import error_response, success_response
@@ -36,9 +43,58 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-Id", "").strip() or uuid4().hex
+    request.state.request_id = request_id
+    started = perf_counter()
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Process-Time-Ms"] = f"{(perf_counter() - started) * 1000:.2f}"
+    return response
+
+
 @app.get("/")
 def home():
     return success_response({"message": "Backend is running"})
+
+
+@app.get("/health/live")
+def live_health():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def ready_health():
+    db_status = db_health_snapshot()
+    redis_status = {"status": "ok" if get_redis() is not None else "degraded"}
+    qdrant_status = qdrant_health_snapshot()
+    llm_status = llm_health()
+    email_status = email_health_snapshot()
+    queue_status = queue_health_snapshot()
+
+    overall = "ok"
+    if any(
+        value.get("status") in {"down", "degraded", "unconfigured", "error"}
+        for value in [db_status, redis_status, qdrant_status, llm_status, email_status, queue_status]
+    ):
+        overall = "degraded"
+    if db_status.get("status") == "down":
+        overall = "down"
+
+    return success_response(
+        {
+            "status": overall,
+            "services": {
+                "db": db_status,
+                "redis": redis_status,
+                "qdrant": qdrant_status,
+                "llm": llm_status,
+                "email": email_status,
+                "queue": queue_status,
+            },
+        }
+    )
 
 
 def _authorize_internal_request(request: Request) -> None:
@@ -105,6 +161,12 @@ def metrics_api(request: Request):
     return success_response(get_metrics_snapshot())
 
 
+@app.get("/api/config/diagnostics")
+def config_api(request: Request):
+    _authorize_internal_request(request)
+    return success_response(config_diagnostics())
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     try:
@@ -113,6 +175,11 @@ def on_startup() -> None:
         logger.exception("database_initialization_failed error=%s", str(exc))
         raise
 
+    validation = validate_runtime_config()
+    critical_issues = [item for item in validation["issues"] if item["severity"] == "critical"]
+    if critical_issues:
+        raise RuntimeError(f"Invalid runtime config: {critical_issues}")
+
     try:
         ensure_qdrant_indexes()
     except Exception as exc:
@@ -120,44 +187,97 @@ def on_startup() -> None:
 
     for warning in missing_secret_warnings():
         logger.warning("configuration_warning %s", warning)
+    for warning in [item for item in validation["issues"] if item["severity"] == "warning"]:
+        logger.warning("configuration_warning %s", warning["message"])
     try:
         run_startup_connectivity_check()
     except Exception as exc:
         logger.warning("pdl_startup_connectivity_check_failed error=%s", str(exc))
     try:
+        ensure_embedding_version_registry()
+    except Exception as exc:
+        logger.warning("embedding_registry_initialization_failed error=%s", str(exc))
+    try:
         warm_candidate_retrieval()
     except Exception as exc:
         logger.warning("candidate_warmup_failed error=%s", str(exc))
     finally:
+        start_job_queue_workers()
         start_scheduler()
         logger.info("startup_scheduler_started")
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
+    stop_job_queue_workers()
     stop_scheduler()
+    close_redis_client()
+    close_qdrant_client()
+    try:
+        from app.db.session import engine
+
+        engine.dispose()
+    except Exception:
+        logger.exception("database_shutdown_failed")
 
 
 @app.exception_handler(APIError)
-def api_error_handler(_: Request, exc: APIError):
-    return JSONResponse(status_code=exc.status_code, content=error_response(exc.message))
+def api_error_handler(request: Request, exc: APIError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_response(
+            exc.message,
+            code=exc.code,
+            category=exc.category,
+            retryable=exc.retryable,
+            details=exc.details,
+            request_id=str(getattr(request.state, "request_id", "") or ""),
+        ),
+    )
 
 
 @app.exception_handler(RequestValidationError)
-def validation_error_handler(_: Request, exc: RequestValidationError):
+def validation_error_handler(request: Request, exc: RequestValidationError):
     first_error = exc.errors()[0] if exc.errors() else {}
     message = str(first_error.get("msg") or "Invalid request")
-    return JSONResponse(status_code=400, content=error_response(message))
+    return JSONResponse(
+        status_code=400,
+        content=error_response(
+            message,
+            code="validation_error",
+            category="validation",
+            request_id=str(getattr(request.state, "request_id", "") or ""),
+        ),
+    )
 
 
 @app.exception_handler(HTTPException)
-def http_error_handler(_: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content=error_response(str(exc.detail)))
+def http_error_handler(request: Request, exc: HTTPException):
+    status_code = exc.status_code
+    return JSONResponse(
+        status_code=status_code,
+        content=error_response(
+            str(exc.detail),
+            code=f"http_{status_code}",
+            category="http",
+            retryable=status_code >= 500,
+            request_id=str(getattr(request.state, "request_id", "") or ""),
+        ),
+    )
 
 
 @app.exception_handler(Exception)
-def unhandled_error_handler(_: Request, __: Exception):
-    return JSONResponse(status_code=500, content=error_response("Internal server error"))
+def unhandled_error_handler(request: Request, __: Exception):
+    return JSONResponse(
+        status_code=500,
+        content=error_response(
+            "Internal server error",
+            code="internal_error",
+            category="system",
+            retryable=True,
+            request_id=str(getattr(request.state, "request_id", "") or ""),
+        ),
+    )
 
 
 app.include_router(api_router)

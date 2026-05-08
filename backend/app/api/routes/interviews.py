@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.schemas.candidate import InterviewBookingData, InterviewBookingRequest, InterviewSessionData, InterviewSessionRequest
+from app.services.audit_service import record_audit_event
 from app.services.interview_service import list_interviews
 from app.services.interview_session_service import book_interview_session, create_interview_session, get_interview_session
+from app.services.ownership import assert_job_ownership
 from app.utils.responses import success_response
 
 router = APIRouter(tags=["interviews"])
@@ -15,13 +18,25 @@ router = APIRouter(tags=["interviews"])
 
 @router.get("/interviews")
 def get_interviews(jobId: str = Query(...), _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     rows = list_interviews(db=db, job_id=jobId)
     return success_response([row.model_dump() for row in rows])
 
 
 @router.post("/interview/session")
-def create_session(payload: InterviewSessionRequest, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_session(payload: InterviewSessionRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
     data = create_interview_session(db=db, job_id=payload.jobId, candidate_id=payload.candidateId)
+    record_audit_event(
+        db=db,
+        actor_id=request.state.user["id"],
+        action="interview_session_created",
+        entity_type="job",
+        entity_id=payload.jobId,
+        metadata={"candidate_id": payload.candidateId},
+        request_id=str(getattr(request.state, "request_id", "") or ""),
+    )
+    db.commit()
     return success_response(InterviewSessionData(**data).model_dump())
 
 

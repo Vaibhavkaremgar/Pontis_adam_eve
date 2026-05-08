@@ -23,6 +23,11 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build:
@@ -32,26 +37,26 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/pontis
       REDIS_URL: redis://redis:6379/0
-      QDRANT_URL: https://9b585462-89e2-4519-9fe0-f7fa0188a27a.us-east-1-1.aws.cloud.qdrant.io
-      CORS_ALLOW_ORIGINS: http://frontend:3000
+      # QDRANT_URL must be set in .env.production — do NOT hardcode here
+      # CORS_ALLOW_ORIGINS must include the public frontend URL
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
 
   frontend:
     build:
       context: ./frontend
-    args:
-        NEXT_PUBLIC_API_URL: http://backend:8000/api
     env_file:
       - ./.env.production
     environment:
-      NEXT_PUBLIC_API_URL: http://backend:8000/api
-      NEXT_PUBLIC_PUBLIC_APP_URL: http://frontend:3000
+      # NEXT_PUBLIC_API_URL must be the public backend URL (not internal Docker address)
+      # e.g. https://zealous-communication-production-567f.up.railway.app
+      # Set in .env.production
+      NEXT_PUBLIC_PUBLIC_APP_URL: ${NEXT_PUBLIC_PUBLIC_APP_URL:-http://localhost:3000}
     ports:
       - "3000:3000"
     depends_on:

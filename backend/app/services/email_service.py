@@ -10,6 +10,22 @@ from app.utils.exceptions import APIError
 logger = logging.getLogger(__name__)
 
 
+def email_health_snapshot() -> dict[str, str]:
+    if not RESEND_API_KEY:
+        return {"status": "unconfigured", "error": "RESEND_API_KEY missing"}
+    try:
+        response = requests.get(
+            "https://api.resend.com/emails?limit=1",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+            timeout=5,
+        )
+        if response.status_code >= 500:
+            return {"status": "degraded", "error": f"resend_status_{response.status_code}"}
+        return {"status": "ok", "error": ""}
+    except Exception as exc:
+        return {"status": "degraded", "error": str(exc)}
+
+
 def send_email(
     *,
     to_email: str,

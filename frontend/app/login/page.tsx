@@ -26,7 +26,7 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginPage() {
   const router = useRouter();
-  const { setUser, setToken } = useAppContext();
+  const { setUser } = useAppContext();
 
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
@@ -74,7 +74,6 @@ export default function LoginPage() {
         setError(result.error || "Invalid or expired OTP. Please try again.");
         return;
       }
-      setToken(result.data.access_token || result.data.token);
       setUser(result.data.user);
       router.push("/company");
     } finally {
@@ -133,7 +132,6 @@ export default function LoginPage() {
                       setIsGoogleLoading(false);
                       return;
                     }
-                    setToken(result.data.access_token || result.data.token);
                     setUser(result.data.user);
                     setIsGoogleLoading(false);
                     router.push("/company");

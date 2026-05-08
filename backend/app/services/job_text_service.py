@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
+from app.services.embedding_service import embed
+
+logger = logging.getLogger(__name__)
+
+
+def _normalize_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalize_list(values: Any) -> list[str]:
+    if isinstance(values, list):
+        items = values
+    elif isinstance(values, str) and values.strip():
+        items = [values]
+    else:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = _normalize_text(item)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
+def _extract_voice_transcript(structured_data: Any) -> str:
+    if not isinstance(structured_data, dict):
+        return ""
+    voice_extraction = structured_data.get("voice_extraction") or structured_data.get("transcript") or {}
+    if not isinstance(voice_extraction, dict):
+        return ""
+    transcript = (
+        voice_extraction.get("transcript")
+        or voice_extraction.get("notes")
+        or voice_extraction.get("summary")
+        or ""
+    )
+    return _normalize_text(transcript)
+
+
+def build_job_text(job, structured_data: Any | None = None, transcript: str = "") -> str:
+    resolved_structured_data = structured_data if isinstance(structured_data, dict) else getattr(job, "structured_data", None)
+    if not isinstance(resolved_structured_data, dict):
+        resolved_structured_data = {}
+
+    transcript_text = _normalize_text(transcript) or _extract_voice_transcript(resolved_structured_data)
+    role = _normalize_text(
+        resolved_structured_data.get("role")
+        or resolved_structured_data.get("title")
+        or getattr(job, "title", "")
+    )
+    skills = _normalize_list(
+        resolved_structured_data.get("skills")
+        or resolved_structured_data.get("skills_required")
+        or getattr(job, "skills_required", None)
+    )
+    experience = _normalize_text(
+        resolved_structured_data.get("experience")
+        or resolved_structured_data.get("experience_level")
+        or getattr(job, "experience_level", "")
+    )
+    original_jd = _normalize_text(getattr(job, "description", ""))
+    if not original_jd:
+        original_jd = _normalize_text(resolved_structured_data.get("description") or "")
+
+    role_line = role or _normalize_text(getattr(job, "title", ""))
+    skill_line = ", ".join(skills)
+    job_text = (
+        f"Role: {role_line}\n"
+        f"Experience: {experience}\n"
+        f"Skills: {skill_line}\n\n"
+        f"Job Description:\n{original_jd}\n\n"
+        f"Voice Input:\n{transcript_text}"
+    ).strip()
+    if not job_text:
+        job_text = original_jd or transcript_text or " "
+
+    source = "structured_data" if role or skills or experience else "transcript" if transcript_text else "description"
+    logger.info(
+        "job_text_built job_id=%s source=%s has_structured_data=%s transcript_present=%s length=%s",
+        getattr(job, "id", "unknown"),
+        source,
+        bool(role or skills or experience),
+        bool(transcript_text),
+        len(job_text),
+    )
+    return job_text
+
+
+def build_job_embedding(job, structured_data: Any | None = None, transcript: str = "") -> list[float]:
+    return embed(build_job_text(job, structured_data=structured_data, transcript=transcript))
+

@@ -16,7 +16,9 @@ import Vapi from "@vapi-ai/web";
 
 import { useAppContext } from "@/context/AppContext";
 import { getCandidatesWithMode } from "@/lib/api/candidates";
+import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { refineWithVoice } from "@/lib/api/voice";
+import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
 import { ChatBubble, type ChatMessage } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
@@ -190,13 +192,15 @@ async function loadVapiConfig() {
 
 export function VoiceUi() {
   const router = useRouter();
-  const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user } = useAppContext();
+  const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
 
   const [finalTranscript, setFinalTranscript] = useState<ChatMessage[]>([]);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [interimRole, setInterimRole] = useState<TranscriptRole | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
   const [pipelineError, setPipelineError] = useState("");
+  const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
+  const [intelligenceLoading, setIntelligenceLoading] = useState(false);
 
   // Refs — never cause re-renders, safe to read inside Vapi callbacks
   const vapiRef = useRef<Vapi | null>(null);
@@ -211,6 +215,27 @@ export function VoiceUi() {
     assistant: null,
     user: null,
   });
+
+  useEffect(() => {
+    if (!isSessionReady || !user || !jobId) return;
+
+    let cancelled = false;
+    const loadIntelligence = async () => {
+      setIntelligenceLoading(true);
+      const result = await getRecruiterIntelligence(user.id, jobId);
+      if (!cancelled && result.success && result.data) {
+        setIntelligence(result.data);
+      }
+      if (!cancelled) {
+        setIntelligenceLoading(false);
+      }
+    };
+
+    void loadIntelligence();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSessionReady, jobId, user]);
 
   // ── scroll chat to bottom on new messages ──────────────────────────────────
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -368,6 +393,18 @@ export function VoiceUi() {
 
     // Store voiceNotes for any downstream consumers (outreach, etc.)
     setVoiceNotes([fullTranscript]);
+
+    if (user && jobId) {
+      const intelligenceResult = await updateRecruiterIntelligence(user.id, jobId, {
+        jobId,
+        transcript: fullTranscript,
+        voiceSummary: fullTranscript,
+        entities: {},
+      });
+      if (intelligenceResult.success && intelligenceResult.data) {
+        setIntelligence(intelligenceResult.data);
+      }
+    }
 
     setPipelineStatus("refining");
     const refineResult = await refineWithVoice({
@@ -588,9 +625,11 @@ export function VoiceUi() {
       atsConnected: Boolean(company.atsConnected),
     };
 
+    const interviewQuestions = intelligence?.interview?.recommended_questions || intelligence?.selection?.recommended_questions || [];
+    const firstQuestion = intelligence?.interview?.current_question || interviewQuestions[0] || "What's the most important thing you're looking for in this candidate?";
     const firstMessage = companyName && jobTitle
-      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's refine the requirements — what's the most important thing you're looking for in this candidate?`
-      : `Let's refine your job requirements. What's the most important thing you're looking for in this candidate?`;
+      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}`
+      : `Let's refine your job requirements. ${firstQuestion}`;
 
     try {
       const vapi = ensureVapi(publicKey);
@@ -714,6 +753,31 @@ export function VoiceUi() {
             <p className="font-body text-sm text-[#6B7280]">Say &quot;that&apos;s everything&quot; to finish</p>
           )}
         </div>
+
+        {(intelligenceLoading || intelligence) && (
+          <div className="mb-5 rounded-2xl border border-[#D6C8B6] bg-white/70 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Adaptive interview</p>
+                <p className="text-sm font-medium text-[#111111]">
+                  {intelligence?.interview?.stage_summary || "Preparing targeted follow-up questions from the job brief and recruiter history."}
+                </p>
+              </div>
+              <div className="rounded-full bg-[#166534]/10 px-3 py-1 text-xs font-medium text-[#166534]">
+                {intelligence?.interview?.stage || "initial_job_understanding"}
+              </div>
+            </div>
+            {intelligence?.interview?.recommended_questions?.length ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {intelligence.interview.recommended_questions.slice(0, 5).map((question) => (
+                  <span key={question} className="rounded-full bg-[#F3EDE3] px-3 py-1 text-xs text-[#4B5563]">
+                    {question}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
 
         <div className="space-y-6">
           {/* Empty state */}

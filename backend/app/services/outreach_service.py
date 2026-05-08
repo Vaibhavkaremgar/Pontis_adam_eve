@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -23,6 +25,7 @@ from app.core.config import (
     OUTREACH_PROVIDER,
     OUTREACH_RESEND_FALLBACK_FROM_EMAIL,
     RESEND_API_KEY,
+    PUBLIC_APP_URL,
 )
 from app.db.repositories import (
     CandidateProfileRepository,
@@ -32,22 +35,167 @@ from app.db.repositories import (
 )
 from app.db.session import SessionLocal
 from app.models.entities import OutreachEventEntity
+from app.services.job_queue_service import enqueue_job
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
+from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt_text
 from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.slack_integration import post_slack_message
 from app.services.slack_service import notify_slack
 from app.services.state_machine import assert_valid_transition
+from app.services.redis_service import get_redis
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 _EMAIL_PATTERN = re.compile(r"^[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}$", re.IGNORECASE)
+_DISPOSABLE_EMAIL_DOMAINS = {
+    "mailinator.com",
+    "10minutemail.com",
+    "guerrillamail.com",
+    "tempmail.com",
+    "yopmail.com",
+}
+_SUPPRESSION_SET_KEY = "pontis:outreach:suppression:emails"
+_DOMAIN_SUPPRESSION_KEY = "pontis:outreach:suppression:domains"
+_RECRUITER_DAILY_QUOTA_PREFIX = "pontis:outreach:quota:"
+_DOMAIN_REPUTATION_PREFIX = "pontis:outreach:domain:"
+_OPEN_TRACKING_PREFIX = "pontis:outreach:open:"
+_SPAM_RISK_THRESHOLD = 0.8
+_DEFAULT_DAILY_OUTREACH_QUOTA = 50
+_DEFAULT_DOMAIN_DAILY_QUOTA = 20
 
 
 def _normalize_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _email_domain(email: str) -> str:
+    if "@" not in email:
+        return ""
+    return email.rsplit("@", 1)[-1].strip().lower()
+
+
+def _is_blocked_outbound_email(email: str) -> tuple[bool, str]:
+    normalized = _extract_email({"email": email})
+    if not normalized:
+        return True, "invalid_email"
+    domain = _email_domain(normalized)
+    if not domain:
+        return True, "invalid_email_domain"
+    if domain in _DISPOSABLE_EMAIL_DOMAINS:
+        return True, "disposable_email_blocked"
+    return False, ""
+
+
+def _redis_client():
+    return get_redis()
+
+
+def _suppression_key(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _is_suppressed(email: str) -> bool:
+    normalized = _suppression_key(email)
+    if not normalized:
+        return False
+    redis = _redis_client()
+    if redis is None:
+        return False
+    try:
+        return bool(redis.sismember(_SUPPRESSION_SET_KEY, normalized) or redis.sismember(_DOMAIN_SUPPRESSION_KEY, _email_domain(normalized)))
+    except Exception:
+        return False
+
+
+def _suppress_email(email: str, *, reason: str = "suppressed") -> None:
+    normalized = _suppression_key(email)
+    if not normalized:
+        return
+    redis = _redis_client()
+    if redis is None:
+        return
+    try:
+        redis.sadd(_SUPPRESSION_SET_KEY, normalized)
+        redis.hset(f"{_SUPPRESSION_SET_KEY}:meta", normalized, reason)
+    except Exception as exc:
+        logger.warning("outreach_suppression_write_failed email=%s error=%s", normalized, str(exc))
+
+
+def _suppress_domain(domain: str, *, reason: str = "suppressed") -> None:
+    normalized = (domain or "").strip().lower()
+    if not normalized:
+        return
+    redis = _redis_client()
+    if redis is None:
+        return
+    try:
+        redis.sadd(_DOMAIN_SUPPRESSION_KEY, normalized)
+        redis.hset(f"{_DOMAIN_SUPPRESSION_KEY}:meta", normalized, reason)
+    except Exception as exc:
+        logger.warning("outreach_domain_suppression_write_failed domain=%s error=%s", normalized, str(exc))
+
+
+def _quota_key(prefix: str, scope: str) -> str:
+    return f"{prefix}{scope}"
+
+
+def _increment_daily_quota(prefix: str, scope: str, *, ttl_seconds: int = 86400) -> int:
+    redis = _redis_client()
+    if redis is None:
+        return 1
+    key = _quota_key(prefix, scope)
+    try:
+        count = int(redis.incr(key))
+        if count == 1:
+            redis.expire(key, ttl_seconds)
+        return count
+    except Exception:
+        return 1
+
+
+def _daily_quota_allowed(prefix: str, scope: str, *, limit: int) -> bool:
+    redis = _redis_client()
+    if redis is None:
+        return True
+    key = _quota_key(prefix, scope)
+    try:
+        current = int(redis.get(key) or 0)
+        return current < limit
+    except Exception:
+        return True
+
+
+def _spam_risk_score(*, subject: str, body: str, to_email: str) -> float:
+    haystack = " ".join([subject, body, to_email]).lower()
+    risk = 0.0
+    if any(token in haystack for token in ("free", "urgent", "guarantee", "act now", "click here", "bonus")):
+        risk += 0.35
+    if haystack.count("!") > 2:
+        risk += 0.15
+    if len(body) < 60:
+        risk += 0.15
+    if len(body) > 1200:
+        risk += 0.1
+    if "unsubscribe" not in haystack:
+        risk += 0.05
+    return max(0.0, min(1.0, risk))
+
+
+def _tracking_token(*, event_id: str, candidate_id: str, job_id: str) -> str:
+    material = f"{event_id}:{candidate_id}:{job_id}:{OUTREACH_PROVIDER}"
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _append_open_tracking_pixel(*, html_body: str, event_id: str, candidate_id: str, job_id: str) -> str:
+    token = _tracking_token(event_id=event_id, candidate_id=candidate_id, job_id=job_id)
+    pixel_url = f"{PUBLIC_APP_URL}/api/backend/outreach/open?eventId={event_id}&token={token}"
+    pixel = f'<img src="{html.escape(pixel_url)}" alt="" width="1" height="1" style="display:none" />'
+    if "</body>" in html_body.lower():
+        return re.sub(r"</body>", f"{pixel}</body>", html_body, flags=re.IGNORECASE)
+    return f"{html_body}\n{pixel}"
 
 
 # ── Email content helpers ────────────────────────────────────────────────────
@@ -153,14 +301,14 @@ def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
             "- Ask whether the candidate is open to the role\n"
             "- Ask the candidate to share an updated resume\n"
             "- End with a soft call-to-action for a 15-minute chat\n\n"
-            f"Candidate name: {candidate_profile.name or 'there'}\n"
-            f"Candidate current role: {candidate_profile.role or 'unknown'}\n"
-            f"Candidate current company: {candidate_profile.company or 'unknown'}\n"
-            f"Candidate skills: {skills_text}\n"
-            f"Candidate summary: {candidate_profile.summary or 'not listed'}\n"
-            f"Job title: {job.title}\n"
-            f"Job location: {job.location or 'flexible'}\n"
-            f"Compensation: {job.compensation or 'competitive'}\n\n"
+            f"{sanitize_prompt_block('Candidate name', candidate_profile.name or 'there', max_length=120)}\n"
+            f"{sanitize_prompt_block('Candidate current role', candidate_profile.role or 'unknown', max_length=120)}\n"
+            f"{sanitize_prompt_block('Candidate current company', candidate_profile.company or 'unknown', max_length=120)}\n"
+            f"{sanitize_prompt_block('Candidate skills', skills_text, max_length=1000)}\n"
+            f"{sanitize_prompt_block('Candidate summary', candidate_profile.summary or 'not listed', max_length=2000)}\n"
+            f"{sanitize_prompt_block('Job title', job.title, max_length=120)}\n"
+            f"{sanitize_prompt_block('Job location', job.location or 'flexible', max_length=120)}\n"
+            f"{sanitize_prompt_block('Compensation', job.compensation or 'competitive', max_length=120)}\n\n"
             "Include one concrete hook tying a candidate skill or background to the role.\n"
             "Return ONLY:\n"
             "SUBJECT: <subject line>\n"
@@ -412,6 +560,17 @@ def _detect_reply_intent(raw_event: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _detect_bounce_or_unsubscribe(raw_event: dict[str, Any]) -> str:
+    body = _normalize_text(raw_event.get("body") or raw_event.get("text") or raw_event.get("snippet") or "")
+    subject = _normalize_text(raw_event.get("subject") or "")
+    lowered = f"{subject} {body}".lower()
+    if any(token in lowered for token in ("bounce", "undelivered", "delivery failed", "mail delivery", "message rejected")):
+        return "bounced"
+    if any(token in lowered for token in ("unsubscribe", "stop", "do not contact", "do not email")):
+        return "unsubscribed"
+    return ""
+
+
 def _coerce_event_payload(event: Any) -> dict[str, Any]:
     if isinstance(event, dict):
         return event
@@ -564,6 +723,7 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
             return {"status": "ignored"}
 
         intent = _detect_reply_intent({**raw_event, **nested_event, **provider_event, "from": email_from, "subject": subject, "body": body, "text": body})
+        lifecycle_event = _detect_bounce_or_unsubscribe({**raw_event, **nested_event, **provider_event, "from": email_from, "subject": subject, "body": body, "text": body})
         row.status = "replied"
         row.last_contacted_at = datetime.now(timezone.utc)
         row.last_error = ""
@@ -576,6 +736,18 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
 
         recruiter_id = JobRepository(db).get_recruiter_id(row.job_id)
         candidate_profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
+        if lifecycle_event == "bounced":
+            row.status = "bounced"
+            row.last_error = "delivery_bounce_detected"
+            if row.to_email:
+                _suppress_email(row.to_email, reason="bounce")
+                _suppress_domain(_email_domain(row.to_email), reason="bounce")
+        elif lifecycle_event == "unsubscribed":
+            row.status = "unsubscribed"
+            row.last_error = "unsubscribe_detected"
+            if row.to_email:
+                _suppress_email(row.to_email, reason="unsubscribe")
+                _suppress_domain(_email_domain(row.to_email), reason="unsubscribe")
         if recruiter_id and candidate_profile:
             if intent == "interested":
                 update_recruiter_preferences(
@@ -655,6 +827,27 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
     except Exception as exc:
         logger.error("error_occurred reply_handler_exception error=%s", str(exc), exc_info=exc)
         raise
+
+
+def record_outreach_open(*, db: Session, event_id: str, token: str) -> dict[str, Any]:
+    repo = OutreachEventRepository(db)
+    row = repo.get_by_id(event_id)
+    if not row:
+        return {"status": "ignored"}
+
+    expected_token = _tracking_token(event_id=str(row.id), candidate_id=row.candidate_id, job_id=row.job_id)
+    if not token or token != expected_token:
+        return {"status": "ignored"}
+
+    if (row.status or "").strip().lower() not in {"bounced", "unsubscribed"}:
+        row.status = "opened"
+    row.last_contacted_at = datetime.now(timezone.utc)
+    row.last_error = ""
+    db.commit()
+    log_metric("open_tracked", job_id=row.job_id, candidate_id=row.candidate_id, event_id=row.id)
+    logger.info("outreach_open_tracked job_id=%s candidate_id=%s event_id=%s", row.job_id, row.candidate_id, row.id)
+    return {"status": "opened", "job_id": row.job_id, "candidate_id": row.candidate_id, "event_id": row.id}
+
 # ── Main outreach process ────────────────────────────────────────────────────
 
 def process_outreach(
@@ -669,6 +862,7 @@ def process_outreach(
     interviews = InterviewRepository(db)
     profiles = CandidateProfileRepository(db)
     outreach_events = OutreachEventRepository(db)
+    recruiter_id = JobRepository(db).get_recruiter_id(job_id)
 
     # ── Enforce shortlisted-only ──────────────────────────────────────────────
     unique_selected_candidates = list(dict.fromkeys(selected_candidates))
@@ -726,10 +920,28 @@ def process_outreach(
             continue
 
         to_email = _extract_email(profile.raw_data or {})
-        if not to_email:
-            logger.warning("outreach_email_invalid_or_missing job_id=%s candidate_id=%s", job_id, candidate_id)
+        if _is_suppressed(to_email):
             skipped += 1
-            reason = "invalid_or_missing_email"
+            reason = "suppressed"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": to_email})
+            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
+            outreach_events.upsert(
+                job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER,
+                to_email=to_email, subject="", body="", status="failed", last_error=reason,
+            )
+            continue
+        blocked, block_reason = _is_blocked_outbound_email(to_email)
+        if blocked:
+            logger.warning(
+                "outreach_email_blocked job_id=%s candidate_id=%s reason=%s to_email=%s",
+                job_id,
+                candidate_id,
+                block_reason or "invalid_or_missing_email",
+                to_email,
+            )
+            skipped += 1
+            reason = block_reason or "invalid_or_missing_email"
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
             details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": ""})
             skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
@@ -747,6 +959,26 @@ def process_outreach(
             subject, body = generate_personalized_email(candidate_profile=profile, job=job)
 
         next_follow_up = _follow_up_time()
+        if recruiter_id and not _daily_quota_allowed(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id, limit=_DEFAULT_DAILY_OUTREACH_QUOTA):
+            skipped += 1
+            reason = "recruiter_quota_exceeded"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": to_email})
+            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
+            continue
+
+        spam_risk = _spam_risk_score(subject=subject, body=body, to_email=to_email)
+        if spam_risk >= _SPAM_RISK_THRESHOLD:
+            skipped += 1
+            reason = "spam_risk_high"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": to_email})
+            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
+            outreach_events.upsert(
+                job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER,
+                to_email=to_email, subject=subject, body=body, status="failed", last_error=reason,
+            )
+            continue
         try:
             assert_valid_transition(
                 candidate_id=candidate_id,
@@ -830,7 +1062,17 @@ def process_outreach(
         logger.info("outreach_sending_started job_id=%s candidate_id=%s to_email=%s", job_id, candidate_id, to_email)
 
         try:
-            email_sent, send_error, msg_id = _send_outreach_email(to_email=to_email, subject=subject, body=body)
+            tracked_body = _append_open_tracking_pixel(
+                html_body=body,
+                event_id=str(event.id),
+                candidate_id=candidate_id,
+                job_id=job_id,
+            )
+            event.body = tracked_body
+            if recruiter_id:
+                _increment_daily_quota(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id)
+            _increment_daily_quota(_DOMAIN_REPUTATION_PREFIX, _email_domain(to_email), ttl_seconds=86400)
+            email_sent, send_error, msg_id = _send_outreach_email(to_email=to_email, subject=subject, body=tracked_body)
             if email_sent:
                 now = datetime.now(timezone.utc)
                 event.provider_message_id = msg_id or None
@@ -860,6 +1102,7 @@ def process_outreach(
                     "outreach_sent job_id=%s candidate_id=%s to_email=%s provider_id=%s",
                     job_id, candidate_id, to_email, msg_id,
                 )
+                log_metric("outreach_usage", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, action="send")
                 log_metric("outreach_email_sent", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, provider_id=msg_id)
                 details.append({"candidateId": candidate_id, "status": "sent", "toEmail": to_email, "providerId": msg_id})
             else:
@@ -929,8 +1172,46 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
         subject, email_template = _build_shortlist_outreach_email(candidate_profile=profile, job=job)
         to_email = _extract_candidate_email(profile)
         outreach_repo = OutreachEventRepository(db)
+        recruiter_id = JobRepository(db).get_recruiter_id(job_id)
 
-        if not to_email:
+        if _is_suppressed(to_email):
+            outreach_repo.upsert(
+                job_id=job_id,
+                candidate_id=candidate_id,
+                provider=OUTREACH_PROVIDER,
+                to_email=to_email,
+                subject=subject,
+                body=email_template,
+                status="failed",
+                last_error="suppressed",
+                sent_at=None,
+                next_follow_up_at=None,
+                provider_message_id=None,
+            )
+            db.commit()
+            return {
+                "success": True,
+                "jobId": job_id,
+                "candidateId": candidate_id,
+                "candidateName": name,
+                "candidateEmail": to_email,
+                "linkedinUrl": linkedin_url,
+                "status": "suppressed",
+                "outreachStatus": "suppressed",
+                "subject": subject,
+                "html": email_template,
+                "providerMessageId": "",
+            }
+
+        blocked, block_reason = _is_blocked_outbound_email(to_email)
+        if blocked:
+            logger.warning(
+                "outreach_email_blocked job_id=%s candidate_id=%s reason=%s to_email=%s",
+                job_id,
+                candidate_id,
+                block_reason or "missing_email",
+                to_email,
+            )
             outreach_repo.upsert(
                 job_id=job_id,
                 candidate_id=candidate_id,
@@ -939,7 +1220,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 subject=subject,
                 body=email_template,
                 status="manual_required",
-                last_error="missing_email",
+                last_error=block_reason or "missing_email",
                 sent_at=None,
                 next_follow_up_at=None,
                 provider_message_id=None,
@@ -959,10 +1240,62 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 "providerMessageId": "",
             }
 
+        if recruiter_id and not _daily_quota_allowed(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id, limit=_DEFAULT_DAILY_OUTREACH_QUOTA):
+            outreach_repo.upsert(
+                job_id=job_id,
+                candidate_id=candidate_id,
+                provider=OUTREACH_PROVIDER,
+                to_email=to_email,
+                subject=subject,
+                body=email_template,
+                status="failed",
+                last_error="recruiter_quota_exceeded",
+                sent_at=None,
+                next_follow_up_at=None,
+                provider_message_id=None,
+            )
+            db.commit()
+            raise APIError("Recruiter outreach quota exceeded", status_code=429)
+
+        spam_risk = _spam_risk_score(subject=subject, body=email_template, to_email=to_email)
+        if spam_risk >= _SPAM_RISK_THRESHOLD:
+            outreach_repo.upsert(
+                job_id=job_id,
+                candidate_id=candidate_id,
+                provider=OUTREACH_PROVIDER,
+                to_email=to_email,
+                subject=subject,
+                body=email_template,
+                status="failed",
+                last_error="spam_risk_high",
+                sent_at=None,
+                next_follow_up_at=None,
+                provider_message_id=None,
+            )
+            db.commit()
+            raise APIError("Outreach message scored too risky for deliverability", status_code=422)
+
+        event = outreach_repo.claim_outreach_for_sending(
+            job_id=job_id,
+            candidate_id=candidate_id,
+            provider=OUTREACH_PROVIDER,
+            to_email=to_email,
+            subject=subject,
+            body=email_template,
+        )
+        if not event:
+            raise APIError("Outreach event is already being processed", status_code=409)
+
+        tracked_template = _append_open_tracking_pixel(
+            html_body=email_template,
+            event_id=str(event.id),
+            candidate_id=candidate_id,
+            job_id=job_id,
+        )
         email_sent, send_error, msg_id = _send_shortlist_outreach_email(
             to_email=to_email,
             subject=subject,
-            html_body=email_template,
+            html_body=tracked_template,
         )
         now = datetime.now(timezone.utc)
         if not email_sent:
@@ -988,7 +1321,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
             provider=OUTREACH_PROVIDER,
             to_email=to_email,
             subject=subject,
-            body=email_template,
+            body=tracked_template,
             status="sent",
             last_error="",
             sent_at=now,
@@ -996,6 +1329,9 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
             provider_message_id=msg_id or None,
         )
         db.commit()
+        if recruiter_id:
+            _increment_daily_quota(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id)
+        log_metric("outreach_usage", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, action="shortlist_send")
         return {
             "success": True,
             "jobId": job_id,
@@ -1006,7 +1342,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
             "status": "sent",
             "outreachStatus": "sent",
             "subject": subject,
-            "html": email_template,
+            "html": tracked_template,
             "providerMessageId": msg_id,
         }
 
@@ -1050,20 +1386,36 @@ async def trigger_candidate_outreach(candidate_id: str, job_id: str, channel_id:
 
 
 def queue_outreach_delivery(*, job_id: str, selected_candidates: list[str], custom_body: str = "") -> dict:
-    from threading import Thread
-
-    def _worker() -> None:
-        db = SessionLocal()
-        try:
-            process_outreach(db=db, job_id=job_id, selected_candidates=selected_candidates, custom_body=custom_body)
-        except Exception as exc:
-            logger.error("error_occurred outreach_queue_worker_failed job_id=%s error=%s", job_id, str(exc), exc_info=exc)
-        finally:
-            db.close()
-
-    Thread(target=_worker, daemon=True).start()
-    logger.info("request_started outreach_queued job_id=%s selected_count=%s", job_id, len(selected_candidates))
-    return {"queued": True, "job_id": job_id, "selected_count": len(selected_candidates)}
+    idempotency_material = {
+        "job_id": job_id,
+        "selected_candidates": list(dict.fromkeys(selected_candidates)),
+        "custom_body": custom_body.strip(),
+    }
+    idempotency_key = hashlib.sha256(
+        json.dumps(idempotency_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    result = enqueue_job(
+        "outreach_send",
+        {
+            "job_id": job_id,
+            "selected_candidates": list(dict.fromkeys(selected_candidates)),
+            "custom_body": custom_body,
+        },
+        idempotency_key=idempotency_key,
+    )
+    logger.info(
+        "request_started outreach_queued job_id=%s selected_count=%s mode=%s",
+        job_id,
+        len(selected_candidates),
+        result.get("mode", "redis"),
+    )
+    return {
+        "queued": bool(result.get("queued", True)),
+        "job_id": result.get("job_id") or job_id,
+        "selected_count": len(selected_candidates),
+        "mode": result.get("mode", "redis"),
+        "deduplicated": bool(result.get("deduplicated")),
+    }
 
 
 # ── Follow-up CRON engine ────────────────────────────────────────────────────

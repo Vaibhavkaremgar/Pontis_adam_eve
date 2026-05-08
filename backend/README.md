@@ -34,8 +34,10 @@ Required:
 - GROQ_MODEL (defaults to `llama-3.3-70b-versatile`)
 - QDRANT_URL
 - QDRANT_API_KEY
+- INTERNAL_CANDIDATE_COLLECTION_NAME (defaults to `internal_candidate_chunks`)
 - DATABASE_URL
 - PDL_ENABLED=false by default; set PDL_API_KEY only when PDL is enabled
+- USE_INTERNAL_CANDIDATE_DB=false by default; set to `true` to source from the internal resume corpus instead of PDL
 - JWT_SECRET
 - REDIS_URL (recommended for multi-worker cache consistency)
 - HF_TOKEN (optional; enables HuggingFace-backed model loading when available)
@@ -43,6 +45,14 @@ Required:
 - Slack integration: SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET
 - AUTO_RECREATE_SCHEMA=false (recommended; destructive runtime schema changes are disabled)
 - Booking/interview plugins: BOOKING_PROVIDER, BOOKING_PROVIDER_URL, INTERVIEW_PROVIDER, INTERVIEW_PROVIDER_URL
+
+## Internal Resume Ingestion
+
+Seed the internal candidate corpus from `backend/resumes/` with:
+
+`python scripts/seed_resumes.py`
+
+The script extracts PDF text, parses structured candidate JSON, writes PostgreSQL rows, and upserts vectors into Qdrant.
 
 ## Architecture
 

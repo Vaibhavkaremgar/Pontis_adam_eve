@@ -18,6 +18,13 @@ from app.db.repositories import (
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_service import fetch_ranked_candidates
 from app.services.recruiter_preference_service import update_recruiter_preferences
+from app.services.recruiter_preference_round_service import (
+    bootstrap_preference_session,
+    build_state_response,
+    finalize_preference_session,
+    get_preference_session,
+    record_preference_choice,
+)
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.state_machine import assert_valid_transition, is_swipe_locked
 from app.utils.exceptions import APIError
@@ -117,14 +124,7 @@ def _build_batch_plan(candidates: list[CandidateResult]) -> list[list[str]]:
     if len(diverse_subset) < DEFAULT_SELECTION_LIMIT:
         diverse_subset = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))[:DEFAULT_SELECTION_LIMIT]
 
-    batches: list[list[CandidateResult]] = [[], [], []]
-    for index, candidate in enumerate(diverse_subset[:DEFAULT_SELECTION_LIMIT]):
-        batches[index % DEFAULT_TOTAL_BATCHES].append(candidate)
-
-    for batch in batches:
-        batch.sort(key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
-
-    return [[candidate.id for candidate in batch] for batch in batches]
+    return [[candidate.id for candidate in diverse_subset[i : i + 2]] for i in range(0, DEFAULT_SELECTION_LIMIT, 2)]
 
 
 def _candidate_lookup_snapshot(snapshot: list[dict[str, Any]]) -> dict[str, CandidateResult]:
@@ -144,6 +144,23 @@ def _current_batch_from_session(session, snapshot_lookup: dict[str, CandidateRes
     if batch_index >= len(batch_plan):
         return []
     return [snapshot_lookup[candidate_id] for candidate_id in batch_plan[batch_index] if candidate_id in snapshot_lookup]
+
+
+def _selection_session_payload(session, state: dict[str, Any], current_batch: list[CandidateResult], final_candidates: list[CandidateResult] | None = None) -> dict[str, Any]:
+    payload = _session_payload(session=session, current_batch=current_batch, final_candidates=final_candidates)
+    payload.update(
+        {
+            "stage": state.get("stage", "initial_job_understanding"),
+            "recommendedQuestions": list(state.get("recommended_questions") or []),
+            "gapAnalysis": state.get("gap_analysis") or {},
+            "intentProfile": state.get("intent_profile") or {},
+            "telemetry": state.get("telemetry") or {},
+            "currentPair": state.get("current_pair") or {},
+            "pairExplanation": (state.get("current_pair") or {}).get("pair_explanation", {}),
+            "voiceSummary": state.get("voice_summary", ""),
+        }
+    )
+    return payload
 
 
 def _build_selection_analysis(selected_candidates: list[CandidateResult]) -> dict[str, Any]:
@@ -372,16 +389,25 @@ def _session_payload(
 
 def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, dict[str, Any]]:
     jobs = JobRepository(db)
-    if not jobs.get(job_id):
+    job = jobs.get(job_id)
+    if not job:
         raise APIError("Job not found", status_code=404)
 
     repository = CandidateSelectionSessionRepository(db)
     existing = repository.get_by_job(job_id)
+    recruiter_id = jobs.get_recruiter_id(job_id) or ""
+    state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id)
+    if not state:
+        state = bootstrap_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
+
     if existing:
         lookup = _candidate_lookup_snapshot(existing.candidate_pool_snapshot or [])
-        current_batch = _current_batch_from_session(existing, lookup)
+        current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+        current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
+        if not current_batch and existing.batch_plan:
+            current_batch = _current_batch_from_session(existing, lookup)
         final_candidates = [CandidateResult.model_validate(row) for row in (existing.final_candidate_snapshot or [])]
-        return existing, _session_payload(session=existing, current_batch=current_batch, final_candidates=final_candidates)
+        return existing, _selection_session_payload(session=existing, state=state, current_batch=current_batch, final_candidates=final_candidates)
 
     ranked_candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=None, refresh=True)
     if len(ranked_candidates) < DEFAULT_SELECTION_LIMIT:
@@ -397,9 +423,13 @@ def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, 
         batch_size=DEFAULT_BATCH_SIZE,
         total_batches=DEFAULT_TOTAL_BATCHES,
     )
+    state = bootstrap_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
     lookup = _candidate_lookup_snapshot(candidate_pool_snapshot)
-    current_batch = _current_batch_from_session(session, lookup)
-    return session, _session_payload(session=session, current_batch=current_batch)
+    current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+    current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
+    if not current_batch:
+        current_batch = _current_batch_from_session(session, lookup)
+    return session, _selection_session_payload(session=session, state=state, current_batch=current_batch)
 
 
 def get_first_selection_batch(*, db: Session, job_id: str) -> dict[str, Any]:
@@ -421,7 +451,16 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         return payload
 
     lookup = _candidate_lookup_snapshot(session.candidate_pool_snapshot or [])
-    current_batch = _current_batch_from_session(session, lookup)
+    recruiter_id = JobRepository(db).get_recruiter_id(job_id) or ""
+    state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id) or bootstrap_preference_session(
+        db=db,
+        recruiter_id=recruiter_id,
+        job_id=job_id,
+    )
+    current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+    current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
+    if not current_batch:
+        current_batch = _current_batch_from_session(session, lookup)
     current_batch_ids = [candidate.id for candidate in current_batch]
     if candidate_id not in current_batch_ids:
         raise APIError("candidate is not part of the active batch", status_code=400)
@@ -441,7 +480,6 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
 
     selected_candidate = lookup.get(candidate_id)
     rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
-    recruiter_id = JobRepository(db).get_recruiter_id(job_id)
     if recruiter_id and selected_candidate:
         update_recruiter_preferences(
             db,
@@ -468,7 +506,18 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
     if not updated_session:
         raise APIError("Selection session not found", status_code=404)
 
-    if int(updated_session.current_batch_index or 0) >= DEFAULT_TOTAL_BATCHES:
+    state = record_preference_choice(
+        db=db,
+        recruiter_id=recruiter_id,
+        job_id=job_id,
+        selected_candidate_id=candidate_id,
+        previous_round=int(updated_session.current_batch_index or 0) + 1,
+    )
+    updated_session = repository.get_by_job(job_id)
+    if not updated_session:
+        raise APIError("Selection session not found", status_code=404)
+
+    if (state.get("status") or "").strip().lower() == "completed" or int(updated_session.current_batch_index or 0) >= DEFAULT_TOTAL_BATCHES:
         selected_lookup = _candidate_lookup_snapshot(updated_session.candidate_pool_snapshot or [])
         selected_rows = [
             selected_lookup[candidate_id]
@@ -491,6 +540,7 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         if not completed_session:
             raise APIError("Selection session not found after completion", status_code=404)
         final_rows = [CandidateResult.model_validate(row) for row in (completed_session.final_candidate_snapshot or [])]
+        state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
         return {
             **_session_payload(
                 session=completed_session,
@@ -499,6 +549,9 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             ),
             "analysis": completed_session.selection_analysis or analysis,
             "topCandidates": [candidate.model_dump() for candidate in final_rows],
+            "stage": state.get("stage", "final_shortlist"),
+            "intentProfile": state.get("intent_profile") or {},
+            "telemetry": state.get("telemetry") or {},
         }
 
     db.commit()
@@ -506,8 +559,11 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
     if not refreshed_session:
         raise APIError("Selection session not found", status_code=404)
     refreshed_lookup = _candidate_lookup_snapshot(refreshed_session.candidate_pool_snapshot or [])
-    next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
-    return _session_payload(session=refreshed_session, current_batch=next_batch)
+    next_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+    next_batch = [refreshed_lookup[candidate_id] for candidate_id in next_pair_ids if candidate_id in refreshed_lookup]
+    if not next_batch:
+        next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
+    return _selection_session_payload(session=refreshed_session, state=state, current_batch=next_batch)
 
 
 def get_final_selection_results(*, db: Session, job_id: str) -> dict[str, Any]:

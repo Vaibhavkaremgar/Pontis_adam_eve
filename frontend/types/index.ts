@@ -15,6 +15,7 @@
 export type User = {
   id: string;
   email: string;
+  role?: "recruiter" | "internal_ops" | "admin" | string;
   provider?: "email" | "google";
   name?: string;
   picture?: string;
@@ -71,6 +72,21 @@ export type Candidate = {
     pdlRelevance?: number;
     recencyScore?: number;
     aiReasoning?: string;
+    sourceBreakdown?: {
+      vector?: number;
+      lexical?: number;
+      structured?: number;
+      recruiterPreference?: number;
+      freshness?: number;
+      selectionRound?: number;
+      voiceInterview?: number;
+    };
+    recruiterPreferenceInfluence?: number;
+    voiceInterviewInfluence?: number;
+    lexicalRetrievalInfluence?: number;
+    vectorRetrievalInfluence?: number;
+    freshnessInfluence?: number;
+    selectionRoundInfluence?: number;
     penalties?: {
       semanticPenalty?: number;
       missingSkillsPenalty?: number;
@@ -148,4 +164,46 @@ export type CandidateSelectionSession = {
   completed: boolean;
   finalCandidates: Candidate[];
   topCandidates?: Candidate[];
+  stage?: string;
+  recommendedQuestions?: string[];
+  gapAnalysis?: {
+    missing_fields?: string[];
+    ambiguous_fields?: string[];
+    confidence_scores?: Record<string, number>;
+    missing_preferences?: string[];
+    recommended_questions?: string[];
+  };
+  intentProfile?: {
+    required_skills?: string[];
+    preferred_skills?: string[];
+    seniority_weight?: number;
+    startup_weight?: number;
+    domain_weight?: number;
+    leadership_weight?: number;
+    infra_weight?: number;
+    culture_preferences?: string[];
+    hiring_biases?: Record<string, unknown>;
+    recruiter_preference_embedding?: number[];
+    preference_text?: string;
+    voice_summary?: string;
+    selection_round_count?: number;
+    profile_hash?: string;
+  };
+  currentPair?: {
+    round_index?: number;
+    candidate_ids?: string[];
+    candidates?: Candidate[];
+    signal_quality?: number;
+    contrast_axes?: string[];
+    rationale?: string;
+    pair_explanation?: Record<string, unknown>;
+  };
+  telemetry?: {
+    preference_learning_gain?: number;
+    rerank_precision_gain?: number;
+    pair_signal_quality?: number;
+    recruiter_preference_confidence?: number;
+  };
+  voiceSummary?: string;
+  pairExplanation?: Record<string, unknown>;
 };

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
@@ -14,6 +15,7 @@ from app.services.candidate_selection_service import (
     get_next_selection_batch,
     submit_selection_choice,
 )
+from app.services.ownership import assert_job_ownership
 from app.utils.responses import success_response
 
 router = APIRouter(tags=["candidates"])
@@ -28,6 +30,7 @@ def get_candidates(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     candidates = fetch_ranked_candidates(db=db, job_id=jobId, mode=mode, refresh=refresh, debug=debug)
     return success_response([candidate.model_dump(exclude_none=True) for candidate in candidates])
 
@@ -39,6 +42,7 @@ def get_shortlisted_candidates(
     db: Session = Depends(get_db),
 ):
     """Return only shortlisted candidates for a job — used by the outreach page."""
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     from app.services.candidate_service import list_shortlisted_candidates
     candidates = list_shortlisted_candidates(db=db, job_id=jobId)
     return success_response([candidate.model_dump() for candidate in candidates])
@@ -46,6 +50,7 @@ def get_shortlisted_candidates(
 
 @router.post("/candidates/swipe")
 def swipe_candidate(payload: SwipeFeedbackRequest, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    assert_job_ownership(db=db, job_id=payload.jobId, user_id=_.get("id", ""))
     result = apply_feedback(
         db=db,
         job_id=payload.jobId,
@@ -56,7 +61,8 @@ def swipe_candidate(payload: SwipeFeedbackRequest, _: dict = Depends(get_current
 
 
 @router.post("/candidates/export")
-def export_candidates(payload: CandidateExportRequest, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+def export_candidates(payload: CandidateExportRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
     result = export_to_ats(
         db=db,
         job_id=payload.jobId,
@@ -72,6 +78,7 @@ def get_first_candidate_batch(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     result = get_first_selection_batch(db=db, job_id=jobId)
     return success_response(result)
 
@@ -82,6 +89,7 @@ def get_next_candidate_batch(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     result = get_next_selection_batch(db=db, job_id=jobId)
     return success_response(result)
 
@@ -89,9 +97,11 @@ def get_next_candidate_batch(
 @router.post("/candidates/selection")
 def select_candidate(
     payload: CandidateSelectionRequest,
+    request: Request,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
     result = submit_selection_choice(db=db, job_id=payload.jobId, candidate_id=payload.candidateId)
     return success_response(result)
 
@@ -102,5 +112,6 @@ def get_final_candidate_selection(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     result = get_final_selection_results(db=db, job_id=jobId)
     return success_response(result)
