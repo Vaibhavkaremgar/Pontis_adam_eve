@@ -28,7 +28,11 @@ def main() -> int:
 
     with SessionLocal() as db:
         result = ingest_resume_directory(db, resumes_dir)
-        db.commit()
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
         validation = validate_ingestion_state(db)
 
     duration = perf_counter() - started

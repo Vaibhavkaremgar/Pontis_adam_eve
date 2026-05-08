@@ -382,6 +382,7 @@ def ingest_resume_directory(db: Session, resumes_dir: Path) -> dict[str, int]:
             if not outcome.get("created", True):
                 results["duplicates"] += 1
         except Exception as exc:
+            db.rollback()
             results["failed"] += 1
             log_metric("resumes_failed", file_name=pdf_path.name, error_type=type(exc).__name__)
             logger.warning("resume_ingestion_failed file=%s error=%s", pdf_path.name, str(exc), exc_info=exc)
