@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 # revision identifiers, used by Alembic.
@@ -37,7 +38,7 @@ def upgrade() -> None:
     op.create_table(
         "audit_events",
         sa.Column("id", sa.String(length=36), primary_key=True, nullable=False),
-        sa.Column("actor_id", sa.String(length=36), nullable=True),
+        sa.Column("actor_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("actor_type", sa.String(length=32), nullable=False, server_default="user"),
         sa.Column("action", sa.String(length=128), nullable=False),
         sa.Column("entity_type", sa.String(length=128), nullable=False),
@@ -64,4 +65,3 @@ def downgrade() -> None:
 
     op.drop_index("ix_embedding_version_registry_embedding_version", table_name="embedding_version_registry")
     op.drop_table("embedding_version_registry")
-
