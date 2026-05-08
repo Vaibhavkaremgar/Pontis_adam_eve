@@ -24,14 +24,21 @@ logger = logging.getLogger(__name__)
 
 _client: Redis | None = None
 _client_failed = False
+_client_retry_at: float = 0.0
+_client_last_error = ""
+_REDIS_RETRY_COOLDOWN_SECONDS = 60
 
 
 def get_redis() -> Redis | None:
     """Return a shared Redis client, or None if Redis is unavailable."""
-    global _client, _client_failed
+    global _client, _client_failed, _client_retry_at, _client_last_error
 
-    if _client_failed:
+    now = time.monotonic()
+    if _client_failed and now < _client_retry_at:
         return None
+    if _client_failed and now >= _client_retry_at:
+        _client_failed = False
+        _client_last_error = ""
     if _client is not None:
         return _client
 
@@ -55,16 +62,24 @@ def get_redis() -> Redis | None:
         logger.info("redis_connected url=%s", url[:40])
         return _client
     except RedisError as exc:
-        logger.warning("redis_connection_failed error=%s", str(exc))
         _client_failed = True
+        _client_retry_at = time.monotonic() + _REDIS_RETRY_COOLDOWN_SECONDS
+        _client_last_error = str(exc)
+        logger.warning(
+            "redis_connection_failed retry_at_seconds=%s error=%s",
+            _REDIS_RETRY_COOLDOWN_SECONDS,
+            str(exc),
+        )
         return None
 
 
 def reset_redis_client() -> None:
     """Force reconnect on next call — used after transient failures."""
-    global _client, _client_failed
+    global _client, _client_failed, _client_retry_at, _client_last_error
     _client = None
     _client_failed = False
+    _client_retry_at = 0.0
+    _client_last_error = ""
 
 
 def close_redis_client() -> None:

@@ -741,37 +741,70 @@ class InternalCandidateResumeRepository:
 
     def upsert(
         self,
-        *,
-        candidate_id: str,
-        resume_fingerprint: str,
-        source_filename: str,
-        source_path: str,
-        source_metadata: dict,
-        full_name: str,
-        headline: str,
-        years_experience: float,
-        skills: list[str],
-        companies: list[str],
-        education: list[str],
-        projects: list[str],
-        certifications: list[str],
-        location: str,
-        summary: str,
-        domain_experience: list[str],
-        raw_resume_text: str,
-        parsed_data: dict,
-        embedding_version: str,
-        vector_version: str,
-        qdrant_point_id: str,
+        **payload,
     ) -> InternalCandidateResumeEntity:
         now = datetime.now(timezone.utc)
-        normalized_fingerprint = _normalize_text(resume_fingerprint)
-        normalized_candidate_id = _normalize_text(candidate_id)
-        row = self.get_by_fingerprint(normalized_fingerprint) or self.get_by_candidate_id(normalized_candidate_id)
+        normalized_payload = dict(payload or {})
+        candidate_id = _normalize_text(
+            normalized_payload.get("candidate_id")
+            or normalized_payload.get("candidateId")
+            or normalized_payload.get("id")
+        )
+        normalized_fingerprint = _normalize_text(
+            normalized_payload.get("resume_fingerprint")
+            or normalized_payload.get("resumeFingerprint")
+            or normalized_payload.get("fingerprint")
+        )
+        source_filename = _normalize_text(
+            normalized_payload.get("source_filename")
+            or normalized_payload.get("sourceFilename")
+            or normalized_payload.get("file_name")
+            or normalized_payload.get("fileName")
+        )
+        source_path = _normalize_text(normalized_payload.get("source_path") or normalized_payload.get("sourcePath"))
+        source_metadata = normalized_payload.get("source_metadata") or normalized_payload.get("sourceMetadata") or {}
+        full_name = _normalize_text(normalized_payload.get("full_name") or normalized_payload.get("fullName") or normalized_payload.get("name"))
+        headline = _normalize_text(normalized_payload.get("headline") or normalized_payload.get("title") or normalized_payload.get("role"))
+        years_experience = float(
+            normalized_payload.get("years_experience")
+            or normalized_payload.get("yearsExperience")
+            or 0.0
+        )
+        skills = list(normalized_payload.get("skills") or [])
+        companies = list(normalized_payload.get("companies") or [])
+        education = list(normalized_payload.get("education") or [])
+        projects = list(normalized_payload.get("projects") or [])
+        certifications = list(normalized_payload.get("certifications") or [])
+        location = _normalize_text(normalized_payload.get("location"))
+        summary = _normalize_text(normalized_payload.get("summary"))
+        domain_experience = list(normalized_payload.get("domain_experience") or normalized_payload.get("domainExperience") or [])
+        raw_resume_text = _normalize_text(normalized_payload.get("raw_resume_text") or normalized_payload.get("rawResumeText"))
+        parsed_data = normalized_payload.get("parsed_data") or normalized_payload.get("parsedData") or {}
+        embedding_version = _normalize_text(
+            normalized_payload.get("embedding_version")
+            or normalized_payload.get("embeddingVersion")
+            or ""
+        )
+        vector_version = _normalize_text(
+            normalized_payload.get("vector_version")
+            or normalized_payload.get("vectorVersion")
+            or embedding_version
+        )
+        qdrant_point_id = _normalize_text(
+            normalized_payload.get("qdrant_point_id")
+            or normalized_payload.get("qdrantPointId")
+            or candidate_id
+        )
+        if not candidate_id:
+            raise APIError("candidate_id is required", status_code=400)
+        if not normalized_fingerprint:
+            raise APIError("resume_fingerprint is required", status_code=400)
+
+        row = self.get_by_fingerprint(normalized_fingerprint) or self.get_by_candidate_id(candidate_id)
         if not row:
             row = InternalCandidateResumeEntity(
                 id=str(uuid4()),
-                candidate_id=normalized_candidate_id,
+                candidate_id=candidate_id,
                 resume_fingerprint=normalized_fingerprint,
             )
             try:
@@ -781,34 +814,82 @@ class InternalCandidateResumeRepository:
             except IntegrityError:
                 logger.info(
                     "internal_candidate_duplicate_skipped candidate_id=%s fingerprint=%s",
-                    normalized_candidate_id,
+                    candidate_id,
                     normalized_fingerprint,
                 )
-                row = self.get_by_fingerprint(normalized_fingerprint) or self.get_by_candidate_id(normalized_candidate_id)
+                row = self.get_by_fingerprint(normalized_fingerprint) or self.get_by_candidate_id(candidate_id)
                 if not row:
                     raise
 
-        row.candidate_id = normalized_candidate_id
+        row.candidate_id = candidate_id
         row.resume_fingerprint = normalized_fingerprint
-        row.source_filename = source_filename.strip()
-        row.source_path = source_path.strip()
+        row.source_filename = source_filename
+        row.source_path = source_path
         row.source_metadata = dict(source_metadata or {})
-        row.full_name = full_name.strip()
-        row.headline = headline.strip()
-        row.years_experience = float(years_experience or 0.0)
+        row.full_name = full_name
+        row.headline = headline
+        row.years_experience = years_experience
         row.skills = list(skills or [])
         row.companies = list(companies or [])
         row.education = list(education or [])
         row.projects = list(projects or [])
         row.certifications = list(certifications or [])
-        row.location = location.strip()
-        row.summary = summary.strip()
+        row.location = location
+        row.summary = summary
         row.domain_experience = list(domain_experience or [])
         row.raw_resume_text = raw_resume_text
-        row.parsed_data = dict(parsed_data or {})
-        row.embedding_version = embedding_version.strip()
-        row.vector_version = vector_version.strip()
-        row.qdrant_point_id = qdrant_point_id.strip()
+        extra_payload = {
+            key: value
+            for key, value in normalized_payload.items()
+            if key
+            not in {
+                "candidate_id",
+                "candidateId",
+                "id",
+                "resume_fingerprint",
+                "resumeFingerprint",
+                "fingerprint",
+                "source_filename",
+                "sourceFilename",
+                "file_name",
+                "fileName",
+                "source_path",
+                "sourcePath",
+                "source_metadata",
+                "sourceMetadata",
+                "full_name",
+                "fullName",
+                "name",
+                "headline",
+                "title",
+                "role",
+                "years_experience",
+                "yearsExperience",
+                "skills",
+                "companies",
+                "education",
+                "projects",
+                "certifications",
+                "location",
+                "summary",
+                "domain_experience",
+                "domainExperience",
+                "raw_resume_text",
+                "rawResumeText",
+                "parsed_data",
+                "parsedData",
+                "embedding_version",
+                "embeddingVersion",
+                "vector_version",
+                "vectorVersion",
+                "qdrant_point_id",
+                "qdrantPointId",
+            }
+        }
+        row.parsed_data = {**dict(parsed_data or {}), **extra_payload}
+        row.embedding_version = embedding_version
+        row.vector_version = vector_version
+        row.qdrant_point_id = qdrant_point_id
         row.indexed_at = now
         row.updated_at = now
         self.db.flush()

@@ -132,6 +132,10 @@ SLACK_SKIP_SIGNATURE_VERIFICATION = os.getenv("SLACK_SKIP_SIGNATURE_VERIFICATION
 # Disabled after Postgres migration: persistent sqlite cache backend is no longer active.
 PERSISTENT_CACHE_PATH = os.getenv("PERSISTENT_CACHE_PATH", "disabled").strip()
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
+if not REDIS_URL:
+    REDIS_URL = os.getenv("RAILWAY_REDIS_URL", os.getenv("RAILWAY_PRIVATE_URL", "")).strip()
+if REDIS_URL and "YOUR-REDIS-HOST" in REDIS_URL:
+    REDIS_URL = ""
 INTERNAL_API_KEY = _required_env("INTERNAL_API_KEY")
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "").strip()
 ADMIN_EMAILS = {item.strip().lower() for item in os.getenv("ADMIN_EMAILS", "").split(",") if item.strip()}
