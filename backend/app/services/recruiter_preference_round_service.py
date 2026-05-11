@@ -7,9 +7,9 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CandidateSelectionSessionRepository, JobRepository
-from app.services.candidate_service import fetch_ranked_candidates
 from app.services.job_gap_analysis_service import analyze_job_gap
 from app.services.preference_pair_service import generate_preference_pair, generate_three_round_plan
+from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.recruiter_intent_service import (
     build_recruiter_intent_profile,
     persist_recruiter_intent_profile,
@@ -29,6 +29,244 @@ _STATE_TTL_SECONDS = 24 * 60 * 60
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        normalized = _normalize_text(value)
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    return ordered
+
+
+def _job_mode(job: Any) -> str:
+    value = _normalize_text(getattr(job, "vetting_mode", "") or getattr(job, "vettingMode", "") or "volume").lower()
+    return value if value in {"volume", "elite"} else "volume"
+
+
+def _extract_job_skills(job: Any, intent_profile: dict[str, Any]) -> list[str]:
+    if isinstance(intent_profile, dict):
+        preferred = list(intent_profile.get("preferred_skills") or [])
+        required = list(intent_profile.get("required_skills") or [])
+    else:
+        preferred = []
+        required = []
+    job_skills = getattr(job, "skills_required", None) if not isinstance(job, dict) else job.get("skills_required")
+    if isinstance(job_skills, list):
+        required.extend(str(item) for item in job_skills)
+    description = _normalize_text(getattr(job, "description", "") or (job.get("description") if isinstance(job, dict) else ""))
+    for token in ("python", "typescript", "javascript", "react", "fastapi", "postgres", "aws", "gcp", "kubernetes", "terraform", "design systems", "system design", "leadership"):
+        if token in description.lower():
+            required.append(token)
+    return _ordered_unique([*required, *preferred, "communication", "ownership", "execution"])
+
+
+def _synthetic_candidate_blueprint(index: int, *, mode: str) -> dict[str, Any]:
+    elite = mode == "elite"
+    blueprints = [
+        {
+            "name": "Alex Rivera",
+            "role": "Platform Engineer",
+            "company": "Northstar Labs",
+            "location": "Remote",
+            "years": 9.5 if elite else 6.5,
+            "summary": "Builds reliable systems, ships quickly, and owns ambiguous work without needing heavy supervision.",
+            "archetype": "systems_owner",
+        },
+        {
+            "name": "Jordan Chen",
+            "role": "Product Engineer",
+            "company": "Axiom Works",
+            "location": "Bengaluru, India",
+            "years": 8.8 if elite else 5.9,
+            "summary": "Pairs product thinking with execution depth and keeps stakeholder communication crisp.",
+            "archetype": "product_operator",
+        },
+        {
+            "name": "Priya Shah",
+            "role": "Staff Backend Engineer",
+            "company": "Signal Forge",
+            "location": "Remote",
+            "years": 11.0 if elite else 7.1,
+            "summary": "Strong at service design, performance tuning, and mentoring others through messy production issues.",
+            "archetype": "technical_lead",
+        },
+        {
+            "name": "Miguel Santos",
+            "role": "Applied Systems Engineer",
+            "company": "HarborStack",
+            "location": "Singapore",
+            "years": 7.8 if elite else 5.2,
+            "summary": "Turns unclear product requirements into scoped deliverables and keeps momentum high.",
+            "archetype": "startup_operator",
+        },
+        {
+            "name": "Nina Patel",
+            "role": "Infrastructure Engineer",
+            "company": "Cinder Cloud",
+            "location": "Remote",
+            "years": 10.2 if elite else 6.8,
+            "summary": "Deep cloud and infrastructure background with careful operational habits and practical judgment.",
+            "archetype": "infra_specialist",
+        },
+        {
+            "name": "Ethan Brooks",
+            "role": "Full Stack Engineer",
+            "company": "Evergreen Studio",
+            "location": "Austin, TX",
+            "years": 6.9 if elite else 4.8,
+            "summary": "A balanced generalist who moves fast, learns quickly, and works well across product and engineering.",
+            "archetype": "balanced_generalist",
+        },
+    ]
+    return blueprints[index % len(blueprints)]
+
+
+def _build_synthetic_candidate(
+    *,
+    job: Any,
+    intent_profile: dict[str, Any],
+    voice_summary: str,
+    gap_analysis: dict[str, Any],
+    mode: str,
+    index: int,
+) -> CandidateResult:
+    job_title = _normalize_text(getattr(job, "title", "") or (job.get("title") if isinstance(job, dict) else "") or "Candidate")
+    job_location = _normalize_text(getattr(job, "location", "") or (job.get("location") if isinstance(job, dict) else "") or "Remote")
+    job_description = _normalize_text(getattr(job, "description", "") or (job.get("description") if isinstance(job, dict) else ""))
+    skills = _extract_job_skills(job, intent_profile)
+    blueprint = _synthetic_candidate_blueprint(index, mode=mode)
+    fit_base = 4.65 if mode == "elite" else 4.35
+    fit_score = max(3.6, round(fit_base - (index * (0.08 if mode == "elite" else 0.12)), 2))
+    semantic = round(min(0.99, fit_score / 5.0), 3)
+    shared_skills = skills[: min(5, len(skills))]
+    summary = (
+        f"{blueprint['name']} is a synthetic {blueprint['role'].lower()} profile created from the job brief and recruiter voice intake. "
+        f"The profile emphasizes {', '.join(shared_skills[:4]) or 'execution'} and reflects a {mode} hiring mood."
+    )
+    resume_lines = [
+        f"Target role: {job_title} ({mode} mood)",
+        f"Location: {job_location}",
+        f"Years of experience: {blueprint['years']:.1f}",
+        f"Core strengths: {', '.join(shared_skills[:6]) or 'execution, ownership, communication'}",
+        "",
+        "Selected background",
+        f"- {blueprint['summary']}",
+        f"- Built around the recruiter signals captured from voice intake: {_normalize_text(voice_summary) or 'job requirements only'}.",
+        f"- Focus areas: {job_description[:220] or 'N/A'}",
+    ]
+    explanation = CandidateExplanation(
+        semanticScore=semantic,
+        skillOverlap=min(1.0, len(shared_skills) / max(1, len(skills))),
+        finalScore=semantic,
+        pdlRelevance=semantic,
+        recencyScore=0.72 if mode == "elite" else 0.63,
+        penalties={
+            "semanticPenalty": round(max(0.0, 0.15 - (index * 0.02)), 4),
+            "missingSkillsPenalty": 0.0,
+            "selectionPreferenceBonus": 0.0,
+        },
+        skillsMatched=shared_skills[:4],
+        experienceMatch=f"{int(round(blueprint['years']))}+ years on adjacent work",
+        candidateExperience=f"{blueprint['years']:.1f} years",
+        jobExperience=_normalize_text(getattr(job, "experience_required", "") or getattr(job, "experienceRequired", "") or ""),
+        aiReasoning=f"Synthetic profile tuned for {mode} selection. The intent is to reveal recruiter taste before using the real candidate pool.",
+        sourceBreakdown={
+            "vector": round(0.24 + index * 0.03, 4),
+            "lexical": round(0.28 + index * 0.02, 4),
+            "structured": round(0.22 + index * 0.02, 4),
+            "recruiterPreference": 0.0,
+            "freshness": round(0.18 + index * 0.01, 4),
+            "selectionRound": 0.0,
+            "voiceInterview": round(0.26 + index * 0.02, 4),
+        },
+    )
+    fit_label = "HIGH" if fit_score >= 4 else "MEDIUM" if fit_score >= 2.5 else "LOW"
+    decision = "strong_match" if fit_score >= 3.8 else "potential" if fit_score >= 2.5 else "weak"
+
+    return CandidateResult(
+        id=f"synthetic-{mode}-{_normalize_text(getattr(job, 'id', '') or (job.get('id') if isinstance(job, dict) else 'job'))}-{index + 1}",
+        name=blueprint["name"],
+        role=blueprint["role"],
+        company=blueprint["company"],
+        email=f"{blueprint['name'].lower().replace(' ', '.')}@synthetic.pontis.test",
+        isMockEmail=True,
+        headline=f"{mode.title()} candidate for {job_title}",
+        location=blueprint["location"],
+        yearsExperience=float(blueprint["years"]),
+        skills=shared_skills,
+        summary=summary,
+        education=[
+            "B.S. Computer Science, synthetic profile",
+            "Professional development in systems design and product delivery",
+        ],
+        projects=[
+            "Internal platform modernization",
+            "Cross-functional workflow automation",
+            "Operational dashboard rollout",
+        ],
+        certifications=[
+            "AWS Fundamentals",
+            "System Design Foundations",
+        ],
+        companiesHistory=[
+            blueprint["company"],
+            "Synthetic Growth Labs",
+        ],
+        domainExperience=[
+            "Hiring intake analysis",
+            "Platform execution",
+            "High-velocity product delivery",
+        ],
+        resumeText="\n".join(resume_lines).strip(),
+        profileData={
+            "source": "synthetic",
+            "mood": mode,
+            "archetype": blueprint["archetype"],
+            "generated_from": "job_details_and_voice_intake",
+            "job_title": job_title,
+            "job_location": job_location,
+            "voice_summary": _normalize_text(voice_summary),
+            "gap_analysis": gap_analysis,
+        },
+        fitScore=fit_score,
+        decision=decision,
+        explanation=explanation,
+        strategy=fit_label,
+        status="new",
+        outreachStatus="pending",
+        exportStatus="pending",
+        ats_export_status="not_sent",
+    )
+
+
+def _build_synthetic_candidate_pool(
+    *,
+    job: Any,
+    voice_summary: str,
+    gap_analysis: dict[str, Any],
+    intent_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    mode = _job_mode(job)
+    synthetic_candidates = [
+        _build_synthetic_candidate(
+            job=job,
+            intent_profile=intent_profile,
+            voice_summary=voice_summary,
+            gap_analysis=gap_analysis,
+            mode=mode,
+            index=index,
+        )
+        for index in range(6)
+    ]
+    return [candidate.model_dump(exclude_none=True) for candidate in synthetic_candidates]
 
 
 def _state_key(*, recruiter_id: str, job_id: str) -> str:
@@ -143,8 +381,6 @@ def bootstrap_preference_session(
     if existing_state:
         return existing_state
 
-    candidate_results = fetch_ranked_candidates(db=db, job_id=job_id, mode=None, refresh=True)
-    candidate_pool = [_serialize_candidate(candidate) for candidate in candidate_results[:12]]
     gap_analysis = gap_analysis or analyze_job_gap(job=job, voice_summary=voice_summary)
     intent_profile = build_recruiter_intent_profile(
         db=db,
@@ -156,6 +392,12 @@ def bootstrap_preference_session(
         transcript=voice_summary,
     )
     persist_recruiter_intent_profile(db=db, recruiter_id=recruiter_id, profile=intent_profile)
+    candidate_pool = _build_synthetic_candidate_pool(
+        job=job,
+        voice_summary=voice_summary,
+        gap_analysis=gap_analysis,
+        intent_profile=intent_profile,
+    )
 
     round_plan = generate_three_round_plan(candidates=candidate_pool, intent_profile=intent_profile)
     session_repo = CandidateSelectionSessionRepository(db)
@@ -180,6 +422,8 @@ def bootstrap_preference_session(
         "history": [],
         "gap_analysis": gap_analysis,
         "recommended_questions": list(gap_analysis.get("recommended_questions") or []),
+        "vetting_mode": _job_mode(job),
+        "candidate_source": "synthetic",
         "intent_profile": summarize_intent_profile(intent_profile),
         "voice_summary": _normalize_text(voice_summary),
         "session_id": db_session.id,
@@ -358,6 +602,8 @@ def finalize_preference_session(*, db: Session, recruiter_id: str, job_id: str) 
     state["intent_profile"] = summarize_intent_profile(intent_profile)
     state["status"] = "completed"
     state["stage"] = "final_shortlist"
+    state["candidate_source"] = "real" if len(selection_rounds) >= 3 else state.get("candidate_source", "synthetic")
+    state["vetting_mode"] = _job_mode(job)
     state["telemetry"] = {
         **dict(state.get("telemetry") or {}),
         "recruiter_preference_confidence": round(min(1.0, float(intent_profile.get("history_signal_strength") or 0.0) + len(selection_rounds) * 0.12), 4),
@@ -381,6 +627,8 @@ def build_state_response(state: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "status": state.get("status", "active"),
         "stage": state.get("stage", "initial_job_understanding"),
+        "vetting_mode": state.get("vetting_mode", "volume"),
+        "candidate_source": state.get("candidate_source", "synthetic"),
         "rounds": list(state.get("rounds") or []),
         "current_round_index": int(state.get("current_round_index") or 1),
         "current_pair": state.get("current_pair") or {},

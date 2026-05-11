@@ -409,13 +409,13 @@ def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, 
         final_candidates = [CandidateResult.model_validate(row) for row in (existing.final_candidate_snapshot or [])]
         return existing, _selection_session_payload(session=existing, state=state, current_batch=current_batch, final_candidates=final_candidates)
 
-    ranked_candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=None, refresh=True)
-    if len(ranked_candidates) < DEFAULT_SELECTION_LIMIT:
+    candidate_pool_snapshot = list(state.get("candidate_pool") or [])
+    if len(candidate_pool_snapshot) < DEFAULT_SELECTION_LIMIT:
         raise APIError("Not enough candidates to start selection flow", status_code=409)
-
-    candidate_pool_snapshot = [candidate.model_dump() for candidate in ranked_candidates[:DEFAULT_FINAL_LIMIT]]
     candidate_pool = [CandidateResult.model_validate(row) for row in candidate_pool_snapshot]
-    batch_plan = _build_batch_plan(candidate_pool)
+    batch_plan = [list(pair.get("candidate_ids") or []) for pair in list(state.get("rounds") or [])][:DEFAULT_TOTAL_BATCHES]
+    if len(batch_plan) < DEFAULT_TOTAL_BATCHES or any(len(batch) < DEFAULT_BATCH_SIZE for batch in batch_plan):
+        batch_plan = _build_batch_plan(candidate_pool)
     session = repository.create(
         job_id=job_id,
         candidate_pool_snapshot=candidate_pool_snapshot,
@@ -446,6 +446,9 @@ def get_next_selection_batch(*, db: Session, job_id: str) -> dict[str, Any]:
 
 def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> dict[str, Any]:
     repository = CandidateSelectionSessionRepository(db)
+    job = JobRepository(db).get(job_id)
+    if not job:
+        raise APIError("Job not found", status_code=404)
     session, payload = _get_or_create_selection_session(db=db, job_id=job_id)
     if (session.status or "").strip().lower() == "completed":
         return payload
@@ -525,8 +528,14 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             if candidate_id in selected_lookup
         ]
         analysis = _build_selection_analysis(selected_rows)
+        real_candidates = fetch_ranked_candidates(
+            db=db,
+            job_id=job_id,
+            mode=(getattr(job, "vetting_mode", None) or "volume").strip().lower(),
+            refresh=True,
+        )
         final_candidates = _rerank_with_selection_signals(
-            pool_candidates=[CandidateResult.model_validate(row) for row in (updated_session.candidate_pool_snapshot or [])],
+            pool_candidates=real_candidates or [CandidateResult.model_validate(row) for row in (updated_session.candidate_pool_snapshot or [])],
             selected_candidates=selected_rows,
             analysis=analysis,
         )

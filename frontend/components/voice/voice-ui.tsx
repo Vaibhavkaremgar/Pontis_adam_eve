@@ -606,6 +606,7 @@ export function VoiceUi() {
     const jobDescription = job.description || "";
     const location = job.location || "";
     const recruiterName = user?.name || user?.email || "Recruiter";
+    const selectionMood = job.vettingMode || "volume";
     const jobContext = {
       title: job.title || "",
       description: job.description || "",
@@ -615,6 +616,7 @@ export function VoiceUi() {
       remotePolicy: job.remotePolicy || "",
       experienceRequired: job.experienceRequired || "",
       autoExportToAts: Boolean(job.autoExportToAts),
+      vettingMode: selectionMood,
     };
     const companyContext = {
       name: company.name || "",
@@ -627,6 +629,9 @@ export function VoiceUi() {
 
     const interviewQuestions = intelligence?.interview?.recommended_questions || intelligence?.selection?.recommended_questions || [];
     const firstQuestion = intelligence?.interview?.current_question || interviewQuestions[0] || "What's the most important thing you're looking for in this candidate?";
+    const questionList = interviewQuestions.length
+      ? interviewQuestions.map((question, index) => `${index + 1}. ${question}`).join("\n")
+      : firstQuestion;
     const firstMessage = companyName && jobTitle
       ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}`
       : `Let's refine your job requirements. ${firstQuestion}`;
@@ -649,6 +654,11 @@ export function VoiceUi() {
           remotePolicy: jobContext.remotePolicy,
           experienceRequired: jobContext.experienceRequired,
           autoExportToAts: String(jobContext.autoExportToAts),
+          vettingMode: selectionMood,
+          candidateMood: selectionMood,
+          dynamicQuestions: questionList,
+          dynamicQuestionCount: String(interviewQuestions.length || 1),
+          firstDynamicQuestion: firstQuestion,
           jobContext: JSON.stringify(jobContext),
           companyContext: JSON.stringify(companyContext),
           recruiterName,
