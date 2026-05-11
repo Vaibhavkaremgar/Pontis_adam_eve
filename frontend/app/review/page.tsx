@@ -478,8 +478,8 @@ export default function ReviewPage() {
 
   return (
     <AppShell activeStep={4}>
-      <div className="mx-auto w-full max-w-[1200px] space-y-6 px-4 py-6 md:px-6 lg:px-8">
-        <div className="rounded-[24px] border border-[#E7E0D4] bg-[#F8F5EE] p-6 shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+      <div className="mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-8 2xl:px-6">
+        <div className="w-full rounded-[32px] border border-[#E7E0D4] bg-[#F8F5EE] p-5 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6 lg:p-10">
           <div className="mb-6 flex items-center justify-between gap-4">
             <div className="space-y-1">
               <h1 className="font-heading text-3xl font-bold tracking-tight text-[#111827]">Review Candidates</h1>
@@ -534,7 +534,7 @@ export default function ReviewPage() {
                     Review the candidates in this set. Expand their profile to see full details and choose the one you want to keep.
                   </p>
                 </div>
-                <Badge className="rounded-full bg-[#F5E7B8] px-4 py-2 text-sm font-semibold text-[#8A5A00] shadow-none">
+                <Badge className="inline-flex rounded-full bg-[#F5E7B8] px-4 py-2 text-sm font-semibold text-[#8A5A00] shadow-none">
                   2-candidate set
                 </Badge>
               </div>
