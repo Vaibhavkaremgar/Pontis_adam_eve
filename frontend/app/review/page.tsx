@@ -16,6 +16,17 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  BriefcaseBusiness,
+  Building2,
+  CheckCircle2,
+  ChevronDown,
+  CircleUserRound,
+  GraduationCap,
+  MapPin,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -95,106 +106,113 @@ function trimText(value?: string, maxLength = 1200): string {
   return `${normalized.slice(0, maxLength).trim()}...`;
 }
 
+function clampLines(lines = 2) {
+  return {
+    display: "-webkit-box",
+    WebkitLineClamp: lines,
+    WebkitBoxOrient: "vertical" as const,
+    overflow: "hidden",
+  };
+}
+
+function DetailRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-[#ECE7DE] py-2 last:border-b-0">
+      <span className="text-sm text-[#6B7280]">{label}</span>
+      <span className="text-sm font-semibold text-[#111827]">{value}</span>
+    </div>
+  );
+}
+
+function ProfileToggleButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-14 w-full items-center justify-between rounded-[16px] border border-[#ECE7DE] bg-white px-4 text-left text-[15px] font-semibold text-[#111827] transition-all duration-200 hover:bg-[#FAFAF8]"
+    >
+      <span className="flex items-center gap-3">
+        <CircleUserRound className="h-5 w-5 text-[#0F6B3A]" />
+        <span>View full profile</span>
+      </span>
+      <ChevronDown className="h-5 w-5 text-[#6B7280]" />
+    </button>
+  );
+}
+
 function CandidateDetails({ candidate }: { candidate: Candidate }) {
   return (
-    <div className="space-y-4 pt-1">
-      <div className="space-y-2 rounded-2xl bg-white/75 p-4 text-sm text-gray-700">
-        <p>
-          Email: <span className="font-medium text-gray-900">{candidate.email || "Not provided"}</span>
-        </p>
-        <p>
-          Role: <span className="font-medium text-gray-900">{candidate.headline || candidate.role || "Not provided"}</span>
-        </p>
-        <p>
-          Location: <span className="font-medium text-gray-900">{candidate.location || "Not provided"}</span>
-        </p>
-      </div>
-
-      {candidate.skills.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {candidate.skills.slice(0, 6).map((skill) => (
-            <span key={`${candidate.id}-${skill}`} className="rounded-full bg-white/90 px-3 py-1 text-xs text-gray-700">
-              {skill}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {candidate.summary && <p className="text-[15px] leading-relaxed text-gray-700">{trimText(candidate.summary, 220)}</p>}
-
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Profile</p>
-          <div className="mt-2 space-y-1">
-            <p>
-              Company: <span className="font-medium text-gray-900">{candidate.company || "Not provided"}</span>
-            </p>
-            <p>
-              Experience: <span className="font-medium text-gray-900">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span>
-            </p>
-            <p>
-              Status: <span className="font-medium text-gray-900">{statusLabel(candidate)}</span>
-            </p>
-            <p>
-              Fit score: <span className="font-medium text-gray-900">{candidate.fitScore.toFixed(1)} / 5</span>
-            </p>
-          </div>
-        </div>
-
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Scoring</p>
-          <div className="mt-2 space-y-1">
-            <p>
-              Strategy: <span className="font-medium text-gray-900">{candidate.strategy}</span>
-            </p>
-            <p>
-              Resume included: <span className="font-medium text-gray-900">{candidate.resumeText ? "Yes" : "No"}</span>
-            </p>
-            <p>
-              Mock email: <span className="font-medium text-gray-900">{candidate.isMockEmail ? "Yes" : "No"}</span>
-            </p>
-          </div>
+    <div className="space-y-5">
+      <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
+        <div className="space-y-3">
+          <DetailRow label="Email" value={candidate.email || "Not provided"} />
+          <DetailRow label="Role" value={candidate.headline || candidate.role || "Not provided"} />
+          <DetailRow label="Location" value={candidate.location || "Not provided"} />
+          <DetailRow label="Company" value={candidate.company || "Not provided"} />
+          <DetailRow label="Experience" value={candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"} />
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Education</p>
-          <ul className="mt-2 space-y-1">
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Education</p>
+          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
             {formatList(candidate.education).map((item) => (
-              <li key={`education-${candidate.id}-${item}`}>{item}</li>
+              <li key={`education-${candidate.id}-${item}`} className="flex gap-2">
+                <GraduationCap className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span>{item}</span>
+              </li>
             ))}
           </ul>
         </div>
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Projects</p>
-          <ul className="mt-2 space-y-1">
+
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Projects</p>
+          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
             {formatList(candidate.projects).map((item) => (
-              <li key={`project-${candidate.id}-${item}`}>{item}</li>
+              <li key={`project-${candidate.id}-${item}`} className="flex gap-2">
+                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span>{item}</span>
+              </li>
             ))}
           </ul>
         </div>
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Certifications</p>
-          <ul className="mt-2 space-y-1">
+
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Certifications</p>
+          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
             {formatList(candidate.certifications).map((item) => (
-              <li key={`cert-${candidate.id}-${item}`}>{item}</li>
+              <li key={`cert-${candidate.id}-${item}`} className="flex gap-2">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span>{item}</span>
+              </li>
             ))}
           </ul>
         </div>
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Companies</p>
-          <ul className="mt-2 space-y-1">
+
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Companies</p>
+          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
             {formatList(candidate.companiesHistory).map((item) => (
-              <li key={`company-${candidate.id}-${item}`}>{item}</li>
+              <li key={`company-${candidate.id}-${item}`} className="flex gap-2">
+                <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span>{item}</span>
+              </li>
             ))}
           </ul>
         </div>
-        <div className="rounded-xl bg-white/80 p-4 text-sm text-gray-700 md:col-span-2">
-          <p className="text-xs uppercase tracking-wide text-gray-500">Domain experience</p>
-          <div className="mt-2 flex flex-wrap gap-2">
+
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 md:col-span-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Domain experience</p>
+          <div className="mt-3 flex flex-wrap gap-2">
             {formatList(candidate.domainExperience).map((item) => (
-              <span key={`domain-${candidate.id}-${item}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+              <span key={`domain-${candidate.id}-${item}`} className="rounded-full bg-[#F5E7B8] px-3 py-1 text-xs font-semibold text-[#8A5A00]">
                 {item}
               </span>
             ))}
@@ -202,15 +220,42 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         </div>
       </div>
 
+      {candidate.summary && (
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
+          <p className="mt-3 text-sm leading-7 text-[#4B5563]">{trimText(candidate.summary, 1200)}</p>
+        </div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 text-sm text-[#4B5563]">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Scoring</p>
+          <div className="mt-3 space-y-0.5">
+            <DetailRow label="Fit score" value={`${candidate.fitScore.toFixed(1)} / 5`} />
+            <DetailRow label="Status" value={statusLabel(candidate)} />
+            <DetailRow label="Strategy" value={candidate.strategy} />
+          </div>
+        </div>
+
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 text-sm text-[#4B5563]">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Signals</p>
+          <div className="mt-3 space-y-0.5">
+            <DetailRow label="Resume included" value={candidate.resumeText ? "Yes" : "No"} />
+            <DetailRow label="Mock email" value={candidate.isMockEmail ? "Yes" : "No"} />
+            <DetailRow label="Matched skills" value={candidate.skills.length ? `${candidate.skills.slice(0, 4).join(", ")}` : "Not provided"} />
+          </div>
+        </div>
+      </div>
+
       {candidate.resumeText && (
-        <div className="rounded-xl bg-[#111111] p-4 text-sm text-white">
-          <p className="text-xs uppercase tracking-wide text-white/70">Resume text</p>
-          <pre className="mt-2 whitespace-pre-wrap font-body leading-relaxed text-white/90">{candidate.resumeText}</pre>
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#111111] p-5 text-sm text-white">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Resume text</p>
+          <pre className="mt-3 whitespace-pre-wrap font-body leading-relaxed text-white/90">{candidate.resumeText}</pre>
         </div>
       )}
 
       {candidate.explanation?.sourceBreakdown && (
-        <div className="grid gap-2 rounded-xl bg-white/80 p-4 text-xs text-gray-600 sm:grid-cols-2">
+        <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-white p-5 text-xs text-[#6B7280] sm:grid-cols-2">
           <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
           <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
           <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
@@ -251,59 +296,70 @@ function CandidateCard({
           onOpenDetails();
         }
       }}
-      className={`h-full border transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(0,0,0,0.08)] ${
-        isSelected ? "border-green-300 bg-green-50" : "border-[rgba(120,100,80,0.08)] bg-[#F3EDE3]"
+      className={`flex h-full min-h-[620px] flex-col rounded-[24px] border border-[#E7E0D4] bg-white p-8 shadow-[0_8px_24px_rgba(0,0,0,0.04)] transition-all duration-200 hover:-translate-y-1 hover:shadow-[0_14px_32px_rgba(0,0,0,0.08)] ${
+        isSelected ? "ring-2 ring-[#DDF5E6]" : ""
       }`}
     >
-      <CardHeader className="space-y-3 pb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle className="text-xl">{candidate.name || candidate.id.slice(0, 8)}</CardTitle>
-            <CardDescription>{candidateSubtitle(candidate)}</CardDescription>
+      <CardHeader className="p-0">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-3">
+            <CardTitle className="font-heading text-[32px] font-bold leading-none text-[#111827]">
+              {candidate.name || candidate.id.slice(0, 8)}
+            </CardTitle>
+            <div className="space-y-2 text-[16px] leading-6 text-[#4B5563]">
+              <p className="flex items-center gap-2">
+                <BriefcaseBusiness className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span style={clampLines(2)}>
+                  {candidate.headline || candidate.role || "Not provided"}
+                </span>
+              </p>
+              <p className="flex items-center gap-2">
+                <Building2 className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span>{candidate.company || "Not provided"}</span>
+              </p>
+              <p className="flex items-center gap-2">
+                <MapPin className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
+                <span>{candidate.location || "Not provided"}</span>
+              </p>
+            </div>
           </div>
-          <Badge variant={candidate.strategy === "HIGH" ? "high" : candidate.strategy === "MEDIUM" ? "medium" : "low"}>
-            {candidate.fitScore.toFixed(1)} / 5
-          </Badge>
+          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center text-[16px] font-semibold leading-tight text-[#0F6B3A]">
+            <span>{candidate.fitScore.toFixed(1)}</span>
+            <span className="block text-[12px]">/5</span>
+          </div>
         </div>
-        <p className="text-xs text-gray-500">{statusLabel(candidate)}</p>
-        <p className="text-xs font-medium text-gray-500">Click to show details</p>
       </CardHeader>
 
-      <CardContent className="space-y-5">
-        <div className="space-y-2 rounded-2xl bg-white/75 p-4 text-sm text-gray-700">
-          <p>
-            Experience: <span className="font-medium text-gray-900">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span>
-          </p>
-          <p>
-            Company: <span className="font-medium text-gray-900">{candidate.company || "Not provided"}</span>
-          </p>
+      <CardContent className="flex flex-1 flex-col p-0 pt-6">
+        <div className="mb-4 inline-flex w-fit rounded-full bg-[#F3F4F6] px-3 py-1 text-xs font-semibold text-[#6B7280]">
+          {statusLabel(candidate)}
         </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          className="w-full justify-between rounded-2xl border border-dashed border-[rgba(120,100,80,0.16)] bg-white/60 px-4 py-3 text-sm text-gray-700 hover:bg-white"
-          onClick={(event) => {
-            event.stopPropagation();
-            onOpenDetails();
-          }}
-        >
-          <span>Click to show details</span>
-          <span aria-hidden="true">+</span>
-        </Button>
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
+          <DetailRow label="Experience" value={candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"} />
+          <DetailRow label="Company" value={candidate.company || "Not provided"} />
+        </div>
 
-        {showSelectButton && onSelect && (
-          <Button
-            className="w-full justify-center"
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelect();
-            }}
-            disabled={selectionLocked || isSelecting}
-          >
-            {isSelecting ? "Saving choice..." : "Select this candidate"}
-          </Button>
-        )}
+        <div className="mt-5">
+        <ProfileToggleButton
+            onClick={() => onOpenDetails()}
+          />
+        </div>
+
+        <div className="mt-auto pt-6">
+          {showSelectButton && onSelect && (
+            <Button
+              className="h-14 w-full rounded-[14px] bg-[#0F6B3A] text-[18px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect();
+              }}
+              disabled={selectionLocked || isSelecting}
+            >
+              {isSelecting ? "Saving choice..." : "Select this candidate"}
+            </Button>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
@@ -422,29 +478,40 @@ export default function ReviewPage() {
 
   return (
     <AppShell activeStep={4}>
-      <Card className="mx-auto w-full max-w-none">
-        <CardHeader className="space-y-2 text-center">
-          <CardTitle>Candidate selection</CardTitle>
-          <CardDescription>Review 3 batches of 2 candidates. Select one from each pair to teach the ranking model your preference.</CardDescription>
-        </CardHeader>
+      <div className="mx-auto w-full max-w-[1200px] space-y-6 px-4 py-6 md:px-6 lg:px-8">
+        <div className="rounded-[24px] border border-[#E7E0D4] bg-[#F8F5EE] p-6 shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <div className="space-y-1">
+              <h1 className="font-heading text-3xl font-bold tracking-tight text-[#111827]">Review Candidates</h1>
+              <p className="text-sm text-[#6B7280]">A refined shortlist review built for fast, confident selection.</p>
+            </div>
+          </div>
 
-        <CardContent className="space-y-8 px-4 pb-6 md:px-6">
           {isRefined && (
-            <div className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
+            <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
               Voice intake completed. The selection flow is now running on the refined job profile.
             </div>
           )}
 
-          <div className="grid gap-3 rounded-2xl bg-[#FAF7F1] p-4 text-sm text-gray-600 md:grid-cols-3">
-            <span>
-              Progress: <strong>{session ? `${progress} / ${session.totalBatches}` : "0 / 3"}</strong>
-            </span>
-            <span>
-              Selected: <strong>{session?.selectedCandidateIds.length ?? 0}</strong>
-            </span>
-            <span>
-              Rejected: <strong>{session?.rejectedCandidateIds.length ?? 0}</strong>
-            </span>
+          <div className="grid h-[72px] grid-cols-3 overflow-hidden rounded-[20px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+            <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
+              <ShieldCheck className="h-5 w-5 text-[#0F6B3A]" />
+              <span className="text-[18px] font-semibold text-[#111827]">
+                Progress: <span className="text-[#0F6B3A]">{session ? `${progress} / ${session.totalBatches}` : "0 / 3"}</span>
+              </span>
+            </div>
+            <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
+              <CheckCircle2 className="h-5 w-5 text-[#0F6B3A]" />
+              <span className="text-[18px] font-semibold text-[#111827]">
+                Selected: <span className="text-[#0F6B3A]">{session?.selectedCandidateIds.length ?? 0}</span>
+              </span>
+            </div>
+            <div className="flex items-center justify-center gap-3 px-4">
+              <ShieldCheck className="h-5 w-5 text-[#0F6B3A]" />
+              <span className="text-[18px] font-semibold text-[#111827]">
+                Rejected: <span className="text-[#0F6B3A]">{session?.rejectedCandidateIds.length ?? 0}</span>
+              </span>
+            </div>
           </div>
 
           {isLoading && <p className="text-sm text-gray-500">Loading selection session...</p>}
@@ -457,18 +524,22 @@ export default function ReviewPage() {
           )}
 
           {!isLoading && !completed && currentBatch.length > 0 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            <div className="space-y-8">
+              <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
                     Batch {session?.currentBatchIndex ? session.currentBatchIndex + 1 : 1} of {session?.totalBatches ?? 3}
                   </p>
-                  <p className="text-sm text-gray-600">Click a card to show the full details, then choose the candidate you want to keep.</p>
+                  <p className="max-w-3xl text-sm leading-6 text-[#6B7280]">
+                    Review the candidates in this set. Expand their profile to see full details and choose the one you want to keep.
+                  </p>
                 </div>
-                <Badge variant="medium">2-candidate set</Badge>
+                <Badge className="rounded-full bg-[#F5E7B8] px-4 py-2 text-sm font-semibold text-[#8A5A00] shadow-none">
+                  2-candidate set
+                </Badge>
               </div>
 
-              <div className="grid gap-5 xl:grid-cols-2">
+              <div className="grid gap-8 md:grid-cols-2">
                 {currentBatch.map((candidate) => {
                   return (
                     <CandidateCard
@@ -488,20 +559,20 @@ export default function ReviewPage() {
           )}
 
           {!isLoading && !completed && currentBatch.length === 0 && (
-            <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-600">
+            <div className="rounded-[20px] border border-[#E7E0D4] bg-[#EFE6D8] p-4 text-sm text-[#6B7280]">
               Preparing the next batch. If this screen just refreshed, the session will resume from the last saved step.
             </div>
           )}
 
           {completed && (
             <div className="space-y-5">
-              <div className="rounded-2xl border border-green-200 bg-green-50 p-4 text-sm text-green-900">
+              <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#0F6B3A]">
                 <p className="font-semibold">Selection complete</p>
                 <p className="mt-1">The backend has analyzed your choices and reranked the full candidate pool using the signals you showed.</p>
               </div>
 
               {summaryLines.length > 0 && (
-                <Card className="border-[rgba(120,100,80,0.08)] bg-[#F3EDE3]">
+                <Card className="rounded-[24px] border border-[#E7E0D4] bg-[#F8F5EE] shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
                   <CardHeader>
                     <CardTitle className="text-base">Preference analysis</CardTitle>
                   </CardHeader>
@@ -519,7 +590,7 @@ export default function ReviewPage() {
                   <Badge variant="high">{finalCandidates.length} candidates</Badge>
                 </div>
 
-                <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-8 md:grid-cols-2">
                   {finalCandidates.map((candidate) => {
                     return (
                       <CandidateCard
@@ -568,7 +639,7 @@ export default function ReviewPage() {
 
                 <div className="flex flex-col gap-3 md:flex-row">
                   <Button
-                    className="w-full justify-center md:w-auto md:flex-1"
+                    className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
                     onClick={() => void handleSelect(activeCandidate.id)}
                     disabled={isAdvancing || selectedCandidateId !== "" || activeCandidate.status === "shortlisted"}
                   >
@@ -576,7 +647,7 @@ export default function ReviewPage() {
                   </Button>
                   <Button
                     variant="outline"
-                    className="w-full justify-center md:w-auto"
+                    className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white md:w-auto"
                     onClick={() => setActiveCandidate(null)}
                   >
                     Close
@@ -585,8 +656,12 @@ export default function ReviewPage() {
               </div>
             )}
           </Modal>
-        </CardContent>
-      </Card>
+          <div className="mt-6 flex items-center justify-center gap-2 text-sm text-[#6B7280]">
+            <ShieldCheck className="h-4 w-4 text-[#0F6B3A]" />
+            <span>Your selection helps us improve future matches</span>
+          </div>
+        </div>
+      </div>
     </AppShell>
   );
 }
