@@ -333,6 +333,18 @@ def _transcript_fingerprint(transcript: str) -> str:
     return hashlib.sha256((transcript or "").strip().encode("utf-8")).hexdigest()
 
 
+def _cleanup_transcript_text(transcript: str) -> str:
+    text = re.sub(r"\s+", " ", (transcript or "").strip())
+    if not text:
+      return ""
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([,.;:!?])(?!\s|$)", r"\1 ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if text:
+        text = text[0].upper() + text[1:]
+    return text
+
+
 def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], transcript: str = "") -> dict:
     jobs = JobRepository(db)
     companies = CompanyRepository(db)
@@ -483,11 +495,13 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
                 "confidence": confidence,
                 "success": True,
                 "transcript": raw_text,
+                "cleanedTranscript": _cleanup_transcript_text(raw_text),
                 "transcriptHash": transcript_hash,
                 "fallback": fallback_raw,
                 "fields": extracted_fields if not used_fallback else fallback_fields,
             },
             "voiceTranscript": raw_text,
+            "voiceTranscriptClean": _cleanup_transcript_text(raw_text),
         },
     )
     if not updated:

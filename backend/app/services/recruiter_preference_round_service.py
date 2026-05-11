@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -22,6 +23,8 @@ from app.services.redis_service import get_redis
 from app.services.recruiter_question_service import generate_recruiter_questions
 from app.services.embedding_service import embed
 from app.services.candidate_text import build_candidate_text
+
+logger = logging.getLogger(__name__)
 
 _STATE_PREFIX = "pontis:recruiter-preference-round:"
 _STATE_TTL_SECONDS = 24 * 60 * 60
@@ -521,13 +524,22 @@ def record_preference_choice(
     selected_candidate = lookup.get(selected_candidate_id, {})
     rejected_candidates = [lookup[candidate_id] for candidate_id in rejected_candidate_ids if candidate_id in lookup]
 
-    update_recruiter_preferences(
-        db,
-        recruiter_id,
-        selected_candidate,
-        rejected_candidates,
-        signal_multiplier=1.1 + (current_round_index * 0.25),
-    )
+    try:
+        update_recruiter_preferences(
+            db,
+            recruiter_id,
+            selected_candidate,
+            rejected_candidates,
+            signal_multiplier=1.1 + (current_round_index * 0.25),
+        )
+    except Exception as exc:
+        logger.warning(
+            "recruiter_preference_update_failed recruiter_id=%s job_id=%s round_index=%s error=%s",
+            recruiter_id,
+            job_id,
+            current_round_index,
+            str(exc),
+        )
 
     history_entry = {
         "round_index": current_round_index,
@@ -542,28 +554,51 @@ def record_preference_choice(
     state["selected_candidate_ids"] = list(dict.fromkeys([*state.get("selected_candidate_ids", []), selected_candidate_id]))
     state["rejected_candidate_ids"] = list(dict.fromkeys([*state.get("rejected_candidate_ids", []), *rejected_candidate_ids]))
     state["history"] = [*list(state.get("history") or []), history_entry]
-    state = _live_profile_update(
-        db=db,
-        recruiter_id=recruiter_id,
-        job=job,
-        state=state,
-        selected_candidate=selected_candidate,
-        rejected_candidates=rejected_candidates,
-        round_index=current_round_index,
-    )
+    try:
+        state = _live_profile_update(
+            db=db,
+            recruiter_id=recruiter_id,
+            job=job,
+            state=state,
+            selected_candidate=selected_candidate,
+            rejected_candidates=rejected_candidates,
+            round_index=current_round_index,
+        )
+    except Exception as exc:
+        logger.warning(
+            "recruiter_live_profile_update_failed recruiter_id=%s job_id=%s round_index=%s error=%s",
+            recruiter_id,
+            job_id,
+            current_round_index,
+            str(exc),
+        )
+        state["telemetry"] = {
+            **dict(state.get("telemetry") or {}),
+            "preference_learning_gain": round(min(1.0, (current_round_index / 3.0) * 0.25 + len(previous_rounds) * 0.03), 4),
+        }
 
     next_round_index = current_round_index + 1
     if next_round_index <= 3:
-        next_pair = _ensure_pair_for_round(
-            state=state,
-            job=job,
-            recruiter_id=recruiter_id,
-            round_index=next_round_index,
-            previous_choice={
-                "selected_candidate_id": selected_candidate_id,
-                "selected_candidate_skills": selected_candidate.get("skills", []),
-            },
-        )
+        try:
+            next_pair = _ensure_pair_for_round(
+                state=state,
+                job=job,
+                recruiter_id=recruiter_id,
+                round_index=next_round_index,
+                previous_choice={
+                    "selected_candidate_id": selected_candidate_id,
+                    "selected_candidate_skills": selected_candidate.get("skills", []),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "recruiter_next_pair_generation_failed recruiter_id=%s job_id=%s round_index=%s error=%s",
+                recruiter_id,
+                job_id,
+                next_round_index,
+                str(exc),
+            )
+            next_pair = {}
         state["stage"] = "preference_rounds" if next_round_index <= 3 else "final_shortlist"
         state["current_round_index"] = next_round_index
         state["current_pair"] = next_pair

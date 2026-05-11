@@ -483,13 +483,6 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
 
     selected_candidate = lookup.get(candidate_id)
     rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
-    if recruiter_id and selected_candidate:
-        update_recruiter_preferences(
-            db,
-            recruiter_id,
-            selected_candidate,
-            rejected_candidates,
-        )
 
     history_entry = {
         "batchIndex": int(session.current_batch_index or 0),

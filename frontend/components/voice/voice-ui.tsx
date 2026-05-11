@@ -31,6 +31,15 @@ type VoiceTurn = {
 };
 
 type TranscriptRole = VoiceTurn["role"];
+type StreamingMessage = {
+  id: string;
+  role: "assistant" | "user";
+  speaker: "Adam" | "You";
+  content: string;
+  isStreaming: boolean;
+  isFinal: boolean;
+  timestamp: string;
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -58,6 +67,38 @@ function buildFullTranscript(turns: VoiceTurn[]): string {
   return turns
     .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${t.text}`)
     .join("\n");
+}
+
+function speakerLabel(role: TranscriptRole): "Adam" | "You" {
+  return role === "assistant" ? "Adam" : "You";
+}
+
+function createMessageId(role: TranscriptRole, suffix = "") {
+  const base = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return suffix ? `${base}-${suffix}` : base;
+}
+
+function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string): VoiceTurn[] {
+  const normalized = normalize(text);
+  if (!normalized) return turns;
+
+  const next = [...turns];
+  const last = next[next.length - 1];
+  const lastText = last ? normalize(last.text).toLowerCase() : "";
+  const nextText = normalized.toLowerCase();
+
+  if (last?.role === role) {
+    if (lastText === nextText) {
+      return next;
+    }
+    if (nextText.startsWith(lastText) || lastText.startsWith(nextText)) {
+      next[next.length - 1] = { role, text: normalized };
+      return next;
+    }
+  }
+
+  next.push({ role, text: normalized });
+  return next;
 }
 
 function mergeTranscriptFragments(previous: string, incoming: string): string {
@@ -134,6 +175,52 @@ function classifyVoiceError(error: unknown): { kind: string; message: string } {
   return { kind: type || "unknown", message: message || "Voice assistant failed to connect." };
 }
 
+function normalizeFinalTranscriptText(text: string): string {
+  const normalized = normalize(text);
+  if (!normalized) return "";
+
+  const withCompactSpacing = normalized.replace(/\s+/g, " ");
+  const cleaned = withCompactSpacing
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/([,.;:!?])(?!\s|$)/g, "$1 ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const sentence = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  return sentence
+    .replace(/\b(and)\s+and\b/gi, "and")
+    .replace(/\b(,)\s+(,)+/g, ",")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s+and\s+and\b/gi, ", and")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function mergeASRRevision(previous: string, incoming: string): string {
+  const prev = normalize(previous);
+  const next = normalize(incoming);
+  if (!prev) return next;
+  if (!next) return prev;
+  if (next.toLowerCase() === prev.toLowerCase()) return prev;
+  if (next.toLowerCase().startsWith(prev.toLowerCase())) return next;
+  if (prev.toLowerCase().startsWith(next.toLowerCase())) return prev;
+  if (prev.toLowerCase().includes(next.toLowerCase())) return prev;
+  if (next.toLowerCase().includes(prev.toLowerCase())) return next;
+
+  const prevWords = prev.split(" ");
+  const nextWords = next.split(" ");
+  const maxOverlap = Math.min(12, prevWords.length, nextWords.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    const prevTail = prevWords.slice(-size).join(" ").toLowerCase();
+    const nextHead = nextWords.slice(0, size).join(" ").toLowerCase();
+    if (prevTail === nextHead) {
+      return [...prevWords, ...nextWords.slice(size)].join(" ");
+    }
+  }
+
+  return next;
+}
+
 function debugVoice(event: string, details?: Record<string, unknown>) {
   if (details) {
     console.info(`[voice-debug] ${event}`, details);
@@ -194,7 +281,7 @@ export function VoiceUi() {
   const router = useRouter();
   const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
 
-  const [finalTranscript, setFinalTranscript] = useState<ChatMessage[]>([]);
+  const [finalTranscript, setFinalTranscript] = useState<StreamingMessage[]>([]);
   const [interimTranscript, setInterimTranscript] = useState("");
   const [interimRole, setInterimRole] = useState<TranscriptRole | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
@@ -209,6 +296,7 @@ export function VoiceUi() {
   const callStartedAtRef = useRef<number | null>(null);
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
   const transcriptBufferRef = useRef<Record<TranscriptRole, string>>({ assistant: "", user: "" });
+  const currentStreamingMessageIdRef = useRef<Record<TranscriptRole, string | null>>({ assistant: null, user: null });
   const interimRoleRef = useRef<TranscriptRole | null>(null);
   const interimTranscriptRef = useRef("");
   const transcriptFlushTimersRef = useRef<Record<TranscriptRole, ReturnType<typeof setTimeout> | null>>({
@@ -251,6 +339,50 @@ export function VoiceUi() {
     }
   }, []);
 
+  const upsertStreamingMessage = useCallback((role: TranscriptRole, text: string, isFinal: boolean) => {
+    const normalized = isFinal ? normalizeFinalTranscriptText(text) : normalize(text);
+    if (!normalized) return;
+
+    const speaker = speakerLabel(role);
+    const existingId = currentStreamingMessageIdRef.current[role];
+    const timestamp = new Date().toISOString();
+
+    setFinalTranscript((prev) => {
+      const next = [...prev];
+      const targetIndex = existingId ? next.findIndex((item) => item.id === existingId) : -1;
+      const target = targetIndex >= 0 ? next[targetIndex] : null;
+
+      if (target) {
+        next[targetIndex] = {
+          ...target,
+          content: normalized,
+          isStreaming: !isFinal,
+          isFinal,
+          timestamp,
+        };
+        return next;
+      }
+
+      const nextMessage: StreamingMessage = {
+        id: createMessageId(role),
+        role,
+        speaker,
+        content: normalized,
+        isStreaming: !isFinal,
+        isFinal,
+        timestamp,
+      };
+      currentStreamingMessageIdRef.current[role] = nextMessage.id;
+      return [...next, nextMessage];
+    });
+
+    if (isFinal) {
+      currentStreamingMessageIdRef.current[role] = null;
+    }
+
+    turnsRef.current = upsertTurn(turnsRef.current, role, normalized);
+  }, []);
+
   const clearLiveTranscript = useCallback((role?: TranscriptRole) => {
     if (role && interimRoleRef.current !== role) {
       return;
@@ -272,52 +404,41 @@ export function VoiceUi() {
     interimTranscriptRef.current = normalized;
     setInterimRole(role);
     setInterimTranscript(normalized);
-  }, [clearLiveTranscript]);
 
-  const appendFinalSentence = useCallback((role: TranscriptRole, text: string) => {
-    const normalized = normalize(text);
-    if (!normalized) return;
-
+    const speaker = speakerLabel(role);
     setFinalTranscript((prev) => {
       const next = [...prev];
-      const last = next[next.length - 1];
-      const lastText = last ? normalize(last.text).toLowerCase() : "";
-      const nextText = normalized.toLowerCase();
+      const existingId = currentStreamingMessageIdRef.current[role];
+      const targetIndex = existingId ? next.findIndex((item) => item.id === existingId) : -1;
+      const timestamp = new Date().toISOString();
 
-      if (last?.role === role) {
-        if (lastText === nextText) {
-          return prev;
-        }
-        if (nextText.startsWith(lastText) || lastText.startsWith(nextText)) {
-          next[next.length - 1] = { role, text: normalized, isFinal: true };
-          return next;
-        }
+      if (targetIndex >= 0) {
+        next[targetIndex] = {
+          ...next[targetIndex],
+          content: normalized,
+          isStreaming: true,
+          isFinal: false,
+          timestamp,
+          speaker,
+        };
+        return next;
       }
 
-      next.push({ role, text: normalized, isFinal: true });
-      return next;
+      const newMessage: StreamingMessage = {
+        id: createMessageId(role),
+        role,
+        speaker,
+        content: normalized,
+        isStreaming: true,
+        isFinal: false,
+        timestamp,
+      };
+      currentStreamingMessageIdRef.current[role] = newMessage.id;
+      return [...next, newMessage];
     });
 
-    turnsRef.current = (() => {
-      const nextTurns = [...turnsRef.current];
-      const lastTurn = nextTurns[nextTurns.length - 1];
-      const lastText = lastTurn ? normalize(lastTurn.text).toLowerCase() : "";
-      const nextText = normalized.toLowerCase();
-
-      if (lastTurn?.role === role) {
-        if (lastText === nextText) {
-          return nextTurns;
-        }
-        if (nextText.startsWith(lastText) || lastText.startsWith(nextText)) {
-          nextTurns[nextTurns.length - 1] = { role, text: normalized };
-          return nextTurns;
-        }
-      }
-
-      nextTurns.push({ role, text: normalized });
-      return nextTurns;
-    })();
-  }, []);
+    turnsRef.current = upsertTurn(turnsRef.current, role, normalized);
+  }, [clearLiveTranscript]);
 
   const finalizeBufferedTranscript = useCallback((role: TranscriptRole, forceFinalize = false) => {
     const buffered = normalize(transcriptBufferRef.current[role]);
@@ -326,11 +447,12 @@ export function VoiceUi() {
     if (!buffered) {
       transcriptBufferRef.current[role] = "";
       clearLiveTranscript(role);
+      currentStreamingMessageIdRef.current[role] = null;
       return;
     }
 
     if (forceFinalize) {
-      appendFinalSentence(role, buffered);
+      upsertStreamingMessage(role, buffered, true);
       transcriptBufferRef.current[role] = "";
       clearLiveTranscript(role);
       return;
@@ -338,7 +460,8 @@ export function VoiceUi() {
 
     const { sentences, remainder } = splitCompleteSentences(buffered);
     if (sentences.length > 0) {
-      sentences.forEach((sentence) => appendFinalSentence(role, sentence));
+      const joined = normalizeFinalTranscriptText(sentences.join(" "));
+      upsertStreamingMessage(role, joined, false);
       transcriptBufferRef.current[role] = remainder;
       if (remainder) {
         setLiveTranscript(role, remainder);
@@ -355,11 +478,11 @@ export function VoiceUi() {
     transcriptFlushTimersRef.current[role] = setTimeout(() => {
       finalizeBufferedTranscript(role, true);
     }, 800);
-  }, [appendFinalSentence, clearLiveTranscript, clearTranscriptFlushTimer, setLiveTranscript]);
+  }, [clearLiveTranscript, clearTranscriptFlushTimer, setLiveTranscript, upsertStreamingMessage]);
 
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
     const role = event.role;
-    const merged = mergeTranscriptFragments(transcriptBufferRef.current[role], event.text);
+    const merged = mergeASRRevision(transcriptBufferRef.current[role], event.text);
     transcriptBufferRef.current[role] = merged;
     setLiveTranscript(role, merged);
 
@@ -377,6 +500,9 @@ export function VoiceUi() {
     firedRef.current = true;
 
     const fullTranscript = buildFullTranscript(turns);
+    const cleanedTranscript = turns
+      .map((turn) => `${turn.role === "assistant" ? "Adam" : "You"}: ${normalizeFinalTranscriptText(turn.text)}`)
+      .join("\n");
     const endedAt = Date.now();
 
     if (!fullTranscript.trim()) {
@@ -392,13 +518,13 @@ export function VoiceUi() {
     });
 
     // Store voiceNotes for any downstream consumers (outreach, etc.)
-    setVoiceNotes([fullTranscript]);
+    setVoiceNotes([cleanedTranscript || fullTranscript]);
 
     if (user && jobId) {
       const intelligenceResult = await updateRecruiterIntelligence(user.id, jobId, {
         jobId,
-        transcript: fullTranscript,
-        voiceSummary: fullTranscript,
+        transcript: cleanedTranscript || fullTranscript,
+        voiceSummary: cleanedTranscript || fullTranscript,
         entities: {},
       });
       if (intelligenceResult.success && intelligenceResult.data) {
@@ -409,8 +535,8 @@ export function VoiceUi() {
     setPipelineStatus("refining");
     const refineResult = await refineWithVoice({
       jobId,
-      voiceNotes: [fullTranscript],
-      transcript: fullTranscript,
+      voiceNotes: [cleanedTranscript || fullTranscript],
+      transcript: cleanedTranscript || fullTranscript,
     });
 
     if (!refineResult.success) {
@@ -807,7 +933,15 @@ export function VoiceUi() {
                 <p className="text-center text-xs text-gray-400">Waiting for Adam...</p>
               )}
               {finalTranscript.map((msg, i) => (
-                <ChatBubble key={`${msg.role}-${i}-${msg.text.slice(0, 12)}`} message={msg} />
+                <ChatBubble key={msg.id || `${msg.role}-${i}`} message={{
+                  id: msg.id,
+                  role: msg.role,
+                  speaker: msg.speaker,
+                  content: msg.content,
+                  isStreaming: msg.isStreaming,
+                  isFinal: msg.isFinal,
+                  timestamp: msg.timestamp,
+                }} />
               ))}
               {interimTranscript && interimRole && (
                 <motion.div
@@ -819,7 +953,18 @@ export function VoiceUi() {
                   className="space-y-2 pt-2"
                 >
                   <p className="px-2 text-[11px] uppercase tracking-[0.18em] text-gray-400">Live caption</p>
-                  <ChatBubble message={{ role: interimRole, text: interimTranscript, isFinal: false }} isInterim />
+                  <ChatBubble
+                    message={{
+                      id: `${interimRole}-interim`,
+                      role: interimRole,
+                      speaker: speakerLabel(interimRole),
+                      content: interimTranscript,
+                      isStreaming: true,
+                      isFinal: false,
+                      timestamp: new Date().toISOString(),
+                    }}
+                    isInterim
+                  />
                 </motion.div>
               )}
             </div>

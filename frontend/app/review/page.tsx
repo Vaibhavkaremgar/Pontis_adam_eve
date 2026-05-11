@@ -193,7 +193,7 @@ export default function ReviewPage() {
 
   return (
     <AppShell activeStep={4}>
-      <Card className="mx-auto w-full max-w-[980px]">
+      <Card className="mx-auto w-full max-w-[1440px]">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Candidate selection</CardTitle>
           <CardDescription>
@@ -201,14 +201,14 @@ export default function ReviewPage() {
           </CardDescription>
         </CardHeader>
 
-        <CardContent className="space-y-6">
+        <CardContent className="space-y-8 px-4 pb-6 md:px-6">
           {isRefined && (
             <div className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
               Voice intake completed. The selection flow is now running on the refined job profile.
             </div>
           )}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-gray-600">
+          <div className="grid gap-3 rounded-2xl bg-[#FAF7F1] p-4 text-sm text-gray-600 md:grid-cols-3">
             <span>
               Progress: <strong>{session ? `${progress} / ${session.totalBatches}` : "0 / 3"}</strong>
             </span>
@@ -220,48 +220,50 @@ export default function ReviewPage() {
             </span>
           </div>
 
-          {intentLines.length > 0 && (
-            <Card className="border-[rgba(120,100,80,0.08)] bg-[#F8F5EF]">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Recruiter intent summary</CardTitle>
-                <CardDescription>The AI has normalized what you care about before the final shortlist rerun.</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-wrap gap-2 text-xs text-gray-700">
-                {intentLines.map((line) => (
-                  <span key={line} className="rounded-full bg-white px-3 py-1">
-                    {line}
-                  </span>
-                ))}
-              </CardContent>
-            </Card>
-          )}
+          <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+            {intentLines.length > 0 && (
+              <Card className="border-[rgba(120,100,80,0.08)] bg-[#F8F5EF]">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Recruiter intent summary</CardTitle>
+                  <CardDescription>The AI has normalized what you care about before the final shortlist rerun.</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-2 text-xs text-gray-700">
+                  {intentLines.map((line) => (
+                    <span key={line} className="rounded-full bg-white px-3 py-1">
+                      {line}
+                    </span>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
 
-          {currentPair?.rationale && (
-            <Card className="border-[rgba(120,100,80,0.08)] bg-white">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base">Why this pair</CardTitle>
-                <CardDescription>{currentPair.rationale}</CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-wrap gap-2 text-xs text-gray-600">
-                {(currentPair.contrast_axes || []).map((axis) => (
-                  <span key={axis} className="rounded-full bg-[#F3EDE3] px-3 py-1">
-                    {axis.replace(/_/g, " ")}
-                  </span>
-                ))}
-                {typeof currentPair.signal_quality === "number" && (
-                  <span className="rounded-full bg-green-50 px-3 py-1 text-green-700">
-                    Signal quality {(currentPair.signal_quality * 100).toFixed(0)}%
-                  </span>
-                )}
-              </CardContent>
-            </Card>
-          )}
+            {currentPair?.rationale && (
+              <Card className="border-[rgba(120,100,80,0.08)] bg-white">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base">Why this pair</CardTitle>
+                  <CardDescription>{currentPair.rationale}</CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-2 text-xs text-gray-600">
+                  {(currentPair.contrast_axes || []).map((axis) => (
+                    <span key={axis} className="rounded-full bg-[#F3EDE3] px-3 py-1">
+                      {axis.replace(/_/g, " ")}
+                    </span>
+                  ))}
+                  {typeof currentPair.signal_quality === "number" && (
+                    <span className="rounded-full bg-green-50 px-3 py-1 text-green-700">
+                      Signal quality {(currentPair.signal_quality * 100).toFixed(0)}%
+                    </span>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </div>
 
           {isLoading && <p className="text-sm text-gray-500">Loading selection session...</p>}
           {error && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
 
           {!isLoading && !completed && currentBatch.length > 0 && (
-            <div className="space-y-4">
+            <div className="space-y-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
@@ -272,7 +274,7 @@ export default function ReviewPage() {
                 <Badge variant="medium">2-candidate set</Badge>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-5 xl:grid-cols-2">
                 {currentBatch.map((candidate) => (
                   <Card
                     key={candidate.id}
@@ -285,12 +287,12 @@ export default function ReviewPage() {
                         setActiveCandidate(candidate);
                       }
                     }}
-                    className={`cursor-pointer border transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(0,0,0,0.08)] ${selectedCandidateId === candidate.id ? "border-green-300 bg-green-50" : "border-[rgba(120,100,80,0.08)] bg-[#F3EDE3]"}`}
+                    className={`h-full cursor-pointer border transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(0,0,0,0.08)] ${selectedCandidateId === candidate.id ? "border-green-300 bg-green-50" : "border-[rgba(120,100,80,0.08)] bg-[#F3EDE3]"}`}
                   >
-                    <CardHeader className="space-y-2 pb-3">
+                    <CardHeader className="space-y-3 pb-4">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <CardTitle className="text-lg">{candidate.name || candidate.id.slice(0, 8)}</CardTitle>
+                          <CardTitle className="text-xl">{candidate.name || candidate.id.slice(0, 8)}</CardTitle>
                           <CardDescription>
                             {candidate.headline || candidate.role}
                             {candidate.company ? ` @ ${candidate.company}` : ""}
@@ -304,8 +306,8 @@ export default function ReviewPage() {
                       <p className="text-xs text-gray-500">{statusLabel(candidate)}</p>
                     </CardHeader>
 
-                    <CardContent className="space-y-4">
-                      <div className="grid gap-2 text-xs text-gray-600 sm:grid-cols-2">
+                    <CardContent className="space-y-5">
+                      <div className="grid gap-3 rounded-2xl bg-white/75 p-4 text-sm text-gray-600 sm:grid-cols-2">
                         <span>Email: <span className="font-medium text-gray-800">{candidate.email || "Not provided"}</span></span>
                         <span>Location: <span className="font-medium text-gray-800">{candidate.location || "Not provided"}</span></span>
                         <span>Experience: <span className="font-medium text-gray-800">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span></span>
@@ -313,16 +315,16 @@ export default function ReviewPage() {
                       </div>
 
                       {candidate.skills.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="flex flex-wrap gap-2">
                           {candidate.skills.slice(0, 6).map((skill) => (
-                            <span key={`${candidate.id}-${skill}`} className="rounded-full bg-white/80 px-2 py-0.5 text-xs text-gray-700">
+                            <span key={`${candidate.id}-${skill}`} className="rounded-full bg-white/90 px-3 py-1 text-xs text-gray-700">
                               {skill}
                             </span>
                           ))}
                         </div>
                       )}
 
-                      <div className="space-y-2 rounded-xl bg-white/70 p-3 text-xs text-gray-600">
+                      <div className="grid gap-3 rounded-2xl bg-white/70 p-4 text-sm text-gray-600 md:grid-cols-2">
                         <p>
                           Education: <span className="font-medium text-gray-800">{formatList(candidate.education).slice(0, 3).join(", ")}</span>
                         </p>
@@ -340,16 +342,16 @@ export default function ReviewPage() {
                         </p>
                       </div>
 
-                      {candidate.summary && <p className="text-sm leading-relaxed text-gray-700">{candidate.summary}</p>}
+                      {candidate.summary && <p className="text-[15px] leading-relaxed text-gray-700">{candidate.summary}</p>}
                       {candidate.resumeText && (
-                        <div className="rounded-xl bg-[#FAF7F1] p-3 text-xs text-gray-600">
+                        <div className="rounded-2xl bg-[#FAF7F1] p-4 text-sm text-gray-600">
                           <p className="mb-1 font-medium text-gray-800">Resume preview</p>
-                          <p className="whitespace-pre-wrap leading-relaxed">{trimText(candidate.resumeText, 520)}</p>
+                          <p className="whitespace-pre-wrap leading-relaxed">{trimText(candidate.resumeText, 620)}</p>
                         </div>
                       )}
                       {renderSignals(candidate)}
                       {candidate.explanation?.sourceBreakdown && (
-                        <div className="grid grid-cols-2 gap-2 rounded-xl bg-white/70 p-3 text-[11px] text-gray-600">
+                        <div className="grid grid-cols-2 gap-2 rounded-2xl bg-white/70 p-4 text-xs text-gray-600">
                           <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
                           <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
                           <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
@@ -408,7 +410,7 @@ export default function ReviewPage() {
                   <Badge variant="high">{finalCandidates.length} candidates</Badge>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
                   {finalCandidates.map((candidate) => (
                     <Card
                       key={candidate.id}
@@ -421,12 +423,12 @@ export default function ReviewPage() {
                           setActiveCandidate(candidate);
                         }
                       }}
-                      className="cursor-pointer border-[rgba(120,100,80,0.08)] bg-white transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(0,0,0,0.08)]"
+                      className="h-full cursor-pointer border-[rgba(120,100,80,0.08)] bg-white transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(0,0,0,0.08)]"
                     >
-                      <CardHeader className="space-y-2 pb-3">
+                      <CardHeader className="space-y-3 pb-4">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <CardTitle className="text-base">{candidate.name || candidate.id.slice(0, 8)}</CardTitle>
+                            <CardTitle className="text-lg">{candidate.name || candidate.id.slice(0, 8)}</CardTitle>
                             <CardDescription>
                               {candidate.headline || candidate.role}
                               {candidate.company ? ` @ ${candidate.company}` : ""}
@@ -438,12 +440,12 @@ export default function ReviewPage() {
                           </Badge>
                         </div>
                       </CardHeader>
-                      <CardContent className="space-y-3">
-                        <div className="grid gap-2 text-xs text-gray-600 sm:grid-cols-2">
+                      <CardContent className="space-y-4">
+                        <div className="grid gap-2 rounded-2xl bg-[#F8FAFC] p-4 text-sm text-gray-600 sm:grid-cols-2">
                           <span>Email: <span className="font-medium text-gray-800">{candidate.email || "Not provided"}</span></span>
                           <span>Experience: <span className="font-medium text-gray-800">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span></span>
                         </div>
-                        <div className="space-y-2 rounded-xl bg-[#F8FAFC] p-3 text-xs text-gray-600">
+                        <div className="space-y-2 rounded-2xl bg-[#F8FAFC] p-4 text-sm text-gray-600">
                           <p>
                             Education: <span className="font-medium text-gray-800">{formatList(candidate.education).slice(0, 2).join(", ")}</span>
                           </p>
@@ -454,10 +456,10 @@ export default function ReviewPage() {
                             Certifications: <span className="font-medium text-gray-800">{formatList(candidate.certifications).slice(0, 2).join(", ")}</span>
                           </p>
                         </div>
-                        {candidate.summary && <p className="text-sm text-gray-700">{candidate.summary}</p>}
-                        <div className="flex flex-wrap gap-1.5">
+                        {candidate.summary && <p className="text-[15px] text-gray-700">{candidate.summary}</p>}
+                        <div className="flex flex-wrap gap-2">
                           {candidate.skills.slice(0, 5).map((skill) => (
-                            <span key={`${candidate.id}-final-${skill}`} className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+                            <span key={`${candidate.id}-final-${skill}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
                               {skill}
                             </span>
                           ))}
@@ -466,7 +468,7 @@ export default function ReviewPage() {
                           <p className="text-xs italic text-gray-500">{candidate.explanation.aiReasoning}</p>
                         )}
                         {candidate.explanation?.sourceBreakdown && (
-                          <div className="grid grid-cols-2 gap-2 rounded-xl bg-[#F8FAFC] p-3 text-[11px] text-gray-600">
+                          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-[#F8FAFC] p-4 text-xs text-gray-600">
                             <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
                             <span>Voice: {(candidate.explanation.sourceBreakdown.voiceInterview ?? 0).toFixed(2)}</span>
                             <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>

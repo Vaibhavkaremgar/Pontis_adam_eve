@@ -1,9 +1,13 @@
 "use client";
 
 export type ChatMessage = {
+  id: string;
   role: "assistant" | "user";
-  text: string;
-  isFinal?: boolean;
+  speaker: "Adam" | "You";
+  content: string;
+  isStreaming: boolean;
+  isFinal: boolean;
+  timestamp: string;
 };
 
 export function ChatBubble({
@@ -24,7 +28,8 @@ export function ChatBubble({
               : "bg-gray-200/90 text-[#111111]"
           }`}
         >
-          {message.text}
+          {message.content}
+          {message.isStreaming && <span className="ml-1 inline-block animate-pulse">▍</span>}
         </div>
       </div>
     );
@@ -37,7 +42,8 @@ export function ChatBubble({
           isInterim ? "border border-dashed border-green-300 bg-green-50 text-green-800" : "bg-green-500 text-white"
         }`}
       >
-        {message.text}
+        {message.content}
+        {message.isStreaming && <span className="ml-1 inline-block animate-pulse">▍</span>}
       </div>
       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-800 text-sm font-semibold text-white">R</div>
     </div>
