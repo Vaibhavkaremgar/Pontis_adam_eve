@@ -21,6 +21,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
 import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice } from "@/lib/api/candidates";
@@ -224,20 +225,18 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
 
 function CandidateCard({
   candidate,
-  expanded,
   isSelected,
   isSelecting,
   selectionLocked,
-  onToggle,
+  onOpenDetails,
   onSelect,
   showSelectButton,
 }: {
   candidate: Candidate;
-  expanded: boolean;
   isSelected: boolean;
   isSelecting: boolean;
   selectionLocked: boolean;
-  onToggle: () => void;
+  onOpenDetails: () => void;
   onSelect?: () => void;
   showSelectButton: boolean;
 }) {
@@ -245,11 +244,11 @@ function CandidateCard({
     <Card
       role="button"
       tabIndex={0}
-      onClick={onToggle}
+      onClick={onOpenDetails}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onToggle();
+          onOpenDetails();
         }
       }}
       className={`h-full border transition-all hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(0,0,0,0.08)] ${
@@ -267,7 +266,7 @@ function CandidateCard({
           </Badge>
         </div>
         <p className="text-xs text-gray-500">{statusLabel(candidate)}</p>
-        <p className="text-xs font-medium text-gray-500">{expanded ? "Details shown" : "Click to show details"}</p>
+        <p className="text-xs font-medium text-gray-500">Click to show details</p>
       </CardHeader>
 
       <CardContent className="space-y-5">
@@ -280,48 +279,29 @@ function CandidateCard({
           </p>
         </div>
 
-        {expanded ? (
-          <div className="space-y-5">
-            <CandidateDetails candidate={candidate} />
+        <Button
+          type="button"
+          variant="ghost"
+          className="w-full justify-between rounded-2xl border border-dashed border-[rgba(120,100,80,0.16)] bg-white/60 px-4 py-3 text-sm text-gray-700 hover:bg-white"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenDetails();
+          }}
+        >
+          <span>Click to show details</span>
+          <span aria-hidden="true">+</span>
+        </Button>
 
-            {showSelectButton && onSelect && (
-              <div className="flex flex-col gap-2">
-                <Button
-                  className="w-full justify-center"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelect();
-                  }}
-                  disabled={selectionLocked || isSelecting}
-                >
-                  {isSelecting ? "Saving choice..." : "Select this candidate"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="w-full justify-center text-sm text-gray-600 hover:bg-white"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onToggle();
-                  }}
-                >
-                  Hide details
-                </Button>
-              </div>
-            )}
-          </div>
-        ) : (
+        {showSelectButton && onSelect && (
           <Button
-            type="button"
-            variant="ghost"
-            className="w-full justify-between rounded-2xl border border-dashed border-[rgba(120,100,80,0.16)] bg-white/60 px-4 py-3 text-sm text-gray-700 hover:bg-white"
+            className="w-full justify-center"
             onClick={(event) => {
               event.stopPropagation();
-              onToggle();
+              onSelect();
             }}
+            disabled={selectionLocked || isSelecting}
           >
-            <span>Click to show details</span>
-            <span aria-hidden="true">+</span>
+            {isSelecting ? "Saving choice..." : "Select this candidate"}
           </Button>
         )}
       </CardContent>
@@ -339,7 +319,7 @@ export default function ReviewPage() {
   const [error, setError] = useState("");
   const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
-  const [expandedCandidateIds, setExpandedCandidateIds] = useState<string[]>([]);
+  const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -371,7 +351,7 @@ export default function ReviewPage() {
       }
 
       setSession(result.data);
-      setExpandedCandidateIds([]);
+      setActiveCandidate(null);
       setIsLoading(false);
     };
 
@@ -387,12 +367,6 @@ export default function ReviewPage() {
   const finalCandidates = session?.finalCandidates ?? session?.topCandidates ?? [];
   const analysis = session?.analysis ?? null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
-
-  const toggleCandidateDetails = (candidateId: string) => {
-    setExpandedCandidateIds((current) =>
-      current.includes(candidateId) ? current.filter((id) => id !== candidateId) : [...current, candidateId]
-    );
-  };
 
   const handleSelect = async (candidateId: string) => {
     if (!jobId || !session || isAdvancing || completed) return;
@@ -422,7 +396,7 @@ export default function ReviewPage() {
     }
 
     setSession(result.data);
-    setExpandedCandidateIds([]);
+    setActiveCandidate(null);
     if (result.data.warning) {
       console.warn("[selection] submit warning", result.data.warning);
       setSelectionDebug(`warning=${result.data.warning}`);
@@ -439,7 +413,7 @@ export default function ReviewPage() {
     const result = await getFinalSelectionResults(jobId);
     if (result.success && result.data) {
       setSession(result.data);
-      setExpandedCandidateIds([]);
+      setActiveCandidate(null);
     } else if (result.error) {
       setError(result.error);
     }
@@ -448,7 +422,7 @@ export default function ReviewPage() {
 
   return (
     <AppShell activeStep={4}>
-      <Card className="mx-auto w-full max-w-[1440px]">
+      <Card className="mx-auto w-full max-w-none">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Candidate selection</CardTitle>
           <CardDescription>Review 3 batches of 2 candidates. Select one from each pair to teach the ranking model your preference.</CardDescription>
@@ -496,16 +470,14 @@ export default function ReviewPage() {
 
               <div className="grid gap-5 xl:grid-cols-2">
                 {currentBatch.map((candidate) => {
-                  const expanded = expandedCandidateIds.includes(candidate.id);
                   return (
                     <CandidateCard
                       key={candidate.id}
                       candidate={candidate}
-                      expanded={expanded}
                       isSelected={selectedCandidateId === candidate.id}
                       isSelecting={isAdvancing && selectedCandidateId === candidate.id}
                       selectionLocked={isAdvancing && selectedCandidateId !== candidate.id}
-                      onToggle={() => toggleCandidateDetails(candidate.id)}
+                      onOpenDetails={() => setActiveCandidate(candidate)}
                       onSelect={() => void handleSelect(candidate.id)}
                       showSelectButton
                     />
@@ -549,16 +521,14 @@ export default function ReviewPage() {
 
                 <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
                   {finalCandidates.map((candidate) => {
-                    const expanded = expandedCandidateIds.includes(candidate.id);
                     return (
                       <CandidateCard
                         key={candidate.id}
                         candidate={candidate}
-                        expanded={expanded}
                         isSelected={false}
                         isSelecting={false}
                         selectionLocked={false}
-                        onToggle={() => toggleCandidateDetails(candidate.id)}
+                        onOpenDetails={() => setActiveCandidate(candidate)}
                         showSelectButton={false}
                       />
                     );
@@ -578,6 +548,43 @@ export default function ReviewPage() {
               </div>
             </div>
           )}
+
+          <Modal
+            open={Boolean(activeCandidate)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setActiveCandidate(null);
+              }
+            }}
+            title={activeCandidate?.name || "Candidate profile"}
+            description={
+              activeCandidate ? `${activeCandidate.headline || activeCandidate.role}${activeCandidate.company ? ` @ ${activeCandidate.company}` : ""}` : ""
+            }
+            className="max-w-6xl"
+          >
+            {activeCandidate && (
+              <div className="max-h-[78vh] space-y-5 overflow-y-auto pr-1">
+                <CandidateDetails candidate={activeCandidate} />
+
+                <div className="flex flex-col gap-3 md:flex-row">
+                  <Button
+                    className="w-full justify-center md:w-auto md:flex-1"
+                    onClick={() => void handleSelect(activeCandidate.id)}
+                    disabled={isAdvancing || selectedCandidateId !== "" || activeCandidate.status === "shortlisted"}
+                  >
+                    {isAdvancing && selectedCandidateId === activeCandidate.id ? "Saving choice..." : "Select this candidate"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-center md:w-auto"
+                    onClick={() => setActiveCandidate(null)}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Modal>
         </CardContent>
       </Card>
     </AppShell>
