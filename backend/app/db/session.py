@@ -48,7 +48,16 @@ def _verify_migrated_schema() -> None:
     with engine.begin() as conn:
         inspector = inspect(conn)
         table_names = set(inspector.get_table_names())
-        required_tables = {"users", "companies", "jobs", "candidate_profiles", "interviews"}
+        required_tables = {
+            "users",
+            "companies",
+            "jobs",
+            "candidate_profiles",
+            "interviews",
+            "outreach_events",
+            "inbound_email_replies",
+            "inbound_email_attachments",
+        }
         if USE_INTERNAL_CANDIDATE_DB:
             required_tables.add("internal_candidate_resumes")
         missing_tables = sorted(required_tables - table_names)

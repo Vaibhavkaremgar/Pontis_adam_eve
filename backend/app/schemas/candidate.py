@@ -46,8 +46,18 @@ class CandidateResult(BaseModel):
     company: str
     email: str = ""
     isMockEmail: bool = False
+    headline: str = ""
+    location: str = ""
+    yearsExperience: float = 0.0
     skills: list[str]
     summary: str
+    education: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+    certifications: list[str] = Field(default_factory=list)
+    companiesHistory: list[str] = Field(default_factory=list)
+    domainExperience: list[str] = Field(default_factory=list)
+    resumeText: str = ""
+    profileData: dict = Field(default_factory=dict)
     fitScore: float
     decision: str
     explanation: CandidateExplanation

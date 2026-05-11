@@ -69,6 +69,7 @@ SCORING_DEFAULT_MODE = os.getenv("SCORING_DEFAULT_MODE", "volume").strip().lower
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "").strip()
 POSTMARK_SERVER_TOKEN = os.getenv("POSTMARK_SERVER_TOKEN", "").strip()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_WEBHOOK_SECRET = os.getenv("RESEND_WEBHOOK_SECRET", "").strip()
 OUTREACH_PROVIDER = os.getenv("OUTREACH_PROVIDER", "resend").strip().lower()
 OUTREACH_FROM_EMAIL = os.getenv("OUTREACH_FROM_EMAIL", "info@pontis.one").strip()
 FROM_EMAIL = os.getenv("FROM_EMAIL", OUTREACH_FROM_EMAIL).strip()
@@ -107,6 +108,7 @@ REPLY_POLL_INTERVAL_MINUTES = int(os.getenv("REPLY_POLL_INTERVAL_MINUTES", "3"))
 REPLY_POLL_BATCH_SIZE = int(os.getenv("REPLY_POLL_BATCH_SIZE", "50"))
 REPLY_INBOX_PROVIDER = os.getenv("REPLY_INBOX_PROVIDER", "imap").strip().lower()
 ENABLE_PLAYWRIGHT_JOB_PARSER = os.getenv("ENABLE_PLAYWRIGHT_JOB_PARSER", "false").strip().lower() in {"1", "true", "yes", "on"}
+INBOUND_ATTACHMENT_MAX_BYTES = int(os.getenv("INBOUND_ATTACHMENT_MAX_BYTES", "10485760"))
 REPLY_IMAP_HOST = os.getenv("REPLY_IMAP_HOST", "").strip()
 REPLY_IMAP_PORT = int(os.getenv("REPLY_IMAP_PORT", "993"))
 REPLY_IMAP_USERNAME = os.getenv("REPLY_IMAP_USERNAME", "").strip()
@@ -230,8 +232,10 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             issues.append(ConfigIssue(key="REDIS_URL", severity="warning", message="Redis is unavailable; fallback queue/cache modes will be used"))
         if not COOKIE_SECURE:
             issues.append(ConfigIssue(key="COOKIE_SECURE", severity="warning", message="Secure cookies are disabled in a production-like environment"))
-        if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
-            issues.append(ConfigIssue(key="RESEND_API_KEY", severity="warning", message="Real outreach is configured but RESEND_API_KEY is missing"))
+    if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
+        issues.append(ConfigIssue(key="RESEND_API_KEY", severity="warning", message="Real outreach is configured but RESEND_API_KEY is missing"))
+    if not RESEND_WEBHOOK_SECRET:
+        issues.append(ConfigIssue(key="RESEND_WEBHOOK_SECRET", severity="warning", message="Inbound Resend webhooks are enabled but RESEND_WEBHOOK_SECRET is missing"))
 
     return {
         "environment": APP_ENV,

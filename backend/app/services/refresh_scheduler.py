@@ -227,28 +227,10 @@ def _run_reply_poll_cycle() -> None:
     """Poll the reply inbox for new candidate responses."""
     global _last_reply_poll_cycle_at
 
-    from app.services.redis_service import distributed_lock
-    with distributed_lock("scheduler:reply_poll", ttl=60) as acquired:
-        if not acquired:
-            logger.info("scheduler_lock_skipped job=reply_poll reason=already_running")
-            return
-
     with _status_lock:
         _last_reply_poll_cycle_at = _utcnow()
 
-    try:
-        result = enqueue_job(
-            "reply_processing",
-            {"requested_at": _utcnow().isoformat()},
-            idempotency_key=f"reply_processing:{_utcnow().strftime('%Y%m%d%H%M')}",
-        )
-        logger.info(
-            "reply_poll_cycle_queued job_id=%s queue_type=%s",
-            result.get("job_id"),
-            result.get("queue_type"),
-        )
-    except Exception as exc:
-        logger.error("reply_poll_cycle_failed error=%s", str(exc))
+    logger.info("reply_poll_cycle_disabled reason=resend_webhook_only")
 
 
 def _run_db_cleanup_cycle() -> None:

@@ -7,9 +7,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CandidateProfileRepository, InterviewRepository, JobRepository
+from app.core.config import OUTREACH_REPLY_TO_EMAIL
 from app.db.session import SessionLocal
 from app.services.email_service import send_email
-from app.services.interview_link_providers import get_booking_link
+from app.services.interview_session_service import create_interview_session
 from app.services.slack_integration import post_slack_message
 from app.utils.exceptions import APIError
 
@@ -64,6 +65,15 @@ def _build_invite_template(*, candidate_name: str, role: str, booking_link: str)
     return subject, body
 
 
+def _build_invite_html(*, candidate_name: str, role: str, booking_link: str) -> str:
+    return (
+        f"<p>Hi {candidate_name},</p>"
+        f"<p>We'd like to move forward with your application for <b>{role}</b>.</p>"
+        f"<p>Please select a time slot for your interview: <a href=\"{booking_link}\">{booking_link}</a></p>"
+        "<p>Best,<br>Adam</p>"
+    )
+
+
 async def _post_slack_warning(channel_id: str | None, text: str) -> None:
     target = (channel_id or "").strip()
     if not target:
@@ -94,11 +104,21 @@ def _send_interview_invite(*, db: Session, candidate_id: str, job_id: str, chann
     if not candidate_email:
         raise APIError("Candidate email is required", status_code=400)
 
-    booking_link = get_booking_link(profile, job)
+    session = create_interview_session(db=db, job_id=job_id, candidate_id=candidate_id)
+    booking_link = str(session.get("bookingLink") or session.get("bookingUrl") or "")
     subject, body = _build_invite_template(candidate_name=candidate_name, role=role, booking_link=booking_link)
+    html_body = _build_invite_html(candidate_name=candidate_name, role=role, booking_link=booking_link)
 
     try:
-        send_email(to_email=candidate_email, subject=subject, body=body)
+        send_email(
+            to_email=candidate_email,
+            subject=subject,
+            body=body,
+            html=html_body,
+            text=body,
+            reply_to=OUTREACH_REPLY_TO_EMAIL,
+            tags={"product": "pontis", "flow": "interview_invite"},
+        )
         InterviewRepository(db).upsert_status(
             job_id=job_id,
             candidate_id=candidate_id,

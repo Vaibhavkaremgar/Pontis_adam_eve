@@ -375,6 +375,64 @@ def _candidate_summary(candidate: dict) -> str:
     return "Candidate profile sourced from People Data Labs."
 
 
+def _candidate_profile_details(*, profile: Any | None = None, raw_data: Any | None = None) -> dict[str, Any]:
+    source: dict[str, Any] = {}
+
+    profile_raw_data = getattr(profile, "raw_data", None) if profile is not None else None
+    if isinstance(profile_raw_data, dict):
+        source.update(profile_raw_data)
+    if isinstance(raw_data, dict):
+        source.update(raw_data)
+
+    def _string_value(*keys: str) -> str:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _list_value(*keys: str) -> list[str]:
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    years_experience = source.get("years_experience")
+    if years_experience is None:
+        years_experience = source.get("yearsExperience")
+    try:
+        years_experience_value = float(years_experience or 0.0)
+    except (TypeError, ValueError):
+        years_experience_value = 0.0
+
+    parsed_data = source.get("parsed_data") or source.get("parsedData") or {}
+    if not isinstance(parsed_data, dict):
+        parsed_data = {}
+
+    email = _candidate_email_value(
+        source.get("work_email")
+        or source.get("email")
+        or source.get("personal_email")
+    )
+    is_mock_email = email.endswith("@test.local") if email else False
+
+    return {
+        "email": email,
+        "isMockEmail": is_mock_email,
+        "headline": _string_value("headline", "title", "role"),
+        "location": _string_value("location"),
+        "yearsExperience": years_experience_value,
+        "education": _list_value("education"),
+        "projects": _list_value("projects"),
+        "certifications": _list_value("certifications"),
+        "companiesHistory": _list_value("companies", "company_history", "companyHistory"),
+        "domainExperience": _list_value("domain_experience", "domainExperience"),
+        "resumeText": _string_value("raw_resume_text", "rawResumeText"),
+        "profileData": parsed_data,
+    }
+
+
 def _candidate_experience(candidate: dict) -> str:
     for key in ("experience", "years_experience", "experience_summary", "experienceLevel", "experience_level"):
         value = candidate.get(key)
@@ -1793,6 +1851,8 @@ def _build_local_candidates(
         if candidate_email.endswith("@test.local"):
             stored_raw_data["is_mock_email"] = True
             stored_raw_data["email_source"] = "generated"
+        profile_details = _candidate_profile_details(profile=profile, raw_data=stored_raw_data)
+        profile_details = _candidate_profile_details(profile=profile, raw_data=stored_raw_data)
 
         strategy = _strategy_from_score(fit_score)
         debug_payload = None
@@ -1816,10 +1876,20 @@ def _build_local_candidates(
             name=name,
             role=role,
             company=company,
-            email=candidate_email,
-            isMockEmail=candidate_email.endswith("@test.local"),
+            email=profile_details["email"] or candidate_email,
+            isMockEmail=bool(profile_details["isMockEmail"]) or candidate_email.endswith("@test.local"),
+            headline=profile_details["headline"],
+            location=profile_details["location"],
+            yearsExperience=float(profile_details["yearsExperience"] or 0.0),
             skills=skills or [],
             summary=summary,
+            education=list(profile_details["education"] or []),
+            projects=list(profile_details["projects"] or []),
+            certifications=list(profile_details["certifications"] or []),
+            companiesHistory=list(profile_details["companiesHistory"] or []),
+            domainExperience=list(profile_details["domainExperience"] or []),
+            resumeText=profile_details["resumeText"],
+            profileData=dict(profile_details["profileData"] or {}),
             fitScore=fit_score,
             decision=decision,
             explanation=CandidateExplanation(
@@ -2158,10 +2228,20 @@ def _build_ranked_candidates_from_pdl(
             name=candidate_name,
             role=candidate_role,
             company=candidate_company,
-            email=candidate_email,
-            isMockEmail=candidate_email.endswith("@test.local"),
+            email=profile_details["email"] or candidate_email,
+            isMockEmail=bool(profile_details["isMockEmail"]) or candidate_email.endswith("@test.local"),
+            headline=profile_details["headline"],
+            location=profile_details["location"],
+            yearsExperience=float(profile_details["yearsExperience"] or 0.0),
             skills=candidate_skills,
             summary=candidate_summary,
+            education=list(profile_details["education"] or []),
+            projects=list(profile_details["projects"] or []),
+            certifications=list(profile_details["certifications"] or []),
+            companiesHistory=list(profile_details["companiesHistory"] or []),
+            domainExperience=list(profile_details["domainExperience"] or []),
+            resumeText=profile_details["resumeText"],
+            profileData=dict(profile_details["profileData"] or {}),
             fitScore=fit_score,
             decision=decision,
             explanation=CandidateExplanation(
@@ -3212,16 +3292,27 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             )
             continue
         final_score = max(0.0, min(1.0, profile.fit_score / 5.0))
+        profile_details = _candidate_profile_details(profile=profile)
         results.append(
             CandidateResult(
                 id=profile.candidate_id,
                 name=profile.name,
                 role=profile.role,
                 company=profile.company,
-                email=ensure_candidate_email(profile),
-                isMockEmail=ensure_candidate_email(profile).endswith("@test.local"),
+                email=profile_details["email"] or ensure_candidate_email(profile),
+                isMockEmail=bool(profile_details["isMockEmail"]) or ensure_candidate_email(profile).endswith("@test.local"),
+                headline=profile_details["headline"],
+                location=profile_details["location"],
+                yearsExperience=float(profile_details["yearsExperience"] or 0.0),
                 skills=profile.skills or [],
                 summary=profile.summary,
+                education=list(profile_details["education"] or []),
+                projects=list(profile_details["projects"] or []),
+                certifications=list(profile_details["certifications"] or []),
+                companiesHistory=list(profile_details["companiesHistory"] or []),
+                domainExperience=list(profile_details["domainExperience"] or []),
+                resumeText=profile_details["resumeText"],
+                profileData=dict(profile_details["profileData"] or {}),
                 fitScore=round(profile.fit_score, 2),
                 decision=profile.decision,
                 explanation=CandidateExplanation(
@@ -3272,16 +3363,27 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
     results: list[CandidateResult] = []
     for row in profiles:
         final_score = max(0.0, min(1.0, row.fit_score / 5.0))
+        profile_details = _candidate_profile_details(profile=row)
         results.append(
             CandidateResult(
                 id=row.candidate_id,
                 name=row.name,
                 role=row.role,
                 company=row.company,
-                email=ensure_candidate_email(row),
-                isMockEmail=ensure_candidate_email(row).endswith("@test.local"),
+                email=profile_details["email"] or ensure_candidate_email(row),
+                isMockEmail=bool(profile_details["isMockEmail"]) or ensure_candidate_email(row).endswith("@test.local"),
+                headline=profile_details["headline"],
+                location=profile_details["location"],
+                yearsExperience=float(profile_details["yearsExperience"] or 0.0),
                 skills=row.skills or [],
                 summary=row.summary,
+                education=list(profile_details["education"] or []),
+                projects=list(profile_details["projects"] or []),
+                certifications=list(profile_details["certifications"] or []),
+                companiesHistory=list(profile_details["companiesHistory"] or []),
+                domainExperience=list(profile_details["domainExperience"] or []),
+                resumeText=profile_details["resumeText"],
+                profileData=dict(profile_details["profileData"] or {}),
                 fitScore=round(row.fit_score, 2),
                 decision=row.decision,
                 explanation=CandidateExplanation(

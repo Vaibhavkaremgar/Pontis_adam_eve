@@ -360,7 +360,7 @@ def _build_followup_email(*, candidate_profile, job, follow_up_number: int) -> t
     return subject, body
 
 
-def _build_shortlist_outreach_email(*, candidate_profile, job) -> tuple[str, str]:
+def _build_shortlist_outreach_email(*, candidate_profile, job) -> tuple[str, str, str]:
     candidate_name = html.escape((candidate_profile.name or "").strip() or "there")
     role = html.escape((getattr(job, "title", "") or "").strip() or "the role")
     company_name = html.escape(_job_company_name(job))
@@ -380,7 +380,16 @@ def _build_shortlist_outreach_email(*, candidate_profile, job) -> tuple[str, str
 
 <p>Best,<br>Adam</p>
 """
-    return subject, email_template
+    text_template = (
+        f"Hi {(candidate_profile.name or '').strip() or 'there'},\n\n"
+        f"You've been shortlisted for the {getattr(job, 'title', '') or 'the role'} position at {_job_company_name(job)}.\n\n"
+        "Are you open to this role?\n\n"
+        "Please share your updated resume.\n\n"
+        "We'd love to move forward with you.\n\n"
+        "Could you please reply with your availability for an interview?\n\n"
+        "Best,\nAdam"
+    )
+    return subject, email_template, text_template
 
 
 def _job_company_name(job) -> str:
@@ -422,7 +431,7 @@ def _extract_resend_message_id(response: Any) -> str:
     return str(getattr(response, "id", "") or getattr(response, "message_id", "") or "").strip()
 
 
-def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: str) -> tuple[bool, str, str]:
+def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str, str]:
     if not RESEND_API_KEY:
         return False, "RESEND_API_KEY_missing", ""
 
@@ -437,6 +446,8 @@ def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: st
                 "to": to_email,
                 "subject": subject,
                 "html": html_body,
+                "text": text_body,
+                "tags": {"product": "pontis", "flow": "outreach_shortlist"},
             }
         )
         message_id = _extract_resend_message_id(response)
@@ -474,6 +485,7 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
                 "to": [to_email],
                 "subject": subject,
                 "text": body,
+                "tags": {"product": "pontis", "flow": "outreach"},
             }
         )
         try:
@@ -501,6 +513,7 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
                 "to": [to_email],
                 "subject": subject,
                 "text": body,
+                "tags": {"product": "pontis", "flow": "outreach"},
             },
             timeout=20,
         )
@@ -1169,7 +1182,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
 
         name = (profile.name or "").strip() or candidate_id
         linkedin_url = _extract_candidate_linkedin_url(profile)
-        subject, email_template = _build_shortlist_outreach_email(candidate_profile=profile, job=job)
+        subject, email_template, text_template = _build_shortlist_outreach_email(candidate_profile=profile, job=job)
         to_email = _extract_candidate_email(profile)
         outreach_repo = OutreachEventRepository(db)
         recruiter_id = JobRepository(db).get_recruiter_id(job_id)
@@ -1296,6 +1309,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
             to_email=to_email,
             subject=subject,
             html_body=tracked_template,
+            text_body=text_template,
         )
         now = datetime.now(timezone.utc)
         if not email_sent:

@@ -19,6 +19,8 @@ from app.models.entities import (
     CandidateFeedbackEntity,
     CandidateProfileEntity,
     CompanyEntity,
+    InboundEmailAttachmentEntity,
+    InboundEmailReplyEntity,
     InternalCandidateResumeEntity,
     CandidateSelectionSessionEntity,
     InterviewEntity,
@@ -1897,6 +1899,122 @@ class OutreachEventRepository:
         )
         rows = self.db.scalars(stmt).all()
         return list(rows)
+
+
+class InboundEmailRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_svix_id(self, svix_id: str) -> InboundEmailReplyEntity | None:
+        normalized = (svix_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(InboundEmailReplyEntity).where(InboundEmailReplyEntity.svix_id == normalized))
+
+    def get_by_email_id(self, email_id: str) -> InboundEmailReplyEntity | None:
+        normalized = (email_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(InboundEmailReplyEntity).where(InboundEmailReplyEntity.email_id == normalized))
+
+    def create_or_get(
+        self,
+        *,
+        svix_id: str,
+        event_type: str,
+        email_id: str,
+        provider_message_id: str,
+        sender_email: str,
+        sender_name: str,
+        subject: str,
+        body_text: str,
+        body_html: str,
+        received_at: datetime,
+        webhook_created_at: datetime | None,
+        raw_payload: dict,
+    ) -> tuple[InboundEmailReplyEntity, bool]:
+        existing = self.get_by_svix_id(svix_id)
+        if existing:
+            return existing, False
+
+        row = InboundEmailReplyEntity(
+            id=str(uuid4()),
+            svix_id=svix_id,
+            event_type=event_type,
+            email_id=email_id,
+            provider_message_id=provider_message_id,
+            sender_email=sender_email,
+            sender_name=sender_name,
+            subject=subject,
+            body_text=body_text,
+            body_html=body_html,
+            received_at=received_at,
+            webhook_created_at=webhook_created_at,
+            raw_payload=raw_payload,
+            processing_status="received",
+            match_status="unmatched",
+        )
+        try:
+            with self.db.begin_nested():
+                self.db.add(row)
+                self.db.flush()
+            return row, True
+        except IntegrityError:
+            existing = self.get_by_svix_id(svix_id)
+            if existing:
+                return existing, False
+            raise
+
+    def add_attachment(
+        self,
+        *,
+        reply_id: str,
+        provider_attachment_id: str,
+        filename: str,
+        content_type: str,
+        size_bytes: int,
+        storage_path: str,
+        public_url: str,
+        sha256: str,
+    ) -> InboundEmailAttachmentEntity:
+        row = InboundEmailAttachmentEntity(
+            id=str(uuid4()),
+            reply_id=reply_id,
+            provider_attachment_id=provider_attachment_id,
+            filename=filename,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            storage_path=storage_path,
+            public_url=public_url,
+            sha256=sha256,
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def mark_processed(
+        self,
+        row: InboundEmailReplyEntity,
+        *,
+        processing_status: str,
+        match_status: str,
+        attachment_count: int = 0,
+        processing_error: str = "",
+        candidate_id: str | None = None,
+        job_id: str | None = None,
+        outreach_event_id: str | None = None,
+    ) -> InboundEmailReplyEntity:
+        row.processing_status = processing_status
+        row.match_status = match_status
+        row.attachment_count = attachment_count
+        row.processing_error = processing_error
+        row.candidate_id = candidate_id
+        row.job_id = job_id
+        row.outreach_event_id = outreach_event_id
+        row.processed_at = datetime.now(timezone.utc)
+        row.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
+        return row
 
 
 class OtpRepository:

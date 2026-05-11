@@ -356,6 +356,62 @@ class OutreachEventEntity(Base):
     job: Mapped["JobEntity"] = relationship(back_populates="outreach_events")
 
 
+class InboundEmailReplyEntity(Base):
+    __tablename__ = "inbound_email_replies"
+    __table_args__ = (
+        UniqueConstraint("svix_id", name="uq_inbound_email_replies_svix_id"),
+        UniqueConstraint("email_id", name="uq_inbound_email_replies_email_id"),
+        UniqueConstraint("provider_message_id", name="uq_inbound_email_replies_provider_message_id"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    svix_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, default="email.received")
+    email_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    provider_message_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
+    outreach_event_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
+    sender_email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    sender_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    subject: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_html: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    webhook_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    processing_status: Mapped[str] = mapped_column(String(32), nullable=False, default="received")
+    match_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unmatched")
+    attachment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    processing_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    attachments: Mapped[list["InboundEmailAttachmentEntity"]] = relationship(back_populates="reply")
+    outreach_event: Mapped["OutreachEventEntity | None"] = relationship()
+
+
+class InboundEmailAttachmentEntity(Base):
+    __tablename__ = "inbound_email_attachments"
+    __table_args__ = (
+        UniqueConstraint("reply_id", "provider_attachment_id", name="uq_inbound_email_attachments_reply_provider_attachment"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    reply_id: Mapped[str] = mapped_column(GUID(), ForeignKey("inbound_email_replies.id"), nullable=False, index=True)
+    provider_attachment_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    storage_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    public_url: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    reply: Mapped["InboundEmailReplyEntity"] = relationship(back_populates="attachments")
+
+
 class InterviewSessionEntity(Base):
     __tablename__ = "interview_sessions"
     __table_args__ = (UniqueConstraint("token", name="uq_interview_sessions_token"),)

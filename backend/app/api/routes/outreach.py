@@ -2,23 +2,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.schemas.candidate import OutreachReplyRequest, OutreachRequest
 from app.services.audit_service import record_audit_event
-from app.services.outreach_service import (
-    build_email_preview,
-    handle_email_reply,
-    list_outreach_status,
-    record_outreach_open,
-    queue_outreach_delivery,
-)
+from app.services.outreach_service import build_email_preview, list_outreach_status, record_outreach_open, queue_outreach_delivery
 from app.services.ownership import assert_job_ownership
-from app.services.webhook_security import WEBHOOK_SIGNATURE_HEADER, WEBHOOK_TIMESTAMP_HEADER, verify_shared_secret_webhook
 from app.utils.responses import success_response
 
 logger = logging.getLogger(__name__)
@@ -96,32 +89,7 @@ def reply_webhook(payload: OutreachReplyRequest, _: dict = Depends(get_current_u
 
 @router.post("/outreach/webhook/reply")
 async def reply_webhook_public(request: Request, db: Session = Depends(get_db)):
-    """
-    Public webhook endpoint for Resend inbound emails.
-    Accepts raw payload (no schema, no auth).
-    """
-    logger.info("request_started reply_webhook_public")
-    raw_body = await request.body()
-    signature = request.headers.get(WEBHOOK_SIGNATURE_HEADER, "")
-    timestamp = request.headers.get(WEBHOOK_TIMESTAMP_HEADER, "")
-    if not verify_shared_secret_webhook(raw_body=raw_body, signature=signature, timestamp=timestamp):
-        logger.warning("reply_webhook_rejected reason=signature_validation_failed")
-        return JSONResponse(status_code=401, content={"ok": False})
-
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        logger.error("error_occurred reply_webhook_invalid_json error=%s", str(exc), exc_info=exc)
-        payload = {}
-
-    logger.info("decision_taken reply_webhook_payload_received")
-
-    try:
-        handle_email_reply(payload, db=db)
-    except Exception as e:
-        logger.error("error_occurred reply_webhook_processing_failed error=%s", str(e), exc_info=e)
-
-    return {"ok": True}
+    raise HTTPException(status_code=410, detail="Deprecated endpoint. Use /api/webhooks/resend")
 
 
 @router.get("/outreach/open")

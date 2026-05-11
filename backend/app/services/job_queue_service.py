@@ -313,12 +313,8 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
         return _handler
 
     if queue_type == "reply_processing":
-        from app.db.session import SessionLocal
-        from app.services.reply_polling_service import poll_candidate_replies
-
         def _handler(_: dict[str, Any]) -> Any:
-            with SessionLocal() as db:
-                return poll_candidate_replies(db=db)
+            return {"status": "disabled", "reason": "resend_webhook_only"}
 
         return _handler
 

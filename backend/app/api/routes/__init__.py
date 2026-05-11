@@ -13,6 +13,7 @@ from app.api.routes.recruiters import router as recruiters_router
 from app.api.routes.replies import router as replies_router
 from app.api.routes.voice import router as voice_router
 from app.api.routes.recruiter_intelligence import router as recruiter_intelligence_router
+from app.api.routes.webhooks import router as webhooks_router
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth_router)
@@ -28,5 +29,6 @@ api_router.include_router(recruiters_router)
 api_router.include_router(replies_router)
 api_router.include_router(interviews_router)
 api_router.include_router(recruiter_intelligence_router)
+api_router.include_router(webhooks_router)
 
 __all__ = ["api_router"]

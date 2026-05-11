@@ -31,6 +31,7 @@ CSRF_EXEMPT_PATH_PREFIXES = (
     "/api/auth/google",
     "/api/auth/csrf",
     "/api/outreach/webhook",
+    "/api/webhooks/",
     "/api/slack/",
 )
 
@@ -50,7 +51,7 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if request.method == "OPTIONS":
         return await call_next(request)
-    if path.startswith("/api/outreach/webhook"):
+    if path.startswith("/api/outreach/webhook") or path.startswith("/api/webhooks/"):
         return await call_next(request)
     if path.startswith("/api/health") or path == "/health" or path.startswith("/health/"):
         return await call_next(request)

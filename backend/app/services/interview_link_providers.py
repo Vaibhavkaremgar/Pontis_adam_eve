@@ -44,7 +44,7 @@ def _build_absolute_link(path: str, params: dict[str, str]) -> str:
 
 def _placeholder_booking_link(candidate: Any, job: Any) -> str:
     return _build_absolute_link(
-        "/booking/placeholder",
+        "/interview/book",
         {
             "candidateId": _string_field(candidate, "id", "candidate_id"),
             "candidateName": _string_field(candidate, "name"),
@@ -56,7 +56,7 @@ def _placeholder_booking_link(candidate: Any, job: Any) -> str:
 
 def _placeholder_interview_link(candidate: Any, job: Any, scheduled_time: Any) -> str:
     return _build_absolute_link(
-        "/interview/placeholder",
+        "/interview/book",
         {
             "candidateId": _string_field(candidate, "id", "candidate_id"),
             "candidateName": _string_field(candidate, "name"),

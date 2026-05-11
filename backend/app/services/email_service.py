@@ -33,6 +33,10 @@ def send_email(
     body: str,
     from_email: str | None = None,
     reply_to: str | None = None,
+    html: str | None = None,
+    text: str | None = None,
+    tags: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> None:
     sender = (from_email or FROM_EMAIL).strip()
     logger.info("email_config_check from=%s api_key_present=%s", sender, bool(RESEND_API_KEY))
@@ -48,11 +52,20 @@ def send_email(
             "from": sender,
             "to": [to_email],
             "subject": subject,
-            "text": body,
+            "text": text if text is not None else body,
         }
+        normalized_html = (html or "").strip()
+        if normalized_html:
+            payload["html"] = normalized_html
         normalized_reply_to = (reply_to or "").strip()
         if normalized_reply_to:
             payload["reply_to"] = normalized_reply_to
+        normalized_tags = {str(key).strip(): str(value).strip() for key, value in (tags or {}).items() if str(key).strip() and str(value).strip()}
+        if normalized_tags:
+            payload["tags"] = normalized_tags
+        normalized_headers = {str(key).strip(): str(value).strip() for key, value in (headers or {}).items() if str(key).strip() and str(value).strip()}
+        if normalized_headers:
+            payload["headers"] = normalized_headers
 
         response = requests.post(
             "https://api.resend.com/emails",

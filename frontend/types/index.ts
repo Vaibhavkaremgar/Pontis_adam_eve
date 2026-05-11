@@ -50,8 +50,20 @@ export type Candidate = {
   name: string;
   role: string;
   company: string;
+  email?: string;
+  isMockEmail?: boolean;
+  headline?: string;
+  location?: string;
+  yearsExperience?: number;
   skills: string[];
   summary: string;
+  education?: string[];
+  projects?: string[];
+  certifications?: string[];
+  companiesHistory?: string[];
+  domainExperience?: string[];
+  resumeText?: string;
+  profileData?: Record<string, unknown>;
   fitScore: number;
   decision: "strong_match" | "potential" | "weak";
   explanation?: {
