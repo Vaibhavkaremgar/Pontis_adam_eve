@@ -537,9 +537,9 @@ export default function ReviewPage() {
           )}
 
           {!isLoading && !completed && currentBatch.length > 0 && (
-            <div className="space-y-8">
-              <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
-                <div className="space-y-2">
+            <div className="space-y-8 pt-4 md:pt-6">
+              <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
+                <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
                     Batch {session?.currentBatchIndex ? session.currentBatchIndex + 1 : 1} of {session?.totalBatches ?? 3}
                   </p>
@@ -547,7 +547,7 @@ export default function ReviewPage() {
                     Review the candidates in this set. Expand their profile to see full details and choose the one you want to keep.
                   </p>
                 </div>
-                <Badge className="inline-flex rounded-full bg-[#F5E7B8] px-4 py-2 text-sm font-semibold text-[#8A5A00] shadow-none">
+                <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F5E7B8] px-5 py-2 text-[13px] font-semibold text-[#8A5A00] shadow-none">
                   2-candidate set
                 </Badge>
               </div>
