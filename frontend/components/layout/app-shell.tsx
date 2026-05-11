@@ -23,7 +23,7 @@ export function AppShell({ activeStep, children }: AppShellProps) {
     <div className="min-h-screen bg-background">
       <Navbar />
       <Stepper activeStep={activeStep} />
-      <main className="mx-auto w-full max-w-8xl px-4 py-10">{children}</main>
+      <main className="mx-auto w-full max-w-5xl px-4 py-10">{children}</main>
     </div>
   );
 }
