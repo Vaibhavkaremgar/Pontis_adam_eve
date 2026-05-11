@@ -385,6 +385,7 @@ export default function ReviewPage() {
   const [session, setSession] = useState<CandidateSelectionSession | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
+  const [isContinuingToOutreach, setIsContinuingToOutreach] = useState(false);
   const [error, setError] = useState("");
   const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
@@ -438,16 +439,43 @@ export default function ReviewPage() {
   const finalCandidates = session?.finalCandidates ?? session?.topCandidates ?? [];
   const analysis = session?.analysis ?? null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
-  const shortlistedCount = useMemo(() => {
-    if (!completed) return session?.selectedCandidateIds.length ?? 0;
+  const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of finalCandidates) {
       if (candidate.status === "shortlisted") {
         ids.add(candidate.id);
       }
     }
-    return ids.size;
-  }, [completed, finalCandidates, finalShortlistedIds, session?.selectedCandidateIds.length]);
+    return [...ids];
+  }, [finalCandidates, finalShortlistedIds]);
+  const shortlistedCount = useMemo(() => {
+    if (!completed) return session?.selectedCandidateIds.length ?? 0;
+    return completedShortlistedIds.length;
+  }, [completed, completedShortlistedIds, session?.selectedCandidateIds.length]);
+
+  const syncFinalShortlist = async () => {
+    if (!jobId || !completed || completedShortlistedIds.length === 0) {
+      return true;
+    }
+
+    const results = await Promise.all(
+      completedShortlistedIds.map((candidateId) => swipeCandidate({ jobId, candidateId, action: "accept" }))
+    );
+    const failed = results.find((result) => !result.success || !result.data);
+    if (failed) {
+      setError(failed.error || "Could not prepare shortlisted candidates for outreach.");
+      setSelectionDebug(
+        [
+          `jobId=${jobId}`,
+          `shortlistedIds=${completedShortlistedIds.join(", ")}`,
+          `error=${failed.error || "Unknown error"}`
+        ].join("\n")
+      );
+      return false;
+    }
+
+    return true;
+  };
 
   const handleSelect = async (candidateId: string) => {
     if (!jobId || !session || isAdvancing) return;
@@ -517,6 +545,19 @@ export default function ReviewPage() {
     }
     setIsAdvancing(false);
     setSelectedCandidateId("");
+  };
+
+  const handleContinueToOutreach = async () => {
+    if (!jobId || !session || !completed || shortlistedCount === 0 || isContinuingToOutreach) return;
+    setIsContinuingToOutreach(true);
+    setError("");
+
+    const ok = await syncFinalShortlist();
+    if (ok) {
+      router.push("/outreach");
+    }
+
+    setIsContinuingToOutreach(false);
   };
 
   const refreshFinalResults = async () => {
@@ -669,10 +710,14 @@ export default function ReviewPage() {
               <div className="grid gap-3 md:grid-cols-2">
                 <Button
                   className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
-                  onClick={() => router.push("/outreach")}
-                  disabled={shortlistedCount === 0}
+                  onClick={() => void handleContinueToOutreach()}
+                  disabled={shortlistedCount === 0 || isAdvancing || isContinuingToOutreach}
                 >
-                  {shortlistedCount > 0 ? "Continue to Outreach" : "Select candidates to continue"}
+                  {isContinuingToOutreach
+                    ? "Preparing shortlist..."
+                    : shortlistedCount > 0
+                      ? "Continue to Outreach"
+                      : "Select candidates to continue"}
                 </Button>
                 <Button variant="outline" className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white text-[15px] font-semibold text-[#111827]" onClick={() => void refreshFinalResults()}>
                   Refresh final results
