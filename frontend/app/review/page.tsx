@@ -124,8 +124,8 @@ function DetailRow({
 }) {
   return (
     <div className="flex items-center justify-between gap-4 border-b border-[#ECE7DE] py-2 last:border-b-0">
-      <span className="text-sm text-[#6B7280]">{label}</span>
-      <span className="text-sm font-semibold text-[#111827]">{value}</span>
+      <span className="font-body text-[13px] text-[#6B7280]">{label}</span>
+      <span className="font-body text-[13px] font-semibold text-[#111827]">{value}</span>
     </div>
   );
 }
@@ -135,7 +135,7 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex h-14 w-full items-center justify-between rounded-[16px] border border-[#ECE7DE] bg-white px-4 text-left text-[15px] font-semibold text-[#111827] transition-all duration-200 hover:bg-[#FAFAF8]"
+      className="flex h-14 w-full items-center justify-between rounded-[16px] border border-[#ECE7DE] bg-white px-4 text-left font-body text-[14px] font-semibold text-[#111827] transition-all duration-200 hover:bg-[#FAFAF8]"
     >
       <span className="flex items-center gap-3">
         <CircleUserRound className="h-5 w-5 text-[#0F6B3A]" />
@@ -161,8 +161,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Education</p>
-          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Education</p>
+          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
             {formatList(candidate.education).map((item) => (
               <li key={`education-${candidate.id}-${item}`} className="flex gap-2">
                 <GraduationCap className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
@@ -173,8 +173,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         </div>
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Projects</p>
-          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Projects</p>
+          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
             {formatList(candidate.projects).map((item) => (
               <li key={`project-${candidate.id}-${item}`} className="flex gap-2">
                 <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
@@ -185,8 +185,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         </div>
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Certifications</p>
-          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Certifications</p>
+          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
             {formatList(candidate.certifications).map((item) => (
               <li key={`cert-${candidate.id}-${item}`} className="flex gap-2">
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
@@ -197,8 +197,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         </div>
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Companies</p>
-          <ul className="mt-3 space-y-2 text-sm text-[#4B5563]">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Companies</p>
+          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
             {formatList(candidate.companiesHistory).map((item) => (
               <li key={`company-${candidate.id}-${item}`} className="flex gap-2">
                 <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
@@ -209,7 +209,7 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         </div>
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 md:col-span-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Domain experience</p>
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Domain experience</p>
           <div className="mt-3 flex flex-wrap gap-2">
             {formatList(candidate.domainExperience).map((item) => (
               <span key={`domain-${candidate.id}-${item}`} className="rounded-full bg-[#F5E7B8] px-3 py-1 text-xs font-semibold text-[#8A5A00]">
@@ -222,14 +222,14 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
 
       {candidate.summary && (
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
-          <p className="mt-3 text-sm leading-7 text-[#4B5563]">{trimText(candidate.summary, 1200)}</p>
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
+          <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(candidate.summary, 1200)}</p>
         </div>
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 text-sm text-[#4B5563]">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Scoring</p>
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[13px] text-[#4B5563]">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Scoring</p>
           <div className="mt-3 space-y-0.5">
             <DetailRow label="Fit score" value={`${candidate.fitScore.toFixed(1)} / 5`} />
             <DetailRow label="Status" value={statusLabel(candidate)} />
@@ -237,8 +237,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
           </div>
         </div>
 
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 text-sm text-[#4B5563]">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Signals</p>
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[13px] text-[#4B5563]">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Signals</p>
           <div className="mt-3 space-y-0.5">
             <DetailRow label="Resume included" value={candidate.resumeText ? "Yes" : "No"} />
             <DetailRow label="Mock email" value={candidate.isMockEmail ? "Yes" : "No"} />
@@ -248,14 +248,14 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
       </div>
 
       {candidate.resumeText && (
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#111111] p-5 text-sm text-white">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70">Resume text</p>
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#111111] p-5 font-body text-[13px] text-white">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">Resume text</p>
           <pre className="mt-3 whitespace-pre-wrap font-body leading-relaxed text-white/90">{candidate.resumeText}</pre>
         </div>
       )}
 
       {candidate.explanation?.sourceBreakdown && (
-        <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-white p-5 text-xs text-[#6B7280] sm:grid-cols-2">
+        <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[12px] text-[#6B7280] sm:grid-cols-2">
           <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
           <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
           <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
@@ -303,10 +303,10 @@ function CandidateCard({
       <CardHeader className="p-0">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-3">
-            <CardTitle className="font-heading text-[32px] font-bold leading-none text-[#111827]">
+            <CardTitle className="font-body text-[28px] font-semibold leading-none text-[#111827]">
               {candidate.name || candidate.id.slice(0, 8)}
             </CardTitle>
-            <div className="space-y-2 text-[16px] leading-6 text-[#4B5563]">
+            <div className="space-y-2 font-body text-[14px] leading-5 text-[#4B5563]">
               <p className="flex items-center gap-2">
                 <BriefcaseBusiness className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
                 <span style={clampLines(2)}>
@@ -323,7 +323,7 @@ function CandidateCard({
               </p>
             </div>
           </div>
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center text-[16px] font-semibold leading-tight text-[#0F6B3A]">
+          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center font-body text-[14px] font-semibold leading-tight text-[#0F6B3A]">
             <span>{candidate.fitScore.toFixed(1)}</span>
             <span className="block text-[12px]">/5</span>
           </div>
@@ -331,7 +331,7 @@ function CandidateCard({
       </CardHeader>
 
       <CardContent className="flex flex-1 flex-col p-0 pt-6">
-        <div className="mb-4 inline-flex w-fit rounded-full bg-[#F3F4F6] px-3 py-1 text-xs font-semibold text-[#6B7280]">
+        <div className="mb-4 inline-flex rounded-full bg-[#F3F4F6] px-3 py-1 font-body text-[11px] font-semibold text-[#6B7280]">
           {statusLabel(candidate)}
         </div>
 
@@ -349,7 +349,7 @@ function CandidateCard({
         <div className="mt-auto pt-6">
           {showSelectButton && onSelect && (
             <Button
-              className="h-14 w-full rounded-[14px] bg-[#0F6B3A] text-[18px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
+              className="h-14 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
               onClick={(event) => {
                 event.stopPropagation();
                 onSelect();
@@ -478,12 +478,12 @@ export default function ReviewPage() {
 
   return (
     <AppShell activeStep={4}>
-      <div className="w-full max-w-[1700px] mx-auto space-y-6 px-4 py-6 sm:px-6 lg:px-8 xl:px-10">
-        <div className="w-full rounded-[32px] border border-[#E7E0D4] bg-[#F8F5EE] shadow-sm p-6 md:p-8 lg:p-10 xl:p-12">
+      <div className="mx-auto w-full max-w-[1700px] space-y-6 px-4 py-6 font-body sm:px-6 lg:px-8 xl:px-10">
+        <div className="w-full rounded-[32px] border border-[#E7E0D4] bg-[#F8F5EE] p-6 shadow-sm md:p-8 lg:p-10 xl:p-12">
           <div className="mb-6 flex items-center justify-between gap-4">
             <div className="space-y-1">
-              <h1 className="font-heading text-3xl font-bold tracking-tight text-[#111827]">Review Candidates</h1>
-              <p className="text-sm text-[#6B7280]">A refined shortlist review built for fast, confident selection.</p>
+              <h1 className="font-body text-2xl font-semibold tracking-tight text-[#111827]">Review Candidates</h1>
+              <p className="font-body text-sm text-[#6B7280]">A refined shortlist review built for fast, confident selection.</p>
             </div>
           </div>
 
@@ -496,19 +496,19 @@ export default function ReviewPage() {
           <div className="grid h-[72px] grid-cols-3 overflow-hidden rounded-[20px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
             <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
               <ShieldCheck className="h-5 w-5 text-[#0F6B3A]" />
-              <span className="text-[18px] font-semibold text-[#111827]">
+              <span className="font-body text-[15px] font-semibold text-[#111827]">
                 Progress: <span className="text-[#0F6B3A]">{session ? `${progress} / ${session.totalBatches}` : "0 / 3"}</span>
               </span>
             </div>
             <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
               <CheckCircle2 className="h-5 w-5 text-[#0F6B3A]" />
-              <span className="text-[18px] font-semibold text-[#111827]">
+              <span className="font-body text-[15px] font-semibold text-[#111827]">
                 Selected: <span className="text-[#0F6B3A]">{session?.selectedCandidateIds.length ?? 0}</span>
               </span>
             </div>
             <div className="flex items-center justify-center gap-3 px-4">
               <ShieldCheck className="h-5 w-5 text-[#0F6B3A]" />
-              <span className="text-[18px] font-semibold text-[#111827]">
+              <span className="font-body text-[15px] font-semibold text-[#111827]">
                 Rejected: <span className="text-[#0F6B3A]">{session?.rejectedCandidateIds.length ?? 0}</span>
               </span>
             </div>
@@ -527,10 +527,10 @@ export default function ReviewPage() {
             <div className="space-y-8">
               <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
                 <div className="space-y-2">
-                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
+                  <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
                     Batch {session?.currentBatchIndex ? session.currentBatchIndex + 1 : 1} of {session?.totalBatches ?? 3}
                   </p>
-                  <p className="max-w-3xl text-sm leading-6 text-[#6B7280]">
+                  <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
                     Review the candidates in this set. Expand their profile to see full details and choose the one you want to keep.
                   </p>
                 </div>
@@ -586,7 +586,7 @@ export default function ReviewPage() {
 
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-gray-900">Top reranked candidates</p>
+                  <p className="font-body text-sm font-semibold text-gray-900">Top reranked candidates</p>
                   <Badge variant="high">{finalCandidates.length} candidates</Badge>
                 </div>
 
@@ -656,7 +656,7 @@ export default function ReviewPage() {
               </div>
             )}
           </Modal>
-          <div className="mt-6 flex items-center justify-center gap-2 text-sm text-[#6B7280]">
+          <div className="mt-6 flex items-center justify-center gap-2 font-body text-sm text-[#6B7280]">
             <ShieldCheck className="h-4 w-4 text-[#0F6B3A]" />
             <span>Your selection helps us improve future matches</span>
           </div>
