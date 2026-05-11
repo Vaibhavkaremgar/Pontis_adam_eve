@@ -175,6 +175,45 @@ def _best_effort_next_batch(session, snapshot_lookup: dict[str, CandidateResult]
     return []
 
 
+def _best_effort_final_candidates(
+    *,
+    db: Session,
+    job,
+    updated_session,
+    selected_rows: list[CandidateResult],
+    analysis: dict[str, Any],
+) -> list[CandidateResult]:
+    try:
+        real_candidates = fetch_ranked_candidates(
+            db=db,
+            job_id=updated_session.job_id,
+            mode=(getattr(job, "vetting_mode", None) or "volume").strip().lower(),
+            refresh=True,
+        )
+    except Exception as exc:
+        logger.warning(
+            "selection_final_rank_fetch_failed job_id=%s error=%s",
+            updated_session.job_id,
+            str(exc),
+        )
+        real_candidates = []
+
+    pool = real_candidates or selected_rows or [CandidateResult.model_validate(row) for row in (updated_session.candidate_pool_snapshot or [])]
+    try:
+        return _rerank_with_selection_signals(
+            pool_candidates=pool,
+            selected_candidates=selected_rows,
+            analysis=analysis,
+        )
+    except Exception as exc:
+        logger.warning(
+            "selection_final_rerank_failed job_id=%s error=%s",
+            updated_session.job_id,
+            str(exc),
+        )
+        return pool[:DEFAULT_FINAL_LIMIT]
+
+
 def _build_selection_analysis(selected_candidates: list[CandidateResult]) -> dict[str, Any]:
     skill_counter: Counter[str] = Counter()
     role_counter: Counter[str] = Counter()
@@ -560,15 +599,11 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 if candidate_id in selected_lookup
             ]
             analysis = _build_selection_analysis(selected_rows)
-            real_candidates = fetch_ranked_candidates(
+            final_candidates = _best_effort_final_candidates(
                 db=db,
-                job_id=job_id,
-                mode=(getattr(job, "vetting_mode", None) or "volume").strip().lower(),
-                refresh=True,
-            )
-            final_candidates = _rerank_with_selection_signals(
-                pool_candidates=real_candidates or [CandidateResult.model_validate(row) for row in (updated_session.candidate_pool_snapshot or [])],
-                selected_candidates=selected_rows,
+                job=job,
+                updated_session=updated_session,
+                selected_rows=selected_rows,
                 analysis=analysis,
             )
             repository.complete(
@@ -581,7 +616,11 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             if not completed_session:
                 raise APIError("Selection session not found after completion", status_code=404)
             final_rows = [CandidateResult.model_validate(row) for row in (completed_session.final_candidate_snapshot or [])]
-            state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
+            try:
+                state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
+            except Exception as exc:
+                logger.warning("selection_finalize_state_failed job_id=%s error=%s", job_id, str(exc))
+                state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id) or {}
             return {
                 **_session_payload(
                     session=completed_session,
