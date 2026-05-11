@@ -38,7 +38,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
-import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice } from "@/lib/api/candidates";
+import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
 import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession } from "@/types";
 
 function statusLabel(candidate: Candidate): string {
@@ -366,9 +366,9 @@ function CandidateCard({
                 event.stopPropagation();
                 onSelect();
               }}
-              disabled={selectionLocked || isSelecting}
+              disabled={selectionLocked || isSelecting || isSelected}
             >
-              {isSelecting ? "Saving choice..." : "Select this candidate"}
+              {isSelecting ? "Saving choice..." : isSelected ? "Selected" : "Select this candidate"}
             </Button>
           )}
           </div>
@@ -389,6 +389,7 @@ export default function ReviewPage() {
   const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
+  const [finalShortlistedIds, setFinalShortlistedIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -421,6 +422,7 @@ export default function ReviewPage() {
 
       setSession(result.data);
       setActiveCandidate(null);
+      setFinalShortlistedIds([]);
       setIsLoading(false);
     };
 
@@ -436,12 +438,53 @@ export default function ReviewPage() {
   const finalCandidates = session?.finalCandidates ?? session?.topCandidates ?? [];
   const analysis = session?.analysis ?? null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
+  const shortlistedCount = useMemo(() => {
+    if (!completed) return session?.selectedCandidateIds.length ?? 0;
+    const ids = new Set<string>(finalShortlistedIds);
+    for (const candidate of finalCandidates) {
+      if (candidate.status === "shortlisted") {
+        ids.add(candidate.id);
+      }
+    }
+    return ids.size;
+  }, [completed, finalCandidates, finalShortlistedIds, session?.selectedCandidateIds.length]);
 
   const handleSelect = async (candidateId: string) => {
-    if (!jobId || !session || isAdvancing || completed) return;
+    if (!jobId || !session || isAdvancing) return;
     setIsAdvancing(true);
     setError("");
     setSelectedCandidateId(candidateId);
+
+    if (completed) {
+      const result = await swipeCandidate({ jobId, candidateId, action: "accept" });
+      if (!result.success || !result.data) {
+        setError(result.error || "Could not shortlist candidate for outreach.");
+        setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\nerror=${result.error || "Unknown error"}`);
+        setIsAdvancing(false);
+        setSelectedCandidateId("");
+        return;
+      }
+
+      setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
+      setSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
+                candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
+              ),
+              topCandidates: (prev.topCandidates || []).map((candidate) =>
+                candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
+              ),
+            }
+          : prev
+      );
+      setSelectionDebug("");
+      setActiveCandidate(null);
+      setIsAdvancing(false);
+      setSelectedCandidateId("");
+      return;
+    }
 
     const result = await submitSelectionChoice({ jobId, candidateId });
     if (!result.success || !result.data) {
@@ -516,7 +559,7 @@ export default function ReviewPage() {
             <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
               <Users className="h-5 w-5 text-[#0F6B3A]" />
               <span className="font-body text-[15px] font-semibold text-[#111827]">
-                Selected: <span className="text-[#0F6B3A]">{session?.selectedCandidateIds.length ?? 0}</span>
+                Selected: <span className="text-[#0F6B3A]">{shortlistedCount}</span>
               </span>
             </div>
             <div className="flex items-center justify-center gap-3 px-4">
@@ -609,11 +652,12 @@ export default function ReviewPage() {
                       <CandidateCard
                         key={candidate.id}
                         candidate={candidate}
-                        isSelected={false}
+                        isSelected={finalShortlistedIds.includes(candidate.id) || candidate.status === "shortlisted"}
                         isSelecting={false}
                         selectionLocked={false}
                         onOpenDetails={() => setActiveCandidate(candidate)}
-                        showSelectButton={false}
+                        onSelect={() => void handleSelect(candidate.id)}
+                        showSelectButton
                       />
                     );
                   })}
@@ -623,8 +667,12 @@ export default function ReviewPage() {
               <Separator />
 
               <div className="grid gap-3 md:grid-cols-2">
-                <Button className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]" onClick={() => router.push("/outreach")}>
-                  Continue to Outreach
+                <Button
+                  className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
+                  onClick={() => router.push("/outreach")}
+                  disabled={shortlistedCount === 0}
+                >
+                  {shortlistedCount > 0 ? "Continue to Outreach" : "Select candidates to continue"}
                 </Button>
                 <Button variant="outline" className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white text-[15px] font-semibold text-[#111827]" onClick={() => void refreshFinalResults()}>
                   Refresh final results
@@ -654,9 +702,13 @@ export default function ReviewPage() {
                   <Button
                     className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
                     onClick={() => void handleSelect(activeCandidate.id)}
-                    disabled={isAdvancing || selectedCandidateId !== "" || activeCandidate.status === "shortlisted"}
+                    disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"}
                   >
-                    {isAdvancing && selectedCandidateId === activeCandidate.id ? "Saving choice..." : "Select this candidate"}
+                    {isAdvancing && selectedCandidateId === activeCandidate.id
+                      ? "Saving choice..."
+                      : finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"
+                        ? "Selected"
+                        : "Select this candidate"}
                   </Button>
                   <Button
                     variant="outline"

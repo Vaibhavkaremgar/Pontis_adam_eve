@@ -19,6 +19,16 @@ _QUESTION_BANK: dict[str, str] = {
     "responsibilities": "Which responsibilities matter most on day one?",
 }
 
+_DEFAULT_TASTE_QUESTIONS = [
+    "What kind of candidate background should we bias toward if two people look equally strong on paper?",
+    "What is the biggest dealbreaker we should screen for before outreach?",
+    "Should we favor speed and adaptability, depth and specialization, or a balance of both?",
+    "If you had to choose, would you rather optimize for startup energy, enterprise rigor, or something in between?",
+    "What should a standout candidate have done recently that would make you say yes quickly?",
+    "Which trait matters most to you: ownership, execution, communication, or technical depth?",
+    "Are there any experience patterns that look good on paper but actually are not a fit for this team?",
+]
+
 
 def _ordered_unique(values: list[str]) -> list[str]:
     seen: set[str] = set()
@@ -85,11 +95,12 @@ def generate_recruiter_questions(
     questions = _ordered_unique(questions)
 
     if not questions:
-        base_questions = [
-            "What kind of background would make a candidate stand out to you?",
-            "What is the one thing you'd most like to clarify before we search?",
-        ]
-        return base_questions[:max_questions]
+        return _DEFAULT_TASTE_QUESTIONS[:max_questions]
+
+    for question in _DEFAULT_TASTE_QUESTIONS:
+        if len(questions) >= max_questions:
+            break
+        if question.lower() not in {item.lower() for item in questions}:
+            questions.append(question)
 
     return questions[:max_questions]
-
