@@ -101,52 +101,6 @@ function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string): Voi
   return next;
 }
 
-function mergeTranscriptFragments(previous: string, incoming: string): string {
-  const prev = normalize(previous);
-  const next = normalize(incoming);
-
-  if (!prev) return next;
-  if (!next) return prev;
-  const prevLower = prev.toLowerCase();
-  const nextLower = next.toLowerCase();
-
-  if (nextLower === prevLower) return next;
-  if (nextLower.startsWith(prevLower)) return next;
-  if (prevLower.startsWith(nextLower)) return prev;
-  if (prevLower.includes(nextLower)) return prev;
-  if (nextLower.includes(prevLower)) return next;
-
-  const prevWords = prev.split(" ");
-  const nextWords = next.split(" ");
-  const maxOverlap = Math.min(12, prevWords.length, nextWords.length);
-
-  for (let size = maxOverlap; size > 0; size -= 1) {
-    const prevTail = prevWords.slice(-size).join(" ").toLowerCase();
-    const nextHead = nextWords.slice(0, size).join(" ").toLowerCase();
-    if (prevTail === nextHead) {
-      return [...prevWords, ...nextWords.slice(size)].join(" ");
-    }
-  }
-
-  return `${prev} ${next}`.replace(/\s+/g, " ").trim();
-}
-
-function splitCompleteSentences(text: string): { sentences: string[]; remainder: string } {
-  const normalized = normalize(text);
-  if (!normalized) {
-    return { sentences: [], remainder: "" };
-  }
-
-  const matches = normalized.match(/[^.!?]+[.!?]+(?:["')\]]+)?/g) || [];
-  const consumed = matches.join("").length;
-  const remainder = normalize(normalized.slice(consumed));
-
-  return {
-    sentences: matches.map(normalize).filter(Boolean),
-    remainder,
-  };
-}
-
 function extractTranscriptEvent(message: unknown): { role: "assistant" | "user"; text: string; isFinal: boolean } | null {
   if (!message || typeof message !== "object") return null;
   const r = message as Record<string, unknown>;
@@ -282,8 +236,6 @@ export function VoiceUi() {
   const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
 
   const [finalTranscript, setFinalTranscript] = useState<StreamingMessage[]>([]);
-  const [interimTranscript, setInterimTranscript] = useState("");
-  const [interimRole, setInterimRole] = useState<TranscriptRole | null>(null);
   const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
   const [pipelineError, setPipelineError] = useState("");
   const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
@@ -296,13 +248,6 @@ export function VoiceUi() {
   const callStartedAtRef = useRef<number | null>(null);
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
   const transcriptBufferRef = useRef<Record<TranscriptRole, string>>({ assistant: "", user: "" });
-  const currentStreamingMessageIdRef = useRef<Record<TranscriptRole, string | null>>({ assistant: null, user: null });
-  const interimRoleRef = useRef<TranscriptRole | null>(null);
-  const interimTranscriptRef = useRef("");
-  const transcriptFlushTimersRef = useRef<Record<TranscriptRole, ReturnType<typeof setTimeout> | null>>({
-    assistant: null,
-    user: null,
-  });
 
   useEffect(() => {
     if (!isSessionReady || !user || !jobId) return;
@@ -329,32 +274,23 @@ export function VoiceUi() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [finalTranscript, interimTranscript, interimRole]);
-
-  const clearTranscriptFlushTimer = useCallback((role: TranscriptRole) => {
-    const timer = transcriptFlushTimersRef.current[role];
-    if (timer) {
-      clearTimeout(timer);
-      transcriptFlushTimersRef.current[role] = null;
-    }
-  }, []);
+  }, [finalTranscript]);
 
   const upsertStreamingMessage = useCallback((role: TranscriptRole, text: string, isFinal: boolean) => {
     const normalized = isFinal ? normalizeFinalTranscriptText(text) : normalize(text);
     if (!normalized) return;
 
     const speaker = speakerLabel(role);
-    const existingId = currentStreamingMessageIdRef.current[role];
     const timestamp = new Date().toISOString();
 
     setFinalTranscript((prev) => {
       const next = [...prev];
-      const targetIndex = existingId ? next.findIndex((item) => item.id === existingId) : -1;
-      const target = targetIndex >= 0 ? next[targetIndex] : null;
+      const last = next[next.length - 1];
 
-      if (target) {
-        next[targetIndex] = {
-          ...target,
+      if (last && last.role === role) {
+        next[next.length - 1] = {
+          ...last,
+          speaker,
           content: normalized,
           isStreaming: !isFinal,
           isFinal,
@@ -363,136 +299,36 @@ export function VoiceUi() {
         return next;
       }
 
-      const nextMessage: StreamingMessage = {
-        id: createMessageId(role),
-        role,
-        speaker,
-        content: normalized,
-        isStreaming: !isFinal,
-        isFinal,
-        timestamp,
-      };
-      currentStreamingMessageIdRef.current[role] = nextMessage.id;
-      return [...next, nextMessage];
-    });
-
-    if (isFinal) {
-      currentStreamingMessageIdRef.current[role] = null;
-    }
-
-    turnsRef.current = upsertTurn(turnsRef.current, role, normalized);
-  }, []);
-
-  const clearLiveTranscript = useCallback((role?: TranscriptRole) => {
-    if (role && interimRoleRef.current !== role) {
-      return;
-    }
-    interimRoleRef.current = null;
-    interimTranscriptRef.current = "";
-    setInterimRole(null);
-    setInterimTranscript("");
-  }, []);
-
-  const setLiveTranscript = useCallback((role: TranscriptRole, text: string) => {
-    const normalized = normalize(text);
-    if (!normalized) {
-      clearLiveTranscript(role);
-      return;
-    }
-
-    interimRoleRef.current = role;
-    interimTranscriptRef.current = normalized;
-    setInterimRole(role);
-    setInterimTranscript(normalized);
-
-    const speaker = speakerLabel(role);
-    setFinalTranscript((prev) => {
-      const next = [...prev];
-      const existingId = currentStreamingMessageIdRef.current[role];
-      const targetIndex = existingId ? next.findIndex((item) => item.id === existingId) : -1;
-      const timestamp = new Date().toISOString();
-
-      if (targetIndex >= 0) {
-        next[targetIndex] = {
-          ...next[targetIndex],
-          content: normalized,
-          isStreaming: true,
-          isFinal: false,
+      if (last && last.isStreaming) {
+        next[next.length - 1] = {
+          ...last,
+          isStreaming: false,
+          isFinal: true,
           timestamp,
-          speaker,
         };
-        return next;
       }
 
-      const newMessage: StreamingMessage = {
-        id: createMessageId(role),
-        role,
-        speaker,
-        content: normalized,
-        isStreaming: true,
-        isFinal: false,
-        timestamp,
-      };
-      currentStreamingMessageIdRef.current[role] = newMessage.id;
-      return [...next, newMessage];
+      return [
+        ...next,
+        {
+          id: createMessageId(role),
+          role,
+          speaker,
+          content: normalized,
+          isStreaming: !isFinal,
+          isFinal,
+          timestamp,
+        },
+      ];
     });
 
     turnsRef.current = upsertTurn(turnsRef.current, role, normalized);
-  }, [clearLiveTranscript]);
-
-  const finalizeBufferedTranscript = useCallback((role: TranscriptRole, forceFinalize = false) => {
-    const buffered = normalize(transcriptBufferRef.current[role]);
-    clearTranscriptFlushTimer(role);
-
-    if (!buffered) {
-      transcriptBufferRef.current[role] = "";
-      clearLiveTranscript(role);
-      currentStreamingMessageIdRef.current[role] = null;
-      return;
-    }
-
-    if (forceFinalize) {
-      upsertStreamingMessage(role, buffered, true);
-      transcriptBufferRef.current[role] = "";
-      clearLiveTranscript(role);
-      return;
-    }
-
-    const { sentences, remainder } = splitCompleteSentences(buffered);
-    if (sentences.length > 0) {
-      const joined = normalizeFinalTranscriptText(sentences.join(" "));
-      upsertStreamingMessage(role, joined, false);
-      transcriptBufferRef.current[role] = remainder;
-      if (remainder) {
-        setLiveTranscript(role, remainder);
-        transcriptFlushTimersRef.current[role] = setTimeout(() => {
-          finalizeBufferedTranscript(role, true);
-        }, 800);
-      } else {
-        clearLiveTranscript(role);
-      }
-      return;
-    }
-
-    setLiveTranscript(role, buffered);
-    transcriptFlushTimersRef.current[role] = setTimeout(() => {
-      finalizeBufferedTranscript(role, true);
-    }, 800);
-  }, [clearLiveTranscript, clearTranscriptFlushTimer, setLiveTranscript, upsertStreamingMessage]);
+  }, []);
 
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
-    const role = event.role;
-    const merged = mergeASRRevision(transcriptBufferRef.current[role], event.text);
-    transcriptBufferRef.current[role] = merged;
-    setLiveTranscript(role, merged);
-
-    if (event.isFinal) {
-      finalizeBufferedTranscript(role, true);
-      return;
-    }
-
-    finalizeBufferedTranscript(role, false);
-  }, [finalizeBufferedTranscript, setLiveTranscript]);
+    transcriptBufferRef.current[event.role] = event.text;
+    upsertStreamingMessage(event.role, event.text, event.isFinal);
+  }, [upsertStreamingMessage]);
 
   // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
   const runPipeline = useCallback(async (turns: VoiceTurn[]) => {
@@ -560,8 +396,8 @@ export function VoiceUi() {
 
     setCandidates(candidatesResult.data);
     setIsRefined(true);
-    setPipelineStatus("done");
-    terminalStateRef.current = "done";
+      setPipelineStatus("done");
+      terminalStateRef.current = "done";
 
     // Auto-navigate to review after a short pause so recruiter sees "done"
     setTimeout(() => router.push("/review"), 1200);
@@ -656,17 +492,28 @@ export function VoiceUi() {
 
       setCallStatus("completed");
       terminalStateRef.current = "done";
-      clearTranscriptFlushTimer("assistant");
-      clearTranscriptFlushTimer("user");
-      finalizeBufferedTranscript("assistant", true);
-      finalizeBufferedTranscript("user", true);
+      setFinalTranscript((prev) => {
+        if (prev.length === 0) return prev;
+        const next = [...prev];
+        const lastIndex = next.length - 1;
+        const last = next[lastIndex];
+        if (last && last.isStreaming) {
+          next[lastIndex] = {
+            ...last,
+            isStreaming: false,
+            isFinal: true,
+            timestamp: new Date().toISOString(),
+          };
+        }
+        return next;
+      });
       // Auto-trigger pipeline with everything captured so far
       void runPipeline(turnsRef.current);
     });
 
     vapiRef.current = vapi;
     return vapi;
-  }, [finalizeBufferedTranscript, runPipeline, setCallStatus]);
+  }, [runPipeline, setCallStatus, upsertStreamingMessage]);
 
   // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
@@ -716,10 +563,6 @@ export function VoiceUi() {
 
     // Reset state
     setFinalTranscript([]);
-    setInterimTranscript("");
-    setInterimRole(null);
-    interimRoleRef.current = null;
-    interimTranscriptRef.current = "";
     turnsRef.current = [];
     firedRef.current = false;
     callStartedAtRef.current = null;
@@ -810,8 +653,6 @@ export function VoiceUi() {
     terminalStateRef.current = "manual-stop";
     setCallStatus("processing");
     try {
-      finalizeBufferedTranscript("assistant", true);
-      finalizeBufferedTranscript("user", true);
       await vapiRef.current.stop();
     } catch {
       setCallStatus("error");
@@ -823,11 +664,8 @@ export function VoiceUi() {
   useEffect(() => {
     return () => {
       vapiRef.current?.stop().catch(() => undefined);
-      clearTranscriptFlushTimer("assistant");
-      clearTranscriptFlushTimer("user");
-      clearLiveTranscript();
     };
-  }, [clearLiveTranscript, clearTranscriptFlushTimer]);
+  }, []);
 
   // ── derived display state ──────────────────────────────────────────────────
   const isIdle = callStatus === "idle";
@@ -835,7 +673,7 @@ export function VoiceUi() {
   const isLive = callStatus === "connecting" || callStatus === "listening" || callStatus === "speaking";
   const isSpeaking = callStatus === "speaking";
   const isProcessingCall = callStatus === "processing" || callStatus === "completed";
-  const showChat = !isIdle || finalTranscript.length > 0 || Boolean(interimTranscript);
+  const showChat = !isIdle || finalTranscript.length > 0;
 
   const pipelineLabel: Record<typeof pipelineStatus, string> = {
     idle: "",
@@ -917,7 +755,7 @@ export function VoiceUi() {
 
         <div className="space-y-6">
           {/* Empty state */}
-          {(isIdle || isErrorState) && finalTranscript.length === 0 && !interimTranscript && (
+          {(isIdle || isErrorState) && finalTranscript.length === 0 && (
             <div className="flex min-h-[120px] items-center justify-center rounded-xl bg-[#F9FAFB]">
               <p className="font-body text-sm text-[#6B7280]">Click start to begin voice intake</p>
             </div>
@@ -929,7 +767,7 @@ export function VoiceUi() {
               ref={chatScrollRef}
               className="max-h-[320px] space-y-3 overflow-y-auto rounded-xl bg-[#F8FAFC] p-3 md:max-h-[360px]"
             >
-              {finalTranscript.length === 0 && !interimTranscript && (callStatus === "connecting" || callStatus === "listening") && (
+              {finalTranscript.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
                 <p className="text-center text-xs text-gray-400">Waiting for Adam...</p>
               )}
               {finalTranscript.map((msg, i) => (
@@ -943,30 +781,6 @@ export function VoiceUi() {
                   timestamp: msg.timestamp,
                 }} />
               ))}
-              {interimTranscript && interimRole && (
-                <motion.div
-                  key={`${interimRole}-live-caption`}
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.16 }}
-                  className="space-y-2 pt-2"
-                >
-                  <p className="px-2 text-[11px] uppercase tracking-[0.18em] text-gray-400">Live caption</p>
-                  <ChatBubble
-                    message={{
-                      id: `${interimRole}-interim`,
-                      role: interimRole,
-                      speaker: speakerLabel(interimRole),
-                      content: interimTranscript,
-                      isStreaming: true,
-                      isFinal: false,
-                      timestamp: new Date().toISOString(),
-                    }}
-                    isInterim
-                  />
-                </motion.div>
-              )}
             </div>
           )}
 

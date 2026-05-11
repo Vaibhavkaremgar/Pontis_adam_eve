@@ -478,8 +478,8 @@ export default function ReviewPage() {
 
   return (
     <AppShell activeStep={4}>
-      <div className="mx-auto w-full max-w-[1600px] space-y-6 px-4 py-6 md:px-8 2xl:px-6">
-        <div className="w-full rounded-[32px] border border-[#E7E0D4] bg-[#F8F5EE] p-5 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6 lg:p-10">
+      <div className="w-full max-w-[1700px] mx-auto space-y-6 px-4 py-6 sm:px-6 lg:px-8 xl:px-10">
+        <div className="w-full rounded-[32px] border border-[#E7E0D4] bg-[#F8F5EE] shadow-sm p-6 md:p-8 lg:p-10 xl:p-12">
           <div className="mb-6 flex items-center justify-between gap-4">
             <div className="space-y-1">
               <h1 className="font-heading text-3xl font-bold tracking-tight text-[#111827]">Review Candidates</h1>
