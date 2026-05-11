@@ -163,6 +163,18 @@ def _selection_session_payload(session, state: dict[str, Any], current_batch: li
     return payload
 
 
+def _best_effort_next_batch(session, snapshot_lookup: dict[str, CandidateResult]) -> list[CandidateResult]:
+    next_batch = _current_batch_from_session(session, snapshot_lookup)
+    if next_batch:
+        return next_batch
+
+    batch_plan = list(session.batch_plan or [])
+    batch_index = max(0, int(session.current_batch_index or 0))
+    if batch_index < len(batch_plan):
+        return [snapshot_lookup[candidate_id] for candidate_id in batch_plan[batch_index] if candidate_id in snapshot_lookup]
+    return []
+
+
 def _build_selection_analysis(selected_candidates: list[CandidateResult]) -> dict[str, Any]:
     skill_counter: Counter[str] = Counter()
     role_counter: Counter[str] = Counter()
@@ -589,10 +601,7 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         if not refreshed_session:
             raise APIError("Selection session not found", status_code=404)
         refreshed_lookup = _candidate_lookup_snapshot(refreshed_session.candidate_pool_snapshot or [])
-        next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
-        if not next_batch:
-            next_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
-            next_batch = [refreshed_lookup[candidate_id] for candidate_id in next_pair_ids if candidate_id in refreshed_lookup]
+        next_batch = _best_effort_next_batch(refreshed_session, refreshed_lookup)
         payload = _selection_session_payload(session=refreshed_session, state=state, current_batch=next_batch)
         if feedback_error:
             payload["warning"] = feedback_error
@@ -600,7 +609,6 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
     except Exception as exc:
         logger.exception("selection_submit_unhandled job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc))
         session, payload = _get_or_create_selection_session(db=db, job_id=job_id)
-        payload["warning"] = "Selection was saved, but the learning step hit a temporary issue."
         return payload
 
 
