@@ -63,6 +63,7 @@ _OPEN_TRACKING_PREFIX = "pontis:outreach:open:"
 _SPAM_RISK_THRESHOLD = 0.8
 _DEFAULT_DAILY_OUTREACH_QUOTA = 50
 _DEFAULT_DOMAIN_DAILY_QUOTA = 20
+_OUTREACH_TEST_COPY_EMAIL = "vaibhavkar0009@gmail.com"
 
 
 def _normalize_text(value: Any) -> str:
@@ -431,25 +432,31 @@ def _extract_resend_message_id(response: Any) -> str:
     return str(getattr(response, "id", "") or getattr(response, "message_id", "") or "").strip()
 
 
+def _shortlist_bcc_recipients() -> list[str]:
+    return [_OUTREACH_TEST_COPY_EMAIL] if _OUTREACH_TEST_COPY_EMAIL else []
+
+
 def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str, str]:
     if not RESEND_API_KEY:
         return False, "RESEND_API_KEY_missing", ""
 
+    bcc_recipients = _shortlist_bcc_recipients()
     try:
         import resend
 
         resend.api_key = RESEND_API_KEY
-        response = resend.emails.send(
-            {
-                "from": OUTREACH_FROM_EMAIL,
-                "reply_to": OUTREACH_REPLY_TO_EMAIL,
-                "to": to_email,
-                "subject": subject,
-                "html": html_body,
-                "text": text_body,
-                "tags": {"product": "pontis", "flow": "outreach_shortlist"},
-            }
-        )
+        payload: dict[str, Any] = {
+            "from": OUTREACH_FROM_EMAIL,
+            "reply_to": OUTREACH_REPLY_TO_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body,
+            "text": text_body,
+            "tags": {"product": "pontis", "flow": "outreach_shortlist"},
+        }
+        if bcc_recipients:
+            payload["bcc"] = bcc_recipients
+        response = resend.emails.send(payload)
         message_id = _extract_resend_message_id(response)
         if not message_id:
             logger.warning("resend_shortlist_send_missing_id to=%s response=%s", to_email, response)
@@ -504,17 +511,21 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
 
     # HTTP fallback
     try:
+        bcc_recipients = _shortlist_bcc_recipients()
+        payload: dict[str, Any] = {
+            "from": from_email,
+            "reply_to": OUTREACH_REPLY_TO_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+            "tags": {"product": "pontis", "flow": "outreach"},
+        }
+        if bcc_recipients:
+            payload["bcc"] = bcc_recipients
         resp = requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "from": from_email,
-                "reply_to": OUTREACH_REPLY_TO_EMAIL,
-                "to": [to_email],
-                "subject": subject,
-                "text": body,
-                "tags": {"product": "pontis", "flow": "outreach"},
-            },
+            json=payload,
             timeout=20,
         )
         if 200 <= resp.status_code < 300:

@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import os
+import sys
+import types
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+os.environ.setdefault("DATABASE_URL", "sqlite:///./test_selection_flow.db")
+os.environ.setdefault("JWT_SECRET", "test-secret")
+os.environ.setdefault("PUBLIC_APP_URL", "http://localhost:3000")
+os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+fake_redis_module = types.ModuleType("redis")
+fake_redis_exceptions = types.ModuleType("redis.exceptions")
+
+
+class _FakeRedisError(Exception):
+    pass
+
+
+class _FakeRedisClient:
+    @staticmethod
+    def from_url(*args, **kwargs):
+        return _FakeRedisClient()
+
+    def ping(self):
+        return True
+
+
+fake_redis_module.Redis = _FakeRedisClient
+fake_redis_module.from_url = lambda *args, **kwargs: _FakeRedisClient()
+fake_redis_exceptions.RedisError = _FakeRedisError
+sys.modules.setdefault("redis", fake_redis_module)
+sys.modules.setdefault("redis.exceptions", fake_redis_exceptions)
+
+fake_slack_sdk = types.ModuleType("slack_sdk")
+fake_slack_sdk_errors = types.ModuleType("slack_sdk.errors")
+
+
+class _FakeWebClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+class _FakeSlackApiError(Exception):
+    pass
+
+
+fake_slack_sdk.WebClient = _FakeWebClient
+fake_slack_sdk_errors.SlackApiError = _FakeSlackApiError
+sys.modules.setdefault("slack_sdk", fake_slack_sdk)
+sys.modules.setdefault("slack_sdk.errors", fake_slack_sdk_errors)
+
+from app.services.preference_pair_service import generate_three_round_plan
+from app.services import outreach_service
+
+
+class SelectionFlowTests(unittest.TestCase):
+    def test_generate_three_round_plan_uses_unique_candidate_ids(self) -> None:
+        candidates = [
+            {"id": f"candidate-{index}", "name": f"Candidate {index}", "role": "Engineer", "company": f"Company {index}", "skills": ["Python", "FastAPI"], "summary": "Strong builder", "fitScore": 5 - index * 0.1}
+            for index in range(6)
+        ]
+
+        plan = generate_three_round_plan(candidates=candidates, intent_profile={"preferred_skills": ["Python"]})
+        all_ids = [candidate_id for pair in plan for candidate_id in pair.get("candidate_ids", [])]
+
+        self.assertEqual(len(plan), 3)
+        self.assertEqual(len(all_ids), 6)
+        self.assertEqual(len(set(all_ids)), 6)
+        self.assertTrue(all(len(pair.get("candidate_ids", [])) == 2 for pair in plan))
+
+    def test_shortlist_email_bccs_test_mailbox(self) -> None:
+        fake_send_calls: list[dict] = []
+
+        def fake_send(payload):
+            fake_send_calls.append(payload)
+            return {"id": "msg-123"}
+
+        fake_resend = types.SimpleNamespace(
+            api_key=None,
+            Emails=types.SimpleNamespace(send=fake_send),
+            emails=types.SimpleNamespace(send=fake_send),
+        )
+
+        with patch.dict(sys.modules, {"resend": fake_resend}), patch.object(outreach_service, "RESEND_API_KEY", "test-key"):
+            ok, error, message_id = outreach_service._send_shortlist_outreach_email(
+                to_email="candidate@example.com",
+                subject="Opportunity",
+                html_body="<p>Hello</p>",
+                text_body="Hello",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+        self.assertEqual(message_id, "msg-123")
+        self.assertEqual(len(fake_send_calls), 1)
+        payload = fake_send_calls[0]
+        self.assertEqual(payload["to"], ["candidate@example.com"])
+        self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
+
+
+if __name__ == "__main__":
+    unittest.main()

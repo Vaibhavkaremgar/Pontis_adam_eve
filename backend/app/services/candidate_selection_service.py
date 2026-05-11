@@ -402,10 +402,10 @@ def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, 
 
     if existing:
         lookup = _candidate_lookup_snapshot(existing.candidate_pool_snapshot or [])
-        current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
-        current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
+        current_batch = _current_batch_from_session(existing, lookup)
         if not current_batch and existing.batch_plan:
-            current_batch = _current_batch_from_session(existing, lookup)
+            current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+            current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
         final_candidates = [CandidateResult.model_validate(row) for row in (existing.final_candidate_snapshot or [])]
         return existing, _selection_session_payload(session=existing, state=state, current_batch=current_batch, final_candidates=final_candidates)
 
@@ -425,10 +425,10 @@ def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, 
     )
     state = bootstrap_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
     lookup = _candidate_lookup_snapshot(candidate_pool_snapshot)
-    current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
-    current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
+    current_batch = _current_batch_from_session(session, lookup)
     if not current_batch:
-        current_batch = _current_batch_from_session(session, lookup)
+        current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+        current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
     return session, _selection_session_payload(session=session, state=state, current_batch=current_batch)
 
 
@@ -526,7 +526,7 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 recruiter_id=recruiter_id,
                 job_id=job_id,
                 selected_candidate_id=candidate_id,
-                previous_round=int(updated_session.current_batch_index or 0) + 1,
+                previous_round=int(updated_session.current_batch_index or 0),
             )
         except Exception as exc:
             logger.warning(
@@ -589,10 +589,10 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         if not refreshed_session:
             raise APIError("Selection session not found", status_code=404)
         refreshed_lookup = _candidate_lookup_snapshot(refreshed_session.candidate_pool_snapshot or [])
-        next_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
-        next_batch = [refreshed_lookup[candidate_id] for candidate_id in next_pair_ids if candidate_id in refreshed_lookup]
+        next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
         if not next_batch:
-            next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
+            next_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+            next_batch = [refreshed_lookup[candidate_id] for candidate_id in next_pair_ids if candidate_id in refreshed_lookup]
         payload = _selection_session_payload(session=refreshed_session, state=state, current_batch=next_batch)
         if feedback_error:
             payload["warning"] = feedback_error
