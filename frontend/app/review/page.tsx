@@ -109,6 +109,7 @@ export default function ReviewPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [error, setError] = useState("");
+  const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
 
@@ -136,10 +137,11 @@ export default function ReviewPage() {
       if (cancelled) return;
 
       if (!result.success || !result.data) {
-        setError(result.error || "Could not load candidate selection.");
-        setIsLoading(false);
-        return;
-      }
+      setError(result.error || "Could not load candidate selection.");
+      setSelectionDebug("");
+      setIsLoading(false);
+      return;
+    }
 
       setSession(result.data);
       setIsLoading(false);
@@ -168,13 +170,32 @@ export default function ReviewPage() {
 
     const result = await submitSelectionChoice({ jobId, candidateId });
     if (!result.success || !result.data) {
+      const debugText = [
+        `jobId=${jobId}`,
+        `candidateId=${candidateId}`,
+        `selectedBatch=${(session?.currentBatch || []).map((item) => item.id).join(", ")}`,
+        `error=${result.error || "Unknown error"}`,
+      ].join("\n");
+      console.error("[selection] submit failed", {
+        jobId,
+        candidateId,
+        selectedBatch: session?.currentBatch,
+        response: result,
+      });
       setError(result.error || "Could not record candidate selection.");
+      setSelectionDebug(debugText);
       setIsAdvancing(false);
       setSelectedCandidateId("");
       return;
     }
 
     setSession(result.data);
+    if (result.data.warning) {
+      console.warn("[selection] submit warning", result.data.warning);
+      setSelectionDebug(`warning=${result.data.warning}`);
+    } else {
+      setSelectionDebug("");
+    }
     setIsAdvancing(false);
     setSelectedCandidateId("");
   };
@@ -261,6 +282,14 @@ export default function ReviewPage() {
 
           {isLoading && <p className="text-sm text-gray-500">Loading selection session...</p>}
           {error && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+          {selectionDebug && (
+            <details className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <summary className="cursor-pointer font-medium">Debug details</summary>
+              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-relaxed text-amber-950">
+                {selectionDebug}
+              </pre>
+            </details>
+          )}
 
           {!isLoading && !completed && currentBatch.length > 0 && (
             <div className="space-y-6">
@@ -307,16 +336,18 @@ export default function ReviewPage() {
                     </CardHeader>
 
                     <CardContent className="space-y-5">
-                      <div className="grid gap-3 rounded-2xl bg-white/75 p-4 text-sm text-gray-600 sm:grid-cols-2">
-                        <span>Email: <span className="font-medium text-gray-800">{candidate.email || "Not provided"}</span></span>
-                        <span>Location: <span className="font-medium text-gray-800">{candidate.location || "Not provided"}</span></span>
-                        <span>Experience: <span className="font-medium text-gray-800">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span></span>
-                        <span>Resume: <span className="font-medium text-gray-800">{candidate.resumeText ? "Included" : "Profile only"}</span></span>
+                      <div className="space-y-2 rounded-2xl bg-white/75 p-4 text-sm text-gray-700">
+                        <p>
+                          Email: <span className="font-medium text-gray-900">{candidate.email || "Not provided"}</span>
+                        </p>
+                        <p>
+                          Experience: <span className="font-medium text-gray-900">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span>
+                        </p>
                       </div>
 
                       {candidate.skills.length > 0 && (
                         <div className="flex flex-wrap gap-2">
-                          {candidate.skills.slice(0, 6).map((skill) => (
+                          {candidate.skills.slice(0, 3).map((skill) => (
                             <span key={`${candidate.id}-${skill}`} className="rounded-full bg-white/90 px-3 py-1 text-xs text-gray-700">
                               {skill}
                             </span>
@@ -324,42 +355,8 @@ export default function ReviewPage() {
                         </div>
                       )}
 
-                      <div className="grid gap-3 rounded-2xl bg-white/70 p-4 text-sm text-gray-600 md:grid-cols-2">
-                        <p>
-                          Education: <span className="font-medium text-gray-800">{formatList(candidate.education).slice(0, 3).join(", ")}</span>
-                        </p>
-                        <p>
-                          Projects: <span className="font-medium text-gray-800">{formatList(candidate.projects).slice(0, 3).join(", ")}</span>
-                        </p>
-                        <p>
-                          Certifications: <span className="font-medium text-gray-800">{formatList(candidate.certifications).slice(0, 3).join(", ")}</span>
-                        </p>
-                        <p>
-                          Companies: <span className="font-medium text-gray-800">{formatList(candidate.companiesHistory).slice(0, 3).join(", ")}</span>
-                        </p>
-                        <p>
-                          Domain experience: <span className="font-medium text-gray-800">{formatList(candidate.domainExperience).slice(0, 3).join(", ")}</span>
-                        </p>
-                      </div>
-
-                      {candidate.summary && <p className="text-[15px] leading-relaxed text-gray-700">{candidate.summary}</p>}
-                      {candidate.resumeText && (
-                        <div className="rounded-2xl bg-[#FAF7F1] p-4 text-sm text-gray-600">
-                          <p className="mb-1 font-medium text-gray-800">Resume preview</p>
-                          <p className="whitespace-pre-wrap leading-relaxed">{trimText(candidate.resumeText, 620)}</p>
-                        </div>
-                      )}
+                      {candidate.summary && <p className="text-[15px] leading-relaxed text-gray-700">{trimText(candidate.summary, 180)}</p>}
                       {renderSignals(candidate)}
-                      {candidate.explanation?.sourceBreakdown && (
-                        <div className="grid grid-cols-2 gap-2 rounded-2xl bg-white/70 p-4 text-xs text-gray-600">
-                          <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
-                          <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
-                          <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
-                          <span>Selection: {(candidate.explanation.sourceBreakdown.selectionRound ?? 0).toFixed(2)}</span>
-                          <span>Voice: {(candidate.explanation.sourceBreakdown.voiceInterview ?? 0).toFixed(2)}</span>
-                          <span>Freshness: {(candidate.explanation.sourceBreakdown.freshness ?? 0).toFixed(2)}</span>
-                        </div>
-                      )}
 
                       <Button
                         className="w-full justify-center"
@@ -441,42 +438,22 @@ export default function ReviewPage() {
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        <div className="grid gap-2 rounded-2xl bg-[#F8FAFC] p-4 text-sm text-gray-600 sm:grid-cols-2">
-                          <span>Email: <span className="font-medium text-gray-800">{candidate.email || "Not provided"}</span></span>
-                          <span>Experience: <span className="font-medium text-gray-800">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span></span>
-                        </div>
                         <div className="space-y-2 rounded-2xl bg-[#F8FAFC] p-4 text-sm text-gray-600">
                           <p>
-                            Education: <span className="font-medium text-gray-800">{formatList(candidate.education).slice(0, 2).join(", ")}</span>
+                            Email: <span className="font-medium text-gray-800">{candidate.email || "Not provided"}</span>
                           </p>
                           <p>
-                            Projects: <span className="font-medium text-gray-800">{formatList(candidate.projects).slice(0, 2).join(", ")}</span>
-                          </p>
-                          <p>
-                            Certifications: <span className="font-medium text-gray-800">{formatList(candidate.certifications).slice(0, 2).join(", ")}</span>
+                            Experience: <span className="font-medium text-gray-800">{candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"}</span>
                           </p>
                         </div>
-                        {candidate.summary && <p className="text-[15px] text-gray-700">{candidate.summary}</p>}
+                        {candidate.summary && <p className="text-[15px] text-gray-700">{trimText(candidate.summary, 160)}</p>}
                         <div className="flex flex-wrap gap-2">
-                          {candidate.skills.slice(0, 5).map((skill) => (
+                          {candidate.skills.slice(0, 3).map((skill) => (
                             <span key={`${candidate.id}-final-${skill}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
                               {skill}
                             </span>
                           ))}
                         </div>
-                        {candidate.explanation?.aiReasoning && (
-                          <p className="text-xs italic text-gray-500">{candidate.explanation.aiReasoning}</p>
-                        )}
-                        {candidate.explanation?.sourceBreakdown && (
-                          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-[#F8FAFC] p-4 text-xs text-gray-600">
-                            <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
-                            <span>Voice: {(candidate.explanation.sourceBreakdown.voiceInterview ?? 0).toFixed(2)}</span>
-                            <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
-                            <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
-                            <span>Selection: {(candidate.explanation.sourceBreakdown.selectionRound ?? 0).toFixed(2)}</span>
-                            <span>Freshness: {(candidate.explanation.sourceBreakdown.freshness ?? 0).toFixed(2)}</span>
-                          </div>
-                        )}
                       </CardContent>
                     </Card>
                   ))}

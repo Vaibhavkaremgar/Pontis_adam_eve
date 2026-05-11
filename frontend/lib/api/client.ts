@@ -95,10 +95,11 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
       ...(payload ? { body: JSON.stringify(payload) } : {})
     });
 
-    let parsed: Partial<ApiResponse<T>> | null = null;
+    const responseText = await response.text();
+    let parsed: any = null;
 
     try {
-      parsed = (await response.json()) as Partial<ApiResponse<T>>;
+      parsed = responseText ? JSON.parse(responseText) : null;
     } catch {
       parsed = null;
     }
@@ -124,13 +125,21 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
     }
 
     if (!response.ok) {
+      const detailParts = [
+        parsed?.error,
+        parsed?.detail,
+        parsed?.message,
+        typeof parsed?.detail === "string" ? parsed.detail : "",
+        typeof parsed?.error === "string" ? parsed.error : "",
+      ].filter((value): value is string => Boolean(value && value.trim()));
+      const rawDetail = detailParts[0] || responseText.trim();
       const result: ApiResponse<T> = {
         success: false,
         data: null,
         error:
           response.status >= 500
-            ? "Server error. Please try again in a moment."
-            : parsed?.error || "Request failed"
+            ? `Server error (${response.status}): ${rawDetail || response.statusText || "Please try again in a moment."}`
+            : rawDetail || response.statusText || "Request failed"
       };
 
       logRequest({ url, method, payload, response: result });

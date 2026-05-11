@@ -218,4 +218,5 @@ export type CandidateSelectionSession = {
   };
   voiceSummary?: string;
   pairExplanation?: Record<string, unknown>;
+  warning?: string;
 };

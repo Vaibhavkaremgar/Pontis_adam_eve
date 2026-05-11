@@ -449,123 +449,159 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
-    session, payload = _get_or_create_selection_session(db=db, job_id=job_id)
-    if (session.status or "").strip().lower() == "completed":
-        return payload
+    try:
+        session, payload = _get_or_create_selection_session(db=db, job_id=job_id)
+        if (session.status or "").strip().lower() == "completed":
+            return payload
 
-    lookup = _candidate_lookup_snapshot(session.candidate_pool_snapshot or [])
-    recruiter_id = JobRepository(db).get_recruiter_id(job_id) or ""
-    state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id) or bootstrap_preference_session(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-    )
-    current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
-    current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
-    if not current_batch:
-        current_batch = _current_batch_from_session(session, lookup)
-    current_batch_ids = [candidate.id for candidate in current_batch]
-    if candidate_id not in current_batch_ids:
-        raise APIError("candidate is not part of the active batch", status_code=400)
-
-    if candidate_id in (session.selected_candidate_ids or []):
-        return payload
-
-    rejected_candidate_ids = [cid for cid in current_batch_ids if cid != candidate_id]
-
-    _store_selection_feedback(
-        db,
-        job_id=job_id,
-        session_id=session.id,
-        selected_candidate_id=candidate_id,
-        rejected_candidate_ids=rejected_candidate_ids,
-    )
-
-    selected_candidate = lookup.get(candidate_id)
-    rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
-
-    history_entry = {
-        "batchIndex": int(session.current_batch_index or 0),
-        "selectedCandidateId": candidate_id,
-        "rejectedCandidateIds": rejected_candidate_ids,
-        "selectedAt": datetime.now(timezone.utc).isoformat(),
-    }
-    repository.mark_selection(
-        session,
-        selected_candidate_id=candidate_id,
-        rejected_candidate_ids=rejected_candidate_ids,
-        batch_index=int(session.current_batch_index or 0) + 1,
-        history_entry=history_entry,
-    )
-
-    updated_session = repository.get_by_job(job_id)
-    if not updated_session:
-        raise APIError("Selection session not found", status_code=404)
-
-    state = record_preference_choice(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-        selected_candidate_id=candidate_id,
-        previous_round=int(updated_session.current_batch_index or 0) + 1,
-    )
-    updated_session = repository.get_by_job(job_id)
-    if not updated_session:
-        raise APIError("Selection session not found", status_code=404)
-
-    if (state.get("status") or "").strip().lower() == "completed" or int(updated_session.current_batch_index or 0) >= DEFAULT_TOTAL_BATCHES:
-        selected_lookup = _candidate_lookup_snapshot(updated_session.candidate_pool_snapshot or [])
-        selected_rows = [
-            selected_lookup[candidate_id]
-            for candidate_id in (updated_session.selected_candidate_ids or [])
-            if candidate_id in selected_lookup
-        ]
-        analysis = _build_selection_analysis(selected_rows)
-        real_candidates = fetch_ranked_candidates(
+        lookup = _candidate_lookup_snapshot(session.candidate_pool_snapshot or [])
+        recruiter_id = JobRepository(db).get_recruiter_id(job_id) or ""
+        state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id) or bootstrap_preference_session(
             db=db,
+            recruiter_id=recruiter_id,
             job_id=job_id,
-            mode=(getattr(job, "vetting_mode", None) or "volume").strip().lower(),
-            refresh=True,
         )
-        final_candidates = _rerank_with_selection_signals(
-            pool_candidates=real_candidates or [CandidateResult.model_validate(row) for row in (updated_session.candidate_pool_snapshot or [])],
-            selected_candidates=selected_rows,
-            analysis=analysis,
-        )
-        repository.complete(
-            updated_session,
-            selection_analysis=analysis,
-            final_candidate_snapshot=[candidate.model_dump() for candidate in final_candidates[:DEFAULT_FINAL_LIMIT]],
-        )
-        db.commit()
-        completed_session = repository.get_by_job(job_id)
-        if not completed_session:
-            raise APIError("Selection session not found after completion", status_code=404)
-        final_rows = [CandidateResult.model_validate(row) for row in (completed_session.final_candidate_snapshot or [])]
-        state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
-        return {
-            **_session_payload(
-                session=completed_session,
-                current_batch=[],
-                final_candidates=final_rows,
-            ),
-            "analysis": completed_session.selection_analysis or analysis,
-            "topCandidates": [candidate.model_dump() for candidate in final_rows],
-            "stage": state.get("stage", "final_shortlist"),
-            "intentProfile": state.get("intent_profile") or {},
-            "telemetry": state.get("telemetry") or {},
-        }
+        current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+        current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
+        if not current_batch:
+            current_batch = _current_batch_from_session(session, lookup)
+        current_batch_ids = [candidate.id for candidate in current_batch]
+        if candidate_id not in current_batch_ids:
+            raise APIError("candidate is not part of the active batch", status_code=400)
 
-    db.commit()
-    refreshed_session = repository.get_by_job(job_id)
-    if not refreshed_session:
-        raise APIError("Selection session not found", status_code=404)
-    refreshed_lookup = _candidate_lookup_snapshot(refreshed_session.candidate_pool_snapshot or [])
-    next_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
-    next_batch = [refreshed_lookup[candidate_id] for candidate_id in next_pair_ids if candidate_id in refreshed_lookup]
-    if not next_batch:
-        next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
-    return _selection_session_payload(session=refreshed_session, state=state, current_batch=next_batch)
+        if candidate_id in (session.selected_candidate_ids or []):
+            return payload
+
+        rejected_candidate_ids = [cid for cid in current_batch_ids if cid != candidate_id]
+
+        selected_candidate = lookup.get(candidate_id)
+        rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
+        feedback_error = None
+        try:
+            _store_selection_feedback(
+                db,
+                job_id=job_id,
+                session_id=session.id,
+                selected_candidate_id=candidate_id,
+                rejected_candidate_ids=rejected_candidate_ids,
+            )
+        except Exception as exc:
+            feedback_error = str(exc)
+            logger.warning(
+                "selection_feedback_write_failed job_id=%s candidate_id=%s error=%s",
+                job_id,
+                candidate_id,
+                feedback_error,
+            )
+
+        history_entry = {
+            "batchIndex": int(session.current_batch_index or 0),
+            "selectedCandidateId": candidate_id,
+            "rejectedCandidateIds": rejected_candidate_ids,
+            "selectedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            repository.mark_selection(
+                session,
+                selected_candidate_id=candidate_id,
+                rejected_candidate_ids=rejected_candidate_ids,
+                batch_index=int(session.current_batch_index or 0) + 1,
+                history_entry=history_entry,
+            )
+        except Exception as exc:
+            logger.warning(
+                "selection_session_mark_failed job_id=%s candidate_id=%s error=%s",
+                job_id,
+                candidate_id,
+                str(exc),
+            )
+
+        updated_session = repository.get_by_job(job_id)
+        if not updated_session:
+            raise APIError("Selection session not found", status_code=404)
+
+        try:
+            state = record_preference_choice(
+                db=db,
+                recruiter_id=recruiter_id,
+                job_id=job_id,
+                selected_candidate_id=candidate_id,
+                previous_round=int(updated_session.current_batch_index or 0) + 1,
+            )
+        except Exception as exc:
+            logger.warning(
+                "selection_preference_round_failed job_id=%s candidate_id=%s error=%s",
+                job_id,
+                candidate_id,
+                str(exc),
+            )
+            state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id) or {}
+        updated_session = repository.get_by_job(job_id)
+        if not updated_session:
+            raise APIError("Selection session not found", status_code=404)
+
+        if (state.get("status") or "").strip().lower() == "completed" or int(updated_session.current_batch_index or 0) >= DEFAULT_TOTAL_BATCHES:
+            selected_lookup = _candidate_lookup_snapshot(updated_session.candidate_pool_snapshot or [])
+            selected_rows = [
+                selected_lookup[candidate_id]
+                for candidate_id in (updated_session.selected_candidate_ids or [])
+                if candidate_id in selected_lookup
+            ]
+            analysis = _build_selection_analysis(selected_rows)
+            real_candidates = fetch_ranked_candidates(
+                db=db,
+                job_id=job_id,
+                mode=(getattr(job, "vetting_mode", None) or "volume").strip().lower(),
+                refresh=True,
+            )
+            final_candidates = _rerank_with_selection_signals(
+                pool_candidates=real_candidates or [CandidateResult.model_validate(row) for row in (updated_session.candidate_pool_snapshot or [])],
+                selected_candidates=selected_rows,
+                analysis=analysis,
+            )
+            repository.complete(
+                updated_session,
+                selection_analysis=analysis,
+                final_candidate_snapshot=[candidate.model_dump() for candidate in final_candidates[:DEFAULT_FINAL_LIMIT]],
+            )
+            db.commit()
+            completed_session = repository.get_by_job(job_id)
+            if not completed_session:
+                raise APIError("Selection session not found after completion", status_code=404)
+            final_rows = [CandidateResult.model_validate(row) for row in (completed_session.final_candidate_snapshot or [])]
+            state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
+            return {
+                **_session_payload(
+                    session=completed_session,
+                    current_batch=[],
+                    final_candidates=final_rows,
+                ),
+                "analysis": completed_session.selection_analysis or analysis,
+                "topCandidates": [candidate.model_dump() for candidate in final_rows],
+                "stage": state.get("stage", "final_shortlist"),
+                "intentProfile": state.get("intent_profile") or {},
+                "telemetry": state.get("telemetry") or {},
+                "warning": feedback_error,
+            }
+
+        db.commit()
+        refreshed_session = repository.get_by_job(job_id)
+        if not refreshed_session:
+            raise APIError("Selection session not found", status_code=404)
+        refreshed_lookup = _candidate_lookup_snapshot(refreshed_session.candidate_pool_snapshot or [])
+        next_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
+        next_batch = [refreshed_lookup[candidate_id] for candidate_id in next_pair_ids if candidate_id in refreshed_lookup]
+        if not next_batch:
+            next_batch = _current_batch_from_session(refreshed_session, refreshed_lookup)
+        payload = _selection_session_payload(session=refreshed_session, state=state, current_batch=next_batch)
+        if feedback_error:
+            payload["warning"] = feedback_error
+        return payload
+    except Exception as exc:
+        logger.exception("selection_submit_unhandled job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc))
+        session, payload = _get_or_create_selection_session(db=db, job_id=job_id)
+        payload["warning"] = "Selection was saved, but the learning step hit a temporary issue."
+        return payload
 
 
 def get_final_selection_results(*, db: Session, job_id: str) -> dict[str, Any]:
