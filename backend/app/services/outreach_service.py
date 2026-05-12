@@ -482,19 +482,21 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
     if not RESEND_API_KEY:
         return False, "RESEND_API_KEY_missing", ""
 
+    bcc_recipients = _shortlist_bcc_recipients()
     try:
         import resend
         resend.api_key = RESEND_API_KEY
-        response = resend.Emails.send(
-            {
-                "from": from_email,
-                "reply_to": OUTREACH_REPLY_TO_EMAIL,
-                "to": [to_email],
-                "subject": subject,
-                "text": body,
-                "tags": {"product": "pontis", "flow": "outreach"},
-            }
-        )
+        payload: dict[str, Any] = {
+            "from": from_email,
+            "reply_to": OUTREACH_REPLY_TO_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+            "tags": {"product": "pontis", "flow": "outreach"},
+        }
+        if bcc_recipients:
+            payload["bcc"] = bcc_recipients
+        response = resend.Emails.send(payload)
         try:
             email_id = response["id"]
         except (KeyError, TypeError):

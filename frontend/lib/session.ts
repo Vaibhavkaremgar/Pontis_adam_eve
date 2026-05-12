@@ -16,6 +16,8 @@ const JOB_ID_KEY = "pontis_job_id";
 const JOB_KEY = "pontis_job";
 const COMPANY_KEY = "pontis_company";
 const IS_REFINED_KEY = "pontis_is_refined";
+const SHORTLIST_JOB_ID_KEY = "pontis_shortlist_job_id";
+const SHORTLIST_IDS_KEY = "pontis_shortlist_ids";
 
 export function getStoredUser(): User | null {
   if (typeof window === "undefined") return null;
@@ -89,4 +91,33 @@ export function clearPipelineState() {
   sessionStorage.removeItem(JOB_KEY);
   sessionStorage.removeItem(COMPANY_KEY);
   sessionStorage.removeItem(IS_REFINED_KEY);
+}
+
+export function storeShortlistedCandidateIds(jobId: string, candidateIds: string[]) {
+  if (typeof window === "undefined") return;
+  const normalizedIds = Array.from(new Set((candidateIds || []).map((id) => String(id).trim()).filter(Boolean)));
+  sessionStorage.setItem(SHORTLIST_JOB_ID_KEY, jobId);
+  sessionStorage.setItem(SHORTLIST_IDS_KEY, JSON.stringify(normalizedIds));
+}
+
+export function getStoredShortlistedCandidateIds(jobId: string): string[] {
+  if (typeof window === "undefined") return [];
+  const storedJobId = sessionStorage.getItem(SHORTLIST_JOB_ID_KEY) || "";
+  if (!storedJobId || storedJobId !== jobId) return [];
+
+  try {
+    const raw = sessionStorage.getItem(SHORTLIST_IDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return Array.from(new Set(parsed.map((id) => String(id).trim()).filter(Boolean)));
+  } catch {
+    return [];
+  }
+}
+
+export function clearShortlistedCandidateIds() {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(SHORTLIST_JOB_ID_KEY);
+  sessionStorage.removeItem(SHORTLIST_IDS_KEY);
 }

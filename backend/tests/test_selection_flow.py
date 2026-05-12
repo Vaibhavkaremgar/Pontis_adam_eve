@@ -105,6 +105,35 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(payload["to"], ["candidate@example.com"])
         self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
 
+    def test_regular_outreach_email_bccs_test_mailbox(self) -> None:
+        fake_send_calls: list[dict] = []
+
+        def fake_send(payload):
+            fake_send_calls.append(payload)
+            return {"id": "msg-456"}
+
+        fake_resend = types.SimpleNamespace(
+            api_key=None,
+            Emails=types.SimpleNamespace(send=fake_send),
+            emails=types.SimpleNamespace(send=fake_send),
+        )
+
+        with patch.dict(sys.modules, {"resend": fake_resend}), patch.object(outreach_service, "RESEND_API_KEY", "test-key"):
+            ok, error, message_id = outreach_service._send_resend(
+                to_email="candidate@example.com",
+                subject="Opportunity",
+                body="Hello",
+                from_email="recruiter@example.com",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+        self.assertEqual(message_id, "msg-456")
+        self.assertEqual(len(fake_send_calls), 1)
+        payload = fake_send_calls[0]
+        self.assertEqual(payload["to"], ["candidate@example.com"])
+        self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
+
 
 if __name__ == "__main__":
     unittest.main()

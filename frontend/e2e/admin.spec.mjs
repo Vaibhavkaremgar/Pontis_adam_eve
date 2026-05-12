@@ -5,7 +5,7 @@ test('admin dashboard shows diagnostics and replay surfaces', async ({ page }) =
     window.localStorage.setItem('pontis_user', JSON.stringify({ id: 'user-1', email: 'admin@example.com', role: 'admin' }));
   });
 
-  await page.route('**/api/auth/me', async (route) => {
+  await page.route('**/api/backend/auth/me', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -57,5 +57,5 @@ test('admin dashboard shows diagnostics and replay surfaces', async ({ page }) =
 
   await page.goto('/admin');
   await expect(page.getByText('Platform Admin')).toBeVisible();
-  await expect(page.getByText('Dead Letters')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Dead Letters' })).toBeVisible();
 });

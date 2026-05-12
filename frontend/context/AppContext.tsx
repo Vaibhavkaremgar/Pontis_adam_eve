@@ -93,6 +93,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [candidates, setCandidatesState] = useState<Candidate[]>([]);
   const [voiceNotes, setVoiceNotesState] = useState<string[]>([]);
   const [isRefined, setIsRefinedState] = useState(false);
+  const [isBootstrapped, setIsBootstrapped] = useState(false);
 
   // Prepared voice call state.
   const [callStatus, setCallStatusState] = useState<CallStatus>("idle");
@@ -149,6 +150,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (pipeline.company) setCompanyState(pipeline.company);
       if (pipeline.isRefined) setIsRefinedState(pipeline.isRefined);
       setIsSessionReady(true);
+      setIsBootstrapped(true);
     };
 
     void restore();
@@ -160,12 +162,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Persist or clear the cached user profile whenever auth state changes.
   useEffect(() => {
+    if (!isBootstrapped) return;
     if (user) {
       storeSession(user);
       return;
     }
     clearSession();
-  }, [user]);
+  }, [isBootstrapped, user]);
 
   // Persist pipeline state to sessionStorage whenever it changes.
   useEffect(() => {

@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAppContext } from "@/context/AppContext";
 import { getShortlistedCandidates } from "@/lib/api/candidates";
 import { getEmailPreview, getOutreachStatuses, queueOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
+import { getStoredShortlistedCandidateIds } from "@/lib/session";
 import type { Candidate } from "@/types";
 
 function OutreachContent() {
@@ -60,7 +61,21 @@ function OutreachContent() {
     if (!isSessionReady || !user || !jobId) return;
     setIsLoadingCandidates(true);
     getShortlistedCandidates(jobId).then((result) => {
-      if (result.success && result.data) setShortlisted(result.data);
+      if (result.success && result.data) {
+        const preferredIds = getStoredShortlistedCandidateIds(jobId);
+        const shortlistedCandidates =
+          preferredIds.length > 0
+            ? preferredIds
+                .map((candidateId) => result.data?.find((candidate) => candidate.id === candidateId))
+                .filter((candidate): candidate is Candidate => Boolean(candidate))
+            : result.data;
+
+        setShortlisted(shortlistedCandidates);
+        setSelectedCandidates((prev) => {
+          if (prev.length > 0) return prev;
+          return shortlistedCandidates.map((candidate) => candidate.id);
+        });
+      }
       setIsLoadingCandidates(false);
     });
   }, [isSessionReady, user, jobId]);
@@ -132,6 +147,8 @@ function OutreachContent() {
       prev.includes(candidateId) ? prev.filter((id) => id !== candidateId) : [...prev, candidateId]
     );
   };
+
+  const selectedCount = selectedCandidates.length;
 
   const handleSendOutreach = async () => {
     if (!canSubmit) return;
@@ -269,6 +286,11 @@ function OutreachContent() {
           >
             {isSubmitting ? "Sending..." : "Send Outreach"}
           </Button>
+          {selectedCount > 0 && shortlisted.length > 0 && (
+            <p className="text-xs text-gray-500">
+              {selectedCount} shortlisted candidate{selectedCount === 1 ? "" : "s"} selected for outreach.
+            </p>
+          )}
 
           {isOutreachComplete && (
             <div className="rounded-xl border border-green-100 bg-green-50 p-4 text-sm text-green-800">

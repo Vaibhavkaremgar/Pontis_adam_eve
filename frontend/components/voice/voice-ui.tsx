@@ -175,6 +175,28 @@ function mergeASRRevision(previous: string, incoming: string): string {
   return next;
 }
 
+function accumulateTranscript(previous: string, incoming: string): string {
+  const prev = normalize(previous);
+  const next = normalize(incoming);
+  if (!prev) return next;
+  if (!next) return prev;
+
+  const prevLower = prev.toLowerCase();
+  const nextLower = next.toLowerCase();
+
+  if (nextLower === prevLower) return prev;
+  if (nextLower.startsWith(prevLower)) return next;
+  if (prevLower.startsWith(nextLower)) return prev;
+  if (prevLower.includes(nextLower)) return prev;
+  if (nextLower.includes(prevLower)) return next;
+
+  const revised = mergeASRRevision(prev, next);
+  if (revised.toLowerCase() === prevLower) return prev;
+  if (revised.toLowerCase() === nextLower) return next;
+
+  return `${prev} ${next}`.replace(/\s+/g, " ").trim();
+}
+
 function debugVoice(event: string, details?: Record<string, unknown>) {
   if (details) {
     console.info(`[voice-debug] ${event}`, details);
@@ -277,8 +299,12 @@ export function VoiceUi() {
   }, [finalTranscript]);
 
   const upsertStreamingMessage = useCallback((role: TranscriptRole, text: string, isFinal: boolean) => {
-    const normalized = isFinal ? normalizeFinalTranscriptText(text) : normalize(text);
+    const previousBuffer = transcriptBufferRef.current[role];
+    const accumulated = accumulateTranscript(previousBuffer, text);
+    const normalized = isFinal ? normalizeFinalTranscriptText(accumulated) : accumulated;
     if (!normalized) return;
+
+    transcriptBufferRef.current[role] = normalized;
 
     const speaker = speakerLabel(role);
     const timestamp = new Date().toISOString();
@@ -326,7 +352,6 @@ export function VoiceUi() {
   }, []);
 
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
-    transcriptBufferRef.current[event.role] = event.text;
     upsertStreamingMessage(event.role, event.text, event.isFinal);
   }, [upsertStreamingMessage]);
 

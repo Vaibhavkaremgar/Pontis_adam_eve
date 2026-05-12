@@ -16,7 +16,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
-import { LoadingModal } from "@/components/modals/loading-modal";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -64,8 +63,6 @@ export default function JobPage() {
   const [selectedATS, setSelectedATS] = useState<AtsProviderKey>(() => (company.atsProvider as AtsProviderKey) || "mock");
   const [atsConnected, setAtsConnected] = useState(() => Boolean(company.atsConnected));
   const [autoExport, setAutoExport] = useState(() => Boolean(job.autoExportToAts));
-  const [showLoading, setShowLoading] = useState(false);
-  const [progress, setProgress] = useState(8);
   const [submitError, setSubmitError] = useState("");
   const [atsMessage, setAtsMessage] = useState("");
   const [importMessage, setImportMessage] = useState("");
@@ -119,7 +116,7 @@ export default function JobPage() {
     };
   }, [isSessionReady, router, setCompany, user]);
 
-  const canSubmit = Boolean(form.title.trim() && form.description.trim()) && !showLoading;
+  const canSubmit = Boolean(form.title.trim() && form.description.trim());
 
   const handleConnectAts = async () => {
     setAtsMessage("");
@@ -205,8 +202,6 @@ export default function JobPage() {
     }
 
     setSubmitError("");
-    setShowLoading(true);
-    setProgress(25);
 
     const cleanJob = {
       ...form,
@@ -227,14 +222,12 @@ export default function JobPage() {
 
     const createResult = await createHiring({ company, job: cleanJob });
     if (!createResult.success || !createResult.data) {
-      setShowLoading(false);
       setSubmitError(createResult.error || "Failed to create hiring session.");
       return;
     }
 
     const { jobId } = createResult.data;
     setJobId(jobId);
-    setProgress(100);
     router.push("/voice");
   };
 
@@ -266,7 +259,7 @@ export default function JobPage() {
                     Connected to: {formatAtsLabel(selectedATS)} ✅
                   </span>
                 </div>
-                <Button variant="outline" onClick={handleDisconnectAts} disabled={isConnectingAts || showLoading}>
+                <Button variant="outline" onClick={handleDisconnectAts} disabled={isConnectingAts}>
                   {isConnectingAts ? "Disconnecting..." : "Disconnect"}
                 </Button>
               </div>
@@ -278,7 +271,7 @@ export default function JobPage() {
                     id="ats-provider"
                     value={selectedATS}
                     onChange={(event) => setSelectedATS(event.target.value as AtsProviderKey)}
-                    disabled={isConnectingAts || showLoading}
+                    disabled={isConnectingAts}
                     className="flex h-12 w-full rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#F5EFE6] px-4 text-sm text-gray-700 outline-none transition focus:ring-2 focus:ring-green-900/15 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <option value="mock">Mock ATS</option>
@@ -287,7 +280,7 @@ export default function JobPage() {
                   </select>
                 </div>
                 <div className="lg:min-w-[180px]">
-                  <Button className="w-full" onClick={handleConnectAts} disabled={isConnectingAts || showLoading}>
+                  <Button className="w-full" onClick={handleConnectAts} disabled={isConnectingAts}>
                     {isConnectingAts ? "Connecting..." : "Connect ATS"}
                   </Button>
                 </div>
@@ -300,7 +293,7 @@ export default function JobPage() {
                 type="checkbox"
                 checked={autoExport}
                 onChange={(event) => setAutoExport(event.target.checked)}
-                disabled={showLoading}
+                disabled={false}
                 className="mt-1 h-4 w-4 rounded border-gray-300 text-green-700 focus:ring-green-700"
               />
               <span className="space-y-1">
@@ -330,11 +323,11 @@ export default function JobPage() {
                   placeholder="https://company.com/careers/senior-frontend-engineer"
                   value={jobUrl}
                   onChange={(event) => setJobUrl(event.target.value)}
-                  disabled={isParsingJob || showLoading}
+                  disabled={isParsingJob}
                 />
               </div>
               <div className="lg:pt-8">
-                <Button variant="secondary" onClick={handleParseJob} disabled={isParsingJob || showLoading}>
+                <Button variant="secondary" onClick={handleParseJob} disabled={isParsingJob}>
                   {isParsingJob ? "Parsing..." : "Parse"}
                 </Button>
               </div>
@@ -356,7 +349,7 @@ export default function JobPage() {
                 placeholder="Senior Frontend Engineer"
                 value={form.title}
                 onChange={(event) => setForm((prev) => ({ ...prev, title: event.target.value }))}
-                disabled={showLoading}
+                disabled={false}
               />
             </div>
 
@@ -367,7 +360,7 @@ export default function JobPage() {
                 placeholder="Describe responsibilities, must-have skills, and desired outcomes."
                 value={form.description}
                 onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
-                disabled={showLoading}
+                disabled={false}
               />
             </div>
 
@@ -379,7 +372,7 @@ export default function JobPage() {
                   placeholder="San Francisco / Remote"
                   value={form.location}
                   onChange={(event) => setForm((prev) => ({ ...prev, location: event.target.value }))}
-                  disabled={showLoading}
+                  disabled={false}
                 />
               </div>
               <div className="space-y-2">
@@ -389,7 +382,7 @@ export default function JobPage() {
                   placeholder="$140k - $180k + Equity"
                   value={form.compensation}
                   onChange={(event) => setForm((prev) => ({ ...prev, compensation: event.target.value }))}
-                  disabled={showLoading}
+                  disabled={false}
                 />
               </div>
             </div>
@@ -411,7 +404,7 @@ export default function JobPage() {
                   onChange={(event) =>
                     setForm((prev) => ({ ...prev, remotePolicy: event.target.value as RemotePolicyValue }))
                   }
-                  disabled={showLoading}
+                  disabled={false}
                   className="flex h-12 w-full rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#F5EFE6] px-4 text-sm text-gray-700 outline-none transition focus:ring-2 focus:ring-green-900/15 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {REMOTE_POLICY_OPTIONS.map((option) => (
@@ -433,7 +426,7 @@ export default function JobPage() {
                       workAuthorization: event.target.value as WorkAuthorizationValue
                     }))
                   }
-                  disabled={showLoading}
+                  disabled={false}
                   className="flex h-12 w-full rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#F5EFE6] px-4 text-sm text-gray-700 outline-none transition focus:ring-2 focus:ring-green-900/15 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {WORK_AUTH_OPTIONS.map((option) => (
@@ -452,7 +445,7 @@ export default function JobPage() {
                 placeholder="3-5 years"
                 value={form.experienceRequired || ""}
                 onChange={(event) => setForm((prev) => ({ ...prev, experienceRequired: event.target.value }))}
-                disabled={showLoading}
+                disabled={false}
               />
             </div>
           </CardContent>
@@ -490,7 +483,7 @@ export default function JobPage() {
                       checked={scoringMode === option.value}
                       onChange={() => setScoringMode(option.value)}
                       className="mt-1 h-4 w-4 border-gray-300 text-green-700 focus:ring-green-700"
-                      disabled={showLoading}
+                      disabled={false}
                     />
                     <span className="space-y-1">
                       <span className="block text-sm font-medium text-gray-900">{option.title}</span>
@@ -504,13 +497,12 @@ export default function JobPage() {
             {submitError ? <p className="text-sm text-red-600">{submitError}</p> : null}
 
             <Button className="w-full justify-center" onClick={handleGenerateCandidates} disabled={!canSubmit}>
-              {showLoading ? "Loading..." : "Continue → Voice Intake"}
+              Continue → Voice Intake
             </Button>
           </CardContent>
         </Card>
       </div>
 
-      <LoadingModal open={showLoading} progress={progress} />
     </AppShell>
   );
 }
