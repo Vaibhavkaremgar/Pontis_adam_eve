@@ -39,6 +39,7 @@ from app.models.entities import (
 from app.core.config import ENABLE_FAKE_EMAILS, RLHF_BASE_FEEDBACK_BIAS, RLHF_MIN_FEEDBACK_BIAS, RLHF_SMOOTHING_ALPHA
 
 logger = logging.getLogger(__name__)
+_EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}", re.IGNORECASE)
 
 
 def ensure_candidate_profile(db: Session, job_id: str, candidate_id: str) -> CandidateProfileEntity:
@@ -51,9 +52,10 @@ def _normalize_text(value: object) -> str:
 
 def _candidate_email_value(value: object) -> str:
     email = _normalize_text(value).lower()
-    if "@" not in email:
-        return ""
-    return email
+    if "@" in email:
+        return email
+    match = _EMAIL_PATTERN.search(email)
+    return match.group(0).lower() if match else ""
 
 
 def _build_dev_email(*, name: str, candidate_id: str) -> str:
@@ -63,16 +65,37 @@ def _build_dev_email(*, name: str, candidate_id: str) -> str:
 
 
 def _ensure_candidate_profile_email(row: CandidateProfileEntity) -> bool:
-    if not ENABLE_FAKE_EMAILS:
-        return False
-
     raw_data = dict(row.raw_data or {})
+    parsed_data = raw_data.get("parsed_data") or raw_data.get("parsedData")
+    if not isinstance(parsed_data, dict):
+        parsed_data = {}
     existing = (
         _candidate_email_value(raw_data.get("work_email"))
         or _candidate_email_value(raw_data.get("email"))
         or _candidate_email_value(raw_data.get("personal_email"))
+        or _candidate_email_value(raw_data.get("emails_primary"))
+        or _candidate_email_value(raw_data.get("raw_resume_text"))
+        or _candidate_email_value(raw_data.get("rawResumeText"))
+        or _candidate_email_value(parsed_data.get("work_email"))
+        or _candidate_email_value(parsed_data.get("email"))
+        or _candidate_email_value(parsed_data.get("personal_email"))
+        or _candidate_email_value(parsed_data.get("emails_primary"))
+        or _candidate_email_value(parsed_data.get("raw_resume_text"))
+        or _candidate_email_value(parsed_data.get("rawResumeText"))
     )
     if existing:
+        raw_data.update(
+            {
+                "work_email": raw_data.get("work_email") or existing,
+                "email": raw_data.get("email") or existing,
+                "personal_email": raw_data.get("personal_email") or existing,
+                "emails_primary": raw_data.get("emails_primary") or existing,
+            }
+        )
+        row.raw_data = raw_data
+        return True
+
+    if not ENABLE_FAKE_EMAILS:
         return False
 
     generated = _build_dev_email(name=row.name or row.candidate_id, candidate_id=row.candidate_id)
@@ -545,6 +568,24 @@ class CandidateProfileRepository:
             _candidate_email_value(raw_data.get("work_email")),
             _candidate_email_value(raw_data.get("email")),
             _candidate_email_value(raw_data.get("personal_email")),
+            _candidate_email_value(raw_data.get("emails_primary")),
+            _candidate_email_value(raw_data.get("raw_resume_text")),
+            _candidate_email_value(raw_data.get("rawResumeText")),
+            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("work_email"))
+            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
+            else "",
+            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("email"))
+            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
+            else "",
+            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("personal_email"))
+            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
+            else "",
+            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("emails_primary"))
+            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
+            else "",
+            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("raw_resume_text"))
+            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
+            else "",
         ]
         return [value for value in values if value]
 

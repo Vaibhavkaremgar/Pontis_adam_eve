@@ -20,6 +20,7 @@ from app.services.qdrant_service import ensure_collection_indexes, upsert_intern
 from app.services.skill_normalizer import parse_experience
 
 logger = logging.getLogger(__name__)
+_EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}", re.IGNORECASE)
 
 
 class ResumeStructuredProfile(BaseModel):
@@ -95,6 +96,20 @@ class ResumeStructuredProfile(BaseModel):
 
 def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _extract_emails_from_text(text: str) -> list[str]:
+    if not text:
+        return []
+    emails: list[str] = []
+    seen: set[str] = set()
+    for match in _EMAIL_PATTERN.findall(text):
+        normalized = match.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        emails.append(normalized)
+    return emails
 
 
 def _pdf_file_fingerprint(path: Path) -> str:
@@ -259,6 +274,8 @@ def build_internal_candidate_payload(
     source_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(uuid5(NAMESPACE_URL, f"pontis-internal-resume:{resume_fingerprint}"))
+    extracted_emails = _extract_emails_from_text(resume_text)
+    primary_email = extracted_emails[0] if extracted_emails else ""
     return {
         "candidate_id": candidate_id,
         "resume_fingerprint": resume_fingerprint,
@@ -284,6 +301,13 @@ def build_internal_candidate_payload(
         "summary": profile.summary,
         "domain_experience": profile.domain_experience,
         "raw_resume_text": resume_text,
+        "email": primary_email,
+        "work_email": primary_email,
+        "personal_email": primary_email,
+        "emails_primary": primary_email,
+        "emails": extracted_emails,
+        "contact_emails": extracted_emails,
+        "email_source": "resume_text" if primary_email else "",
         "parsed_data": profile.model_dump(),
         "embedding_version": EMBEDDING_VERSION,
         "vector_version": EMBEDDING_VERSION,

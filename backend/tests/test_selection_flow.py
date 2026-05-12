@@ -168,6 +168,14 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(payload["to"], ["candidate@example.com"])
         self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
 
+    def test_invalid_email_falls_back_to_debug_mailbox(self) -> None:
+        result = outreach_service._resolve_outreach_recipient(raw_data={"email": "not-an-email"})
+
+        self.assertEqual(result["original_email"], "")
+        self.assertEqual(result["to_email"], "vaibhavkar0009@gmail.com")
+        self.assertTrue(result["fallback_used"])
+        self.assertIn("fallback", result["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

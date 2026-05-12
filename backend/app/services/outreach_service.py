@@ -64,12 +64,23 @@ _SPAM_RISK_THRESHOLD = 0.8
 _DEFAULT_DAILY_OUTREACH_QUOTA = 50
 _DEFAULT_DOMAIN_DAILY_QUOTA = 20
 _OUTREACH_TEST_COPY_EMAIL = "vaibhavkar0009@gmail.com"
+_INVALID_EMAIL_BLOCK_REASONS = {"invalid_email", "invalid_email_domain", "missing_email"}
 
 
 def _normalize_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _extract_email_from_text(value: str) -> str:
+    text = _normalize_text(value)
+    if not text:
+        return ""
+    if _EMAIL_PATTERN.fullmatch(text):
+        return text.lower()
+    match = _EMAIL_PATTERN.search(text)
+    return match.group(0).lower() if match else ""
 
 
 def _email_domain(email: str) -> str:
@@ -400,6 +411,8 @@ def _job_company_name(job) -> str:
 
 
 def _candidate_raw_data(candidate_profile) -> dict[str, Any]:
+    if isinstance(candidate_profile, dict):
+        return candidate_profile
     raw_data = getattr(candidate_profile, "raw_data", None)
     return raw_data if isinstance(raw_data, dict) else {}
 
@@ -408,13 +421,72 @@ def _extract_candidate_email(candidate_profile) -> str:
     raw_data = _candidate_raw_data(candidate_profile)
     if bool(raw_data.get("is_mock_email")) or str(raw_data.get("email_source") or "").strip().lower() == "generated":
         return ""
-    for key in ("work_email", "email", "personal_email"):
+    for key in ("work_email", "email", "personal_email", "emails_primary"):
         value = str(raw_data.get(key) or "").strip()
         if value:
-            if value.lower().endswith("@test.local"):
+            extracted = _extract_email_from_text(value)
+            if extracted.endswith("@test.local"):
                 return ""
-            return value
+            if extracted:
+                return extracted
+
+    for key in ("emails", "personal_emails", "work_emails"):
+        value = raw_data.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item.strip():
+                    extracted = _extract_email_from_text(item)
+                    if extracted and not extracted.endswith("@test.local"):
+                        return extracted
+                if isinstance(item, dict):
+                    extracted = _extract_email_from_text(str(item.get("address") or item.get("email") or ""))
+                    if extracted and not extracted.endswith("@test.local"):
+                        return extracted
+
+    for key in ("raw_resume_text", "rawResumeText"):
+        value = str(raw_data.get(key) or "").strip()
+        if value:
+            extracted = _extract_email_from_text(value)
+            if extracted and not extracted.endswith("@test.local"):
+                return extracted
+
+    parsed_data = raw_data.get("parsed_data") or raw_data.get("parsedData")
+    if isinstance(parsed_data, dict):
+        extracted = _extract_candidate_email(parsed_data)
+        if extracted:
+            return extracted
     return ""
+
+
+def _resolve_outreach_recipient(*, raw_data: dict[str, Any]) -> dict[str, Any]:
+    candidate_email = _extract_email(raw_data)
+    blocked = True
+    block_reason = "missing_email"
+    if candidate_email:
+        blocked, block_reason = _is_blocked_outbound_email(candidate_email)
+        if not blocked:
+            return {
+                "to_email": candidate_email,
+                "original_email": candidate_email,
+                "fallback_used": False,
+                "reason": "",
+            }
+
+    fallback_email = _OUTREACH_TEST_COPY_EMAIL.strip()
+    if fallback_email:
+        return {
+            "to_email": fallback_email,
+            "original_email": candidate_email,
+            "fallback_used": True,
+            "reason": f"{block_reason}_fallback_to_debug_mailbox" if blocked else "fallback_to_debug_mailbox",
+        }
+
+    return {
+        "to_email": "",
+        "original_email": candidate_email,
+        "fallback_used": False,
+        "reason": block_reason,
+    }
 
 
 def _extract_candidate_linkedin_url(candidate_profile) -> str:
@@ -432,15 +504,19 @@ def _extract_resend_message_id(response: Any) -> str:
     return str(getattr(response, "id", "") or getattr(response, "message_id", "") or "").strip()
 
 
-def _shortlist_bcc_recipients() -> list[str]:
-    return [_OUTREACH_TEST_COPY_EMAIL] if _OUTREACH_TEST_COPY_EMAIL else []
+def _shortlist_bcc_recipients(*, main_recipient: str | None = None) -> list[str]:
+    recipients = [_OUTREACH_TEST_COPY_EMAIL] if _OUTREACH_TEST_COPY_EMAIL else []
+    normalized_main = _extract_email_from_text(main_recipient or "")
+    if normalized_main:
+        recipients = [recipient for recipient in recipients if recipient.lower() != normalized_main]
+    return recipients
 
 
 def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str, str]:
     if not RESEND_API_KEY:
         return False, "RESEND_API_KEY_missing", ""
 
-    bcc_recipients = _shortlist_bcc_recipients()
+    bcc_recipients = _shortlist_bcc_recipients(main_recipient=to_email)
     try:
         import resend
 
@@ -482,7 +558,7 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
     if not RESEND_API_KEY:
         return False, "RESEND_API_KEY_missing", ""
 
-    bcc_recipients = _shortlist_bcc_recipients()
+    bcc_recipients = _shortlist_bcc_recipients(main_recipient=to_email)
     try:
         import resend
         resend.api_key = RESEND_API_KEY
@@ -513,7 +589,7 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
 
     # HTTP fallback
     try:
-        bcc_recipients = _shortlist_bcc_recipients()
+        bcc_recipients = _shortlist_bcc_recipients(main_recipient=to_email)
         payload: dict[str, Any] = {
             "from": from_email,
             "reply_to": OUTREACH_REPLY_TO_EMAIL,
@@ -945,35 +1021,64 @@ def process_outreach(
             skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
             continue
 
-        to_email = _extract_email(profile.raw_data or {})
-        if _is_suppressed(to_email):
+        raw_data = profile.raw_data or {}
+        delivery_target = _resolve_outreach_recipient(raw_data=raw_data)
+        original_to_email = str(delivery_target.get("original_email") or "").strip()
+        to_email = str(delivery_target.get("to_email") or "").strip()
+        fallback_used = bool(delivery_target.get("fallback_used"))
+        fallback_reason = str(delivery_target.get("reason") or "").strip()
+        if not to_email:
             skipped += 1
-            reason = "suppressed"
+            reason = fallback_reason or "invalid_email"
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": to_email})
-            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
-            outreach_events.upsert(
-                job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER,
-                to_email=to_email, subject="", body="", status="failed", last_error=reason,
-            )
-            continue
-        blocked, block_reason = _is_blocked_outbound_email(to_email)
-        if blocked:
             logger.warning(
                 "outreach_email_blocked job_id=%s candidate_id=%s reason=%s to_email=%s",
                 job_id,
                 candidate_id,
-                block_reason or "invalid_or_missing_email",
-                to_email,
+                reason,
+                original_to_email,
             )
-            skipped += 1
-            reason = block_reason or "invalid_or_missing_email"
-            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": ""})
+            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": original_to_email})
             skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
             outreach_events.upsert(
                 job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER,
-                to_email="", subject="", body="", status="failed", last_error=reason,
+                to_email=original_to_email, subject="", body="", status="failed", last_error=reason,
+            )
+            continue
+
+        if original_to_email and _is_suppressed(original_to_email):
+            skipped += 1
+            reason = "suppressed"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": original_to_email})
+            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
+            outreach_events.upsert(
+                job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER,
+                to_email=original_to_email, subject="", body="", status="failed", last_error=reason,
+            )
+            continue
+        blocked, block_reason = _is_blocked_outbound_email(original_to_email)
+        if blocked and fallback_used:
+            warnings.append(
+                f"candidate {candidate_id} invalid email '{original_to_email or 'missing'}'; sent to fallback mailbox {to_email}"
+            )
+            logger.warning(
+                "outreach_email_fallback job_id=%s candidate_id=%s reason=%s original_to_email=%s fallback_to_email=%s",
+                job_id,
+                candidate_id,
+                fallback_reason or block_reason or "invalid_email_fallback_to_debug_mailbox",
+                original_to_email,
+                to_email,
+            )
+        elif blocked:
+            skipped += 1
+            reason = block_reason or "invalid_or_missing_email"
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason, "toEmail": original_to_email})
+            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
+            outreach_events.upsert(
+                job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER,
+                to_email=original_to_email, subject="", body="", status="failed", last_error=reason,
             )
             continue
 
@@ -1035,19 +1140,27 @@ def process_outreach(
                 to_email=to_email, subject=subject, body=body, status="simulated",
                 sent_at=datetime.now(timezone.utc),
                 next_follow_up_at=next_follow_up if ENABLE_FOLLOWUPS else None,
+                last_error=fallback_reason if fallback_used else "",
             )
             db.commit()
             sent += 1
             follow_up_scheduled += 1
             logger.info(
-                "outreach_simulated job_id=%s candidate_id=%s to_email=%s simulated=%s",
+                "outreach_simulated job_id=%s candidate_id=%s to_email=%s simulated=%s fallback_used=%s",
                 job_id,
                 candidate_id,
                 to_email,
                 True,
+                fallback_used,
             )
             log_metric("outreach_email_sent", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, simulated=True)
-            details.append({"candidateId": candidate_id, "status": "simulated", "toEmail": to_email})
+            details.append({
+                "candidateId": candidate_id,
+                "status": "simulated",
+                "toEmail": to_email,
+                "originalEmail": original_to_email,
+                "reason": fallback_reason if fallback_used else "",
+            })
             continue
 
         if not provider_configured:
@@ -1107,7 +1220,7 @@ def process_outreach(
                 event.last_contacted_at = now
                 event.next_follow_up_at = next_follow_up if ENABLE_FOLLOWUPS else None
                 event.follow_up_count = 0
-                event.last_error = ""
+                event.last_error = fallback_reason if fallback_used else ""
                 try:
                     db.commit()
                 except Exception as db_exc:
@@ -1120,17 +1233,32 @@ def process_outreach(
                         str(db_exc),
                         exc_info=db_exc,
                     )
-                    details.append({"candidateId": candidate_id, "status": "sending", "toEmail": to_email, "providerId": msg_id})
+                    details.append({
+                        "candidateId": candidate_id,
+                        "status": "sending",
+                        "toEmail": to_email,
+                        "providerId": msg_id,
+                        "originalEmail": original_to_email,
+                        "reason": fallback_reason if fallback_used else "",
+                    })
                     continue
                 sent += 1
                 follow_up_scheduled += 1
                 logger.info(
-                    "outreach_sent job_id=%s candidate_id=%s to_email=%s provider_id=%s",
-                    job_id, candidate_id, to_email, msg_id,
+                    "outreach_sent job_id=%s candidate_id=%s to_email=%s provider_id=%s fallback_used=%s",
+                    job_id, candidate_id, to_email, msg_id, fallback_used,
                 )
                 log_metric("outreach_usage", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, action="send")
                 log_metric("outreach_email_sent", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, provider_id=msg_id)
-                details.append({"candidateId": candidate_id, "status": "sent", "toEmail": to_email, "providerId": msg_id})
+                details.append({
+                    "candidateId": candidate_id,
+                    "status": "sent",
+                    "toEmail": to_email,
+                    "providerId": msg_id,
+                    "originalEmail": original_to_email,
+                    "reason": fallback_reason if fallback_used else "",
+                    "fallbackRecipient": to_email if fallback_used else "",
+                })
             else:
                 skipped += 1
                 reason = send_error or "provider_rejected"
@@ -1142,7 +1270,14 @@ def process_outreach(
                 event.provider_message_id = None
                 event.next_follow_up_at = None
                 db.commit()
-                details.append({"candidateId": candidate_id, "status": "failed", "reason": reason, "toEmail": to_email})
+                details.append({
+                    "candidateId": candidate_id,
+                    "status": "failed",
+                    "reason": reason,
+                    "toEmail": to_email,
+                    "originalEmail": original_to_email,
+                    "fallbackRecipient": to_email if fallback_used else "",
+                })
                 skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
         except Exception as exc:
             reason = _error_debug_string(exc)
@@ -1155,7 +1290,14 @@ def process_outreach(
             event.provider_message_id = None
             event.next_follow_up_at = None
             db.commit()
-            details.append({"candidateId": candidate_id, "status": "failed", "reason": reason, "toEmail": to_email})
+            details.append({
+                "candidateId": candidate_id,
+                "status": "failed",
+                "reason": reason,
+                "toEmail": to_email,
+                "originalEmail": original_to_email,
+                "fallbackRecipient": to_email if fallback_used else "",
+            })
             skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
 
     log_metric("outreach_cycle", job_id=job_id, processed=processed, sent=sent, skipped=skipped)
@@ -1176,6 +1318,7 @@ def process_outreach(
             "fromEmail": OUTREACH_FROM_EMAIL,
             "providerConfigured": provider_configured,
             "dryRun": OUTREACH_DRY_RUN,
+            "fallbackRecipient": _OUTREACH_TEST_COPY_EMAIL,
         },
     }
     if warnings:
@@ -1196,16 +1339,21 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
         name = (profile.name or "").strip() or candidate_id
         linkedin_url = _extract_candidate_linkedin_url(profile)
         subject, email_template, text_template = _build_shortlist_outreach_email(candidate_profile=profile, job=job)
-        to_email = _extract_candidate_email(profile)
+        raw_data = _candidate_raw_data(profile)
+        delivery_target = _resolve_outreach_recipient(raw_data=raw_data)
+        original_to_email = str(delivery_target.get("original_email") or "").strip()
+        to_email = str(delivery_target.get("to_email") or "").strip()
+        fallback_used = bool(delivery_target.get("fallback_used"))
+        fallback_reason = str(delivery_target.get("reason") or "").strip()
         outreach_repo = OutreachEventRepository(db)
         recruiter_id = JobRepository(db).get_recruiter_id(job_id)
 
-        if _is_suppressed(to_email):
+        if original_to_email and _is_suppressed(original_to_email):
             outreach_repo.upsert(
                 job_id=job_id,
                 candidate_id=candidate_id,
                 provider=OUTREACH_PROVIDER,
-                to_email=to_email,
+                to_email=original_to_email,
                 subject=subject,
                 body=email_template,
                 status="failed",
@@ -1220,7 +1368,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 "jobId": job_id,
                 "candidateId": candidate_id,
                 "candidateName": name,
-                "candidateEmail": to_email,
+                "candidateEmail": original_to_email,
                 "linkedinUrl": linkedin_url,
                 "status": "suppressed",
                 "outreachStatus": "suppressed",
@@ -1229,20 +1377,29 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 "providerMessageId": "",
             }
 
-        blocked, block_reason = _is_blocked_outbound_email(to_email)
-        if blocked:
+        blocked, block_reason = _is_blocked_outbound_email(original_to_email)
+        if blocked and fallback_used:
+            logger.warning(
+                "outreach_email_fallback job_id=%s candidate_id=%s reason=%s original_to_email=%s fallback_to_email=%s",
+                job_id,
+                candidate_id,
+                fallback_reason or block_reason or "invalid_email_fallback_to_debug_mailbox",
+                original_to_email,
+                to_email,
+            )
+        elif blocked:
             logger.warning(
                 "outreach_email_blocked job_id=%s candidate_id=%s reason=%s to_email=%s",
                 job_id,
                 candidate_id,
                 block_reason or "missing_email",
-                to_email,
+                original_to_email,
             )
             outreach_repo.upsert(
                 job_id=job_id,
                 candidate_id=candidate_id,
                 provider=OUTREACH_PROVIDER,
-                to_email="",
+                to_email=original_to_email,
                 subject=subject,
                 body=email_template,
                 status="manual_required",
@@ -1257,7 +1414,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 "jobId": job_id,
                 "candidateId": candidate_id,
                 "candidateName": name,
-                "candidateEmail": "",
+                "candidateEmail": original_to_email,
                 "linkedinUrl": linkedin_url,
                 "status": "manual_required",
                 "outreachStatus": "manual_required",
@@ -1350,7 +1507,7 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
             subject=subject,
             body=tracked_template,
             status="sent",
-            last_error="",
+            last_error=fallback_reason if fallback_used else "",
             sent_at=now,
             next_follow_up_at=_follow_up_time() if ENABLE_FOLLOWUPS else None,
             provider_message_id=msg_id or None,
@@ -1364,13 +1521,16 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
             "jobId": job_id,
             "candidateId": candidate_id,
             "candidateName": name,
-            "candidateEmail": to_email,
+            "candidateEmail": to_email if fallback_used or not original_to_email else original_to_email,
             "linkedinUrl": linkedin_url,
             "status": "sent",
             "outreachStatus": "sent",
             "subject": subject,
             "html": tracked_template,
             "providerMessageId": msg_id,
+            "fallbackUsed": fallback_used,
+            "fallbackReason": fallback_reason,
+            "originalCandidateEmail": original_to_email,
         }
 
 
@@ -1597,11 +1757,14 @@ def build_email_preview(*, db: Session, job_id: str, candidate_id: str) -> dict:
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
         raise APIError("Candidate not found", status_code=404)
-    to_email = _extract_email(profile.raw_data or {})
+    delivery_target = _resolve_outreach_recipient(raw_data=profile.raw_data or {})
+    to_email = str(delivery_target.get("to_email") or "").strip()
     subject, body = generate_personalized_email(candidate_profile=profile, job=job)
     return {
         "subject": subject,
         "body": body,
         "toEmail": to_email,
-        "usingFallbackEmail": not bool(to_email),
+        "originalToEmail": str(delivery_target.get("original_email") or "").strip(),
+        "usingFallbackEmail": bool(delivery_target.get("fallback_used")),
+        "fallbackReason": str(delivery_target.get("reason") or "").strip(),
     }

@@ -72,6 +72,35 @@ class ResumeIngestionTests(unittest.TestCase):
         self.assertEqual(payload["company"], "Pontis")
         self.assertEqual(payload["embedding_version"], "v2_structured")
 
+    def test_internal_candidate_payload_extracts_resume_email(self) -> None:
+        profile = ResumeStructuredProfile(
+            full_name="Priya Sharma",
+            headline="Senior Backend Engineer",
+            years_experience=7,
+            skills=["Python", "FastAPI"],
+            companies=["Pontis"],
+            education=["B.Tech"],
+            projects=["Retrieval system"],
+            certifications=["AWS"],
+            location="Bengaluru, India",
+            summary="Built candidate systems.",
+            domain_experience=["Recruiting"],
+        )
+
+        payload = build_internal_candidate_payload(
+            profile=profile,
+            resume_text="Priya Sharma\nEmail: priya.sharma@example.com\nPhone: 99999 88888",
+            file_name="resume.pdf",
+            source_path="backend/resumes/resume.pdf",
+            resume_fingerprint="abc123-email",
+        )
+
+        self.assertEqual(payload["email"], "priya.sharma@example.com")
+        self.assertEqual(payload["work_email"], "priya.sharma@example.com")
+        self.assertEqual(payload["personal_email"], "priya.sharma@example.com")
+        self.assertEqual(payload["emails"], ["priya.sharma@example.com"])
+        self.assertEqual(payload["email_source"], "resume_text")
+
     def test_repository_upsert_accepts_rich_payload(self) -> None:
         class _FakeNested:
             def __enter__(self):

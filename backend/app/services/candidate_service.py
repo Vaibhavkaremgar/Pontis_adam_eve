@@ -271,18 +271,37 @@ def _extract_candidate_email(candidate: dict) -> str:
     for key in direct_keys:
         value = candidate.get(key)
         if isinstance(value, str) and value.strip():
-            return value.strip().lower()
+            extracted = _candidate_email_value(value)
+            if extracted:
+                return extracted
 
     for key in ("emails", "personal_emails", "work_emails"):
         value = candidate.get(key)
         if isinstance(value, list):
             for item in value:
                 if isinstance(item, str) and item.strip():
-                    return item.strip().lower()
+                    extracted = _candidate_email_value(item)
+                    if extracted:
+                        return extracted
                 if isinstance(item, dict):
                     address = str(item.get("address") or item.get("email") or "").strip()
                     if address:
-                        return address.lower()
+                        extracted = _candidate_email_value(address)
+                        if extracted:
+                            return extracted
+
+    for key in ("raw_resume_text", "rawResumeText"):
+        value = candidate.get(key)
+        if isinstance(value, str) and value.strip():
+            extracted = _candidate_email_value(value)
+            if extracted:
+                return extracted
+
+    parsed_data = candidate.get("parsed_data") or candidate.get("parsedData")
+    if isinstance(parsed_data, dict):
+        extracted = _extract_candidate_email(parsed_data)
+        if extracted:
+            return extracted
     return ""
 
 
@@ -415,7 +434,12 @@ def _candidate_profile_details(*, profile: Any | None = None, raw_data: Any | No
         source.get("work_email")
         or source.get("email")
         or source.get("personal_email")
+        or source.get("emails_primary")
+        or source.get("raw_resume_text")
+        or source.get("rawResumeText")
     )
+    if not email:
+        email = _extract_candidate_email(source)
     is_mock_email = email.endswith("@test.local") if email else False
 
     return {

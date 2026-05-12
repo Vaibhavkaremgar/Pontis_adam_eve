@@ -45,10 +45,10 @@ function OutreachContent() {
   const [isOutreachComplete, setIsOutreachComplete] = useState(false);
   const [outreachStatuses, setOutreachStatuses] = useState<OutreachStatusItem[]>([]);
   const [sendDebug, setSendDebug] = useState<{
-    details: { candidateId: string; status: string; reason?: string; toEmail?: string; providerId?: string }[];
+    details: { candidateId: string; status: string; reason?: string; toEmail?: string; providerId?: string; originalEmail?: string; fallbackRecipient?: string }[];
     skipReasons: Record<string, number>;
     warnings: string[];
-    debug?: { provider?: string; fromEmail?: string; providerConfigured?: boolean; dryRun?: boolean };
+    debug?: { provider?: string; fromEmail?: string; providerConfigured?: boolean; dryRun?: boolean; fallbackRecipient?: string };
   } | null>(null);
 
   // Auth + flow guard
@@ -137,7 +137,7 @@ function OutreachContent() {
           setEmailSubject(result.data.subject);
           setEmailBody(result.data.body);
           setPreviewToEmail(result.data.toEmail);
-          setUsingFallbackEmail((result.data as any).usingFallbackEmail ?? false);
+          setUsingFallbackEmail(result.data.usingFallbackEmail ?? false);
         }
         setIsLoadingPreview(false);
       });
@@ -270,7 +270,7 @@ function OutreachContent() {
                 <p className="text-xs text-gray-500">
                   To: {previewToEmail}
                   {usingFallbackEmail && (
-                    <span className="ml-2 text-amber-600">(no email on file)</span>
+                    <span className="ml-2 text-amber-600">(using fallback mailbox)</span>
                   )}
                 </p>
               )}
@@ -344,6 +344,9 @@ function OutreachContent() {
                 <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
                   <div>Provider configured: {String(sendDebug.debug.providerConfigured ?? false)}</div>
                   <div>From: {sendDebug.debug.fromEmail || "n/a"}</div>
+                  {sendDebug.debug.fallbackRecipient && (
+                    <div>Fallback mailbox: {sendDebug.debug.fallbackRecipient}</div>
+                  )}
                 </div>
               )}
 
@@ -377,8 +380,10 @@ function OutreachContent() {
                           {item.status}
                         </Badge>
                       </div>
+                      {item.originalEmail && <p className="mt-1">Original: {item.originalEmail}</p>}
                       {item.reason && <p className="mt-1">Reason: {item.reason}</p>}
                       {item.toEmail && <p>To: {item.toEmail}</p>}
+                      {item.fallbackRecipient && <p>Fallback: {item.fallbackRecipient}</p>}
                       {item.providerId && <p>Provider id: {item.providerId}</p>}
                     </div>
                   ))}
