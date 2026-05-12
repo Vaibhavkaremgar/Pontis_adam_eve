@@ -100,6 +100,12 @@ function buildSelectionSession({
 }
 
 test('review shortlist carries into outreach and queues the selected candidates', async ({ page }) => {
+  const baseUrl = process.env.PLAYWRIGHT_BASE_URL?.trim() || '';
+  const isLiveTarget = Boolean(baseUrl && !/localhost|127\.0\.0\.1/.test(baseUrl));
+  if (isLiveTarget && (!process.env.PLAYWRIGHT_USERNAME || !process.env.PLAYWRIGHT_PASSWORD)) {
+    test.skip(true, 'Live recruiter flow requires PLAYWRIGHT_USERNAME and PLAYWRIGHT_PASSWORD.');
+  }
+
   const selectedIds = ['candidate-1', 'candidate-3', 'candidate-5'];
   const candidatePool = Array.from({ length: 6 }, (_, index) => makeCandidate('job-1', index + 1));
   const batch1 = candidatePool.slice(0, 2);
@@ -119,6 +125,7 @@ test('review shortlist carries into outreach and queues the selected candidates'
   const swipeCalls = [];
   const statusesByCandidate = Object.fromEntries(selectedIds.map((candidateId) => [candidateId, 'queued']));
 
+  if (!isLiveTarget) {
   await page.addInitScript(({ jobId, shortlistedIds }) => {
     window.localStorage.setItem('pontis_user', JSON.stringify({ id: 'user-1', email: 'recruiter@example.com', role: 'admin', name: 'Recruiter' }));
     window.sessionStorage.setItem('pontis_job_id', jobId);
@@ -398,6 +405,7 @@ test('review shortlist carries into outreach and queues the selected candidates'
       }),
     });
   });
+  }
 
   await page.goto('/review');
   await expect(page.getByText('Review Candidates')).toBeVisible();

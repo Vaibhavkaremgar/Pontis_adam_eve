@@ -11,6 +11,7 @@ class CandidateExplanation(BaseModel):
     finalScore: float
     pdlRelevance: float
     recencyScore: float
+    engineeringScore: float = 0.0
     penalties: dict[str, float]
     skillsMatched: list[str] = Field(default_factory=list)
     experienceMatch: str = ""

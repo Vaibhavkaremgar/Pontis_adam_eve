@@ -37,6 +37,7 @@ from app.db.repositories import (
     RankingExplanationRepository,
     RankingRunRepository,
     ScoringProfileRepository,
+    _candidate_email_value,
 )
 from app.schemas.candidate import CandidateExplanation, CandidateRankingDebug, CandidateResult
 from app.services.candidate_text import build_candidate_text
@@ -1898,6 +1899,7 @@ def _build_local_candidates(
                 finalScore=round(final, 4),
                 pdlRelevance=0.0,
                 recencyScore=round(freshness_score, 4),
+                engineeringScore=round(min(1.0, (0.65 * skill_overlap) + (0.35 * semantic_similarity)), 4),
                 skillsMatched=_matched_skills(job_skills, skills or []),
                 experienceMatch=_experience_match_summary(candidate_experience, job_experience),
                 candidateExperience=candidate_experience,
@@ -2250,6 +2252,7 @@ def _build_ranked_candidates_from_pdl(
                 finalScore=round(final_score, 4),
                 pdlRelevance=round(pdl_relevance, 4),
                 recencyScore=round(freshness_score, 4),
+                engineeringScore=round(min(1.0, (0.55 * skill_overlap) + (0.45 * semantic_similarity)), 4),
                 skillsMatched=_matched_skills(job_skills, candidate_skills),
                 experienceMatch=_experience_match_summary(candidate_experience, job_experience),
                 candidateExperience=candidate_experience,
@@ -3047,6 +3050,29 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
     return final_candidates
 
 
+def build_selection_candidate_snapshot(
+    *,
+    db: Session,
+    job_id: str,
+    mode: str | None = None,
+    refresh: bool = False,
+    limit: int = 12,
+) -> list[CandidateResult]:
+    """Return the real retrieved candidates used to seed the 3-round preference flow."""
+    candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh)
+    unique_candidates: list[CandidateResult] = []
+    seen_ids: set[str] = set()
+    for candidate in candidates:
+        candidate_id = str(candidate.id or "").strip()
+        if not candidate_id or candidate_id in seen_ids:
+            continue
+        unique_candidates.append(candidate)
+        seen_ids.add(candidate_id)
+        if len(unique_candidates) >= max(2, limit):
+            break
+    return unique_candidates
+
+
 def warm_candidate_retrieval() -> int:
     ensure_all_collections()
     preloaded = preload_sample_candidate_embeddings()
@@ -3321,6 +3347,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                     finalScore=round(final_score, 4),
                     pdlRelevance=0.0,
                     recencyScore=0.0,
+                    engineeringScore=round(final_score, 4),
                     penalties={},
                     sourceBreakdown=_explanation_source_breakdown(
                         vector_score=0.0,
@@ -3392,6 +3419,7 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
                     finalScore=round(final_score, 4),
                     pdlRelevance=0.0,
                     recencyScore=0.0,
+                    engineeringScore=round(final_score, 4),
                     penalties={},
                 ),
                 strategy=row.strategy,

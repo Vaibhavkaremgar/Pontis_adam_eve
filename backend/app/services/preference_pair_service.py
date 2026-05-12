@@ -167,13 +167,15 @@ def _pair_score(left: dict[str, Any], right: dict[str, Any], intent_profile: dic
         ),
     )
     exact_match_bonus = 1.0 if len(left["skill_set"].intersection(right["skill_set"])) >= 2 else 0.0
-    score = (avg_alignment * 0.35) + (contrast * 0.30) + (uncertainty * 0.20) + (diversity * 0.15) + (exact_match_bonus * 0.05)
+    information_gain = max(0.0, min(1.0, (contrast * 0.45) + (uncertainty * 0.25) + (diversity * 0.20) + (exact_match_bonus * 0.10)))
+    score = (avg_alignment * 0.30) + (information_gain * 0.40) + (contrast * 0.15) + (uncertainty * 0.10) + (diversity * 0.05)
     return score, {
         "alignment": avg_alignment,
         "contrast": contrast,
         "uncertainty": uncertainty,
         "diversity": diversity,
         "exactMatchBonus": exact_match_bonus,
+        "informationGain": information_gain,
     }, [axis for axis, value in contrast_scores.items() if value >= max(contrast_scores.values(), default=0.0) * 0.8]
 
 

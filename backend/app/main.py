@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from app.api.routes import api_router
 from app.api.routes.slack import router as slack_router
 from app.core.auth_middleware import auth_middleware
-from app.core.config import CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, config_diagnostics, missing_secret_warnings, validate_runtime_config
+from app.core.config import APP_ENV, CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, config_diagnostics, missing_secret_warnings, validate_runtime_config
 from app.core.rate_limit_middleware import rate_limit_middleware
 from app.core.security import verify_access_token
 from app.db.session import db_health_snapshot, init_db
@@ -169,16 +169,16 @@ def config_api(request: Request):
 
 @app.on_event("startup")
 def on_startup() -> None:
+    validation = validate_runtime_config(production_mode=APP_ENV in {"production", "prod"})
+    critical_issues = [item for item in validation["issues"] if item["severity"] == "critical"]
+    if critical_issues:
+        raise RuntimeError(f"Invalid runtime config: {critical_issues}")
+
     try:
         init_db()
     except Exception as exc:
         logger.exception("database_initialization_failed error=%s", str(exc))
         raise
-
-    validation = validate_runtime_config()
-    critical_issues = [item for item in validation["issues"] if item["severity"] == "critical"]
-    if critical_issues:
-        raise RuntimeError(f"Invalid runtime config: {critical_issues}")
 
     try:
         ensure_qdrant_indexes()

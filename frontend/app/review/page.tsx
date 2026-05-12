@@ -39,7 +39,7 @@ import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
 import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
-import { storeShortlistedCandidateIds } from "@/lib/session";
+import { storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
 import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession } from "@/types";
 
 function statusLabel(candidate: Candidate): string {
@@ -555,7 +555,11 @@ export default function ReviewPage() {
 
     const ok = await syncFinalShortlist();
     if (ok) {
+      const shortlistedCandidates = (session.finalCandidates || session.topCandidates || []).filter(
+        (candidate) => completedShortlistedIds.includes(candidate.id)
+      );
       storeShortlistedCandidateIds(jobId, completedShortlistedIds);
+      storeShortlistedCandidates(jobId, shortlistedCandidates);
       router.push("/outreach");
     }
 

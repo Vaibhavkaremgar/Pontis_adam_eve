@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CandidateSelectionSessionRepository, JobRepository
+from app.services.candidate_service import build_selection_candidate_snapshot
 from app.services.job_gap_analysis_service import analyze_job_gap
 from app.services.preference_pair_service import generate_preference_pair, generate_three_round_plan
 from app.schemas.candidate import CandidateExplanation, CandidateResult
@@ -171,6 +172,7 @@ def _build_synthetic_candidate(
         finalScore=semantic,
         pdlRelevance=semantic,
         recencyScore=0.72 if mode == "elite" else 0.63,
+        engineeringScore=round(min(1.0, len(shared_skills) / max(1, len(skills))), 3),
         penalties={
             "semanticPenalty": round(max(0.0, 0.15 - (index * 0.02)), 4),
             "missingSkillsPenalty": 0.0,
@@ -272,6 +274,41 @@ def _build_synthetic_candidate_pool(
     return [candidate.model_dump(exclude_none=True) for candidate in synthetic_candidates]
 
 
+def _real_candidate_pool_snapshot(
+    *,
+    db: Session,
+    job: Any,
+) -> list[dict[str, Any]]:
+    mode = _job_mode(job)
+    try:
+        candidates = build_selection_candidate_snapshot(
+            db=db,
+            job_id=str(getattr(job, "id", "") or ""),
+            mode=mode,
+            refresh=True,
+            limit=12,
+        )
+    except Exception as exc:
+        logger.warning(
+            "real_selection_snapshot_failed job_id=%s error=%s",
+            getattr(job, "id", ""),
+            str(exc),
+        )
+        return []
+
+    snapshot = [candidate.model_dump(exclude_none=True) for candidate in candidates]
+    if len(snapshot) < 6:
+        return []
+
+    logger.info(
+        "real_selection_snapshot_captured job_id=%s count=%s mode=%s",
+        getattr(job, "id", ""),
+        len(snapshot),
+        mode,
+    )
+    return snapshot
+
+
 def _state_key(*, recruiter_id: str, job_id: str) -> str:
     return f"{_STATE_PREFIX}{_normalize_text(recruiter_id)}:{_normalize_text(job_id)}"
 
@@ -325,6 +362,24 @@ def _save_state(*, recruiter_id: str, job_id: str, state: dict[str, Any]) -> dic
         except Exception:
             pass
     return state
+
+
+def _persist_selection_snapshot(*, db: Session, job_id: str, state: dict[str, Any]) -> None:
+    job_repo = JobRepository(db)
+    job = job_repo.get(job_id)
+    if not job:
+        return
+
+    structured = dict(job.structured_data or {})
+    candidate_pool = list(state.get("candidate_pool") or [])
+    structured["selectionSnapshot"] = {
+        "source": state.get("candidate_source", "synthetic"),
+        "candidateCount": len(candidate_pool),
+        "candidateIds": [str(candidate.get("id") or "").strip() for candidate in candidate_pool if str(candidate.get("id") or "").strip()],
+        "batchPlan": [list(pair.get("candidate_ids") or []) for pair in list(state.get("rounds") or [])],
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    job_repo.update_structured_fields(job_id=job_id, structured_data=structured)
 
 
 def _candidate_lookup(pool: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -395,12 +450,18 @@ def bootstrap_preference_session(
         transcript=voice_summary,
     )
     persist_recruiter_intent_profile(db=db, recruiter_id=recruiter_id, profile=intent_profile)
-    candidate_pool = _build_synthetic_candidate_pool(
+    candidate_pool = _real_candidate_pool_snapshot(
+        db=db,
         job=job,
-        voice_summary=voice_summary,
-        gap_analysis=gap_analysis,
-        intent_profile=intent_profile,
     )
+    candidate_source = "real" if len(candidate_pool) >= 6 else "synthetic"
+    if candidate_source == "synthetic":
+        candidate_pool = _build_synthetic_candidate_pool(
+            job=job,
+            voice_summary=voice_summary,
+            gap_analysis=gap_analysis,
+            intent_profile=intent_profile,
+        )
 
     round_plan = generate_three_round_plan(candidates=candidate_pool, intent_profile=intent_profile)
     session_repo = CandidateSelectionSessionRepository(db)
@@ -426,7 +487,7 @@ def bootstrap_preference_session(
         "gap_analysis": gap_analysis,
         "recommended_questions": list(gap_analysis.get("recommended_questions") or []),
         "vetting_mode": _job_mode(job),
-        "candidate_source": "synthetic",
+        "candidate_source": candidate_source,
         "intent_profile": summarize_intent_profile(intent_profile),
         "voice_summary": _normalize_text(voice_summary),
         "session_id": db_session.id,
@@ -438,6 +499,7 @@ def bootstrap_preference_session(
         },
     }
     _save_state(recruiter_id=recruiter_id, job_id=job_id, state=state)
+    _persist_selection_snapshot(db=db, job_id=job_id, state=state)
     if round_plan:
         log_metric("pair_signal_quality", value=float(round_plan[0].get("signal_quality") or 0.0))
     return state
@@ -637,13 +699,15 @@ def finalize_preference_session(*, db: Session, recruiter_id: str, job_id: str) 
     state["intent_profile"] = summarize_intent_profile(intent_profile)
     state["status"] = "completed"
     state["stage"] = "final_shortlist"
-    state["candidate_source"] = "real" if len(selection_rounds) >= 3 else state.get("candidate_source", "synthetic")
+    state["candidate_source"] = state.get("candidate_source", "synthetic")
     state["vetting_mode"] = _job_mode(job)
     state["telemetry"] = {
         **dict(state.get("telemetry") or {}),
         "recruiter_preference_confidence": round(min(1.0, float(intent_profile.get("history_signal_strength") or 0.0) + len(selection_rounds) * 0.12), 4),
     }
-    return _save_state(recruiter_id=recruiter_id, job_id=job_id, state=state)
+    final_state = _save_state(recruiter_id=recruiter_id, job_id=job_id, state=state)
+    _persist_selection_snapshot(db=db, job_id=job_id, state=final_state)
+    return final_state
 
 
 def build_state_response(state: dict[str, Any] | None) -> dict[str, Any]:
@@ -663,7 +727,7 @@ def build_state_response(state: dict[str, Any] | None) -> dict[str, Any]:
         "status": state.get("status", "active"),
         "stage": state.get("stage", "initial_job_understanding"),
         "vetting_mode": state.get("vetting_mode", "volume"),
-        "candidate_source": state.get("candidate_source", "synthetic"),
+        "candidate_source": state.get("candidate_source", "real" if len(state.get("candidate_pool") or []) >= 6 else "synthetic"),
         "rounds": list(state.get("rounds") or []),
         "current_round_index": int(state.get("current_round_index") or 1),
         "current_pair": state.get("current_pair") or {},

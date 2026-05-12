@@ -15,6 +15,42 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _is_placeholder_value(value: str | None) -> bool:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return True
+    placeholder_markers = {
+        "changeme",
+        "change-me",
+        "replace-me",
+        "replace_me",
+        "your-value",
+        "your-secret",
+        "your-key",
+        "your-api-key",
+        "your-database-url",
+        "your-redis-url",
+        "your-qdrant-url",
+        "your-resend-api-key",
+        "example",
+        "example.com",
+        "todo",
+        "tbd",
+        "dummy",
+    }
+    if normalized in placeholder_markers:
+        return True
+    return (
+        normalized.startswith("your-")
+        or normalized.startswith("placeholder")
+        or "your-" in normalized
+        or "placeholder" in normalized
+        or "example" in normalized
+        or "changeme" in normalized
+        or "replace-me" in normalized
+    )
+
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
@@ -43,7 +79,7 @@ DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
 PUBLIC_APP_URL = _required_env("PUBLIC_APP_URL").strip().rstrip("/")
-APP_ENV = os.getenv("APP_ENV", os.getenv("NODE_ENV", "production")).strip().lower() or "production"
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "production"))).strip().lower() or "production"
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", PUBLIC_APP_URL).strip().rstrip("/")
 if not FRONTEND_ORIGIN and PUBLIC_APP_URL:
     FRONTEND_ORIGIN = PUBLIC_APP_URL
@@ -213,11 +249,13 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
         "INTERNAL_API_KEY": INTERNAL_API_KEY,
     }
     for key, value in critical_checks.items():
-        if not str(value or "").strip():
-            issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required"))
+        if _is_placeholder_value(str(value or "")):
+            issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required and must not be a placeholder"))
 
     if DATABASE_URL and not str(DATABASE_URL).startswith(("postgresql://", "postgres://", "sqlite:///")):
         issues.append(ConfigIssue(key="DATABASE_URL", severity="critical", message="DATABASE_URL must be a valid database URL"))
+    if resolved_production and str(DATABASE_URL or "").startswith("sqlite:///"):
+        issues.append(ConfigIssue(key="DATABASE_URL", severity="critical", message="SQLite is not allowed in production"))
 
     if PUBLIC_APP_URL and not _is_valid_url(PUBLIC_APP_URL):
         issues.append(ConfigIssue(key="PUBLIC_APP_URL", severity="critical", message="PUBLIC_APP_URL must be an absolute URL"))
@@ -226,10 +264,23 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
         issues.append(ConfigIssue(key="FRONTEND_ORIGIN", severity="warning", message="FRONTEND_ORIGIN should be an absolute URL"))
 
     if resolved_production:
+        production_required = {
+            "JWT_SECRET": JWT_SECRET,
+            "DATABASE_URL": DATABASE_URL,
+            "REDIS_URL": REDIS_URL,
+            "QDRANT_URL": QDRANT_URL,
+            "QDRANT_API_KEY": QDRANT_API_KEY,
+            "RESEND_API_KEY": RESEND_API_KEY,
+            "INTERNAL_API_KEY": INTERNAL_API_KEY,
+            "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_OAUTH_CLIENT_ID,
+        }
+        for key, value in production_required.items():
+            if _is_placeholder_value(str(value or "")):
+                issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required in production and must not be empty or placeholder"))
         if OUTREACH_DRY_RUN:
             issues.append(ConfigIssue(key="OUTREACH_DRY_RUN", severity="warning", message="Outreach is running in dry-run mode"))
         if not REDIS_URL:
-            issues.append(ConfigIssue(key="REDIS_URL", severity="warning", message="Redis is unavailable; fallback queue/cache modes will be used"))
+            issues.append(ConfigIssue(key="REDIS_URL", severity="critical", message="Redis is required in production"))
         if not COOKIE_SECURE:
             issues.append(ConfigIssue(key="COOKIE_SECURE", severity="warning", message="Secure cookies are disabled in a production-like environment"))
     if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
@@ -264,3 +315,7 @@ def config_diagnostics() -> dict[str, Any]:
             "queue_job_ttl_seconds": JOB_QUEUE_JOB_TTL_SECONDS,
         },
     }
+
+
+def is_production_environment() -> bool:
+    return APP_ENV in {"production", "prod"}

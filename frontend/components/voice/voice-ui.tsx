@@ -313,7 +313,10 @@ export function VoiceUi() {
       const next = [...prev];
       const last = next[next.length - 1];
 
-      if (last && last.role === role) {
+      // Only rewrite the active streaming bubble. Once a turn has been finalized,
+      // keep later assistant/user turns as new bubbles so earlier transcript lines
+      // remain visible in the conversation history.
+      if (last && last.role === role && last.isStreaming) {
         next[next.length - 1] = {
           ...last,
           speaker,

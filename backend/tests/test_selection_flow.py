@@ -57,6 +57,8 @@ fake_slack_sdk_errors.SlackApiError = _FakeSlackApiError
 sys.modules.setdefault("slack_sdk", fake_slack_sdk)
 sys.modules.setdefault("slack_sdk.errors", fake_slack_sdk_errors)
 
+from app.schemas.candidate import CandidateExplanation, CandidateResult
+from app.services.candidate_service import build_selection_candidate_snapshot
 from app.services.preference_pair_service import generate_three_round_plan
 from app.services import outreach_service
 
@@ -75,6 +77,38 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(len(all_ids), 6)
         self.assertEqual(len(set(all_ids)), 6)
         self.assertTrue(all(len(pair.get("candidate_ids", [])) == 2 for pair in plan))
+
+    @patch("app.services.candidate_service.fetch_ranked_candidates")
+    def test_real_selection_snapshot_uses_retrieved_candidates(self, mock_fetch_ranked_candidates) -> None:
+        mock_fetch_ranked_candidates.return_value = [
+            CandidateResult(
+                id=f"real-candidate-{index}",
+                name=f"Real Candidate {index}",
+                role="Engineer",
+                company="Company",
+                email=f"real-candidate-{index}@example.com",
+                skills=["Python", "FastAPI"],
+                summary="Strong builder",
+                fitScore=5 - index * 0.1,
+                decision="strong_match",
+                explanation=CandidateExplanation(
+                    semanticScore=0.9,
+                    skillOverlap=0.8,
+                    finalScore=0.9,
+                    pdlRelevance=0.8,
+                    recencyScore=0.7,
+                    engineeringScore=0.85,
+                    penalties={},
+                ),
+                strategy="HIGH",
+            )
+            for index in range(8)
+        ]
+
+        snapshot = build_selection_candidate_snapshot(db=object(), job_id="job-1")
+
+        self.assertEqual(len(snapshot), 8)
+        self.assertEqual([candidate.id for candidate in snapshot][:2], ["real-candidate-0", "real-candidate-1"])
 
     def test_shortlist_email_bccs_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []

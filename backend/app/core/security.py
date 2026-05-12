@@ -11,7 +11,16 @@ import jwt
 from fastapi import Request
 from starlette.responses import Response
 
-from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_TOKEN_TTL_SECONDS, JWT_EXPIRY_DAYS, JWT_SECRET, COOKIE_SECURE, COOKIE_SAMESITE
+from app.core.config import (
+    AUTH_COOKIE_NAME,
+    COOKIE_SAMESITE,
+    COOKIE_SECURE,
+    CSRF_COOKIE_NAME,
+    CSRF_TOKEN_TTL_SECONDS,
+    JWT_EXPIRY_DAYS,
+    JWT_SECRET,
+    is_production_environment,
+)
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -23,7 +32,12 @@ def _resolved_jwt_secret() -> str:
 
     configured = (JWT_SECRET or "").strip()
     if configured:
+        if is_production_environment() and configured.lower() in {"changeme", "change-me", "replace-me", "replace_me", "your-secret"}:
+            raise RuntimeError("JWT_SECRET is a placeholder and cannot be used in production")
         return configured
+
+    if is_production_environment():
+        raise RuntimeError("JWT_SECRET is required in production")
 
     if not _ephemeral_jwt_secret:
         _ephemeral_jwt_secret = secrets.token_urlsafe(48)
