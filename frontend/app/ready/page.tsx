@@ -19,6 +19,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useAppContext } from "@/context/AppContext";
 import { exportCandidates } from "@/lib/api/candidates";
 import { getInterviewStatuses } from "@/lib/api/interviews";
+import { getOutreachStatuses, type OutreachStatusItem } from "@/lib/api/outreach";
 import { getMetrics } from "@/lib/api/metrics";
 import type { InterviewStatus } from "@/types";
 
@@ -46,6 +47,7 @@ export default function ReadyPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [outreachStatuses, setOutreachStatuses] = useState<OutreachStatusItem[]>([]);
   const [metrics, setMetrics] = useState<{
     emails_sent: number;
     replies_received: number;
@@ -76,12 +78,15 @@ export default function ReadyPage() {
     const run = async () => {
       setIsLoading(true);
       setError("");
-      const result = await getInterviewStatuses(jobId);
+      const [result, outreachResult] = await Promise.all([getInterviewStatuses(jobId), getOutreachStatuses(jobId)]);
       const metricsResult = canViewOperationalMetrics ? await getMetrics() : null;
       if (!result.success || !result.data) {
         setError(result.error || "Could not load interview statuses.");
       } else {
         setItems(result.data);
+      }
+      if (outreachResult.success && outreachResult.data) {
+        setOutreachStatuses(outreachResult.data);
       }
       if (metricsResult && metricsResult.success && metricsResult.data) {
         setMetrics({
@@ -173,6 +178,42 @@ export default function ReadyPage() {
               </Button>
             </div>
           ))}
+
+          <div className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="font-semibold text-gray-900">Outreach delivery</p>
+                <p className="text-xs text-gray-500">Shows whether candidate mail was sent, simulated, or failed</p>
+              </div>
+              <Badge variant="neutral">{outreachStatuses.length} records</Badge>
+            </div>
+
+            {outreachStatuses.length === 0 ? (
+              <p className="text-sm text-gray-600">No outreach delivery records yet.</p>
+            ) : (
+              outreachStatuses.slice(0, 6).map((item) => (
+                <div key={item.candidateId} className="flex items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{item.candidateId.slice(0, 8)}</p>
+                    <p className="text-xs text-gray-500">{item.toEmail || "No email on file"}</p>
+                  </div>
+                  <Badge
+                    variant={
+                      item.status === "sent"
+                        ? "high"
+                        : item.status === "simulated"
+                          ? "info"
+                          : item.status === "failed"
+                            ? "low"
+                            : "neutral"
+                    }
+                  >
+                    {item.status}
+                  </Badge>
+                </div>
+              ))
+            )}
+          </div>
 
           {metrics && (
             <div className="grid grid-cols-2 gap-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm">
