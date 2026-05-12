@@ -10,7 +10,13 @@ from app.core.security import get_current_user
 from app.db.session import get_db
 from app.schemas.candidate import OutreachReplyRequest, OutreachRequest
 from app.services.audit_service import record_audit_event
-from app.services.outreach_service import build_email_preview, list_outreach_status, record_outreach_open, queue_outreach_delivery
+from app.services.outreach_service import (
+    build_email_preview,
+    list_outreach_status,
+    process_outreach,
+    queue_outreach_delivery,
+    record_outreach_open,
+)
 from app.services.ownership import assert_job_ownership
 from app.utils.responses import success_response
 
@@ -22,7 +28,8 @@ router = APIRouter(tags=["outreach"])
 @router.post("/outreach")
 def send_outreach(payload: OutreachRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
-    data = queue_outreach_delivery(
+    data = process_outreach(
+        db=db,
         job_id=payload.jobId,
         selected_candidates=payload.selectedCandidates,
         custom_body=payload.customBody,
@@ -30,7 +37,7 @@ def send_outreach(payload: OutreachRequest, request: Request, _: dict = Depends(
     record_audit_event(
         db=db,
         actor_id=request.state.user["id"],
-        action="outreach_queued",
+        action="outreach_sent",
         entity_type="job",
         entity_id=payload.jobId,
         metadata={"selected_candidates": len(payload.selectedCandidates)},
