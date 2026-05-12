@@ -25,10 +25,22 @@ type OutreachData = {
   processed: number;
   sent: number;
   skipped: number;
-  details: { candidateId: string; status: string; reason: string; toEmail: string }[];
+  details: {
+    candidateId: string;
+    status: string;
+    reason?: string;
+    toEmail?: string;
+    providerId?: string;
+  }[];
   skippedCandidates: { candidateId: string; reason: string }[];
   skipReasons: Record<string, number>;
   warnings?: string[];
+  debug?: {
+    provider?: string;
+    fromEmail?: string;
+    providerConfigured?: boolean;
+    dryRun?: boolean;
+  };
 };
 
 type QueueOutreachData = {

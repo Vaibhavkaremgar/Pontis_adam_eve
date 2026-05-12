@@ -188,16 +188,17 @@ export default function ReadyPage() {
               <Badge variant="neutral">{outreachStatuses.length} records</Badge>
             </div>
 
-            {outreachStatuses.length === 0 ? (
-              <p className="text-sm text-gray-600">No outreach delivery records yet.</p>
-            ) : (
-              outreachStatuses.slice(0, 6).map((item) => (
-                <div key={item.candidateId} className="flex items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2">
-                  <div>
-                    <p className="text-sm font-medium text-gray-900">{item.candidateId.slice(0, 8)}</p>
-                    <p className="text-xs text-gray-500">{item.toEmail || "No email on file"}</p>
-                  </div>
-                  <Badge
+          {outreachStatuses.length === 0 ? (
+            <p className="text-sm text-gray-600">No outreach delivery records yet.</p>
+          ) : (
+            outreachStatuses.slice(0, 6).map((item) => (
+              <div key={item.candidateId} className="flex items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">{item.candidateId.slice(0, 8)}</p>
+                  <p className="text-xs text-gray-500">{item.toEmail || "No email on file"}</p>
+                  {item.lastError && <p className="text-xs text-amber-700">Reason: {item.lastError}</p>}
+                </div>
+                <Badge
                     variant={
                       item.status === "sent"
                         ? "high"

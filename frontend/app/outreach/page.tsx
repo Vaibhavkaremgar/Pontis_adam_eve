@@ -44,6 +44,12 @@ function OutreachContent() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isOutreachComplete, setIsOutreachComplete] = useState(false);
   const [outreachStatuses, setOutreachStatuses] = useState<OutreachStatusItem[]>([]);
+  const [sendDebug, setSendDebug] = useState<{
+    details: { candidateId: string; status: string; reason?: string; toEmail?: string; providerId?: string }[];
+    skipReasons: Record<string, number>;
+    warnings: string[];
+    debug?: { provider?: string; fromEmail?: string; providerConfigured?: boolean; dryRun?: boolean };
+  } | null>(null);
 
   // Auth + flow guard
   useEffect(() => {
@@ -166,6 +172,7 @@ function OutreachContent() {
     setError("");
     setFeedback("");
     setIsOutreachComplete(false);
+    setSendDebug(null);
 
     const customBody = selectedCandidates.length === 1 ? emailBody.trim() : "";
     const result = await sendOutreach({ jobId, selectedCandidates, customBody });
@@ -178,6 +185,12 @@ function OutreachContent() {
     setFeedback(
       `Outreach processed: ${result.data.sent} sent, ${result.data.skipped} skipped.`
     );
+    setSendDebug({
+      details: result.data.details || [],
+      skipReasons: result.data.skipReasons || {},
+      warnings: result.data.warnings || [],
+      debug: result.data.debug || undefined,
+    });
     setIsOutreachComplete(true);
     setIsSubmitting(false);
 
@@ -306,12 +319,73 @@ function OutreachContent() {
 
           {isOutreachComplete && (
             <div className="rounded-xl border border-green-100 bg-green-50 p-4 text-sm text-green-800">
-              Outreach queued. We’ll keep the page updated as statuses change.
+              Outreach processed. We’ll keep the page updated as statuses change.
             </div>
           )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
           {feedback && <p className="text-sm text-gray-700">{feedback}</p>}
+
+          {sendDebug && (
+            <div className="space-y-3 rounded-2xl border border-dashed border-[#C7B89F] bg-[#FCFAF5] p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">Send debug</p>
+                  <p className="text-xs text-gray-500">Exact reasons returned by the backend</p>
+                </div>
+                {sendDebug.debug && (
+                  <Badge variant="neutral">
+                    {sendDebug.debug.provider || "provider"}{sendDebug.debug.dryRun ? " / dry-run" : ""}
+                  </Badge>
+                )}
+              </div>
+
+              {sendDebug.debug && (
+                <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                  <div>Provider configured: {String(sendDebug.debug.providerConfigured ?? false)}</div>
+                  <div>From: {sendDebug.debug.fromEmail || "n/a"}</div>
+                </div>
+              )}
+
+              {sendDebug.warnings.length > 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  {sendDebug.warnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              )}
+
+              {sendDebug.skipReasons && Object.keys(sendDebug.skipReasons).length > 0 && (
+                <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-white/70 p-3 text-xs text-gray-700">
+                  <p className="mb-2 font-medium text-gray-900">Skip reasons</p>
+                  <div className="space-y-1">
+                    {Object.entries(sendDebug.skipReasons).map(([reason, count]) => (
+                      <p key={reason}>{reason}: {count}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {sendDebug.details.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-gray-900">Per candidate</p>
+                  {sendDebug.details.map((item) => (
+                    <div key={item.candidateId} className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-white/70 px-3 py-2 text-xs text-gray-700">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-gray-900">{item.candidateId.slice(0, 8)}</span>
+                        <Badge variant={item.status === "sent" ? "high" : item.status === "failed" ? "low" : "info"}>
+                          {item.status}
+                        </Badge>
+                      </div>
+                      {item.reason && <p className="mt-1">Reason: {item.reason}</p>}
+                      {item.toEmail && <p>To: {item.toEmail}</p>}
+                      {item.providerId && <p>Provider id: {item.providerId}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {outreachStatuses.length > 0 && (
             <div className="space-y-2 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
