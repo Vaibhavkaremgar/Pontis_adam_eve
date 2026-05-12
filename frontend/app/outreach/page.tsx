@@ -21,7 +21,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppContext } from "@/context/AppContext";
 import { getShortlistedCandidates } from "@/lib/api/candidates";
-import { getEmailPreview, getOutreachStatuses, queueOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
+import { getEmailPreview, getOutreachStatuses, sendOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
 import { getStoredShortlistedCandidateIds, getStoredShortlistedCandidates } from "@/lib/session";
 import type { Candidate } from "@/types";
 
@@ -168,14 +168,16 @@ function OutreachContent() {
     setIsOutreachComplete(false);
 
     const customBody = selectedCandidates.length === 1 ? emailBody.trim() : "";
-    const result = await queueOutreach({ jobId, selectedCandidates, customBody });
+    const result = await sendOutreach({ jobId, selectedCandidates, customBody });
     if (!result.success || !result.data) {
       setError(result.error || "Failed to send outreach.");
       setIsSubmitting(false);
       return;
     }
 
-    setFeedback(`Outreach queued for ${result.data.selected_count} candidate${result.data.selected_count !== 1 ? "s" : ""}.`);
+    setFeedback(
+      `Outreach processed: ${result.data.sent} sent, ${result.data.skipped} skipped.`
+    );
     setIsOutreachComplete(true);
     setIsSubmitting(false);
 
