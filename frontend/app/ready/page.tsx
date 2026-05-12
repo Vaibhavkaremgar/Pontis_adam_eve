@@ -71,23 +71,28 @@ export default function ReadyPage() {
     if (!isSessionReady) return;
     if (!user) { router.replace("/login"); return; }
     if (!jobId) { router.replace("/job"); return; }
+    const canViewOperationalMetrics = user.role === "admin" || user.role === "internal_ops";
 
     const run = async () => {
       setIsLoading(true);
       setError("");
-      const [result, metricsResult] = await Promise.all([getInterviewStatuses(jobId), getMetrics()]);
+      const result = await getInterviewStatuses(jobId);
+      const metricsResult = canViewOperationalMetrics ? await getMetrics() : null;
       if (!result.success || !result.data) {
         setError(result.error || "Could not load interview statuses.");
       } else {
         setItems(result.data);
       }
-      if (metricsResult.success && metricsResult.data) {
+      if (metricsResult && metricsResult.success && metricsResult.data) {
         setMetrics({
           emails_sent: metricsResult.data.emails_sent,
           replies_received: metricsResult.data.replies_received,
           interviews_booked: metricsResult.data.interviews_booked,
           conversion_rate: metricsResult.data.conversion_rate
         });
+      }
+      if (!canViewOperationalMetrics) {
+        setMetrics(null);
       }
       setIsLoading(false);
     };

@@ -19,7 +19,7 @@ export function ChatBubble({
 }) {
   const bubbleClasses =
     message.role === "assistant"
-      ? `ml-0 mr-auto max-w-[78%] rounded-[20px] border border-[#E7E0D4] bg-white px-5 py-4 text-sm leading-7 text-[#111827] shadow-[0_8px_20px_rgba(0,0,0,0.04)] ${
+      ? `ml-0 mr-auto w-fit max-w-[68%] rounded-[18px] border border-[#E7E0D4] bg-white px-4 py-3 text-[14px] leading-6 text-[#111827] shadow-[0_6px_16px_rgba(0,0,0,0.04)] ${
           isInterim ? "opacity-75" : ""
         }`
       : `ml-auto mr-0 max-w-[78%] rounded-[20px] border border-[#CFE7D8] bg-[#0F6B3A] px-5 py-4 text-sm leading-7 text-white shadow-[0_8px_20px_rgba(15,107,58,0.14)] ${
@@ -31,10 +31,10 @@ export function ChatBubble({
   if (message.role === "assistant") {
     return (
       <div className={`flex ${shellClasses} gap-3 animate-[fadeIn_220ms_ease-out] ${isInterim ? "opacity-75" : ""}`}>
-        <img src="/images/adam.png" alt="Adam" className="mt-1 h-8 w-8 rounded-full object-cover" />
+        <img src="/images/adam.png" alt="Adam" className="mt-1 h-7 w-7 rounded-full object-cover" />
         <div className={bubbleClasses}>
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Adam</p>
-          <div className="whitespace-pre-wrap break-words">{message.content}{message.isStreaming && <span className="ml-1 inline-block animate-pulse align-middle">▍</span>}</div>
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Adam</p>
+          <div className="whitespace-pre-wrap break-words">{message.content}{message.isStreaming && <span className="ml-1 inline-block animate-pulse align-middle">â–</span>}</div>
         </div>
       </div>
     );
@@ -44,7 +44,7 @@ export function ChatBubble({
     <div className={`flex ${shellClasses} gap-3 animate-[fadeIn_220ms_ease-out] ${isInterim ? "opacity-75" : ""}`}>
       <div className={bubbleClasses}>
         <p className="mb-2 text-xs font-semibold uppercase tracking-[0.16em] text-white/70">You</p>
-        <div className="whitespace-pre-wrap break-words">{message.content}{message.isStreaming && <span className="ml-1 inline-block animate-pulse align-middle">▍</span>}</div>
+        <div className="whitespace-pre-wrap break-words">{message.content}{message.isStreaming && <span className="ml-1 inline-block animate-pulse align-middle">â–</span>}</div>
       </div>
       <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0F6B3A] text-sm font-semibold text-white">Y</div>
     </div>
