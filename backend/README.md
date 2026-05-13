@@ -53,6 +53,24 @@ If Alembic reports multiple heads:
 
 In CI, the same check runs before `alembic upgrade head` against a temporary PostgreSQL service.
 
+## Redis Queue Cleanup
+
+If stale queue items or dead-letter entries reference deleted jobs, run the cleanup utility once:
+
+```bash
+python scripts/cleanup_queue_state.py
+```
+
+For local development only, you can clear Redis completely after stopping the app:
+
+```bash
+redis-cli FLUSHDB
+```
+
+Do not use `FLUSHALL` against shared or production Redis instances.
+
+The backend also runs a one-time queue cleanup during worker startup, so orphaned queue entries are pruned automatically on deploy.
+
 ## Environment Variables
 
 Required:

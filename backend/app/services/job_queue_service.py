@@ -35,6 +35,7 @@ _WORKERS: list[threading.Thread] = []
 _HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {}
 _MAINTENANCE_INTERVAL_SECONDS = 5
 _QUEUE_ALERT_STUCK_SECONDS = max(30, JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS * 2)
+_QUEUE_CLEANUP_RAN = False
 
 
 def _utcnow() -> datetime:
@@ -400,6 +401,10 @@ def _mark_dead(redis, queue_type: str, job_id: str, payload: dict[str, Any], err
     log_metric("queue_job_deadlettered", queue_type=queue_type, job_id=job_id, error=error)
 
 
+def _discard_terminal_job(redis, queue_type: str, job_id: str, payload: dict[str, Any], error: str) -> None:
+    _mark_dead(redis, queue_type, job_id, payload, error)
+
+
 def _retry_job(redis, queue_type: str, job_id: str, payload: dict[str, Any], error: str) -> None:
     attempts = int(payload.get("attempts") or 0) + 1
     max_attempts = max(1, int(payload.get("max_attempts") or 1))
@@ -506,7 +511,115 @@ def _process_single_job(redis, queue_type: str, job_id: str, worker_name: str) -
         payload["last_error"] = error
         payload["failure_code"] = failure["code"]
         payload["failure_category"] = failure["category"]
+        if not failure["retryable"]:
+            _discard_terminal_job(redis, queue_type, job_id, payload, error)
+            return
         _retry_job(redis, queue_type, job_id, payload, error)
+
+
+def cleanup_orphaned_queue_entries() -> dict[str, int]:
+    redis = get_redis()
+    if redis is None:
+        logger.info("job_queue_cleanup_skipped reason=redis_unavailable")
+        return {"removed": 0, "dead_removed": 0, "processing_removed": 0, "ready_removed": 0, "delayed_removed": 0}
+
+    from app.db.session import SessionLocal
+    from app.models.entities import JobEntity
+    from sqlalchemy import select
+
+    with SessionLocal() as db:
+        valid_job_ids = {
+            str(job_id or "").strip()
+            for (job_id,) in db.execute(select(JobEntity.id)).all()
+            if str(job_id or "").strip()
+        }
+
+    removed = 0
+    dead_removed = 0
+    processing_removed = 0
+    ready_removed = 0
+    delayed_removed = 0
+
+    for queue_type in QUEUE_TYPES:
+        ready_ids = list(redis.lrange(_ready_key(queue_type), 0, -1) or [])
+        processing_ids = list(redis.lrange(_processing_key(queue_type), 0, -1) or [])
+        delayed_ids = list(redis.zrange(_delayed_key(queue_type), 0, -1) or [])
+        dead_items = dict(redis.hgetall(_dead_key(queue_type)) or {})
+        dead_meta_items = dict(redis.hgetall(_dead_meta_key(queue_type)) or {})
+
+        for job_id in ready_ids:
+            payload = _load_job(redis, queue_type, str(job_id))
+            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+                continue
+            idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
+            if idempotency_key:
+                redis.delete(_dedupe_key(queue_type, idempotency_key))
+            redis.lrem(_ready_key(queue_type), 0, job_id)
+            redis.delete(_job_key(queue_type, str(job_id)))
+            ready_removed += 1
+            removed += 1
+
+        for job_id in processing_ids:
+            payload = _load_job(redis, queue_type, str(job_id))
+            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+                continue
+            idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
+            if idempotency_key:
+                redis.delete(_dedupe_key(queue_type, idempotency_key))
+            redis.lrem(_processing_key(queue_type), 0, job_id)
+            redis.hdel(_processing_meta_key(queue_type), job_id)
+            redis.delete(_job_key(queue_type, str(job_id)))
+            processing_removed += 1
+            removed += 1
+
+        for job_id in delayed_ids:
+            payload = _load_job(redis, queue_type, str(job_id))
+            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+                continue
+            idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
+            if idempotency_key:
+                redis.delete(_dedupe_key(queue_type, idempotency_key))
+            redis.zrem(_delayed_key(queue_type), job_id)
+            redis.delete(_job_key(queue_type, str(job_id)))
+            delayed_removed += 1
+            removed += 1
+
+        for job_id, raw_payload in dead_items.items():
+            payload = _json_loads(raw_payload)
+            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+                continue
+            idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
+            if idempotency_key:
+                redis.delete(_dedupe_key(queue_type, idempotency_key))
+            redis.hdel(_dead_key(queue_type), job_id)
+            redis.hdel(_dead_meta_key(queue_type), job_id)
+            redis.delete(_job_key(queue_type, str(job_id)))
+            dead_removed += 1
+            removed += 1
+
+        for job_id, raw_meta in dead_meta_items.items():
+            if job_id in dead_items:
+                continue
+            meta = _json_loads(raw_meta)
+            if meta and str(meta.get("job_id") or "").strip() in valid_job_ids:
+                continue
+            redis.hdel(_dead_meta_key(queue_type), job_id)
+
+    logger.info(
+        "job_queue_cleanup_completed removed=%s dead_removed=%s processing_removed=%s ready_removed=%s delayed_removed=%s",
+        removed,
+        dead_removed,
+        processing_removed,
+        ready_removed,
+        delayed_removed,
+    )
+    return {
+        "removed": removed,
+        "dead_removed": dead_removed,
+        "processing_removed": processing_removed,
+        "ready_removed": ready_removed,
+        "delayed_removed": delayed_removed,
+    }
 
 
 def _worker_loop(queue_type: str, index: int) -> None:
@@ -546,6 +659,15 @@ def _worker_loop(queue_type: str, index: int) -> None:
 def start_job_queue_workers() -> None:
     if _WORKERS:
         return
+
+    global _QUEUE_CLEANUP_RAN
+    if not _QUEUE_CLEANUP_RAN:
+        try:
+            cleanup_orphaned_queue_entries()
+        except Exception as exc:
+            logger.warning("job_queue_cleanup_failed error=%s", str(exc), exc_info=exc)
+        finally:
+            _QUEUE_CLEANUP_RAN = True
 
     _STOP_EVENT.clear()
     per_type = max(1, int(JOB_QUEUE_WORKERS_PER_TYPE))

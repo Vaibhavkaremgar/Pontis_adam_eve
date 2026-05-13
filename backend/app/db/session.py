@@ -122,7 +122,7 @@ def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool,
             "updated_at",
             "created_at",
         ],
-        "interviews": ["id", "job_id", "candidate_id", "status", "created_at"],
+        "interviews": ["id", "job_id", "company_id", "candidate_id", "status", "created_at"],
     }
 
     for table_name, columns in expected_columns.items():
