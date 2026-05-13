@@ -26,6 +26,33 @@ Production-ready backend for Next.js hiring flow:
 4. Start API:
    uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+## Alembic Workflow
+
+Create a new migration from the `backend/` directory:
+
+```bash
+alembic revision --autogenerate -m "add job intakes"
+```
+
+Follow these conventions:
+- Keep revision IDs short. Prefer Alembic's default 12-character hash format.
+- Do not introduce date-based revision IDs or custom IDs longer than 16 characters.
+- Keep the migration graph linear whenever possible.
+- If you create two heads, merge them immediately with `alembic merge`.
+
+Before pushing, run the integrity check:
+
+```bash
+python scripts/check_alembic_integrity.py
+```
+
+If Alembic reports multiple heads:
+1. Run `alembic heads` to list them.
+2. Create a merge migration with `alembic merge -m "merge heads" <head1> <head2>`.
+3. Re-run `python scripts/check_alembic_integrity.py`.
+
+In CI, the same check runs before `alembic upgrade head` against a temporary PostgreSQL service.
+
 ## Environment Variables
 
 Required:

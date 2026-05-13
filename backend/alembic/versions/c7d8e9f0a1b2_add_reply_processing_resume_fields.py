@@ -1,6 +1,6 @@
 """add reply processing and resume fields
 
-Revision ID: 20260513_add_reply_processing_resume_fields
+Revision ID: c7d8e9f0a1b2
 Revises: 84956441b9c3
 Create Date: 2026-05-13 00:00:00.000000
 """
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260513_add_reply_processing_resume_fields"
+revision = "c7d8e9f0a1b2"
 down_revision = "84956441b9c3"
 branch_labels = None
 depends_on = None

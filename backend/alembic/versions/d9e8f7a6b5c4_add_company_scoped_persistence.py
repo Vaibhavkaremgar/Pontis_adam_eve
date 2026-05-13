@@ -1,7 +1,7 @@
 """add company-scoped persistence and job intakes
 
-Revision ID: 20260513_add_company_scoped_persistence
-Revises: 20260513_add_reply_processing_resume_fields
+Revision ID: d9e8f7a6b5c4
+Revises: c7d8e9f0a1b2
 Create Date: 2026-05-13 00:00:01.000000
 """
 
@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260513_add_company_scoped_persistence"
-down_revision = "20260513_add_reply_processing_resume_fields"
+revision = "d9e8f7a6b5c4"
+down_revision = "c7d8e9f0a1b2"
 branch_labels = None
 depends_on = None
 
