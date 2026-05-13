@@ -2581,6 +2581,111 @@ def _fallback_stored_candidates(
     return fallback_candidates
 
 
+def _finalize_candidate_sourcing_state(
+    *,
+    db: Session,
+    jobs: JobRepository,
+    job,
+    previous_status: str,
+    source: str,
+    reason: str,
+    local_count: int,
+    pdl_count: int,
+    swiped_ids: frozenset[str],
+    run_type: str,
+    recruiter_id: str | None,
+    combined_run_metrics: dict[str, dict[str, float | bool]],
+) -> list[CandidateResult]:
+    candidate_count = CandidateProfileRepository(db).count_for_job(job.id)
+    outreach_triggered = candidate_count > 0
+    new_status = "active" if outreach_triggered else "no_candidates"
+    now = datetime.now(timezone.utc)
+
+    jobs.update_candidate_sourcing_state(
+        job_id=job.id,
+        job_status=new_status,
+        last_candidate_attempt_at=now,
+    )
+    logger.info(
+        "job_sourcing_finalized job_id=%s candidate_count=%s previous_status=%s new_status=%s outreach_triggered=%s",
+        job.id,
+        candidate_count,
+        previous_status,
+        new_status,
+        outreach_triggered,
+    )
+    log_metric(
+        "job_sourcing_finalized",
+        job_id=job.id,
+        candidate_count=candidate_count,
+        previous_status=previous_status,
+        new_status=new_status,
+        outreach_triggered=outreach_triggered,
+        local_count=local_count,
+        pdl_count=pdl_count,
+        source=source,
+        reason=reason,
+    )
+
+    if not outreach_triggered:
+        logger.info(
+            "no_candidates_detected job_id=%s local_count=%s pdl_count=%s candidate_count=%s",
+            job.id,
+            local_count,
+            pdl_count,
+            candidate_count,
+        )
+        log_metric(
+            "no_candidates_detected",
+            job_id=job.id,
+            local_count=local_count,
+            pdl_count=pdl_count,
+            candidate_count=candidate_count,
+        )
+        _safe_commit(db, context="candidate_fetch_finalized_no_candidates", job_id=job.id)
+        return []
+
+    stored_candidates = _fallback_stored_candidates(
+        db=db,
+        job_id=job.id,
+        swiped_ids=swiped_ids,
+        source=source,
+        reason=reason,
+    )
+    if not stored_candidates:
+        logger.warning(
+            "candidate_profiles_present_but_no_candidates_returned job_id=%s candidate_count=%s",
+            job.id,
+            candidate_count,
+        )
+        return []
+
+    record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
+    _record_ranking_run(
+        db=db,
+        job_id=job.id,
+        recruiter_id=recruiter_id,
+        run_type=run_type,
+        metrics=_ranking_run_metrics_for_candidates(stored_candidates, combined_run_metrics),
+    )
+    logger.info(
+        "outreach_triggered job_id=%s candidate_count=%s returned_count=%s",
+        job.id,
+        candidate_count,
+        len(stored_candidates),
+    )
+    log_metric(
+        "outreach_triggered",
+        job_id=job.id,
+        candidate_count=candidate_count,
+        returned_count=len(stored_candidates),
+        source=source,
+        reason=reason,
+    )
+    _safe_commit(db, context="candidate_fetch_finalized_with_candidates", job_id=job.id)
+    return stored_candidates
+
+
 def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False, debug: bool = False) -> list[CandidateResult]:
     jobs = JobRepository(db)
     job = jobs.get(job_id)
@@ -2776,49 +2881,20 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             job_id=job.id,
         )
         if not final_local:
-            stored_candidates = _fallback_stored_candidates(
+            return _finalize_candidate_sourcing_state(
                 db=db,
-                job_id=job.id,
-                swiped_ids=swiped_ids,
+                jobs=jobs,
+                job=job,
+                previous_status=job_status,
                 source="local",
                 reason="no_candidates_after_filter",
-            )
-            if stored_candidates:
-                record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
-                _record_ranking_run(
-                    db=db,
-                    job_id=job.id,
-                    recruiter_id=recruiter_id,
-                    run_type=run_type,
-                    metrics=_ranking_run_metrics_for_candidates(stored_candidates, local_run_metrics),
-                )
-                logger.info("candidates_returned count=%s", len(stored_candidates))
-                return stored_candidates
-            jobs.update_candidate_sourcing_state(
-                job_id=job.id,
-                job_status="no_candidates",
-                last_candidate_attempt_at=datetime.now(timezone.utc),
-            )
-            logger.info(
-                "no_candidates_detected job_id=%s local_count=%s pdl_count=0",
-                job.id,
-                len(local_results),
-            )
-            log_metric(
-                "no_candidates_detected",
-                job_id=job.id,
                 local_count=len(local_results),
                 pdl_count=0,
-                )
-            _safe_commit(db, context="candidate_fetch_no_candidates_local", job_id=job.id)
-            _record_ranking_run(
-                db=db,
-                job_id=job.id,
-                recruiter_id=recruiter_id,
+                swiped_ids=swiped_ids,
                 run_type=run_type,
-                metrics=[],
+                recruiter_id=recruiter_id,
+                combined_run_metrics=local_run_metrics,
             )
-            return []
         record_candidate_fetch(job_id=job.id, candidates=final_local)
         _record_ranking_run(
             db=db,
@@ -2845,49 +2921,20 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             job_id=job.id,
         )
         if not final_suppressed:
-            stored_candidates = _fallback_stored_candidates(
+            return _finalize_candidate_sourcing_state(
                 db=db,
-                job_id=job.id,
-                swiped_ids=swiped_ids,
+                jobs=jobs,
+                job=job,
+                previous_status=job_status,
                 source="local_fallback",
                 reason="no_candidates_after_filter",
-            )
-            if stored_candidates:
-                record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
-                _record_ranking_run(
-                    db=db,
-                    job_id=job.id,
-                    recruiter_id=recruiter_id,
-                    run_type=run_type,
-                    metrics=_ranking_run_metrics_for_candidates(stored_candidates, local_run_metrics),
-                )
-                logger.info("candidates_returned count=%s", len(stored_candidates))
-                return stored_candidates
-            jobs.update_candidate_sourcing_state(
-                job_id=job.id,
-                job_status="no_candidates",
-                last_candidate_attempt_at=now,
-            )
-            logger.info(
-                "no_candidates_detected job_id=%s local_count=%s pdl_count=0",
-                job.id,
-                len(local_results),
-            )
-            log_metric(
-                "no_candidates_detected",
-                job_id=job.id,
                 local_count=len(local_results),
                 pdl_count=0,
-            )
-            _safe_commit(db, context="candidate_fetch_no_candidates_suppressed", job_id=job.id)
-            _record_ranking_run(
-                db=db,
-                job_id=job.id,
-                recruiter_id=recruiter_id,
+                swiped_ids=swiped_ids,
                 run_type=run_type,
-                metrics=[],
+                recruiter_id=recruiter_id,
+                combined_run_metrics=local_run_metrics,
             )
-            return []
         record_candidate_fetch(job_id=job.id, candidates=final_suppressed)
         _record_ranking_run(
             db=db,
@@ -2982,56 +3029,20 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
     combined_run_metrics = {**local_run_metrics, **pdl_run_metrics}
     now = datetime.now(timezone.utc)
     if not candidates:
-        stored_candidates = _fallback_stored_candidates(
+        return _finalize_candidate_sourcing_state(
             db=db,
-            job_id=job.id,
-            swiped_ids=swiped_ids,
+            jobs=jobs,
+            job=job,
+            previous_status=job_status,
             source=resolved_mode,
             reason="pdl_empty_or_filtered",
-        )
-        if stored_candidates:
-            jobs.update_candidate_sourcing_state(
-                job_id=job.id,
-                job_status="active",
-                last_candidate_attempt_at=now,
-            )
-            _safe_commit(db, context="candidate_fetch_pdl_fallback_active", job_id=job.id)
-            record_candidate_fetch(job_id=job.id, candidates=stored_candidates)
-            _record_ranking_run(
-                db=db,
-                job_id=job.id,
-                recruiter_id=recruiter_id,
-                run_type=run_type,
-                metrics=_ranking_run_metrics_for_candidates(stored_candidates, combined_run_metrics),
-            )
-            logger.info("candidates_returned count=%s", len(stored_candidates))
-            return stored_candidates
-        jobs.update_candidate_sourcing_state(
-            job_id=job.id,
-            job_status="no_candidates",
-            last_candidate_attempt_at=now,
-        )
-        logger.info(
-            "no_candidates_detected job_id=%s local_count=%s pdl_count=%s",
-            job.id,
-            local_count,
-            len(pdl_results) if pdl_results else 0,
-        )
-        log_metric(
-            "no_candidates_detected",
-            job_id=job.id,
             local_count=local_count,
             pdl_count=len(pdl_results) if pdl_results else 0,
-        )
-        _safe_commit(db, context="candidate_fetch_pdl_no_candidates", job_id=job.id)
-        _record_ranking_run(
-            db=db,
-            job_id=job.id,
-            recruiter_id=recruiter_id,
+            swiped_ids=swiped_ids,
             run_type=run_type,
-            metrics=[],
+            recruiter_id=recruiter_id,
+            combined_run_metrics=combined_run_metrics,
         )
-        return []
 
     jobs.update_candidate_sourcing_state(
         job_id=job.id,

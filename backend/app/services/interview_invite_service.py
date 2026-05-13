@@ -84,12 +84,31 @@ async def _post_slack_warning(channel_id: str | None, text: str) -> None:
         logger.error("interview_invite_slack_warning_failed channel_id=%s error=%s", target, str(exc), exc_info=exc)
 
 
-def send_interview_invite(candidate_id: str, job_id: str, *, channel_id: str | None = None) -> dict[str, Any]:
+def send_interview_invite(
+    candidate_id: str,
+    job_id: str,
+    *,
+    outreach_event_id: str | None = None,
+    channel_id: str | None = None,
+) -> dict[str, Any]:
     with SessionLocal() as db:
-        return _send_interview_invite(db=db, candidate_id=candidate_id, job_id=job_id, channel_id=channel_id)
+        return _send_interview_invite(
+            db=db,
+            candidate_id=candidate_id,
+            job_id=job_id,
+            outreach_event_id=outreach_event_id,
+            channel_id=channel_id,
+        )
 
 
-def _send_interview_invite(*, db: Session, candidate_id: str, job_id: str, channel_id: str | None = None) -> dict[str, Any]:
+def _send_interview_invite(
+    *,
+    db: Session,
+    candidate_id: str,
+    job_id: str,
+    outreach_event_id: str | None = None,
+    channel_id: str | None = None,
+) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
@@ -104,7 +123,12 @@ def _send_interview_invite(*, db: Session, candidate_id: str, job_id: str, chann
     if not candidate_email:
         raise APIError("Candidate email is required", status_code=400)
 
-    session = create_interview_session(db=db, job_id=job_id, candidate_id=candidate_id)
+    session = create_interview_session(
+        db=db,
+        job_id=job_id,
+        candidate_id=candidate_id,
+        outreach_event_id=outreach_event_id,
+    )
     booking_link = str(session.get("bookingLink") or session.get("bookingUrl") or "")
     subject, body = _build_invite_template(candidate_name=candidate_name, role=role, booking_link=booking_link)
     html_body = _build_invite_html(candidate_name=candidate_name, role=role, booking_link=booking_link)

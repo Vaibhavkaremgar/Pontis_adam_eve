@@ -4,12 +4,13 @@ import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.config import GROQ_API_KEY
-from app.db.repositories import CompanyRepository, JobRepository
+from app.db.repositories import CompanyRepository, JobIntakeRepository, JobRepository
 from app.services.embedding_service import get_embedding
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
@@ -512,6 +513,28 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         name=merged_company_name if not existing_company_name else None,
         industry=merged_company_industry if not existing_company_industry else None,
         description=merged_company_description if not existing_company_description else None,
+    )
+    JobIntakeRepository(db).upsert_completed_intake(
+        job_id=job_id,
+        transcript=raw_text,
+        structured_data_json={
+            "voiceExtraction": {
+                "source": "fallback" if used_fallback else "openai",
+                "job": extracted_job,
+                "company": extracted_company,
+                "confidence": confidence,
+                "success": True,
+                "transcript": raw_text,
+                "cleanedTranscript": _cleanup_transcript_text(raw_text),
+                "transcriptHash": transcript_hash,
+                "fallback": fallback_raw,
+                "fields": extracted_fields if not used_fallback else fallback_fields,
+            },
+            "voiceTranscript": raw_text,
+            "voiceTranscriptClean": _cleanup_transcript_text(raw_text),
+        },
+        intake_status="completed",
+        completed_at=datetime.now(timezone.utc),
     )
     db.commit()
     db.refresh(updated)

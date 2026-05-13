@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Company(BaseModel):
@@ -76,3 +76,14 @@ class VoiceRefineRequest(BaseModel):
 class VoiceRefineData(BaseModel):
     refined: bool
 
+
+class JobIntakeData(BaseModel):
+    id: str
+    jobId: str
+    companyId: str
+    transcript: str = ""
+    structuredDataJson: dict = Field(default_factory=dict)
+    intakeStatus: str
+    completedAt: str | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None

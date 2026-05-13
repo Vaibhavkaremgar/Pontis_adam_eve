@@ -183,6 +183,8 @@ class InterviewSessionData(BaseModel):
     id: str
     jobId: str
     candidateId: str
+    companyId: str | None = None
+    outreachEventId: str | None = None
     email: str = ""
     token: str
     status: str

@@ -19,6 +19,7 @@ from app.models.entities import (
     CandidateFeedbackEntity,
     CandidateProfileEntity,
     CompanyEntity,
+    JobIntakeEntity,
     InboundEmailAttachmentEntity,
     InboundEmailReplyEntity,
     InternalCandidateResumeEntity,
@@ -62,6 +63,13 @@ def _build_dev_email(*, name: str, candidate_id: str) -> str:
     safe_name = re.sub(r"[^a-z0-9]+", "", _normalize_text(name).lower()) or "candidate"
     safe_id = re.sub(r"[^a-z0-9]+", "", _normalize_text(candidate_id).lower())[:6] or "000000"
     return f"{safe_name}_{safe_id}@test.local"
+
+
+def _job_company_id(db: Session, job_id: str) -> str | None:
+    job = db.scalar(select(JobEntity).where(JobEntity.id == job_id))
+    if not job:
+        return None
+    return str(job.company_id or "").strip() or None
 
 
 def _ensure_candidate_profile_email(row: CandidateProfileEntity) -> bool:
@@ -283,6 +291,7 @@ class JobRepository:
         self,
         *,
         company_id: str,
+        created_by: str,
         title: str,
         description: str,
         location: str,
@@ -291,6 +300,8 @@ class JobRepository:
         vetting_mode: str = "volume",
         auto_export_to_ats: bool = False,
         ats_job_id: str | None = None,
+        remote_policy: str = "",
+        experience_required: str = "",
         responsibilities: list[str] | None = None,
         skills_required: list[str] | None = None,
         experience_level: str = "",
@@ -311,6 +322,9 @@ class JobRepository:
             ats_job_id=(ats_job_id or "").strip() or None,
             vetting_mode=((vetting_mode or "volume").strip().lower() if (vetting_mode or "").strip().lower() in {"volume", "elite"} else "volume"),
             auto_export_to_ats=bool(auto_export_to_ats),
+            created_by=created_by,
+            remote_policy=remote_policy.strip(),
+            experience_required=experience_required.strip(),
         )
         self.db.add(entity)
         self.db.flush()
@@ -341,6 +355,7 @@ class JobRepository:
         job.job_status = job_status.strip().lower()
         if last_candidate_attempt_at is not None:
             job.last_candidate_attempt_at = last_candidate_attempt_at
+        job.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return job
 
@@ -359,6 +374,7 @@ class JobRepository:
         if not job:
             return None
         job.description = description
+        job.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return job
 
@@ -373,6 +389,8 @@ class JobRepository:
         experience_level: str | None = None,
         location: str | None = None,
         compensation: str | None = None,
+        remote_policy: str | None = None,
+        experience_required: str | None = None,
         vetting_mode: str | None = None,
         auto_export_to_ats: bool | None = None,
         ats_job_id: str | None = None,
@@ -403,9 +421,14 @@ class JobRepository:
             job.auto_export_to_ats = bool(auto_export_to_ats)
         if ats_job_id is not None:
             job.ats_job_id = (ats_job_id or "").strip() or None
+        if remote_policy is not None:
+            job.remote_policy = remote_policy.strip()
+        if experience_required is not None:
+            job.experience_required = experience_required.strip()
         if structured_data is not None:
             job.structured_data = structured_data
 
+        job.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return job
 
@@ -415,8 +438,56 @@ class JobRepository:
             return None
         normalized = (vetting_mode or "volume").strip().lower()
         job.vetting_mode = normalized if normalized in {"volume", "elite"} else "volume"
+        job.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return job
+
+
+class JobIntakeRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_job(self, job_id: str) -> JobIntakeEntity | None:
+        normalized = (job_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(JobIntakeEntity).where(JobIntakeEntity.job_id == normalized))
+
+    def upsert_completed_intake(
+        self,
+        *,
+        job_id: str,
+        transcript: str,
+        structured_data_json: dict,
+        intake_status: str = "completed",
+        completed_at: datetime | None = None,
+    ) -> JobIntakeEntity:
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
+
+        row = self.get_by_job(job_id)
+        now = datetime.now(timezone.utc)
+        if not row:
+            row = JobIntakeEntity(
+                id=str(uuid4()),
+                job_id=job.id,
+                company_id=job.company_id,
+                transcript="",
+                structured_data_json={},
+                intake_status="pending",
+            )
+            self.db.add(row)
+            self.db.flush()
+
+        row.company_id = job.company_id
+        row.transcript = transcript.strip()
+        row.structured_data_json = dict(structured_data_json or {})
+        row.intake_status = (intake_status or "completed").strip().lower() or "completed"
+        row.completed_at = completed_at or now
+        row.updated_at = now
+        self.db.flush()
+        return row
 
 
 class InterviewRepository:
@@ -433,12 +504,16 @@ class InterviewRepository:
 
     def upsert_status(self, *, job_id: str, candidate_id: str, status: str, create_default: str = "shortlisted") -> InterviewEntity:
         candidate_id = (candidate_id or "").strip()
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
         ensure_candidate_profile(self.db, job_id, candidate_id)
         row = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
         if not row:
             row = InterviewEntity(
                 id=str(uuid4()),
                 job_id=job_id,
+                company_id=job.company_id,
                 candidate_id=candidate_id,
                 status=create_default,
             )
@@ -485,14 +560,24 @@ class InterviewSessionRepository:
         email: str,
         token: str,
         expires_at: datetime,
+        booking_url: str = "",
+        outreach_event_id: str | None = None,
         status: str = "pending",
     ) -> InterviewSessionEntity:
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
         existing_session = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
         if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
             existing_session.email = email
             existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
             existing_session.token = existing_session.token or token
             existing_session.expires_at = expires_at if not existing_session.expires_at or existing_session.expires_at < expires_at else existing_session.expires_at
+            existing_session.company_id = job.company_id
+            if outreach_event_id is not None:
+                existing_session.outreach_event_id = outreach_event_id
+            if booking_url:
+                existing_session.booking_url = booking_url
             self.db.flush()
             return existing_session
 
@@ -504,6 +589,9 @@ class InterviewSessionRepository:
             existing.expires_at = expires_at
             existing.status = status
             existing.booked_at = None
+            existing.company_id = job.company_id
+            existing.outreach_event_id = outreach_event_id
+            existing.booking_url = booking_url or existing.booking_url
             self.db.flush()
             return existing
 
@@ -511,10 +599,13 @@ class InterviewSessionRepository:
             id=str(uuid4()),
             job_id=job_id,
             candidate_id=candidate_id,
+            company_id=job.company_id,
+            outreach_event_id=outreach_event_id,
             email=email,
             token=token,
             status=status,
             expires_at=expires_at,
+            booking_url=booking_url,
         )
         try:
             with self.db.begin_nested():
@@ -557,6 +648,10 @@ class CandidateProfileRepository:
                 CandidateProfileEntity.candidate_id == candidate_id,
             )
         )
+        if row and not getattr(row, "company_id", "").strip():
+            job = JobRepository(self.db).get(job_id)
+            if job:
+                row.company_id = job.company_id
         if row and _ensure_candidate_profile_email(row):
             self.db.flush()
         return row
@@ -626,9 +721,14 @@ class CandidateProfileRepository:
         if existing:
             return existing
 
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
+
         row = CandidateProfileEntity(
             id=str(uuid4()),
             job_id=job_id,
+            company_id=job.company_id,
             candidate_id=normalized_candidate_id,
         )
         try:
@@ -664,10 +764,14 @@ class CandidateProfileRepository:
     ) -> CandidateProfileEntity:
         row = self.get(job_id=job_id, candidate_id=candidate_id)
         now = datetime.now(timezone.utc)
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
         if not row:
             row = CandidateProfileEntity(
                 id=str(uuid4()),
                 job_id=job_id,
+                company_id=job.company_id,
                 candidate_id=candidate_id,
             )
             try:
@@ -686,6 +790,7 @@ class CandidateProfileRepository:
         row.summary = summary.strip()
         row.skills = skills
         row.raw_data = raw_data
+        row.company_id = job.company_id
         row.fit_score = fit_score
         row.decision = decision
         row.strategy = strategy
@@ -734,6 +839,14 @@ class CandidateProfileRepository:
         if updated:
             self.db.flush()
         return list(rows)
+
+    def count_for_job(self, job_id: str) -> int:
+        count = self.db.scalar(
+            select(func.count())
+            .select_from(CandidateProfileEntity)
+            .where(CandidateProfileEntity.job_id == job_id)
+        )
+        return int(count or 0)
 
     def latest_by_candidate_ids(self, *, job_id: str, candidate_ids: list[str]) -> dict[str, CandidateProfileEntity]:
         unique_ids = list(dict.fromkeys(candidate_ids))
@@ -1711,7 +1824,7 @@ class OutreachEventRepository:
         return self.db.scalar(select(OutreachEventEntity).where(OutreachEventEntity.id == normalized))
 
     def get(self, *, job_id: str, candidate_id: str) -> OutreachEventEntity | None:
-        return self.db.scalar(
+        row = self.db.scalar(
             select(OutreachEventEntity)
             .where(
                 OutreachEventEntity.job_id == job_id,
@@ -1719,6 +1832,12 @@ class OutreachEventRepository:
             )
             .order_by(OutreachEventEntity.created_at.desc())
         )
+        if row and not getattr(row, "company_id", "").strip():
+            job = JobRepository(self.db).get(job_id)
+            if job:
+                row.company_id = job.company_id
+                self.db.flush()
+        return row
 
     def get_by_provider_message_id(self, provider_message_id: str) -> OutreachEventEntity | None:
         if not provider_message_id:
@@ -1738,6 +1857,9 @@ class OutreachEventRepository:
         body: str = "",
     ) -> OutreachEventEntity | None:
         candidate_id = (candidate_id or "").strip()
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
         ensure_candidate_profile(self.db, job_id, candidate_id)
 
         row = self.get(job_id=job_id, candidate_id=candidate_id)
@@ -1745,6 +1867,7 @@ class OutreachEventRepository:
             row = OutreachEventEntity(
                 id=str(uuid4()),
                 job_id=job_id,
+                company_id=job.company_id,
                 candidate_id=candidate_id,
                 provider=provider or "sendgrid",
                 to_email=to_email,
@@ -1762,6 +1885,7 @@ class OutreachEventRepository:
                 row = self.get(job_id=job_id, candidate_id=candidate_id)
                 if not row:
                     raise
+        row.company_id = job.company_id
 
         now = datetime.now(timezone.utc)
         stmt = (
@@ -1780,6 +1904,7 @@ class OutreachEventRepository:
                 status="sending",
                 last_error="",
                 attempt_count=func.coalesce(OutreachEventEntity.attempt_count, 0) + 1,
+                company_id=job.company_id,
                 updated_at=now,
             )
             .returning(OutreachEventEntity)
@@ -1803,6 +1928,9 @@ class OutreachEventRepository:
         increment_follow_up: bool = False,
     ) -> OutreachEventEntity:
         candidate_id = (candidate_id or "").strip()
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
         ensure_candidate_profile(self.db, job_id, candidate_id)
         row = self.get(job_id=job_id, candidate_id=candidate_id)
         now = datetime.now(timezone.utc)
@@ -1810,6 +1938,7 @@ class OutreachEventRepository:
             row = OutreachEventEntity(
                 id=str(uuid4()),
                 job_id=job_id,
+                company_id=job.company_id,
                 candidate_id=candidate_id,
                 attempt_count=0,
                 follow_up_count=0,
@@ -1829,9 +1958,11 @@ class OutreachEventRepository:
         if provider_message_id is not None:
             row.provider_message_id = provider_message_id
         if sent_at:
+            row.sent_at = sent_at
             row.last_sent_at = sent_at
             row.last_contacted_at = sent_at
         row.next_follow_up_at = next_follow_up_at
+        row.company_id = job.company_id
         row.updated_at = now
         self.db.flush()
         return row
@@ -1850,6 +1981,9 @@ class OutreachEventRepository:
         last_error: str = "",
     ) -> OutreachEventEntity:
         candidate_id = (candidate_id or "").strip()
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
         ensure_candidate_profile(self.db, job_id, candidate_id)
         row = self.get(job_id=job_id, candidate_id=candidate_id)
         now = datetime.now(timezone.utc)
@@ -1857,12 +1991,14 @@ class OutreachEventRepository:
             row = OutreachEventEntity(
                 id=str(uuid4()),
                 job_id=job_id,
+                company_id=job.company_id,
                 candidate_id=candidate_id,
                 attempt_count=0,
                 follow_up_count=0,
             )
             self.db.add(row)
             self.db.flush()
+        row.company_id = job.company_id
 
         row.provider = provider
         row.message_text = message_text.strip()
@@ -1873,6 +2009,7 @@ class OutreachEventRepository:
         row.last_error = last_error
         row.last_contacted_at = received_at or now
         row.responded_at = received_at or now
+        row.company_id = job.company_id
         row.updated_at = now
         self.db.flush()
         return row
@@ -1965,6 +2102,7 @@ class InboundEmailRepository:
         event_type: str,
         email_id: str,
         provider_message_id: str,
+        company_id: str | None = None,
         sender_email: str,
         sender_name: str,
         subject: str,
@@ -1977,6 +2115,8 @@ class InboundEmailRepository:
         existing = self.get_by_svix_id(svix_id)
         if existing:
             return existing, False
+
+        normalized_company_id = (company_id or "").strip() or None
 
         row = InboundEmailReplyEntity(
             id=str(uuid4()),
@@ -1991,6 +2131,7 @@ class InboundEmailRepository:
             body_html=body_html,
             received_at=received_at,
             webhook_created_at=webhook_created_at,
+            company_id=normalized_company_id,
             raw_payload=raw_payload,
             processing_status="received",
             match_status="unmatched",
@@ -2045,12 +2186,14 @@ class InboundEmailRepository:
         job_id: str | None = None,
         outreach_event_id: str | None = None,
     ) -> InboundEmailReplyEntity:
+        job = JobRepository(self.db).get(job_id) if job_id else None
         row.processing_status = processing_status
         row.match_status = match_status
         row.attachment_count = attachment_count
         row.processing_error = processing_error
         row.candidate_id = candidate_id
         row.job_id = job_id
+        row.company_id = job.company_id if job else row.company_id
         row.outreach_event_id = outreach_event_id
         row.processed_at = datetime.now(timezone.utc)
         row.updated_at = datetime.now(timezone.utc)

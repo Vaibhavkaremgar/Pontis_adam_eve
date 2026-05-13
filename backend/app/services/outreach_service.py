@@ -373,33 +373,63 @@ def _build_followup_email(*, candidate_profile, job, follow_up_number: int) -> t
 
 
 def _build_shortlist_outreach_email(*, candidate_profile, job) -> tuple[str, str, str]:
-    candidate_name = html.escape((candidate_profile.name or "").strip() or "there")
-    role = html.escape((getattr(job, "title", "") or "").strip() or "the role")
-    company_name = html.escape(_job_company_name(job))
-    subject = f"Opportunity at {_job_company_name(job)}"
+    first_name = html.escape(_candidate_first_name(candidate_profile))
+    job_title_raw = (getattr(job, "title", "") or "").strip() or "the role"
+    job_title = html.escape(job_title_raw)
+    company_name_raw = _job_company_name(job)
+    company_name = html.escape(company_name_raw)
+    location_raw = (getattr(job, "location", "") or "").strip() or "flexible"
+    location = html.escape(location_raw)
+    subject = f"Opportunity: {job_title_raw} at {company_name_raw}"
+
+    intro = (
+        f"We're reaching out about the <strong>{job_title}</strong> opportunity at <strong>{company_name}</strong> in <strong>{location}</strong>."
+    )
+    if (getattr(candidate_profile, "summary", "") or "").strip():
+        intro += " Your background stood out to us, and we think there may be a strong fit."
+    else:
+        intro += " We think your profile may be a strong fit for the role."
+
     email_template = f"""
-<p>Hi {candidate_name},</p>
-
-<p>You've been shortlisted for the <b>{role}</b> position at <b>{company_name}</b>.</p>
-
-<p>Are you open to this role?</p>
-
-<p>Please share your updated resume.</p>
-
-<p>We'd love to move forward with you.</p>
-
-<p>Could you please reply with your availability for an interview?</p>
-
-<p>Best,<br>Adam</p>
+<div style="margin:0;padding:0;background-color:#f4f7fb;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0;padding:0;background-color:#f4f7fb;width:100%;">
+    <tr>
+      <td align="center" style="padding:32px 16px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:640px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:16px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#111827;">
+          <tr>
+            <td style="padding:24px 28px;background:#0f172a;color:#ffffff;">
+              <div style="font-size:13px;letter-spacing:0.08em;text-transform:uppercase;font-weight:700;opacity:0.85;">Pontis Talent</div>
+              <div style="margin-top:10px;font-size:28px;line-height:1.2;font-weight:700;">Opportunity update</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px 28px;">
+              <p style="margin:0 0 16px;font-size:16px;line-height:1.6;">Hi {first_name},</p>
+              <p style="margin:0 0 16px;font-size:16px;line-height:1.7;">{intro}</p>
+              <div style="margin:24px 0;padding:18px 20px;border-left:4px solid #0f172a;background-color:#f8fafc;border-radius:10px;">
+                <p style="margin:0;font-size:16px;line-height:1.7;font-weight:700;color:#0f172a;">If you are interested in exploring this opportunity, please reply to this email with your updated resume.</p>
+              </div>
+              <p style="margin:0 0 12px;font-size:16px;line-height:1.7;">If you'd like to learn more about the team, the role, or the process, just reply and we will be happy to help.</p>
+              <p style="margin:24px 0 0;font-size:16px;line-height:1.7;">Best regards,<br><strong>Pontis Talent Team</strong></p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
 """
     text_template = (
-        f"Hi {(candidate_profile.name or '').strip() or 'there'},\n\n"
-        f"You've been shortlisted for the {getattr(job, 'title', '') or 'the role'} position at {_job_company_name(job)}.\n\n"
-        "Are you open to this role?\n\n"
-        "Please share your updated resume.\n\n"
-        "We'd love to move forward with you.\n\n"
-        "Could you please reply with your availability for an interview?\n\n"
-        "Best,\nAdam"
+        f"Hi {_candidate_first_name(candidate_profile)},\n\n"
+        f"We're reaching out about the {job_title_raw} opportunity at {company_name_raw} in {location_raw}.\n\n"
+        + (
+            "Your background stood out to us, and we think there may be a strong fit.\n\n"
+            if (getattr(candidate_profile, "summary", "") or "").strip()
+            else "We think your profile may be a strong fit for the role.\n\n"
+        )
+        + "If you are interested in exploring this opportunity, please reply to this email with your updated resume.\n\n"
+        + "If you'd like to learn more about the team, the role, or the process, just reply and we will be happy to help.\n\n"
+        + "Best regards,\nPontis Talent Team"
     )
     return subject, email_template, text_template
 
@@ -408,6 +438,18 @@ def _job_company_name(job) -> str:
     company = getattr(job, "company", None)
     company_name = getattr(company, "name", "") if company is not None else ""
     return (company_name or "your company").strip() or "your company"
+
+
+def _candidate_first_name(candidate_profile) -> str:
+    name = (getattr(candidate_profile, "name", "") or "").strip()
+    if name:
+        return name.split()[0]
+    raw_data = _candidate_raw_data(candidate_profile)
+    for key in ("full_name", "first_name", "name"):
+        value = str(raw_data.get(key) or "").strip()
+        if value:
+            return value.split()[0]
+    return "there"
 
 
 def _candidate_raw_data(candidate_profile) -> dict[str, Any]:
@@ -655,11 +697,15 @@ def _follow_up_time() -> datetime:
 def _detect_reply_intent(raw_event: dict[str, Any]) -> str:
     body = _normalize_text(raw_event.get("body") or raw_event.get("text") or raw_event.get("snippet") or "")
     lowered = body.lower()
-    if any(token in lowered for token in ("not interested", "no thanks", "unsubscribe", "stop")):
+    if any(token in lowered for token in ("unsubscribe", "remove me", "stop emailing", "do not contact")):
+        return "unsubscribe"
+    if any(token in lowered for token in ("not interested", "no thanks", "pass", "decline", "not looking")):
         return "not_interested"
-    if any(token in lowered for token in ("interested", "sounds good", "let's talk", "happy to chat")):
+    if any(token in lowered for token in ("tell me more", "share details", "salary", "compensation", "job description")):
+        return "needs_more_info"
+    if any(token in lowered for token in ("interested", "sounds good", "open to discuss", "happy to proceed", "keen to explore", "yes")):
         return "interested"
-    return "unknown"
+    return "ambiguous"
 
 
 def _detect_bounce_or_unsubscribe(raw_event: dict[str, Any]) -> str:
@@ -901,7 +947,12 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
             try:
                 from app.services.interview_session_service import create_interview_session
 
-                session = create_interview_session(db=db, job_id=row.job_id, candidate_id=row.candidate_id)
+                session = create_interview_session(
+                    db=db,
+                    job_id=row.job_id,
+                    candidate_id=row.candidate_id,
+                    outreach_event_id=row.id,
+                )
                 booking_link = session.get("bookingLink", session.get("bookingUrl", ""))
                 logger.info(
                     "decision_taken interview_session_created job_id=%s candidate_id=%s token=%s booking_url=%s",
@@ -1339,6 +1390,12 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
         name = (profile.name or "").strip() or candidate_id
         linkedin_url = _extract_candidate_linkedin_url(profile)
         subject, email_template, text_template = _build_shortlist_outreach_email(candidate_profile=profile, job=job)
+        logger.info(
+            "outreach_email_rendered job_id=%s candidate_id=%s subject=%s",
+            job_id,
+            candidate_id,
+            subject,
+        )
         raw_data = _candidate_raw_data(profile)
         delivery_target = _resolve_outreach_recipient(raw_data=raw_data)
         original_to_email = str(delivery_target.get("original_email") or "").strip()
@@ -1741,6 +1798,7 @@ def list_outreach_status(*, db: Session, job_id: str) -> list[dict]:
             "attemptCount": row.attempt_count,
             "followUpCount": row.follow_up_count,
             "providerMessageId": row.provider_message_id,
+            "sentAt": row.sent_at.isoformat() if row.sent_at else None,
             "lastSentAt": row.last_sent_at.isoformat() if row.last_sent_at else None,
             "lastContactedAt": row.last_contacted_at.isoformat() if row.last_contacted_at else None,
             "nextFollowUpAt": row.next_follow_up_at.isoformat() if row.next_follow_up_at else None,

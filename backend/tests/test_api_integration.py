@@ -133,7 +133,7 @@ from sqlalchemy import text
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_SECRET
 from app.core.security import create_access_token, create_csrf_token
-from app.db.repositories import CandidateProfileRepository, CompanyRepository, JobRepository, UserRepository
+from app.db.repositories import CandidateProfileRepository, CompanyRepository, JobRepository, OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal, engine
 from app.models.entities import Base
 from app.services.resend_inbound_service import process_resend_inbound_webhook
@@ -183,11 +183,14 @@ class IntegrationTests(unittest.TestCase):
         )
         self.job = JobRepository(self.db).create(
             company_id=self.company.id,
+            created_by=self.user.id,
             title=f"Platform Engineer {suffix}",
             description="Build retrieval, queues, and AI observability.",
             location="Remote",
             compensation="$180k",
             work_authorization="required",
+            remote_policy="remote",
+            experience_required="5+ years",
             skills_required=["Python", "Redis", "Qdrant"],
             responsibilities=["Operate queues", "Improve retrieval"],
         )
@@ -213,6 +216,18 @@ class IntegrationTests(unittest.TestCase):
             decision="strong_match",
             strategy="HIGH",
         )
+        OutreachEventRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            provider="resend",
+            to_email="candidate@example.com",
+            subject="Opportunity: Platform Engineer",
+            body="<p>Initial outreach</p>",
+            status="sent",
+            sent_at=None,
+            next_follow_up_at=None,
+            provider_message_id="outreach-message-id-123",
+        )
         self.db.commit()
         self.token = create_access_token(user_id=self.user.id, email=self.user.email, role=self.user.role)
         self.csrf = create_csrf_token(user_id=self.user.id)
@@ -222,6 +237,58 @@ class IntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.db.close()
         self.client.close()
+
+    def _post_resend_inbound_reply(
+        self,
+        *,
+        webhook_id: str,
+        email_id: str,
+        reply_email: dict,
+        attachments_list: dict,
+        attachment_bytes: dict[str, bytes] | None = None,
+        created_at: str = "2026-05-11T00:00:00Z",
+    ):
+        from app.services import resend_inbound_service as inbound_service
+
+        event_payload = {
+            "type": "email.received",
+            "created_at": created_at,
+            "data": {"email_id": email_id},
+        }
+        body = json.dumps(event_payload, separators=(",", ":")).encode("utf-8")
+        timestamp = str(int(time.time()))
+        secret = base64.b64decode(os.environ["RESEND_WEBHOOK_SECRET"].removeprefix("whsec_"))
+        signed = f"{webhook_id}.{timestamp}.".encode("utf-8") + body
+        signature = base64.b64encode(hmac.new(secret, signed, hashlib.sha256).digest()).decode("ascii")
+        headers = {
+            "svix-id": webhook_id,
+            "svix-timestamp": timestamp,
+            "svix-signature": f"v1,{signature}",
+        }
+
+        attachment_bytes = attachment_bytes or {}
+
+        class _FakeResponse:
+            def __init__(self, status_code: int, payload=None, content: bytes | None = None):
+                self.status_code = status_code
+                self._payload = payload
+                self.content = content or b""
+                self.text = json.dumps(payload) if isinstance(payload, (dict, list)) else ""
+
+            def json(self):
+                return self._payload
+
+        def _fake_get(url, headers=None, timeout=None):
+            if url.endswith(f"/emails/receiving/{email_id}"):
+                return _FakeResponse(200, reply_email)
+            if url.endswith(f"/emails/receiving/{email_id}/attachments"):
+                return _FakeResponse(200, attachments_list)
+            if url in attachment_bytes:
+                return _FakeResponse(200, content=attachment_bytes[url])
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        with patch.object(inbound_service.requests, "get", side_effect=_fake_get):
+            return self.client.post("/api/webhooks/resend", content=body, headers=headers)
 
     def test_auth_cookie_and_csrf_lifecycle(self) -> None:
         me = self.client.get("/api/auth/me")
@@ -377,7 +444,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNotNone(inbound)
         self.assertEqual(inbound[2], "candidate@example.com")
         self.assertEqual(inbound[3], "matched")
-        self.assertEqual(inbound[4], "processed")
+        self.assertEqual(inbound[4], "completed")
 
         attachment = self.db.execute(
             text("SELECT filename, content_type FROM inbound_email_attachments WHERE reply_id = (SELECT id FROM inbound_email_replies WHERE svix_id = :svix_id)"),
@@ -448,6 +515,385 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNotNone(inbound)
         self.assertEqual(inbound[0], "unmatched")
         self.assertIsNone(inbound[1])
+
+    def test_resend_inbound_interested_with_resume_updates_profile_and_qualifies(self) -> None:
+        from app.services import resend_inbound_service as inbound_service
+        from app.services.resume_ingestion_service import ResumeStructuredProfile
+
+        webhook_id = "msg_interested_resume_123"
+        reply_email = {
+            "object": "email",
+            "id": "email-interested-resume-123",
+            "to": ["inbound@pontis.one"],
+            "from": "Avery Candidate <candidate@example.com>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Yes, I am interested.</p>",
+            "text": "Yes, I am interested.",
+            "headers": {
+                "message-id": "<reply-message-id-123>",
+                "in-reply-to": "<outreach-message-id-123>",
+            },
+        }
+        attachments_list = {
+            "object": "list",
+            "has_more": False,
+            "data": [
+                {
+                    "id": "att-resume-1",
+                    "filename": "resume.pdf",
+                    "size": 64,
+                    "content_type": "application/pdf",
+                    "content_disposition": "attachment",
+                    "download_url": "https://inbound-cdn.resend.com/email-interested-resume-123/attachments/att-resume-1",
+                    "expires_at": "2026-05-11T01:00:00Z",
+                }
+            ],
+        }
+        parsed_profile = ResumeStructuredProfile(
+            full_name="Avery Candidate",
+            headline="Senior Platform Engineer",
+            years_experience=8,
+            skills=["Python", "Redis", "Qdrant"],
+            companies=["Northstar"],
+            education=["B.Tech"],
+            projects=["Search platform"],
+            certifications=["AWS"],
+            location="Remote",
+            summary="Built queue-backed recruiting systems.",
+            domain_experience=["Recruiting"],
+        )
+
+        with patch("app.services.resume_ingestion_service.extract_pdf_text", return_value=("sample resume text", {})), patch.object(
+            inbound_service, "parse_resume_profile", return_value=parsed_profile
+        ), patch.object(inbound_service, "send_interview_invite", return_value={"status": "queued"}) as invite_mock:
+            response = self._post_resend_inbound_reply(
+                webhook_id=webhook_id,
+                email_id="email-interested-resume-123",
+                reply_email=reply_email,
+                attachments_list=attachments_list,
+                attachment_bytes={
+                    "https://inbound-cdn.resend.com/email-interested-resume-123/attachments/att-resume-1": b"%PDF-1.4 fake resume",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["status"], "processed")
+        invite_mock.assert_called_once()
+        invite_args = invite_mock.call_args.kwargs
+        self.assertEqual(invite_args["candidate_id"], "candidate-1")
+        self.assertEqual(invite_args["job_id"], self.job.id)
+        outreach_row = self.db.execute(
+            text("SELECT id FROM outreach_events WHERE provider_message_id = :provider_message_id"),
+            {"provider_message_id": "outreach-message-id-123"},
+        ).fetchone()
+        self.assertIsNotNone(outreach_row)
+        self.assertEqual(invite_args["outreach_event_id"], outreach_row.id)
+
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.candidate_status, "qualified")
+        self.assertEqual(profile.current_title, "Senior Platform Engineer")
+        self.assertEqual(profile.current_company, "Northstar")
+        self.assertEqual(profile.total_experience_years, 8.0)
+        self.assertIsNotNone(profile.resume_received_at)
+        self.assertEqual(profile.parsed_resume_json["full_name"], "Avery Candidate")
+
+        inbound = self.db.execute(
+            text("SELECT processing_status, intent FROM inbound_email_replies WHERE svix_id = :svix_id"),
+            {"svix_id": webhook_id},
+        ).fetchone()
+        self.assertEqual(inbound[0], "completed")
+        self.assertEqual(inbound[1], "interested")
+
+        outreach = self.db.execute(
+            text("SELECT status, reply_intent FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"),
+            {"job_id": self.job.id, "candidate_id": "candidate-1"},
+        ).fetchone()
+        self.assertEqual(outreach[0], "replied")
+        self.assertEqual(outreach[1], "interested")
+
+    def test_resend_inbound_interested_without_resume_sends_followup(self) -> None:
+        from app.services import resend_inbound_service as inbound_service
+
+        webhook_id = "msg_interested_nor_resume_123"
+        reply_email = {
+            "object": "email",
+            "id": "email-interested-no-resume-123",
+            "to": ["inbound@pontis.one"],
+            "from": "Avery Candidate <candidate@example.com>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Yes, I am interested.</p>",
+            "text": "Yes, I am interested.",
+            "headers": {
+                "message-id": "<reply-message-id-124>",
+                "in-reply-to": "<outreach-message-id-124>",
+            },
+        }
+        attachments_list = {"object": "list", "has_more": False, "data": []}
+
+        with patch.object(inbound_service, "send_email") as send_email_mock:
+            response = self._post_resend_inbound_reply(
+                webhook_id=webhook_id,
+                email_id="email-interested-no-resume-123",
+                reply_email=reply_email,
+                attachments_list=attachments_list,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["status"], "processed")
+        send_email_mock.assert_called_once()
+
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertEqual(profile.candidate_status, "awaiting_resume")
+
+        outreach = self.db.execute(
+            text("SELECT status, reply_intent, follow_up_count FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"),
+            {"job_id": self.job.id, "candidate_id": "candidate-1"},
+        ).fetchone()
+        self.assertEqual(outreach[0], "replied")
+        self.assertEqual(outreach[1], "interested")
+        self.assertEqual(outreach[2], 1)
+
+    def test_job_intake_outreach_and_interview_session_persist_new_schema_fields(self) -> None:
+        from app.services import outreach_service as outreach_module
+        from app.services import voice_service as voice_module
+        from app.services import interview_invite_service as invite_module
+
+        candidate_id = "candidate-schema-fields"
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            name="Schema Candidate",
+            role="Platform Engineer",
+            company="Example Candidate Company",
+            summary="Candidate profile created for persistence verification.",
+            skills=["Python", "Redis"],
+            raw_data={
+                "full_name": "Schema Candidate",
+                "email": "schema-candidate@example.com",
+                "work_email": "schema-candidate@example.com",
+            },
+            fit_score=0.82,
+            decision="shortlisted",
+            strategy="balanced",
+        )
+
+        with patch.object(voice_module, "ensure_all_collections", lambda: None), \
+            patch.object(voice_module, "delete_job_vectors", lambda *_args, **_kwargs: None), \
+            patch.object(voice_module, "upsert_job_chunks", lambda *_args, **_kwargs: None), \
+            patch.object(voice_module, "get_embedding", lambda *_args, **_kwargs: [0.0] * 384):
+            result = voice_module.refine_job_with_voice(
+                db=self.db,
+                job_id=self.job.id,
+                voice_notes=["Build a remote platform team", "5+ years experience"],
+                transcript="Recruiter: Build a remote platform team with Python and Redis.",
+            )
+
+        self.assertTrue(result["refined"])
+
+        job_row = self.db.execute(
+            text(
+                "SELECT company_id, created_by, remote_policy, experience_required, updated_at "
+                "FROM jobs WHERE id = :job_id"
+            ),
+            {"job_id": self.job.id},
+        ).fetchone()
+        self.assertIsNotNone(job_row)
+        self.assertEqual(job_row[0], self.company.id)
+        self.assertEqual(job_row[1], self.user.id)
+        self.assertEqual(job_row[2], "remote")
+        self.assertEqual(job_row[3], "5+ years")
+        self.assertIsNotNone(job_row[4])
+
+        job_intake_row = self.db.execute(
+            text(
+                "SELECT job_id, company_id, intake_status, completed_at, transcript "
+                "FROM job_intakes WHERE job_id = :job_id"
+            ),
+            {"job_id": self.job.id},
+        ).fetchone()
+        self.assertIsNotNone(job_intake_row)
+        self.assertEqual(job_intake_row[1], self.company.id)
+        self.assertEqual(job_intake_row[2], "completed")
+        self.assertIsNotNone(job_intake_row[3])
+        self.assertIn("remote platform team", job_intake_row[4])
+
+        with patch.object(outreach_module, "_send_shortlist_outreach_email", return_value=(True, "", "msg-123")):
+            outreach_module._trigger_candidate_outreach_sync(candidate_id=candidate_id, job_id=self.job.id)
+
+        outreach_row = self.db.execute(
+            text(
+                "SELECT id, company_id, sent_at, status, provider_message_id "
+                "FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"
+            ),
+            {"job_id": self.job.id, "candidate_id": candidate_id},
+        ).fetchone()
+        self.assertIsNotNone(outreach_row)
+        outreach_event_id = str(outreach_row[0])
+        self.assertEqual(outreach_row[1], self.company.id)
+        self.assertIsNotNone(outreach_row[2])
+        self.assertEqual(outreach_row[3], "sent")
+        self.assertEqual(outreach_row[4], "msg-123")
+
+        with patch.object(invite_module, "send_email", return_value=None), \
+            patch("app.services.interview_session_service.get_interview_link", return_value="https://book.example.com/interview"):
+            invite_module.send_interview_invite(
+                candidate_id=candidate_id,
+                job_id=self.job.id,
+                outreach_event_id=outreach_event_id,
+            )
+
+        session_row = self.db.execute(
+            text(
+                "SELECT company_id, outreach_event_id, booking_url, status "
+                "FROM interview_sessions WHERE job_id = :job_id AND candidate_id = :candidate_id"
+            ),
+            {"job_id": self.job.id, "candidate_id": candidate_id},
+        ).fetchone()
+        self.assertIsNotNone(session_row)
+        self.assertEqual(session_row[0], self.company.id)
+        self.assertEqual(session_row[1], outreach_event_id)
+        self.assertTrue(str(session_row[2] or "").startswith("http"))
+        self.assertEqual(session_row[3], "pending")
+
+    def test_resend_inbound_not_interested_updates_declined(self) -> None:
+        reply_email = {
+            "object": "email",
+            "id": "email-not-interested-123",
+            "to": ["inbound@pontis.one"],
+            "from": "Avery Candidate <candidate@example.com>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Not interested.</p>",
+            "text": "Not interested.",
+            "headers": {
+                "message-id": "<reply-message-id-125>",
+                "in-reply-to": "<outreach-message-id-125>",
+            },
+        }
+        attachments_list = {"object": "list", "has_more": False, "data": []}
+
+        response = self._post_resend_inbound_reply(
+            webhook_id="msg_not_interested_123",
+            email_id="email-not-interested-123",
+            reply_email=reply_email,
+            attachments_list=attachments_list,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertEqual(profile.candidate_status, "declined")
+
+        inbound = self.db.execute(
+            text("SELECT processing_status, intent FROM inbound_email_replies WHERE email_id = :email_id"),
+            {"email_id": "email-not-interested-123"},
+        ).fetchone()
+        self.assertEqual(inbound[0], "completed")
+        self.assertEqual(inbound[1], "not_interested")
+
+    def test_resend_inbound_needs_more_info_updates_recruiter_queue_state(self) -> None:
+        reply_email = {
+            "object": "email",
+            "id": "email-needs-info-123",
+            "to": ["inbound@pontis.one"],
+            "from": "Avery Candidate <candidate@example.com>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Can you share the salary and job description?</p>",
+            "text": "Can you share the salary and job description?",
+            "headers": {
+                "message-id": "<reply-message-id-126>",
+                "in-reply-to": "<outreach-message-id-126>",
+            },
+        }
+        attachments_list = {"object": "list", "has_more": False, "data": []}
+
+        response = self._post_resend_inbound_reply(
+            webhook_id="msg_needs_info_123",
+            email_id="email-needs-info-123",
+            reply_email=reply_email,
+            attachments_list=attachments_list,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertEqual(profile.candidate_status, "awaiting_recruiter_response")
+
+        inbound = self.db.execute(
+            text("SELECT intent FROM inbound_email_replies WHERE email_id = :email_id"),
+            {"email_id": "email-needs-info-123"},
+        ).fetchone()
+        self.assertEqual(inbound[0], "needs_more_info")
+
+    def test_resend_inbound_unsubscribe_blocks_future_outreach(self) -> None:
+        reply_email = {
+            "object": "email",
+            "id": "email-unsubscribe-123",
+            "to": ["inbound@pontis.one"],
+            "from": "Avery Candidate <candidate@example.com>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Please unsubscribe me.</p>",
+            "text": "Please unsubscribe me.",
+            "headers": {
+                "message-id": "<reply-message-id-127>",
+                "in-reply-to": "<outreach-message-id-127>",
+            },
+        }
+        attachments_list = {"object": "list", "has_more": False, "data": []}
+
+        response = self._post_resend_inbound_reply(
+            webhook_id="msg_unsubscribe_123",
+            email_id="email-unsubscribe-123",
+            reply_email=reply_email,
+            attachments_list=attachments_list,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertEqual(profile.candidate_status, "do_not_contact")
+
+        inbound = self.db.execute(
+            text("SELECT intent FROM inbound_email_replies WHERE email_id = :email_id"),
+            {"email_id": "email-unsubscribe-123"},
+        ).fetchone()
+        self.assertEqual(inbound[0], "unsubscribe")
+
+    def test_resend_inbound_ambiguous_sets_manual_review(self) -> None:
+        reply_email = {
+            "object": "email",
+            "id": "email-ambiguous-123",
+            "to": ["inbound@pontis.one"],
+            "from": "Avery Candidate <candidate@example.com>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Thanks for reaching out.</p>",
+            "text": "Thanks for reaching out.",
+            "headers": {
+                "message-id": "<reply-message-id-128>",
+                "in-reply-to": "<outreach-message-id-128>",
+            },
+        }
+        attachments_list = {"object": "list", "has_more": False, "data": []}
+
+        response = self._post_resend_inbound_reply(
+            webhook_id="msg_ambiguous_123",
+            email_id="email-ambiguous-123",
+            reply_email=reply_email,
+            attachments_list=attachments_list,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertEqual(profile.candidate_status, "manual_review")
+
+        inbound = self.db.execute(
+            text("SELECT intent FROM inbound_email_replies WHERE email_id = :email_id"),
+            {"email_id": "email-ambiguous-123"},
+        ).fetchone()
+        self.assertEqual(inbound[0], "ambiguous")
 
     def test_queue_dead_letter_replay_and_scheduler_snapshot(self) -> None:
         try:

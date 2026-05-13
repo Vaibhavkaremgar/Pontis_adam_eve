@@ -27,6 +27,8 @@ def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
         "id": row.id,
         "jobId": row.job_id,
         "candidateId": row.candidate_id,
+        "companyId": getattr(row, "company_id", None),
+        "outreachEventId": getattr(row, "outreach_event_id", None),
         "email": row.email,
         "token": row.token,
         "status": row.status,
@@ -37,7 +39,13 @@ def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
     }
 
 
-def create_interview_session(*, db: Session, job_id: str, candidate_id: str) -> dict[str, str | None]:
+def create_interview_session(
+    *,
+    db: Session,
+    job_id: str,
+    candidate_id: str,
+    outreach_event_id: str | None = None,
+) -> dict[str, str | None]:
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
@@ -45,7 +53,11 @@ def create_interview_session(*, db: Session, job_id: str, candidate_id: str) -> 
     session_repo = InterviewSessionRepository(db)
     existing_session = session_repo.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
     if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
-        booking_link = _legacy_booking_url(existing_session.token)
+        booking_link = existing_session.booking_url or _legacy_booking_url(existing_session.token)
+        if not existing_session.booking_url:
+            existing_session.booking_url = booking_link
+        if outreach_event_id is not None:
+            existing_session.outreach_event_id = outreach_event_id
         logger.info("interview_session_duplicate_skipped job_id=%s candidate_id=%s token=%s", job_id, candidate_id, existing_session.token)
         return _session_payload(row=existing_session, booking_link=booking_link)
 
@@ -65,8 +77,10 @@ def create_interview_session(*, db: Session, job_id: str, candidate_id: str) -> 
         email=email,
         token=token,
         expires_at=expires_at,
+        booking_url=_legacy_booking_url(token),
+        outreach_event_id=outreach_event_id,
     )
-    booking_link = _legacy_booking_url(token)
+    booking_link = row.booking_url or _legacy_booking_url(token)
     db.commit()
     logger.info("interview_session_created job_id=%s candidate_id=%s token=%s", job_id, candidate_id, token)
     return _session_payload(row=row, booking_link=booking_link)
@@ -81,7 +95,7 @@ def get_interview_session(*, db: Session, token: str) -> dict[str, str | None]:
 
     job = JobRepository(db).get(row.job_id)
     profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
-    booking_link = _legacy_booking_url(row.token)
+    booking_link = row.booking_url or _legacy_booking_url(row.token)
     return _session_payload(row=row, booking_link=booking_link)
 
 

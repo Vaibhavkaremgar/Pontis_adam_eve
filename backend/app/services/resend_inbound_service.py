@@ -6,11 +6,15 @@ import logging
 import mimetypes
 import re
 import unicodedata
+import tempfile
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parseaddr
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 import requests
 from sqlalchemy.orm import Session
@@ -23,7 +27,10 @@ from app.core.config import (
     REPLY_ATTACHMENT_STORAGE_DIR,
     RESEND_API_KEY,
 )
-from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository
+from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository, JobRepository
+from app.services.email_service import send_email
+from app.services.interview_invite_service import send_interview_invite
+from app.services.resume_ingestion_service import parse_resume_profile
 from app.services.slack_service import notify_slack
 from app.services.webhook_security import get_webhook_header, verify_resend_webhook
 
@@ -36,6 +43,34 @@ _ALLOWED_ATTACHMENT_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 _SUPPORTED_ATTACHMENT_EXTENSIONS = {".pdf", ".doc", ".docx"}
+_INTERESTED_REPLY_KEYWORDS = (
+    "interested",
+    "yes",
+    "sounds good",
+    "open to discuss",
+    "happy to proceed",
+    "keen to explore",
+)
+_NOT_INTERESTED_REPLY_KEYWORDS = (
+    "not interested",
+    "no thanks",
+    "pass",
+    "decline",
+    "not looking",
+)
+_NEEDS_MORE_INFO_REPLY_KEYWORDS = (
+    "tell me more",
+    "share details",
+    "salary",
+    "compensation",
+    "job description",
+)
+_UNSUBSCRIBE_REPLY_KEYWORDS = (
+    "unsubscribe",
+    "remove me",
+    "stop emailing",
+    "do not contact",
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +80,16 @@ class InboundAttachmentDownload:
     content_type: str
     size: int
     content: bytes
+
+
+@dataclass(frozen=True)
+class ResumeParseResult:
+    text: str
+    profile: Any
+    contact_email: str
+    phone: str
+    linkedin_url: str
+    github_url: str
 
 
 def _normalize_email(value: str) -> str:
@@ -57,6 +102,12 @@ def _normalize_email(value: str) -> str:
     if not local or not domain or domain.startswith(".") or domain.endswith("."):
         return ""
     return candidate
+
+
+def _normalize_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
 def _decode_header_value(value: Any) -> str:
@@ -160,6 +211,216 @@ def _looks_supported(filename: str, content_type: str, size_bytes: int) -> tuple
         if normalized_type in {"", "application/octet-stream"}:
             return True, ""
     return False, "unsupported_attachment_type"
+
+
+def _is_resume_attachment(filename: str, content_type: str) -> bool:
+    extension = Path(filename or "").suffix.lower()
+    normalized_type = (content_type or "").strip().lower()
+    return extension in _SUPPORTED_ATTACHMENT_EXTENSIONS or normalized_type in _ALLOWED_ATTACHMENT_TYPES
+
+
+def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _detect_reply_intent(raw_event: dict[str, Any]) -> str:
+    body = _normalize_text(raw_event.get("body") or raw_event.get("text") or raw_event.get("snippet") or "")
+    lowered = body.lower()
+    if not lowered:
+        return "ambiguous"
+    if _contains_any(lowered, _UNSUBSCRIBE_REPLY_KEYWORDS):
+        return "unsubscribe"
+    if _contains_any(lowered, _NOT_INTERESTED_REPLY_KEYWORDS):
+        return "not_interested"
+    if _contains_any(lowered, _NEEDS_MORE_INFO_REPLY_KEYWORDS):
+        return "needs_more_info"
+    if _contains_any(lowered, _INTERESTED_REPLY_KEYWORDS):
+        return "interested"
+    return "ambiguous"
+
+
+def _extract_docx_text(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            document_xml = archive.read("word/document.xml")
+    except Exception:
+        return ""
+
+    try:
+        root = ET.fromstring(document_xml)
+    except Exception:
+        return ""
+
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    parts = [node.text for node in root.findall(".//w:t", namespace) if node.text]
+    return re.sub(r"\s+", " ", "\n".join(parts)).strip()
+
+
+def _extract_plain_text(content: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            text = content.decode(encoding, errors="ignore").strip()
+            if text:
+                return re.sub(r"\s+", " ", text).strip()
+        except Exception:
+            continue
+    return ""
+
+
+def _extract_resume_text(*, attachment: InboundAttachmentDownload) -> str:
+    suffix = Path(attachment.filename or "").suffix.lower()
+    if suffix == ".pdf":
+        temp_file = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        try:
+            temp_file.write(attachment.content)
+            temp_file.flush()
+            temp_file.close()
+            from app.services.resume_ingestion_service import extract_pdf_text
+
+            resume_text, _ = extract_pdf_text(Path(temp_file.name))
+            return resume_text.strip()
+        finally:
+            try:
+                Path(temp_file.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    if suffix == ".docx" or zipfile.is_zipfile(BytesIO(attachment.content)):
+        text = _extract_docx_text(attachment.content)
+        if text:
+            return text
+
+    if suffix == ".doc":
+        text = _extract_docx_text(attachment.content)
+        if text:
+            return text
+
+    return _extract_plain_text(attachment.content)
+
+
+def _extract_phone_number(text: str) -> str:
+    match = re.search(r"(?:\+?\d[\d\s().-]{7,}\d)", text or "")
+    if not match:
+        return ""
+    value = re.sub(r"[^0-9+]", "", match.group(0))
+    return value if len(value) >= 8 else ""
+
+
+def _extract_social_url(text: str, pattern: str) -> str:
+    match = re.search(pattern, text or "", re.IGNORECASE)
+    return match.group(0).rstrip(").,;]") if match else ""
+
+
+def _parse_resume_attachment(*, attachment: InboundAttachmentDownload) -> ResumeParseResult:
+    resume_text = _extract_resume_text(attachment=attachment)
+    profile = parse_resume_profile(resume_text=resume_text, file_name=attachment.filename)
+    resume_json = profile.model_dump()
+    contact_email = ""
+    email_match = re.search(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}", resume_text, re.IGNORECASE)
+    if email_match:
+        contact_email = email_match.group(0).lower()
+    phone = _extract_phone_number(resume_text)
+    linkedin_url = _extract_social_url(resume_text, r"https?://(?:www\.)?linkedin\.com/[^\s)>\]]+")
+    github_url = _extract_social_url(resume_text, r"https?://(?:www\.)?github\.com/[^\s)>\]]+")
+    return ResumeParseResult(
+        text=resume_text,
+        profile=resume_json,
+        contact_email=contact_email,
+        phone=phone,
+        linkedin_url=linkedin_url,
+        github_url=github_url,
+    )
+
+
+def _update_candidate_from_resume(
+    *,
+    candidate_profile: Any,
+    parsed_resume: ResumeParseResult,
+    sender_email: str,
+) -> None:
+    profile = parsed_resume.profile if isinstance(parsed_resume.profile, dict) else {}
+    current_company = ""
+    companies = profile.get("companies") if isinstance(profile.get("companies"), list) else []
+    if companies:
+        current_company = str(companies[0] or "").strip()
+
+    candidate_profile.name = str(profile.get("full_name") or candidate_profile.name or "").strip()
+    candidate_profile.role = str(profile.get("headline") or candidate_profile.role or "").strip()
+    candidate_profile.company = current_company or candidate_profile.company or ""
+    candidate_profile.summary = str(profile.get("summary") or candidate_profile.summary or "").strip()
+    candidate_profile.skills = list(profile.get("skills") or candidate_profile.skills or [])
+    candidate_profile.candidate_status = "qualified"
+    candidate_profile.resume_received_at = datetime.now(timezone.utc)
+    candidate_profile.total_experience_years = float(profile.get("years_experience") or 0.0)
+    candidate_profile.current_title = candidate_profile.role
+    candidate_profile.current_company = current_company
+    candidate_profile.phone = parsed_resume.phone
+    candidate_profile.linkedin_url = parsed_resume.linkedin_url
+    candidate_profile.github_url = parsed_resume.github_url
+    candidate_profile.parsed_resume_text = parsed_resume.text
+    candidate_profile.parsed_resume_json = {
+        **profile,
+        "email": parsed_resume.contact_email or sender_email,
+        "phone": parsed_resume.phone,
+        "linkedin_url": parsed_resume.linkedin_url,
+        "github_url": parsed_resume.github_url,
+        "parsed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    raw_data = dict(candidate_profile.raw_data or {})
+    raw_data.update(
+        {
+            "email": parsed_resume.contact_email or sender_email,
+            "phone": parsed_resume.phone,
+            "linkedin_url": parsed_resume.linkedin_url,
+            "github_url": parsed_resume.github_url,
+            "candidate_status": "qualified",
+            "resume_received_at": candidate_profile.resume_received_at.isoformat() if candidate_profile.resume_received_at else "",
+            "parsed_resume_json": candidate_profile.parsed_resume_json,
+            "parsed_resume_text": parsed_resume.text,
+        }
+    )
+    candidate_profile.raw_data = raw_data
+    logger.info(
+        "candidate_profile_updated job_id=%s candidate_id=%s candidate_status=%s",
+        getattr(candidate_profile, "job_id", ""),
+        getattr(candidate_profile, "candidate_id", ""),
+        candidate_profile.candidate_status,
+    )
+
+
+def _set_candidate_status(candidate_profile: Any, status: str) -> None:
+    candidate_profile.candidate_status = status
+    raw_data = dict(candidate_profile.raw_data or {})
+    raw_data["candidate_status"] = status
+    candidate_profile.raw_data = raw_data
+    logger.info(
+        "candidate_profile_updated job_id=%s candidate_id=%s candidate_status=%s",
+        getattr(candidate_profile, "job_id", ""),
+        getattr(candidate_profile, "candidate_id", ""),
+        status,
+    )
+
+
+def _send_resume_request_followup(*, to_email: str, job_title: str, company_name: str) -> None:
+    subject = "Please share your updated resume"
+    body = (
+        f"Thank you for your interest in the {job_title} opportunity at {company_name}.\n\n"
+        "To proceed with your application, please reply to this email with your most recent resume attached.\n\n"
+        "Once we receive your resume, we will review your profile and share the next steps.\n\n"
+        "Best regards,\nPontis Talent Team"
+    )
+    send_email(
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        from_email="info@pontis.one",
+        reply_to="info@pontis.one",
+        text=body,
+        html=body.replace("\n\n", "<br><br>").replace("\n", "<br>"),
+        tags={"product": "pontis", "flow": "resume_request_followup"},
+    )
+    logger.info("resume_request_sent to_email=%s", to_email)
 
 
 def _build_candidate_profile_link(*, job_id: str, candidate_id: str) -> str:
@@ -298,7 +559,7 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
 
     inbound_repo = InboundEmailRepository(db)
     existing = inbound_repo.get_by_svix_id(svix_id)
-    if existing and (existing.processing_status or "").strip().lower() == "processed":
+    if existing and (existing.processing_status or "").strip().lower() in {"processed", "completed"}:
         return {
             "status": "duplicate",
             "replyId": existing.id,
@@ -345,12 +606,22 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
         profile=candidate_profile,
         reply_message_id=_decode_header_value(headers_map.get("in-reply-to") or headers_map.get("In-Reply-To")),
     )
+    if not job_id and outreach_event is not None:
+        job_id = getattr(outreach_event, "job_id", None)
+    reply_company_id = getattr(candidate_profile, "company_id", None) if candidate_profile else None
+    if not reply_company_id and outreach_event is not None:
+        reply_company_id = getattr(outreach_event, "company_id", None)
+    if not reply_company_id and job_id:
+        job = JobRepository(db).get(job_id)
+        if job:
+            reply_company_id = job.company_id
 
     row, created = inbound_repo.create_or_get(
         svix_id=svix_id,
         event_type=event_type,
         email_id=email_id,
         provider_message_id=provider_message_id or _decode_header_value(headers_map.get("message-id")),
+        company_id=reply_company_id,
         sender_email=sender_email,
         sender_name=sender_name,
         subject=subject,
@@ -371,6 +642,7 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
     attachments_payload = _list_resend_attachments(email_id)
     stored_attachments: list[dict[str, Any]] = []
     skipped_attachments: list[dict[str, Any]] = []
+    downloaded_attachments: list[InboundAttachmentDownload] = []
 
     for attachment_meta in attachments_payload:
         try:
@@ -386,6 +658,7 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
                     }
                 )
                 continue
+            downloaded_attachments.append(download)
             stored_attachments.append(_store_attachment(repo=inbound_repo, reply_id=row.id, attachment=download))
         except Exception as exc:
             skipped_attachments.append(
@@ -404,16 +677,85 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
 
     match_status = "matched" if candidate_profile else "unmatched"
     processing_error = ""
+    intent = _detect_reply_intent({**payload, **email_record, "body": body_text, "text": body_text, "subject": subject})
+    logger.info("reply_intent_detected sender_email=%s intent=%s", sender_email, intent)
+    resume_attachment: InboundAttachmentDownload | None = next(
+        (attachment for attachment in downloaded_attachments if _is_resume_attachment(attachment.filename, attachment.content_type)),
+        None,
+    )
+    if resume_attachment is not None:
+        logger.info(
+            "resume_attachment_detected sender_email=%s filename=%s content_type=%s",
+            sender_email,
+            resume_attachment.filename,
+            resume_attachment.content_type,
+        )
+
+    resume_parse_result: ResumeParseResult | None = None
+    if candidate_profile and intent == "interested" and resume_attachment is not None:
+        try:
+            resume_parse_result = _parse_resume_attachment(attachment=resume_attachment)
+            logger.info(
+                "resume_parsed_successfully sender_email=%s filename=%s",
+                sender_email,
+                resume_attachment.filename,
+            )
+            _update_candidate_from_resume(candidate_profile=candidate_profile, parsed_resume=resume_parse_result, sender_email=sender_email)
+        except Exception as exc:
+            processing_error = f"resume_parse_failed:{exc}"
+            logger.warning(
+                "resume_parse_failed sender_email=%s filename=%s error=%s",
+                sender_email,
+                resume_attachment.filename if resume_attachment else "",
+                str(exc),
+                exc_info=exc,
+            )
+            _set_candidate_status(candidate_profile, "qualified")
+    elif candidate_profile and intent == "interested":
+        _set_candidate_status(candidate_profile, "awaiting_resume")
+    elif candidate_profile and intent == "not_interested":
+        _set_candidate_status(candidate_profile, "declined")
+    elif candidate_profile and intent == "unsubscribe":
+        _set_candidate_status(candidate_profile, "do_not_contact")
+    elif candidate_profile and intent == "needs_more_info":
+        _set_candidate_status(candidate_profile, "awaiting_recruiter_response")
+    elif candidate_profile and intent == "ambiguous":
+        _set_candidate_status(candidate_profile, "manual_review")
+
     if candidate_profile and outreach_event:
         _update_outreach_status(db, outreach_event=outreach_event, received_at=received_at)
+        outreach_event.reply_intent = intent
     elif candidate_profile and not outreach_event:
         logger.warning("inbound_reply_outreach_event_missing candidate_id=%s job_id=%s", candidate_id, job_id)
     elif not candidate_profile:
         logger.info("inbound_reply_unmatched sender_email=%s subject=%s", sender_email, subject)
 
+    if candidate_profile and intent == "unsubscribe" and sender_email:
+        from app.services.outreach_service import _suppress_domain, _suppress_email, _email_domain
+
+        _suppress_email(sender_email, reason="unsubscribe")
+        _suppress_domain(_email_domain(sender_email), reason="unsubscribe")
+
+    if candidate_profile and intent == "interested" and resume_attachment is not None and resume_parse_result is not None:
+        try:
+            send_interview_invite(
+                candidate_id=candidate_id or "",
+                job_id=job_id or "",
+                outreach_event_id=getattr(outreach_event, "id", None),
+            )
+        except Exception as exc:
+            logger.warning(
+                "interview_invite_failed sender_email=%s candidate_id=%s job_id=%s error=%s",
+                sender_email,
+                candidate_id,
+                job_id,
+                str(exc),
+                exc_info=exc,
+            )
+
     inbound_repo.mark_processed(
         row,
-        processing_status="processed",
+        processing_status="completed",
         match_status=match_status,
         attachment_count=len(stored_attachments),
         processing_error=processing_error,
@@ -421,7 +763,28 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
         job_id=job_id,
         outreach_event_id=getattr(outreach_event, "id", None),
     )
+    row.intent = intent
     db.commit()
+
+    if candidate_profile and intent == "interested" and resume_attachment is None and sender_email:
+        try:
+            job_title = str(getattr(candidate_profile, "role", "") or getattr(candidate_profile, "current_title", "") or "the role").strip()
+            company_name = str(getattr(candidate_profile, "company", "") or getattr(candidate_profile, "current_company", "") or "Pontis").strip()
+            _send_resume_request_followup(to_email=sender_email, job_title=job_title, company_name=company_name)
+            if outreach_event:
+                outreach_event.follow_up_count = int(outreach_event.follow_up_count or 0) + 1
+                outreach_event.last_sent_at = datetime.now(timezone.utc)
+                outreach_event.last_contacted_at = datetime.now(timezone.utc)
+                outreach_event.updated_at = datetime.now(timezone.utc)
+                db.commit()
+        except Exception as exc:
+            logger.warning(
+                "resume_request_failed sender_email=%s candidate_id=%s error=%s",
+                sender_email,
+                candidate_id,
+                str(exc),
+                exc_info=exc,
+            )
 
     candidate_name = _candidate_profile_display_name(candidate_profile, sender_email)
     profile_link = _build_candidate_profile_link(job_id=job_id or "", candidate_id=candidate_id or "") if candidate_profile else _build_candidate_profile_link(job_id="", candidate_id="")

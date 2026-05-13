@@ -90,6 +90,7 @@ def create_hiring_job(*, db: Session, user_id: str, company: dict, job: dict) ->
     )
     job_row = job_repo.create(
         company_id=company_row.id,
+        created_by=user_id,
         title=title,
         description=job_description,
         location=location,
@@ -98,6 +99,8 @@ def create_hiring_job(*, db: Session, user_id: str, company: dict, job: dict) ->
         ats_job_id=ats_job_id or None,
         vetting_mode=vetting_mode,
         auto_export_to_ats=auto_export_to_ats,
+        remote_policy=remote_policy,
+        experience_required=experience_required,
         structured_data={
             "remotePolicy": remote_policy,
             "experienceRequired": experience_required,
