@@ -168,6 +168,34 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(payload["to"], ["candidate@example.com"])
         self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
 
+    def test_regular_outreach_email_includes_html_payload(self) -> None:
+        fake_send_calls: list[dict] = []
+
+        def fake_send(payload):
+            fake_send_calls.append(payload)
+            return {"id": "msg-html"}
+
+        fake_resend = types.SimpleNamespace(
+            api_key=None,
+            Emails=types.SimpleNamespace(send=fake_send),
+            emails=types.SimpleNamespace(send=fake_send),
+        )
+
+        with patch.dict(sys.modules, {"resend": fake_resend}), patch.object(outreach_service, "RESEND_API_KEY", "test-key"):
+            ok, error, message_id = outreach_service._send_outreach_email(
+                to_email="candidate@example.com",
+                subject="Opportunity",
+                body="Hello there,\n\nPlease reply with your updated resume.",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+        self.assertEqual(message_id, "msg-html")
+        self.assertEqual(len(fake_send_calls), 1)
+        payload = fake_send_calls[0]
+        self.assertIn("<table", payload.get("html", ""))
+        self.assertEqual(payload["text"], "Hello there,\n\nPlease reply with your updated resume.")
+
     def test_invalid_email_falls_back_to_debug_mailbox(self) -> None:
         result = outreach_service._resolve_outreach_recipient(raw_data={"email": "not-an-email"})
 

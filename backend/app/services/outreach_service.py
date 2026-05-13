@@ -212,6 +212,76 @@ def _append_open_tracking_pixel(*, html_body: str, event_id: str, candidate_id: 
 
 # ── Email content helpers ────────────────────────────────────────────────────
 
+def _text_to_html_paragraphs(text: str) -> str:
+    blocks: list[str] = []
+    for raw_block in re.split(r"\n\s*\n", (text or "").strip()):
+        block = raw_block.strip()
+        if not block:
+            continue
+        if block.startswith(("- ", "* ")):
+            items = [
+                f"<li style=\"margin:0 0 8px;\">{html.escape(line.strip()[2:])}</li>"
+                for line in block.splitlines()
+                if line.strip().startswith(("- ", "* "))
+            ]
+            if items:
+                blocks.append(
+                    "<ul style=\"margin:0 0 20px 20px;padding:0;font-size:16px;line-height:1.7;color:#334155;\">"
+                    + "".join(items)
+                    + "</ul>"
+                )
+                continue
+        escaped_block = html.escape(block).replace("\n", "<br>")
+        blocks.append(
+            f'<p style="margin:0 0 18px;font-size:16px;line-height:1.8;color:#334155;">{escaped_block}</p>'
+        )
+    return "".join(blocks)
+
+
+def _render_professional_outreach_html(*, subject: str, body: str, brand_name: str = "Pontis Talent", accent_label: str = "Hiring Update") -> str:
+    rendered_body = _text_to_html_paragraphs(body)
+    safe_subject = html.escape(subject)
+    safe_brand = html.escape(brand_name)
+    safe_accent = html.escape(accent_label)
+    return f"""
+<div style="margin:0;padding:0;background-color:#eef2f7;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0;padding:0;background-color:#eef2f7;width:100%;">
+    <tr>
+      <td align="center" style="padding:36px 16px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:680px;background-color:#ffffff;border:1px solid #dbe3ee;border-radius:18px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#0f172a;box-shadow:0 10px 30px rgba(15,23,42,0.08);">
+          <tr>
+            <td style="padding:22px 30px;background:linear-gradient(135deg,#0f172a 0%,#172554 100%);color:#ffffff;">
+              <div style="font-size:12px;letter-spacing:0.12em;text-transform:uppercase;font-weight:700;opacity:0.82;">{safe_brand}</div>
+              <div style="margin-top:10px;font-size:28px;line-height:1.2;font-weight:700;">{safe_accent}</div>
+              <div style="margin-top:8px;font-size:14px;line-height:1.6;opacity:0.88;">{safe_subject}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:34px 30px 26px;">
+              {rendered_body}
+              <div style="margin:26px 0;padding:18px 20px;border:1px solid #dbe3ee;border-left:4px solid #0f172a;background-color:#f8fafc;border-radius:12px;">
+                <div style="font-size:13px;letter-spacing:0.08em;text-transform:uppercase;font-weight:700;color:#475569;margin-bottom:6px;">Next step</div>
+                <div style="font-size:16px;line-height:1.7;color:#0f172a;font-weight:600;">Reply with your updated resume if you're open to exploring the role. We can then arrange a short 15-minute conversation at your convenience.</div>
+              </div>
+              <p style="margin:0 0 12px;font-size:16px;line-height:1.8;color:#334155;">If you'd like to discuss the role, team, or process, just reply and we will be glad to help.</p>
+              <p style="margin:28px 0 0;font-size:16px;line-height:1.8;color:#0f172a;">Best regards,<br><strong>{safe_brand} Team</strong></p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 30px 26px;">
+              <div style="border-top:1px solid #e2e8f0;padding-top:16px;font-size:12px;line-height:1.6;color:#64748b;">
+                This message was sent by Pontis for candidate outreach and is intended to be concise and professional.
+              </div>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
+"""
+
+
 def _error_debug_string(exc: Exception) -> str:
     parts: list[str] = []
     message = str(exc).strip()
@@ -595,7 +665,7 @@ async def _safe_post_slack_message(*, channel_id: str, text: str) -> bool:
 
 # ── Email sending ────────────────────────────────────────────────────────────
 
-def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> tuple[bool, str, str]:
+def _send_resend(*, to_email: str, subject: str, body: str, from_email: str, html_body: str | None = None) -> tuple[bool, str, str]:
     """Returns (success, error_message, provider_message_id)."""
     if not RESEND_API_KEY:
         return False, "RESEND_API_KEY_missing", ""
@@ -612,6 +682,8 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
             "text": body,
             "tags": {"product": "pontis", "flow": "outreach"},
         }
+        if html_body:
+            payload["html"] = html_body
         if bcc_recipients:
             payload["bcc"] = bcc_recipients
         response = resend.Emails.send(payload)
@@ -640,6 +712,8 @@ def _send_resend(*, to_email: str, subject: str, body: str, from_email: str) -> 
             "text": body,
             "tags": {"product": "pontis", "flow": "outreach"},
         }
+        if html_body:
+            payload["html"] = html_body
         if bcc_recipients:
             payload["bcc"] = bcc_recipients
         resp = requests.post(
@@ -673,16 +747,29 @@ def _is_email_provider_configured() -> tuple[bool, str]:
     return False, f"Unsupported OUTREACH_PROVIDER '{OUTREACH_PROVIDER}'"
 
 
-def _send_outreach_email(*, to_email: str, subject: str, body: str) -> tuple[bool, str, str]:
+def _send_outreach_email(*, to_email: str, subject: str, body: str, html_body: str | None = None) -> tuple[bool, str, str]:
     """Returns (success, error, provider_message_id)."""
-    ok, error, msg_id = _send_resend(to_email=to_email, subject=subject, body=body, from_email=OUTREACH_FROM_EMAIL)
+    rendered_html = html_body or _render_professional_outreach_html(subject=subject, body=body)
+    ok, error, msg_id = _send_resend(
+        to_email=to_email,
+        subject=subject,
+        body=body,
+        from_email=OUTREACH_FROM_EMAIL,
+        html_body=rendered_html,
+    )
     if ok:
         return True, "", msg_id
 
     fallback_from = OUTREACH_RESEND_FALLBACK_FROM_EMAIL.strip()
     if fallback_from and fallback_from.lower() != OUTREACH_FROM_EMAIL.lower():
         logger.warning("resend_retry_fallback_from to=%s fallback=%s", to_email, fallback_from)
-        ok2, error2, msg_id2 = _send_resend(to_email=to_email, subject=subject, body=body, from_email=fallback_from)
+        ok2, error2, msg_id2 = _send_resend(
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            from_email=fallback_from,
+            html_body=rendered_html,
+        )
         if ok2:
             return True, "", msg_id2
         return False, f"{error}; retry={error2}", ""
@@ -1252,17 +1339,23 @@ def process_outreach(
         logger.info("outreach_sending_started job_id=%s candidate_id=%s to_email=%s", job_id, candidate_id, to_email)
 
         try:
-            tracked_body = _append_open_tracking_pixel(
-                html_body=body,
+            email_html = _render_professional_outreach_html(subject=subject, body=body)
+            tracked_html = _append_open_tracking_pixel(
+                html_body=email_html,
                 event_id=str(event.id),
                 candidate_id=candidate_id,
                 job_id=job_id,
             )
-            event.body = tracked_body
+            event.body = tracked_html
             if recruiter_id:
                 _increment_daily_quota(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id)
             _increment_daily_quota(_DOMAIN_REPUTATION_PREFIX, _email_domain(to_email), ttl_seconds=86400)
-            email_sent, send_error, msg_id = _send_outreach_email(to_email=to_email, subject=subject, body=tracked_body)
+            email_sent, send_error, msg_id = _send_outreach_email(
+                to_email=to_email,
+                subject=subject,
+                body=body,
+                html_body=tracked_html,
+            )
             if email_sent:
                 now = datetime.now(timezone.utc)
                 event.provider_message_id = msg_id or None
@@ -1734,7 +1827,19 @@ def run_followup_cycle(db: Session) -> dict:
                 continue
 
             try:
-                email_sent, send_error, msg_id = _send_outreach_email(to_email=to_email, subject=subject, body=body)
+                followup_html = _render_professional_outreach_html(subject=subject, body=body, accent_label="Follow-up")
+                tracked_followup_html = _append_open_tracking_pixel(
+                    html_body=followup_html,
+                    event_id=str(event.id),
+                    candidate_id=event.candidate_id,
+                    job_id=event.job_id,
+                )
+                email_sent, send_error, msg_id = _send_outreach_email(
+                    to_email=to_email,
+                    subject=subject,
+                    body=body,
+                    html_body=tracked_followup_html,
+                )
                 if email_sent:
                     try:
                         outreach_repo.upsert(
