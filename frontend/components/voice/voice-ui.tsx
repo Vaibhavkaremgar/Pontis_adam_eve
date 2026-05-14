@@ -10,6 +10,7 @@
  * - Navigates to /review on success, shows retry on failure
  */
 import { AnimatePresence, motion } from "framer-motion";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Vapi from "@vapi-ai/web";
@@ -20,7 +21,7 @@ import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
-import { ChatBubble, type ChatMessage } from "./chat-bubble";
+import { ChatBubble } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -34,7 +35,7 @@ type TranscriptRole = VoiceTurn["role"];
 type StreamingMessage = {
   id: string;
   role: "assistant" | "user";
-  speaker: "Adam" | "You";
+  speaker: "Adam" | "Recruiter";
   content: string;
   isStreaming: boolean;
   isFinal: boolean;
@@ -69,8 +70,8 @@ function buildFullTranscript(turns: VoiceTurn[]): string {
     .join("\n");
 }
 
-function speakerLabel(role: TranscriptRole): "Adam" | "You" {
-  return role === "assistant" ? "Adam" : "You";
+function speakerLabel(role: TranscriptRole): "Adam" | "Recruiter" {
+  return role === "assistant" ? "Adam" : "Recruiter";
 }
 
 function createMessageId(role: TranscriptRole, suffix = "") {
@@ -84,17 +85,12 @@ function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string): Voi
 
   const next = [...turns];
   const last = next[next.length - 1];
-  const lastText = last ? normalize(last.text).toLowerCase() : "";
-  const nextText = normalized.toLowerCase();
-
   if (last?.role === role) {
-    if (lastText === nextText) {
-      return next;
-    }
-    if (nextText.startsWith(lastText) || lastText.startsWith(nextText)) {
-      next[next.length - 1] = { role, text: normalized };
-      return next;
-    }
+    next[next.length - 1] = {
+      role,
+      text: accumulateTranscript(last.text, normalized),
+    };
+    return next;
   }
 
   next.push({ role, text: normalized });
@@ -269,7 +265,6 @@ export function VoiceUi() {
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
-  const transcriptBufferRef = useRef<Record<TranscriptRole, string>>({ assistant: "", user: "" });
 
   useEffect(() => {
     if (!isSessionReady || !user || !jobId) return;
@@ -297,30 +292,28 @@ export function VoiceUi() {
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
   }, [finalTranscript]);
+  const selectionMood = job.vettingMode || "volume";
 
   const upsertStreamingMessage = useCallback((role: TranscriptRole, text: string, isFinal: boolean) => {
-    const previousBuffer = transcriptBufferRef.current[role];
-    const accumulated = accumulateTranscript(previousBuffer, text);
-    const normalized = isFinal ? normalizeFinalTranscriptText(accumulated) : accumulated;
-    if (!normalized) return;
-
-    transcriptBufferRef.current[role] = normalized;
-
     const speaker = speakerLabel(role);
     const timestamp = new Date().toISOString();
+    const incoming = normalize(text);
+    if (!incoming) return;
 
     setFinalTranscript((prev) => {
       const next = [...prev];
       const last = next[next.length - 1];
+      const shouldUpdateLast = Boolean(last && last.role === role);
+      const mergedContent = shouldUpdateLast ? accumulateTranscript(last.content, incoming) : incoming;
+      const normalizedContent = isFinal ? normalizeFinalTranscriptText(mergedContent) : mergedContent;
+      if (!normalizedContent) return prev;
 
-      // Only rewrite the active streaming bubble. Once a turn has been finalized,
-      // keep later assistant/user turns as new bubbles so earlier transcript lines
-      // remain visible in the conversation history.
-      if (last && last.role === role && last.isStreaming) {
+      // Keep every speaker turn as a single bubble by merging same-speaker fragments.
+      if (last && last.role === role) {
         next[next.length - 1] = {
           ...last,
           speaker,
-          content: normalized,
+          content: normalizedContent,
           isStreaming: !isFinal,
           isFinal,
           timestamp,
@@ -343,7 +336,7 @@ export function VoiceUi() {
           id: createMessageId(role),
           role,
           speaker,
-          content: normalized,
+          content: normalizedContent,
           isStreaming: !isFinal,
           isFinal,
           timestamp,
@@ -351,7 +344,7 @@ export function VoiceUi() {
       ];
     });
 
-    turnsRef.current = upsertTurn(turnsRef.current, role, normalized);
+    turnsRef.current = upsertTurn(turnsRef.current, role, incoming);
   }, []);
 
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
@@ -365,7 +358,7 @@ export function VoiceUi() {
 
     const fullTranscript = buildFullTranscript(turns);
     const cleanedTranscript = turns
-      .map((turn) => `${turn.role === "assistant" ? "Adam" : "You"}: ${normalizeFinalTranscriptText(turn.text)}`)
+      .map((turn) => `${turn.role === "assistant" ? "Adam" : "Recruiter"}: ${normalizeFinalTranscriptText(turn.text)}`)
       .join("\n");
     const endedAt = Date.now();
 
@@ -412,7 +405,7 @@ export function VoiceUi() {
     setPipelineStatus("fetching");
     const candidatesResult = await getCandidatesWithMode({
       jobId,
-      mode: job.vettingMode || "volume",
+      mode: selectionMood,
       refresh: true,
     });
 
@@ -429,7 +422,7 @@ export function VoiceUi() {
 
     // Auto-navigate to review after a short pause so recruiter sees "done"
     setTimeout(() => router.push("/review"), 1200);
-  }, [jobId, router, setCandidates, setIsRefined, setVoiceNotes]);
+  }, [jobId, router, selectionMood, setCandidates, setIsRefined, setVoiceNotes, user]);
 
   // ── Vapi instance (created once per session) ───────────────────────────────
   const ensureVapi = useCallback((publicKey: string) => {
@@ -541,7 +534,7 @@ export function VoiceUi() {
 
     vapiRef.current = vapi;
     return vapi;
-  }, [runPipeline, setCallStatus, upsertStreamingMessage]);
+  }, [jobId, processTranscriptEvent, runPipeline, setCallStatus]);
 
   // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
@@ -603,7 +596,6 @@ export function VoiceUi() {
     const jobDescription = job.description || "";
     const location = job.location || "";
     const recruiterName = user?.name || user?.email || "Recruiter";
-    const selectionMood = job.vettingMode || "volume";
     const jobContext = {
       title: job.title || "",
       description: job.description || "",
@@ -718,7 +710,7 @@ export function VoiceUi() {
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 overflow-hidden rounded-full">
-              <img src="/images/adam.png" alt="Adam" className="h-full w-full object-cover" />
+              <Image src="/images/adam.png" alt="Adam" width={40} height={40} className="h-full w-full object-cover" />
             </div>
             <p className="font-heading text-2xl leading-none text-[#111111]">Adam</p>
           </div>
