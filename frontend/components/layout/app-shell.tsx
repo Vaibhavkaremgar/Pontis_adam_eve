@@ -16,14 +16,15 @@ import { Stepper } from "@/components/layout/stepper";
 type AppShellProps = {
   activeStep: number;
   children: ReactNode;
+  contentClassName?: string;
 };
 
-export function AppShell({ activeStep, children }: AppShellProps) {
+export function AppShell({ activeStep, children, contentClassName }: AppShellProps) {
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
       <Stepper activeStep={activeStep} />
-      <main className="mx-auto w-full max-w-4xl px-4 py-10">{children}</main>
+      <main className={contentClassName || "mx-auto w-full max-w-4xl px-4 py-10"}>{children}</main>
     </div>
   );
 }

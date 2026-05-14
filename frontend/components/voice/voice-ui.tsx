@@ -812,9 +812,14 @@ export function VoiceUi() {
       </div>
 
       {/* Conversation panel */}
-      <div className="rounded-[20px] border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-6 shadow-[0_4px_12px_rgba(0,0,0,0.02)] md:p-8">
-        <div className="mb-6 flex items-center justify-between gap-4">
-          <p className="font-body text-base font-semibold text-[#111111]">Conversation</p>
+      <div className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.02)] md:p-8">
+        <div className="mb-6 flex flex-col gap-3 border-b border-[rgba(120,100,80,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-1">
+            <p className="font-body text-base font-semibold text-[#111111]">Full Transcript</p>
+            <p className="font-body text-sm text-[#6B7280]">
+              Every speaker turn stays in one bubble with the complete spoken text.
+            </p>
+          </div>
           {isLive && (
             <p className="font-body text-sm text-[#6B7280]">Say &quot;that&apos;s everything&quot; to finish</p>
           )}
@@ -848,8 +853,13 @@ export function VoiceUi() {
         <div className="space-y-6">
           {/* Empty state */}
           {(isIdle || isErrorState) && finalTranscript.length === 0 && (
-            <div className="flex min-h-[120px] items-center justify-center rounded-xl bg-[#F9FAFB]">
-              <p className="font-body text-sm text-[#6B7280]">Click start to begin voice intake</p>
+            <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-[#D6C8B6] bg-[#F9FAFB] px-6 text-center">
+              <div className="max-w-xl space-y-2">
+                <p className="font-body text-base font-medium text-[#111827]">Click start to begin voice intake</p>
+                <p className="font-body text-sm text-[#6B7280]">
+                  The transcript will expand into a full-page feed so every turn remains readable.
+                </p>
+              </div>
             </div>
           )}
 
@@ -857,10 +867,12 @@ export function VoiceUi() {
           {showChat && (
             <div
               ref={chatScrollRef}
-              className="max-h-[320px] space-y-3 overflow-y-auto rounded-xl bg-[#F8FAFC] p-3 md:max-h-[360px]"
+              className="space-y-4 rounded-2xl bg-[#F8FAFC] p-3 md:p-5"
             >
               {finalTranscript.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
-                <p className="text-center text-xs text-gray-400">Waiting for Adam...</p>
+                <p className="rounded-xl border border-dashed border-[#D6C8B6] bg-white px-4 py-3 text-center text-sm text-gray-500">
+                  Waiting for Adam...
+                </p>
               )}
               {finalTranscript.map((msg, i) => (
                 <ChatBubble key={msg.id || `${msg.role}-${i}`} message={{

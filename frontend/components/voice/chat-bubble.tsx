@@ -21,10 +21,10 @@ export function ChatBubble({
 }) {
   const bubbleClasses =
     message.role === "assistant"
-      ? `ml-0 mr-auto w-fit max-w-[72%] rounded-[20px] border border-[#E7E0D4] bg-gradient-to-b from-white to-[#FCFAF6] px-4 py-3 text-[13px] leading-6 text-[#111827] shadow-[0_8px_22px_rgba(0,0,0,0.05)] ${
+      ? `ml-0 mr-auto flex-1 min-w-0 rounded-[20px] border border-[#E7E0D4] bg-gradient-to-b from-white to-[#FCFAF6] px-4 py-3 text-[13px] leading-6 text-[#111827] shadow-[0_8px_22px_rgba(0,0,0,0.05)] ${
           isInterim ? "opacity-75" : ""
         }`
-      : `ml-auto mr-0 max-w-[72%] rounded-[20px] border border-[#CFE7D8] bg-[#0F6B3A] px-4 py-3 text-sm leading-7 text-white shadow-[0_10px_22px_rgba(15,107,58,0.16)] ${
+      : `ml-auto mr-0 flex-1 min-w-0 rounded-[20px] border border-[#CFE7D8] bg-[#0F6B3A] px-4 py-3 text-sm leading-7 text-white shadow-[0_10px_22px_rgba(15,107,58,0.16)] ${
           isInterim ? "opacity-75" : ""
         }`;
 
