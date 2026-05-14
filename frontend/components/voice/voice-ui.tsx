@@ -98,7 +98,7 @@ function transcriptRoleMeta(role: TranscriptRole) {
   };
 }
 
-function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string): VoiceTurn[] {
+function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string, isFinal = false): VoiceTurn[] {
   const normalized = normalize(text);
   if (!normalized) return turns;
 
@@ -107,7 +107,7 @@ function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string): Voi
   if (last?.role === role) {
     next[next.length - 1] = {
       role,
-      text: accumulateTranscript(last.text, normalized),
+      text: accumulateTranscript(last.text, normalized, isFinal),
     };
     return next;
   }
@@ -215,8 +215,8 @@ function mergeASRRevision(previous: string, incoming: string): string {
   return next;
 }
 
-function accumulateTranscript(previous: string, incoming: string): string {
-  return mergeTranscriptText(previous, incoming);
+function accumulateTranscript(previous: string, incoming: string, isFinal = false): string {
+  return isFinal ? mergeTranscriptEventContent(previous, incoming, true) : mergeTranscriptText(previous, incoming);
 }
 
 function mergeTranscriptText(previous: string, incoming: string): string {
@@ -251,7 +251,7 @@ function mergeTranscriptEventContent(previous: string, incoming: string, isFinal
   if (!candidateContent) return "";
 
   const prev = normalize(previous);
-  return prev && candidateContent.length < prev.length ? prev : candidateContent;
+  return prev && candidateContent.length < prev.length && !isFinal ? prev : candidateContent;
 }
 
 function debugVoice(event: string, details?: Record<string, unknown>) {
@@ -406,7 +406,7 @@ export function VoiceUi() {
       ];
     });
 
-    turnsRef.current = upsertTurn(turnsRef.current, role, incoming);
+    turnsRef.current = upsertTurn(turnsRef.current, role, incoming, isFinal);
   }, []);
 
   const requestCallStop = useCallback(async () => {
@@ -831,7 +831,7 @@ export function VoiceUi() {
       </div>
 
       {/* Conversation panel */}
-      <div className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-5 shadow-[0_4px_12px_rgba(0,0,0,0.02)] md:p-8">
+      <div className="rounded-[28px] border border-gray-200 bg-white p-5 shadow-sm md:p-8">
         <div className="mb-6 flex flex-col gap-3 border-b border-[rgba(120,100,80,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-1">
             <p className="font-body text-base font-semibold text-[#111111]">Full Transcript</p>
@@ -894,37 +894,20 @@ export function VoiceUi() {
                 </p>
               )}
               {finalTranscript.map((msg, i) => (
-                <article
-                  key={msg.id || `${msg.role}-${i}`}
-                  className={`rounded-[28px] border p-5 shadow-[0_6px_18px_rgba(0,0,0,0.04)] md:p-6 ${
-                    msg.role === "assistant"
-                      ? "border-[#E7E0D4] bg-white text-[#111827]"
-                      : "border-[#0F6B3A] bg-[#0F6B3A] text-white"
-                  }`}
-                >
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
-                          transcriptRoleMeta(msg.role).pill
-                        }`}
-                      >
-                        {transcriptRoleMeta(msg.role).name}
-                      </span>
-                      <span className={`text-xs font-medium ${transcriptRoleMeta(msg.role).meta}`}>
-                        {msg.isStreaming ? "Live turn" : "Complete turn"}
-                      </span>
-                    </div>
-                    <time className={`text-xs font-medium ${transcriptRoleMeta(msg.role).meta}`}>
+                <div key={msg.id || `${msg.role}-${i}`} className="space-y-2 rounded-xl px-0 py-0">
+                  <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[#4B5563]">
+                    <span className="font-semibold uppercase tracking-[0.12em]">
+                      {transcriptRoleMeta(msg.role).name}
+                    </span>
+                    <time className="text-xs text-[#6B7280]">
                       {new Date(msg.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
                     </time>
                   </div>
-
-                  <div className="whitespace-pre-wrap break-words text-[15px] leading-8 md:text-[16px] md:leading-8">
+                  <p className="whitespace-pre-wrap break-words text-base leading-7 text-[#111827]">
                     {msg.content}
-                    {msg.isStreaming && <span className={`ml-1 inline-block align-middle ${msg.role === "assistant" ? "text-[#166534]" : "text-white"}`}>|</span>}
-                  </div>
-                </article>
+                    {msg.isStreaming && <span className="ml-1 inline-block align-middle text-[#6B7280]">|</span>}
+                  </p>
+                </div>
               ))}
             </div>
           )}
