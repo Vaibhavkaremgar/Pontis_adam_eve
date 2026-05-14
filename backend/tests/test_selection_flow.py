@@ -59,6 +59,7 @@ sys.modules.setdefault("slack_sdk.errors", fake_slack_sdk_errors)
 
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_service import build_selection_candidate_snapshot
+from app.services import candidate_selection_service
 from app.services.preference_pair_service import generate_three_round_plan
 from app.services import outreach_service
 
@@ -109,6 +110,13 @@ class SelectionFlowTests(unittest.TestCase):
 
         self.assertEqual(len(snapshot), 8)
         self.assertEqual([candidate.id for candidate in snapshot][:2], ["real-candidate-0", "real-candidate-1"])
+
+    def test_final_shortlist_limit_differs_by_mode(self) -> None:
+        elite_job = types.SimpleNamespace(vetting_mode="elite")
+        volume_job = types.SimpleNamespace(vetting_mode="volume")
+
+        self.assertEqual(candidate_selection_service._final_shortlist_limit(elite_job), 5)
+        self.assertEqual(candidate_selection_service._final_shortlist_limit(volume_job), 10)
 
     def test_shortlist_email_bccs_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []

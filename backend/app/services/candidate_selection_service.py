@@ -33,13 +33,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_BATCH_SIZE = 2
 DEFAULT_TOTAL_BATCHES = 3
 DEFAULT_SELECTION_LIMIT = DEFAULT_BATCH_SIZE * DEFAULT_TOTAL_BATCHES
-DEFAULT_FINAL_LIMIT = 12
+DEFAULT_FINAL_LIMITS = {
+    "volume": 10,
+    "elite": 5,
+}
 
 
 def _normalize_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _job_mode(job: Any) -> str:
+    value = _normalize_text(getattr(job, "vetting_mode", "") or getattr(job, "vettingMode", "") or "volume").lower()
+    return value if value in {"volume", "elite"} else "volume"
+
+
+def _final_shortlist_limit(job: Any) -> int:
+    return DEFAULT_FINAL_LIMITS.get(_job_mode(job), DEFAULT_FINAL_LIMITS["volume"])
 
 
 def _tokenize(value: str) -> list[str]:
@@ -183,11 +195,12 @@ def _best_effort_final_candidates(
     selected_rows: list[CandidateResult],
     analysis: dict[str, Any],
 ) -> list[CandidateResult]:
+    final_limit = _final_shortlist_limit(job)
     try:
         real_candidates = fetch_ranked_candidates(
             db=db,
             job_id=updated_session.job_id,
-            mode=(getattr(job, "vetting_mode", None) or "volume").strip().lower(),
+            mode=_job_mode(job),
             refresh=True,
         )
     except Exception as exc:
@@ -211,7 +224,7 @@ def _best_effort_final_candidates(
             updated_session.job_id,
             str(exc),
         )
-        return pool[:DEFAULT_FINAL_LIMIT]
+        return pool[:final_limit]
 
 
 def _build_selection_analysis(selected_candidates: list[CandidateResult]) -> dict[str, Any]:
@@ -457,7 +470,8 @@ def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, 
         if not current_batch and existing.batch_plan:
             current_pair_ids = list((state.get("current_pair") or {}).get("candidate_ids") or [])
             current_batch = [lookup[candidate_id] for candidate_id in current_pair_ids if candidate_id in lookup]
-        final_candidates = [CandidateResult.model_validate(row) for row in (existing.final_candidate_snapshot or [])]
+        final_limit = _final_shortlist_limit(job)
+        final_candidates = [CandidateResult.model_validate(row) for row in (existing.final_candidate_snapshot or [])][:final_limit]
         return existing, _selection_session_payload(session=existing, state=state, current_batch=current_batch, final_candidates=final_candidates)
 
     candidate_pool_snapshot = list(state.get("candidate_pool") or [])
@@ -592,6 +606,7 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             raise APIError("Selection session not found", status_code=404)
 
         if (state.get("status") or "").strip().lower() == "completed" or int(updated_session.current_batch_index or 0) >= DEFAULT_TOTAL_BATCHES:
+            final_limit = _final_shortlist_limit(job)
             selected_lookup = _candidate_lookup_snapshot(updated_session.candidate_pool_snapshot or [])
             selected_rows = [
                 selected_lookup[candidate_id]
@@ -609,13 +624,13 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             repository.complete(
                 updated_session,
                 selection_analysis=analysis,
-                final_candidate_snapshot=[candidate.model_dump() for candidate in final_candidates[:DEFAULT_FINAL_LIMIT]],
+                final_candidate_snapshot=[candidate.model_dump() for candidate in final_candidates[:final_limit]],
             )
             db.commit()
             completed_session = repository.get_by_job(job_id)
             if not completed_session:
                 raise APIError("Selection session not found after completion", status_code=404)
-            final_rows = [CandidateResult.model_validate(row) for row in (completed_session.final_candidate_snapshot or [])]
+            final_rows = [CandidateResult.model_validate(row) for row in (completed_session.final_candidate_snapshot or [])][:final_limit]
             try:
                 state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
             except Exception as exc:
@@ -656,7 +671,9 @@ def get_final_selection_results(*, db: Session, job_id: str) -> dict[str, Any]:
     if (session.status or "").strip().lower() != "completed":
         return payload
 
-    final_rows = [CandidateResult.model_validate(row) for row in (session.final_candidate_snapshot or [])]
+    job = JobRepository(db).get(job_id)
+    final_limit = _final_shortlist_limit(job) if job else DEFAULT_FINAL_LIMITS["volume"]
+    final_rows = [CandidateResult.model_validate(row) for row in (session.final_candidate_snapshot or [])][:final_limit]
     return {
         **payload,
         "analysis": session.selection_analysis or {},
