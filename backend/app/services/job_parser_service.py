@@ -19,6 +19,9 @@ from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_REMOTE_POLICIES = {"remote", "hybrid", "onsite"}
+_ALLOWED_WORK_AUTH = {"required", "preferred", "not-required"}
+
 
 class _JobPageParser(HTMLParser):
     def __init__(self) -> None:
@@ -217,6 +220,60 @@ def _select_job_schema_from_json(json_blocks: list[dict[str, Any]]) -> dict[str,
     return {}
 
 
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _normalize_text(value)
+    return _normalize_text(str(value))
+
+
+def _truncate_text(value: str, limit: int) -> str:
+    normalized = _normalize_text(value)
+    if not normalized or limit <= 0:
+        return ""
+    return normalized[:limit].strip()
+
+
+def _serialize_json_block(block: dict[str, Any], limit: int = 4000) -> str:
+    try:
+        return json.dumps(block, ensure_ascii=False, indent=2)[:limit]
+    except TypeError:
+        return json.dumps(str(block), ensure_ascii=False)[:limit]
+
+
+def _collect_json_source_blocks(parser: _JobPageParser, limit: int = 3) -> list[str]:
+    ld_blocks = _extract_json_ld(parser)
+    json_blocks = _extract_json_blocks(parser)
+    selected: list[str] = []
+
+    job_schema = _select_job_schema(ld_blocks)
+    if job_schema:
+        selected.append(_serialize_json_block(job_schema))
+
+    nested_job_schema = _select_job_schema_from_json(json_blocks)
+    if nested_job_schema and nested_job_schema is not job_schema:
+        selected.append(_serialize_json_block(nested_job_schema))
+
+    if len(selected) < limit:
+        for block in ld_blocks:
+            if block is job_schema:
+                continue
+            selected.append(_serialize_json_block(block))
+            if len(selected) >= limit:
+                break
+
+    if len(selected) < limit:
+        for block in json_blocks:
+            if block is nested_job_schema:
+                continue
+            selected.append(_serialize_json_block(block))
+            if len(selected) >= limit:
+                break
+
+    return selected[:limit]
+
+
 def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str]:
     ld_blocks = _extract_json_ld(parser)
     json_blocks = _extract_json_blocks(parser)
@@ -309,6 +366,61 @@ def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str
     return hints
 
 
+def _normalize_work_authorization(value: Any, fallback: str = "required") -> str:
+    normalized = _normalize_text(str(value or "")).lower().replace("_", "-")
+    if normalized in _ALLOWED_WORK_AUTH:
+        return normalized
+    if "preferred" in normalized:
+        return "preferred"
+    if "not required" in normalized or "not-required" in normalized or "no sponsorship" in normalized:
+        return "not-required"
+    if "required" in normalized:
+        return "required"
+    return fallback
+
+
+def _normalize_remote_policy(value: Any, fallback: str = "hybrid") -> str:
+    normalized = _normalize_text(str(value or "")).lower().replace("_", "-")
+    if normalized in _ALLOWED_REMOTE_POLICIES:
+        return normalized
+    if "remote" in normalized:
+        return "remote"
+    if "onsite" in normalized or "on-site" in normalized or "in office" in normalized:
+        return "onsite"
+    if "hybrid" in normalized:
+        return "hybrid"
+    return fallback
+
+
+def _normalize_job_parse_result(parsed: dict[str, Any], parser: _JobPageParser, url: str, hints: dict[str, str]) -> dict[str, str]:
+    text = parser.get_text()
+    title = _coerce_text(parsed.get("title")) or hints["title"] or _slug_title_from_url(url)
+    description = _coerce_text(parsed.get("description")) or hints["description"] or text[:1200]
+    location = _coerce_text(parsed.get("location")) or hints["location"]
+    compensation = _coerce_text(parsed.get("compensation")) or hints["compensation"]
+    work_authorization = _normalize_work_authorization(parsed.get("workAuthorization"), "required")
+    remote_policy = _normalize_remote_policy(parsed.get("remotePolicy"), "hybrid")
+    experience_required = _coerce_text(parsed.get("experienceRequired")) or hints["experience"]
+
+    if not title:
+        title = "Job Posting"
+    if not description:
+        description = f"Imported from {urlparse(url).netloc or 'job posting'}."
+
+    # Keep the description as a real sentence/paragraph rather than a fragmentary outline.
+    description = re.sub(r"\s+\n", "\n", description).strip()
+
+    return {
+        "title": title,
+        "description": description,
+        "location": location,
+        "compensation": compensation,
+        "workAuthorization": work_authorization,
+        "remotePolicy": remote_policy,
+        "experienceRequired": experience_required,
+    }
+
+
 def _build_llm_prompt(url: str, parser: _JobPageParser, hints: dict[str, str]) -> str:
     meta_lines = "\n".join(
         f"- {key}: {value}"
@@ -321,14 +433,22 @@ def _build_llm_prompt(url: str, parser: _JobPageParser, hints: dict[str, str]) -
         if value
     )
     structured_hints = "\n".join(f"- {key}: {value}" for key, value in hints.items() if value)
+    json_sources = "\n\n".join(_collect_json_source_blocks(parser))
     text = parser.get_text()
-    clipped_text = text[:12000]
+    clipped_text = _truncate_text(text, 14000)
 
     return (
-        "You are extracting structured job posting details from a job page.\n"
-        "Use only the information present in the page content and metadata.\n"
-        "If a value is unknown, use an empty string.\n"
-        "Return only valid JSON with this schema:\n"
+        "You are a precise job-posting extraction engine.\n"
+        "Return only valid JSON and nothing else.\n"
+        "Do not invent or infer details that are not explicitly supported by the page.\n"
+        "Prefer exact values from structured data (JSON-LD / embedded JSON) first, then metadata, then visible page text.\n"
+        "If a field is unknown, return an empty string except for the two enum fields below.\n"
+        "Normalize the enums exactly as follows:\n"
+        '- workAuthorization: one of "required", "preferred", "not-required"\n'
+        '- remotePolicy: one of "remote", "hybrid", "onsite"\n'
+        "Keep title as the actual job title from the posting.\n"
+        "Keep description as the main job description paragraph(s), preserving the substance of the posting.\n"
+        "Return only JSON with this schema:\n"
         "{\n"
         '  "title": "",\n'
         '  "description": "",\n'
@@ -341,6 +461,7 @@ def _build_llm_prompt(url: str, parser: _JobPageParser, hints: dict[str, str]) -
         f"URL: {url}\n\n"
         f"Metadata:\n{meta_lines or '- none'}\n\n"
         f"Structured hints:\n{structured_hints or '- none'}\n\n"
+        f"Structured JSON sources:\n{json_sources or '- none'}\n\n"
         f"Page text:\n{clipped_text}\n"
     )
 
@@ -427,20 +548,7 @@ def parse_job_posting_url(*, url: str) -> dict[str, str]:
         try:
             parsed = generate(llm_prompt, expect_json=True)
             if isinstance(parsed, dict):
-                result = {
-                    "title": _normalize_text(str(parsed.get("title") or "")) or hints["title"],
-                    "description": _normalize_text(str(parsed.get("description") or "")) or hints["description"],
-                    "location": _normalize_text(str(parsed.get("location") or "")) or hints["location"],
-                    "compensation": _normalize_text(str(parsed.get("compensation") or "")) or hints["compensation"],
-                    "workAuthorization": _normalize_text(str(parsed.get("workAuthorization") or "")) or "required",
-                    "remotePolicy": _normalize_text(str(parsed.get("remotePolicy") or "")) or "hybrid",
-                    "experienceRequired": _normalize_text(str(parsed.get("experienceRequired") or "")) or hints["experience"],
-                }
-                if not result["title"]:
-                    result["title"] = hints["title"]
-                if not result["description"]:
-                    result["description"] = hints["description"] or parser.get_text()[:1200]
-                return result
+                return _normalize_job_parse_result(parsed, parser, raw_url, hints)
         except Exception as exc:
             logger.warning("job_parse_llm_failed url=%s error=%s", raw_url, str(exc))
 
