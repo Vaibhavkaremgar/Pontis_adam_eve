@@ -21,6 +21,9 @@ from app.services.skill_normalizer import parse_experience
 
 logger = logging.getLogger(__name__)
 _EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}", re.IGNORECASE)
+_PHONE_PATTERN = re.compile(r"(?:\+?\d[\d\s().-]{7,}\d)")
+_LINKEDIN_PATTERN = re.compile(r"https?://(?:www\.)?linkedin\.com/[^\s)>\]]+", re.IGNORECASE)
+_GITHUB_PATTERN = re.compile(r"https?://(?:www\.)?github\.com/[^\s)>\]]+", re.IGNORECASE)
 
 
 class ResumeStructuredProfile(BaseModel):
@@ -94,6 +97,40 @@ class ResumeStructuredProfile(BaseModel):
         return self
 
 
+class ResumeContactDetails(BaseModel):
+    email: str = ""
+    phone: str = ""
+    linkedin_url: str = ""
+    github_url: str = ""
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _normalize_email(cls, value: Any) -> str:
+        candidate = re.sub(r"\s+", "", str(value or "")).strip().lower()
+        if not candidate or len(candidate) > 320:
+            return ""
+        if ".." in candidate or "@" not in candidate:
+            return ""
+        local, _, domain = candidate.rpartition("@")
+        if not local or not domain or domain.startswith(".") or domain.endswith("."):
+            return ""
+        return candidate if _EMAIL_PATTERN.fullmatch(candidate) else ""
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _normalize_phone(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        candidate = re.sub(r"[^0-9+]", "", str(value))
+        return candidate if len(candidate) >= 8 else ""
+
+    @field_validator("linkedin_url", "github_url", mode="before")
+    @classmethod
+    def _normalize_url(cls, value: Any) -> str:
+        candidate = re.sub(r"\s+", "", str(value or "")).strip()
+        return candidate.rstrip(").,;]") if candidate else ""
+
+
 def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -110,6 +147,19 @@ def _extract_emails_from_text(text: str) -> list[str]:
         seen.add(normalized)
         emails.append(normalized)
     return emails
+
+
+def _extract_phone_number(text: str) -> str:
+    match = _PHONE_PATTERN.search(text or "")
+    if not match:
+        return ""
+    value = re.sub(r"[^0-9+]", "", match.group(0))
+    return value if len(value) >= 8 else ""
+
+
+def _extract_social_url(text: str, pattern: re.Pattern[str]) -> str:
+    match = pattern.search(text or "")
+    return match.group(0).rstrip(").,;]") if match else ""
 
 
 def _pdf_file_fingerprint(path: Path) -> str:
@@ -179,6 +229,25 @@ def _resume_prompt(text: str, *, file_name: str) -> str:
     )
 
 
+def _resume_contact_prompt(text: str, *, file_name: str, current_values: ResumeContactDetails) -> str:
+    clipped_text = text[:12000]
+    return (
+        "You are extracting contact details from a resume PDF.\n"
+        "Return only valid JSON with this schema:\n"
+        '{\n'
+        '  "email": "",\n'
+        '  "phone": "",\n'
+        '  "linkedin_url": "",\n'
+        '  "github_url": ""\n'
+        "}\n"
+        "Only fill fields that are actually present in the resume. Do not invent facts.\n"
+        "If a field is already present in the current extracted values, keep it unchanged.\n\n"
+        f"Current extracted values: {json.dumps(current_values.model_dump(), ensure_ascii=True)}\n\n"
+        f"Resume file: {file_name}\n\n"
+        f"Resume text:\n{clipped_text}\n"
+    )
+
+
 def _coerce_profile_payload(raw: Any, resume_text: str, file_name: str) -> dict[str, Any]:
     if isinstance(raw, ResumeStructuredProfile):
         return raw.model_dump()
@@ -189,6 +258,15 @@ def _coerce_profile_payload(raw: Any, resume_text: str, file_name: str) -> dict[
         if isinstance(first, dict):
             return first
     logger.warning("resume_profile_payload_invalid file=%s type=%s", file_name, type(raw).__name__)
+    return {}
+
+
+def _coerce_contact_payload(raw: Any, file_name: str) -> dict[str, Any]:
+    if isinstance(raw, ResumeContactDetails):
+        return raw.model_dump()
+    if isinstance(raw, dict):
+        return raw
+    logger.warning("resume_contact_payload_invalid file=%s type=%s", file_name, type(raw).__name__)
     return {}
 
 
@@ -214,6 +292,19 @@ def _heuristic_profile_from_text(text: str) -> dict[str, Any]:
         "summary": " ".join(lines[:5])[:500],
         "domain_experience": [],
     }
+
+
+def _merge_contact_details(
+    local_details: ResumeContactDetails,
+    llm_payload: dict[str, Any],
+) -> ResumeContactDetails:
+    llm_details = ResumeContactDetails.model_validate(llm_payload or {})
+    return ResumeContactDetails(
+        email=local_details.email or llm_details.email,
+        phone=local_details.phone or llm_details.phone,
+        linkedin_url=local_details.linkedin_url or llm_details.linkedin_url,
+        github_url=local_details.github_url or llm_details.github_url,
+    )
 
 
 def parse_resume_profile(
@@ -249,6 +340,32 @@ def parse_resume_profile(
     raise RuntimeError(f"Unable to parse resume profile for {file_name}")
 
 
+def extract_resume_contact_details(
+    *,
+    resume_text: str,
+    file_name: str,
+) -> ResumeContactDetails:
+    extracted_emails = _extract_emails_from_text(resume_text)
+    local_details = ResumeContactDetails(
+        email=(extracted_emails[0] if extracted_emails else ""),
+        phone=_extract_phone_number(resume_text),
+        linkedin_url=_extract_social_url(resume_text, _LINKEDIN_PATTERN),
+        github_url=_extract_social_url(resume_text, _GITHUB_PATTERN),
+    )
+    if local_details.email and local_details.phone and local_details.linkedin_url and local_details.github_url:
+        return local_details
+
+    prompt = _resume_contact_prompt(resume_text, file_name=file_name, current_values=local_details)
+    raw_output = generate(prompt, expect_json=True)
+    payload = _coerce_contact_payload(raw_output, file_name)
+    try:
+        return _merge_contact_details(local_details, payload)
+    except ValidationError as exc:
+        logger.warning("resume_contact_validation_failed file=%s error=%s", file_name, str(exc))
+        log_metric("parsing_failures", file_name=file_name, reason="contact_validation_error")
+        return local_details
+
+
 def _build_embedding_text(profile: ResumeStructuredProfile, resume_text: str) -> str:
     parts = [
         f"Headline: {profile.headline}".strip(),
@@ -274,8 +391,12 @@ def build_internal_candidate_payload(
     source_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_id = str(uuid5(NAMESPACE_URL, f"pontis-internal-resume:{resume_fingerprint}"))
-    extracted_emails = _extract_emails_from_text(resume_text)
-    primary_email = extracted_emails[0] if extracted_emails else ""
+    local_emails = _extract_emails_from_text(resume_text)
+    contact_details = extract_resume_contact_details(resume_text=resume_text, file_name=file_name)
+    extracted_emails = local_emails[:]
+    if not extracted_emails and contact_details.email:
+        extracted_emails = [contact_details.email]
+    primary_email = extracted_emails[0] if extracted_emails else contact_details.email
     return {
         "candidate_id": candidate_id,
         "resume_fingerprint": resume_fingerprint,
@@ -307,7 +428,10 @@ def build_internal_candidate_payload(
         "emails_primary": primary_email,
         "emails": extracted_emails,
         "contact_emails": extracted_emails,
-        "email_source": "resume_text" if primary_email else "",
+        "phone": contact_details.phone,
+        "linkedin_url": contact_details.linkedin_url,
+        "github_url": contact_details.github_url,
+        "email_source": "resume_text" if local_emails else ("groq" if primary_email else ""),
         "parsed_data": profile.model_dump(),
         "embedding_version": EMBEDDING_VERSION,
         "vector_version": EMBEDDING_VERSION,

@@ -30,7 +30,7 @@ from app.core.config import (
 from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository, JobRepository
 from app.services.email_service import send_email
 from app.services.interview_invite_service import send_interview_invite
-from app.services.resume_ingestion_service import parse_resume_profile
+from app.services.resume_ingestion_service import extract_resume_contact_details, parse_resume_profile
 from app.services.slack_service import notify_slack
 from app.services.webhook_security import get_webhook_header, verify_resend_webhook
 
@@ -299,37 +299,18 @@ def _extract_resume_text(*, attachment: InboundAttachmentDownload) -> str:
     return _extract_plain_text(attachment.content)
 
 
-def _extract_phone_number(text: str) -> str:
-    match = re.search(r"(?:\+?\d[\d\s().-]{7,}\d)", text or "")
-    if not match:
-        return ""
-    value = re.sub(r"[^0-9+]", "", match.group(0))
-    return value if len(value) >= 8 else ""
-
-
-def _extract_social_url(text: str, pattern: str) -> str:
-    match = re.search(pattern, text or "", re.IGNORECASE)
-    return match.group(0).rstrip(").,;]") if match else ""
-
-
 def _parse_resume_attachment(*, attachment: InboundAttachmentDownload) -> ResumeParseResult:
     resume_text = _extract_resume_text(attachment=attachment)
     profile = parse_resume_profile(resume_text=resume_text, file_name=attachment.filename)
     resume_json = profile.model_dump()
-    contact_email = ""
-    email_match = re.search(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}", resume_text, re.IGNORECASE)
-    if email_match:
-        contact_email = email_match.group(0).lower()
-    phone = _extract_phone_number(resume_text)
-    linkedin_url = _extract_social_url(resume_text, r"https?://(?:www\.)?linkedin\.com/[^\s)>\]]+")
-    github_url = _extract_social_url(resume_text, r"https?://(?:www\.)?github\.com/[^\s)>\]]+")
+    contact_details = extract_resume_contact_details(resume_text=resume_text, file_name=attachment.filename)
     return ResumeParseResult(
         text=resume_text,
         profile=resume_json,
-        contact_email=contact_email,
-        phone=phone,
-        linkedin_url=linkedin_url,
-        github_url=github_url,
+        contact_email=contact_details.email,
+        phone=contact_details.phone,
+        linkedin_url=contact_details.linkedin_url,
+        github_url=contact_details.github_url,
     )
 
 

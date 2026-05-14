@@ -101,6 +101,47 @@ class ResumeIngestionTests(unittest.TestCase):
         self.assertEqual(payload["emails"], ["priya.sharma@example.com"])
         self.assertEqual(payload["email_source"], "resume_text")
 
+    def test_internal_candidate_payload_uses_groq_when_email_is_missing(self) -> None:
+        profile = ResumeStructuredProfile(
+            full_name="Priya Sharma",
+            headline="Senior Backend Engineer",
+            years_experience=7,
+            skills=["Python", "FastAPI"],
+            companies=["Pontis"],
+            education=["B.Tech"],
+            projects=["Retrieval system"],
+            certifications=["AWS"],
+            location="Bengaluru, India",
+            summary="Built candidate systems.",
+            domain_experience=["Recruiting"],
+        )
+
+        groq_contact_payload = {
+            "email": "priya.groq@example.com",
+            "phone": "+919999988888",
+            "linkedin_url": "https://www.linkedin.com/in/priyasharma",
+            "github_url": "https://github.com/priyasharma",
+        }
+
+        with patch("app.services.resume_ingestion_service.generate", return_value=groq_contact_payload):
+            payload = build_internal_candidate_payload(
+                profile=profile,
+                resume_text="Priya Sharma\nSenior Backend Engineer\nBengaluru, India",
+                file_name="resume.pdf",
+                source_path="backend/resumes/resume.pdf",
+                resume_fingerprint="abc123-groq-email",
+            )
+
+        self.assertEqual(payload["email"], "priya.groq@example.com")
+        self.assertEqual(payload["work_email"], "priya.groq@example.com")
+        self.assertEqual(payload["personal_email"], "priya.groq@example.com")
+        self.assertEqual(payload["emails"], ["priya.groq@example.com"])
+        self.assertEqual(payload["contact_emails"], ["priya.groq@example.com"])
+        self.assertEqual(payload["email_source"], "groq")
+        self.assertEqual(payload["phone"], "+919999988888")
+        self.assertEqual(payload["linkedin_url"], "https://www.linkedin.com/in/priyasharma")
+        self.assertEqual(payload["github_url"], "https://github.com/priyasharma")
+
     def test_repository_upsert_accepts_rich_payload(self) -> None:
         class _FakeNested:
             def __enter__(self):
