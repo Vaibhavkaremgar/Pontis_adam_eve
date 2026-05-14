@@ -105,7 +105,8 @@ function extractTranscriptEvent(message: unknown): { role: "assistant" | "user";
   const text = normalize(r.transcript);
   if (!text) return null;
   const role: "assistant" | "user" = r.role === "assistant" ? "assistant" : "user";
-  return { role, text, isFinal: r.transcriptType === "final" };
+  const isFinal = r.transcriptType === "final" || r.isFinal === true || r.final === true;
+  return { role, text, isFinal };
 }
 
 function classifyVoiceError(error: unknown): { kind: string; message: string } {
@@ -162,7 +163,6 @@ function normalizeFinalTranscriptText(text: string): string {
 
   const sentence = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
   return sentence
-    .replace(/(^|[.!?]\s+)([a-z])/g, (_match, prefix: string, letter: string) => `${prefix}${letter.toUpperCase()}`)
     .replace(/\b(and)\s+and\b/gi, "and")
     .replace(/\b(,)\s+(,)+/g, ",")
     .replace(/\s+,/g, ",")
@@ -197,6 +197,10 @@ function mergeASRRevision(previous: string, incoming: string): string {
 }
 
 function accumulateTranscript(previous: string, incoming: string): string {
+  return mergeTranscriptText(previous, incoming);
+}
+
+function mergeTranscriptText(previous: string, incoming: string): string {
   const prev = normalize(previous);
   const next = normalize(incoming);
   if (!prev) return next;
@@ -220,6 +224,15 @@ function accumulateTranscript(previous: string, incoming: string): string {
 
   const separator = /[.!?]$/.test(prev) ? " " : ". ";
   return `${prev}${separator}${next}`.replace(/\s+/g, " ").trim();
+}
+
+function mergeTranscriptEventContent(previous: string, incoming: string, isFinal: boolean): string {
+  const mergedContent = mergeTranscriptText(previous, incoming);
+  const candidateContent = isFinal ? normalizeFinalTranscriptText(mergedContent) : mergedContent;
+  if (!candidateContent) return "";
+
+  const prev = normalize(previous);
+  return prev && candidateContent.length < prev.length ? prev : candidateContent;
 }
 
 function debugVoice(event: string, details?: Record<string, unknown>) {
@@ -333,10 +346,9 @@ export function VoiceUi() {
     setFinalTranscript((prev) => {
       const next = [...prev];
       const last = next[next.length - 1];
-      const shouldUpdateLast = Boolean(last && last.role === role);
-      const mergedContent = shouldUpdateLast ? accumulateTranscript(last.content, incoming) : incoming;
-      const candidateContent = isFinal ? normalizeFinalTranscriptText(mergedContent) : mergedContent;
-      const normalizedContent = last && candidateContent.length < last.content.length ? last.content : candidateContent;
+      const normalizedContent = last && last.role === role
+        ? mergeTranscriptEventContent(last.content, incoming, isFinal)
+        : mergeTranscriptEventContent("", incoming, isFinal);
       if (!normalizedContent) return prev;
 
       // Keep every speaker turn as a single bubble by merging same-speaker fragments.
