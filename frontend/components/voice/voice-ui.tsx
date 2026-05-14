@@ -21,7 +21,6 @@ import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
-import { ChatBubble } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -77,6 +76,26 @@ function speakerLabel(role: TranscriptRole): "Adam" | "Recruiter" {
 function createMessageId(role: TranscriptRole, suffix = "") {
   const base = `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return suffix ? `${base}-${suffix}` : base;
+}
+
+function transcriptRoleMeta(role: TranscriptRole) {
+  if (role === "assistant") {
+    return {
+      name: "Adam",
+      accent: "text-[#166534]",
+      pill: "border-[#D1FAE5] bg-[#ECFDF5] text-[#166534]",
+      card: "border-[#E7E0D4] bg-white text-[#111827]",
+      meta: "text-[#6B7280]",
+    };
+  }
+
+  return {
+    name: "Recruiter",
+    accent: "text-white",
+    pill: "border-[#4CAF7A] bg-[#0F6B3A] text-white",
+    card: "border-[#0F6B3A] bg-[#0F6B3A] text-white",
+    meta: "text-white/70",
+  };
 }
 
 function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string): VoiceTurn[] {
@@ -867,23 +886,45 @@ export function VoiceUi() {
           {showChat && (
             <div
               ref={chatScrollRef}
-              className="space-y-4 rounded-2xl bg-[#F8FAFC] p-3 md:p-5"
+              className="space-y-5 rounded-3xl bg-[#F8FAFC] p-4 md:p-6"
             >
               {finalTranscript.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
-                <p className="rounded-xl border border-dashed border-[#D6C8B6] bg-white px-4 py-3 text-center text-sm text-gray-500">
+                <p className="rounded-2xl border border-dashed border-[#D6C8B6] bg-white px-4 py-4 text-center text-sm text-gray-500">
                   Waiting for Adam...
                 </p>
               )}
               {finalTranscript.map((msg, i) => (
-                <ChatBubble key={msg.id || `${msg.role}-${i}`} message={{
-                  id: msg.id,
-                  role: msg.role,
-                  speaker: msg.speaker,
-                  content: msg.content,
-                  isStreaming: msg.isStreaming,
-                  isFinal: msg.isFinal,
-                  timestamp: msg.timestamp,
-                }} />
+                <article
+                  key={msg.id || `${msg.role}-${i}`}
+                  className={`rounded-[28px] border p-5 shadow-[0_6px_18px_rgba(0,0,0,0.04)] md:p-6 ${
+                    msg.role === "assistant"
+                      ? "border-[#E7E0D4] bg-white text-[#111827]"
+                      : "border-[#0F6B3A] bg-[#0F6B3A] text-white"
+                  }`}
+                >
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${
+                          transcriptRoleMeta(msg.role).pill
+                        }`}
+                      >
+                        {transcriptRoleMeta(msg.role).name}
+                      </span>
+                      <span className={`text-xs font-medium ${transcriptRoleMeta(msg.role).meta}`}>
+                        {msg.isStreaming ? "Live turn" : "Complete turn"}
+                      </span>
+                    </div>
+                    <time className={`text-xs font-medium ${transcriptRoleMeta(msg.role).meta}`}>
+                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                    </time>
+                  </div>
+
+                  <div className="whitespace-pre-wrap break-words text-[15px] leading-8 md:text-[16px] md:leading-8">
+                    {msg.content}
+                    {msg.isStreaming && <span className={`ml-1 inline-block align-middle ${msg.role === "assistant" ? "text-[#166534]" : "text-white"}`}>|</span>}
+                  </div>
+                </article>
               ))}
             </div>
           )}

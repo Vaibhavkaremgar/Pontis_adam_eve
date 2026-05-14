@@ -59,7 +59,7 @@ export default function VoicePage() {
   }
 
   return (
-    <AppShell activeStep={3} contentClassName="mx-auto w-full max-w-[1400px] px-4 py-6 md:px-6 lg:px-8">
+    <AppShell activeStep={3} contentClassName="mx-auto w-full max-w-3xl px-4 py-6 md:px-6 lg:px-8">
       <VoiceUi />
 
       <div className="mt-8 flex justify-end">
