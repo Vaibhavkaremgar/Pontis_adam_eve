@@ -20,9 +20,12 @@ from app.services.job_parser_service import parse_job_posting_url
 
 
 class _FakeResponse:
-    def __init__(self, text: str, status_code: int = 200) -> None:
+    def __init__(self, text: str, status_code: int = 200, *, content: bytes | None = None, headers: dict[str, str] | None = None) -> None:
         self.text = text
         self.status_code = status_code
+        self.content = content if content is not None else text.encode("utf-8")
+        self.headers = headers or {"Content-Type": "text/html; charset=utf-8"}
+        self.apparent_encoding = "utf-8"
 
 
 class _FakeSession:
@@ -86,6 +89,39 @@ class JobParserServiceTests(unittest.TestCase):
         self.assertEqual(parsed["remotePolicy"], "remote")
         self.assertEqual(parsed["experienceRequired"], "5+ years")
         self.assertEqual(fake_session.requested_urls, ["https://example.com/jobs/senior-frontend-engineer"])
+
+    def test_parse_job_posting_url_uses_pdf_extraction_when_needed(self) -> None:
+        pdf_bytes = b"%PDF-1.4 fake pdf bytes"
+        fake_session = _FakeSession("")
+        fake_session._html = ""
+
+        with patch("app.utils.ssrf.validate_public_url", side_effect=lambda url: url), patch(
+            "app.services.job_parser_service._http_session", return_value=fake_session
+        ), patch(
+            "app.services.job_parser_service._extract_pdf_text_from_bytes",
+            return_value="Senior Java Full Stack Developer in Hyderabad Pune Mumbai. 8 To 12 Years.",
+        ) as mock_pdf_extract, patch(
+            "app.services.job_parser_service.generate",
+            return_value={
+                "title": "Senior Java Full Stack Developer",
+                "description": "Build scalable enterprise systems.",
+                "location": "Hyderabad, Pune, Mumbai",
+                "compensation": "",
+                "workAuthorization": "required",
+                "remotePolicy": "hybrid",
+                "experienceRequired": "8 to 12 years",
+            },
+        ):
+            fake_session.get = lambda url, timeout, headers: _FakeResponse(
+                "",
+                content=pdf_bytes,
+                headers={"Content-Type": "application/pdf"},
+            )
+            parsed = parse_job_posting_url(url="https://example.com/jobs/senior-java-full-stack-developer.pdf")
+
+        self.assertEqual(parsed["title"], "Senior Java Full Stack Developer")
+        self.assertEqual(parsed["experienceRequired"], "8 to 12 years")
+        mock_pdf_extract.assert_called_once()
 
 
 if __name__ == "__main__":

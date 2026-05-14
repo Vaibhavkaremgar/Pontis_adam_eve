@@ -267,42 +267,7 @@ def _normalize_identity_value(value: str | None) -> str:
 
 
 def _extract_candidate_email(candidate: dict) -> str:
-    direct_keys = ("work_email", "personal_email", "email", "emails_primary")
-    for key in direct_keys:
-        value = candidate.get(key)
-        if isinstance(value, str) and value.strip():
-            extracted = _candidate_email_value(value)
-            if extracted:
-                return extracted
-
-    for key in ("emails", "personal_emails", "work_emails"):
-        value = candidate.get(key)
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, str) and item.strip():
-                    extracted = _candidate_email_value(item)
-                    if extracted:
-                        return extracted
-                if isinstance(item, dict):
-                    address = str(item.get("address") or item.get("email") or "").strip()
-                    if address:
-                        extracted = _candidate_email_value(address)
-                        if extracted:
-                            return extracted
-
-    for key in ("raw_resume_text", "rawResumeText"):
-        value = candidate.get(key)
-        if isinstance(value, str) and value.strip():
-            extracted = _candidate_email_value(value)
-            if extracted:
-                return extracted
-
-    parsed_data = candidate.get("parsed_data") or candidate.get("parsedData")
-    if isinstance(parsed_data, dict):
-        extracted = _extract_candidate_email(parsed_data)
-        if extracted:
-            return extracted
-    return ""
+    return _candidate_email_value(candidate)
 
 
 def _candidate_lookup_value(candidate: Any, key: str) -> str:
@@ -404,42 +369,97 @@ def _candidate_profile_details(*, profile: Any | None = None, raw_data: Any | No
     if isinstance(raw_data, dict):
         source.update(raw_data)
 
-    def _string_value(*keys: str) -> str:
-        for key in keys:
-            value = source.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+    def _find_node(node: Any, *, wanted: set[str]) -> Any:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_name = str(key).strip().lower()
+                if key_name in wanted:
+                    return value
+                found = _find_node(value, wanted=wanted)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = _find_node(item, wanted=wanted)
+                if found is not None:
+                    return found
+        return None
+
+    def _first_text(node: Any) -> str:
+        if isinstance(node, str):
+            return _normalize_text(node)
+        if isinstance(node, dict):
+            for value in node.values():
+                text = _first_text(value)
+                if text:
+                    return text
+        elif isinstance(node, list):
+            for item in node:
+                text = _first_text(item)
+                if text:
+                    return text
         return ""
 
+    def _collect_list_values(node: Any) -> list[str]:
+        collected: list[str] = []
+        seen: set[str] = set()
+
+        def visit(value: Any) -> None:
+            if isinstance(value, dict):
+                for item in value.values():
+                    visit(item)
+            elif isinstance(value, list):
+                for item in value:
+                    visit(item)
+            else:
+                text = _normalize_text(value)
+                if not text:
+                    return
+                key = text.lower()
+                if key in seen:
+                    return
+                seen.add(key)
+                collected.append(text)
+
+        visit(node)
+        return collected
+
+    def _string_value(*keys: str) -> str:
+        wanted = {key.lower() for key in keys}
+        node = _find_node(source, wanted=wanted)
+        if node is None:
+            return ""
+        if "email" in wanted:
+            return _candidate_email_value(node)
+        return _first_text(node)
+
     def _list_value(*keys: str) -> list[str]:
-        for key in keys:
-            value = source.get(key)
-            if isinstance(value, list):
-                return [str(item).strip() for item in value if str(item).strip()]
+        wanted = {key.lower() for key in keys}
+        node = _find_node(source, wanted=wanted)
+        if node is None:
+            return []
+        collected = _collect_list_values(node)
+        if collected:
+            return collected
         return []
 
-    years_experience = source.get("years_experience")
+    years_experience_node = _find_node(source, wanted={"years_experience", "yearsexperience", "experience"})
+    years_experience = years_experience_node if years_experience_node is not None else source.get("years_experience")
     if years_experience is None:
         years_experience = source.get("yearsExperience")
+    if isinstance(years_experience, (dict, list)):
+        years_experience = _first_text(years_experience)
     try:
         years_experience_value = float(years_experience or 0.0)
     except (TypeError, ValueError):
-        years_experience_value = 0.0
+        match = re.search(r"\d+(?:\.\d+)?", _normalize_text(years_experience))
+        years_experience_value = float(match.group(0)) if match else 0.0
 
     parsed_data = source.get("parsed_data") or source.get("parsedData") or {}
     if not isinstance(parsed_data, dict):
         parsed_data = {}
 
-    email = _candidate_email_value(
-        source.get("work_email")
-        or source.get("email")
-        or source.get("personal_email")
-        or source.get("emails_primary")
-        or source.get("raw_resume_text")
-        or source.get("rawResumeText")
-    )
-    if not email:
-        email = _extract_candidate_email(source)
+    email = _candidate_email_value(source)
     is_mock_email = email.endswith("@test.local") if email else False
 
     return {

@@ -125,6 +125,30 @@ function classifyVoiceError(error: unknown): { kind: string; message: string } {
   return { kind: type || "unknown", message: message || "Voice assistant failed to connect." };
 }
 
+const AUTO_CLOSE_PHRASES = [
+  "that's fine",
+  "thats fine",
+  "we are good to go",
+  "we're good to go",
+  "we're good",
+  "we are good",
+  "that is everything",
+  "that's everything",
+  "that is all",
+  "that's all",
+  "no that's all",
+  "no thanks that's all",
+  "nothing else",
+  "nothing more",
+];
+
+function shouldAutoCloseCall(text: string): boolean {
+  const normalized = normalize(text).toLowerCase();
+  if (!normalized) return false;
+  if (/\b(not|nope|don't|do not)\b/.test(normalized)) return false;
+  return AUTO_CLOSE_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
 function normalizeFinalTranscriptText(text: string): string {
   const normalized = normalize(text);
   if (!normalized) return "";
@@ -138,6 +162,7 @@ function normalizeFinalTranscriptText(text: string): string {
 
   const sentence = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
   return sentence
+    .replace(/(^|[.!?]\s+)([a-z])/g, (_match, prefix: string, letter: string) => `${prefix}${letter.toUpperCase()}`)
     .replace(/\b(and)\s+and\b/gi, "and")
     .replace(/\b(,)\s+(,)+/g, ",")
     .replace(/\s+,/g, ",")
@@ -189,8 +214,12 @@ function accumulateTranscript(previous: string, incoming: string): string {
   const revised = mergeASRRevision(prev, next);
   if (revised.toLowerCase() === prevLower) return prev;
   if (revised.toLowerCase() === nextLower) return next;
+  if (revised && revised.length >= prev.length && revised.toLowerCase().includes(prevLower)) {
+    return revised;
+  }
 
-  return `${prev} ${next}`.replace(/\s+/g, " ").trim();
+  const separator = /[.!?]$/.test(prev) ? " " : ". ";
+  return `${prev}${separator}${next}`.replace(/\s+/g, " ").trim();
 }
 
 function debugVoice(event: string, details?: Record<string, unknown>) {
@@ -264,6 +293,7 @@ export function VoiceUi() {
   const turnsRef = useRef<VoiceTurn[]>([]);       // full structured conversation
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
+  const autoEndTimerRef = useRef<number | null>(null);
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
 
   useEffect(() => {
@@ -305,7 +335,8 @@ export function VoiceUi() {
       const last = next[next.length - 1];
       const shouldUpdateLast = Boolean(last && last.role === role);
       const mergedContent = shouldUpdateLast ? accumulateTranscript(last.content, incoming) : incoming;
-      const normalizedContent = isFinal ? normalizeFinalTranscriptText(mergedContent) : mergedContent;
+      const candidateContent = isFinal ? normalizeFinalTranscriptText(mergedContent) : mergedContent;
+      const normalizedContent = last && candidateContent.length < last.content.length ? last.content : candidateContent;
       if (!normalizedContent) return prev;
 
       // Keep every speaker turn as a single bubble by merging same-speaker fragments.
@@ -347,9 +378,36 @@ export function VoiceUi() {
     turnsRef.current = upsertTurn(turnsRef.current, role, incoming);
   }, []);
 
+  const requestCallStop = useCallback(async () => {
+    const vapi = vapiRef.current;
+    if (!vapi) return;
+    if (autoEndTimerRef.current !== null) {
+      window.clearTimeout(autoEndTimerRef.current);
+      autoEndTimerRef.current = null;
+    }
+    terminalStateRef.current = "manual-stop";
+    setCallStatus("processing");
+    try {
+      await vapi.stop();
+    } catch {
+      setCallStatus("error");
+      setPipelineError("Could not end the call cleanly. Please try again.");
+    }
+  }, [setCallStatus]);
+
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
     upsertStreamingMessage(event.role, event.text, event.isFinal);
-  }, [upsertStreamingMessage]);
+    if (event.role === "user" && event.isFinal && shouldAutoCloseCall(event.text)) {
+      if (autoEndTimerRef.current !== null) {
+        window.clearTimeout(autoEndTimerRef.current);
+      }
+      autoEndTimerRef.current = window.setTimeout(() => {
+        if (terminalStateRef.current === "live") {
+          void requestCallStop();
+        }
+      }, 700);
+    }
+  }, [requestCallStop, upsertStreamingMessage]);
 
   // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
   const runPipeline = useCallback(async (turns: VoiceTurn[]) => {
@@ -622,8 +680,13 @@ export function VoiceUi() {
       ? interviewQuestions.map((question, index) => `${index + 1}. ${question}`).join("\n")
       : firstQuestion;
     const firstMessage = companyName && jobTitle
-      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}`
-      : `Let's refine your job requirements. ${firstQuestion}`;
+      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}. At the end, I'll summarize the intake, ask whether you want to add anything else, thank you for the input, and close the call once you confirm we're good.`
+      : `Let's refine your job requirements. ${firstQuestion}. I'll summarize what I captured, ask if you'd like to add anything, and then close the call once you confirm we're good.`;
+    const closingInstructions = [
+      "When the recruiter confirms the intake is complete, acknowledge it briefly, say thanks for the input, and end the call.",
+      "If the recruiter wants to add anything else, capture it first before closing.",
+      "If the recruiter says 'that's fine', 'we're good to go', 'good to go', 'nothing else', or similar confirmation, end the call right after thanking them.",
+    ].join(" ");
 
     try {
       const vapi = ensureVapi(publicKey);
@@ -651,6 +714,7 @@ export function VoiceUi() {
           jobContext: JSON.stringify(jobContext),
           companyContext: JSON.stringify(companyContext),
           recruiterName,
+          closingInstructions,
         },
         firstMessage,
       });
@@ -669,20 +733,16 @@ export function VoiceUi() {
 
   // ── end call manually ──────────────────────────────────────────────────────
   const handleEndCall = async () => {
-    if (!vapiRef.current) return;
-    terminalStateRef.current = "manual-stop";
-    setCallStatus("processing");
-    try {
-      await vapiRef.current.stop();
-    } catch {
-      setCallStatus("error");
-      setPipelineError("Could not end the call cleanly. Please try again.");
-    }
+    void requestCallStop();
   };
 
   // ── cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
+      if (autoEndTimerRef.current !== null) {
+        window.clearTimeout(autoEndTimerRef.current);
+        autoEndTimerRef.current = null;
+      }
       vapiRef.current?.stop().catch(() => undefined);
     };
   }, []);

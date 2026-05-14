@@ -235,6 +235,69 @@ def _truncate_text(value: str, limit: int) -> str:
     return normalized[:limit].strip()
 
 
+def _extract_pdf_text_from_bytes(pdf_bytes: bytes) -> str:
+    if not pdf_bytes:
+        return ""
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return ""
+
+    pages: list[str] = []
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                try:
+                    text = page.get_text("text", sort=True)
+                except Exception:
+                    continue
+                text = _normalize_text(text)
+                if text:
+                    pages.append(text)
+    except Exception as exc:
+        logger.warning("job_parse_pdf_extraction_failed error=%s", str(exc))
+        return ""
+
+    return "\n\n".join(pages).strip()
+
+
+def _looks_binary(text: str) -> bool:
+    if not text:
+        return False
+    sample = text[:4000]
+    nul_ratio = sample.count("\x00") / max(1, len(sample))
+    control_chars = sum(1 for char in sample if ord(char) < 32 and char not in {"\n", "\r", "\t"})
+    return nul_ratio > 0.001 or control_chars > max(40, len(sample) // 8)
+
+
+def _decode_response_body(response: requests.Response, url: str) -> str:
+    headers = getattr(response, "headers", {}) or {}
+    content_type = str(headers.get("Content-Type", "")).lower()
+    raw_content = getattr(response, "content", b"")
+
+    if "pdf" in content_type or url.lower().endswith(".pdf"):
+        pdf_text = _extract_pdf_text_from_bytes(raw_content if isinstance(raw_content, (bytes, bytearray)) else b"")
+        if pdf_text:
+            return pdf_text
+
+    raw_text = getattr(response, "text", "") or ""
+    if raw_text and not _looks_binary(raw_text):
+        return raw_text
+
+    if isinstance(raw_content, (bytes, bytearray)) and raw_content:
+        encoding = getattr(response, "apparent_encoding", None) or "utf-8"
+        for candidate_encoding in (encoding, "utf-8", "utf-8-sig", "cp1252", "latin-1"):
+            try:
+                decoded = bytes(raw_content).decode(candidate_encoding, errors="ignore")
+            except Exception:
+                continue
+            if decoded and not _looks_binary(decoded):
+                return decoded
+        return bytes(raw_content).decode("utf-8", errors="ignore")
+
+    return raw_text
+
+
 def _serialize_json_block(block: dict[str, Any], limit: int = 4000) -> str:
     try:
         return json.dumps(block, ensure_ascii=False, indent=2)[:limit]
@@ -538,8 +601,9 @@ def parse_job_posting_url(*, url: str) -> dict[str, str]:
             status_code=400,
         )
 
+    body_text = _decode_response_body(response, raw_url)
     parser = _JobPageParser()
-    parser.feed(response.text)
+    parser.feed(body_text)
 
     hints = _extract_structured_hints(parser, raw_url)
     llm_prompt = _build_llm_prompt(raw_url, parser, hints)

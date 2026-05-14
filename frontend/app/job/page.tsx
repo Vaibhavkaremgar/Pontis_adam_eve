@@ -220,15 +220,17 @@ export default function JobPage() {
     setVoiceNotes([]);
     setIsRefined(false);
 
-    const createResult = await createHiring({ company, job: cleanJob });
-    if (!createResult.success || !createResult.data) {
-      setSubmitError(createResult.error || "Failed to create hiring session.");
-      return;
-    }
-
-    const { jobId } = createResult.data;
-    setJobId(jobId);
     router.push("/voice");
+
+    void createHiring({ company, job: cleanJob }).then((createResult) => {
+      if (!createResult.success || !createResult.data) {
+        // The voice screen will show a pending state until the job is ready.
+        return;
+      }
+
+      const { jobId } = createResult.data;
+      setJobId(jobId);
+    });
   };
 
   return (

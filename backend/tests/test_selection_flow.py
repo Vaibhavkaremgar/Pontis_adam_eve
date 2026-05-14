@@ -58,6 +58,7 @@ sys.modules.setdefault("slack_sdk", fake_slack_sdk)
 sys.modules.setdefault("slack_sdk.errors", fake_slack_sdk_errors)
 
 from app.schemas.candidate import CandidateExplanation, CandidateResult
+from app.db.repositories import _candidate_email_value
 from app.services.candidate_service import build_selection_candidate_snapshot
 from app.services import candidate_selection_service
 from app.services.preference_pair_service import generate_three_round_plan
@@ -211,6 +212,23 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(result["to_email"], "vaibhavkar0009@gmail.com")
         self.assertTrue(result["fallback_used"])
         self.assertIn("fallback", result["reason"])
+
+    def test_nested_candidate_email_values_are_extracted(self) -> None:
+        nested_payload = {
+            "contact": {
+                "primary": {
+                    "work": "candidate@example.com",
+                }
+            },
+            "profile": {
+                "emails": [
+                    {"address": "alt@example.com"},
+                    {"value": "other@example.com"},
+                ]
+            },
+        }
+
+        self.assertEqual(_candidate_email_value(nested_payload), "candidate@example.com")
 
 
 if __name__ == "__main__":

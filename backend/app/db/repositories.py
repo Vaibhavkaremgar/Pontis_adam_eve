@@ -52,9 +52,24 @@ def _normalize_text(value: object) -> str:
 
 
 def _candidate_email_value(value: object) -> str:
+    if isinstance(value, dict):
+        for item in value.values():
+            extracted = _candidate_email_value(item)
+            if extracted:
+                return extracted
+        return ""
+
+    if isinstance(value, list):
+        for item in value:
+            extracted = _candidate_email_value(item)
+            if extracted:
+                return extracted
+        return ""
+
     email = _normalize_text(value).lower()
     if "@" in email:
-        return email
+        match = _EMAIL_PATTERN.search(email)
+        return match.group(0).lower() if match else email
     match = _EMAIL_PATTERN.search(email)
     return match.group(0).lower() if match else ""
 
