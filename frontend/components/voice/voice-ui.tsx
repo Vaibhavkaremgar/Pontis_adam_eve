@@ -355,6 +355,16 @@ export function VoiceUi() {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
   }, [finalTranscript]);
   const selectionMood = job.vettingMode || "volume";
+  const fullTranscriptText = turnsRef.current.length ? buildFullTranscript(turnsRef.current) : "";
+  const callStatusLabel: Record<string, string> = {
+    idle: "Ready to start voice intake.",
+    connecting: "Connecting to voice assistant...",
+    speaking: "Adam is speaking.",
+    listening: "Listening to the recruiter.",
+    processing: "Finalizing the transcript and refining candidates.",
+    completed: "Conversation completed.",
+    error: "There was a problem capturing the transcript.",
+  };
 
   const upsertStreamingMessage = useCallback((role: TranscriptRole, text: string, isFinal: boolean) => {
     const speaker = speakerLabel(role);
@@ -796,178 +806,119 @@ export function VoiceUi() {
 
   return (
     <div className="space-y-8">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 overflow-hidden rounded-full">
-              <Image src="/images/adam.png" alt="Adam" width={40} height={40} className="h-full w-full object-cover" />
-            </div>
-            <p className="font-heading text-2xl leading-none text-[#111111]">Adam</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-700">Discovery</span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Calibration</span>
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-500">Summary</span>
-          </div>
-        </div>
-
-        {isLive && (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-full bg-green-100 px-3 py-1">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-green-600" />
-              <span className="text-sm font-medium text-green-700">
-                {isSpeaking ? "Speaking" : "Listening"}
-              </span>
-            </div>
-            <button
-              onClick={handleEndCall}
-              className="rounded-full border border-red-500 px-4 py-1 text-red-500 hover:bg-red-50"
-            >
-              End
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Conversation panel */}
-      <div className="rounded-[28px] border border-gray-200 bg-white p-5 shadow-sm md:p-8">
-        <div className="mb-6 flex flex-col gap-3 border-b border-[rgba(120,100,80,0.08)] pb-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-1">
-            <p className="font-body text-base font-semibold text-[#111111]">Full Transcript</p>
-            <p className="font-body text-sm text-[#6B7280]">
-              Every speaker turn stays in one bubble with the complete spoken text.
+      <div className="rounded-[28px] border border-gray-200 bg-white p-6 shadow-sm md:p-8">
+        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-2">
+            <p className="font-heading text-2xl font-semibold text-[#111827]">Live voice intake</p>
+            <p className="max-w-2xl text-sm text-[#6B7280]">
+              This panel displays every speaker turn as a single bubble. The raw transcript below preserves the full spoken text for review and processing.
             </p>
           </div>
           {isLive && (
-            <p className="font-body text-sm text-[#6B7280]">Say &quot;that&apos;s everything&quot; to finish</p>
+            <div className="flex flex-wrap items-center gap-3 rounded-full bg-green-50 px-4 py-2 text-sm text-green-700">
+              <span className="h-2.5 w-2.5 rounded-full bg-green-600 animate-pulse" />
+              {isSpeaking ? "Adam is speaking" : "Listening to the recruiter"}
+            </div>
           )}
         </div>
 
-        {(intelligenceLoading || intelligence) && (
-          <div className="mb-5 rounded-2xl border border-[#D6C8B6] bg-white/70 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Adaptive interview</p>
-                <p className="text-sm font-medium text-[#111111]">
-                  {intelligence?.interview?.stage_summary || "Preparing targeted follow-up questions from the job brief and recruiter history."}
-                </p>
+        <div className="grid gap-6 lg:grid-cols-[1.8fr_0.9fr]">
+          <div className="space-y-4">
+            <div className="rounded-3xl border border-[#E5E7EB] bg-[#F8FAFC] p-4 shadow-sm">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#4B5563]">Transcript feed</p>
+                  <p className="text-xs text-[#6B7280]">Live updates from the call, one speaker bubble at a time.</p>
+                </div>
+                {isLive && <span className="rounded-full bg-[#ECFDF5] px-3 py-1 text-xs font-medium text-[#166534]">Live</span>}
               </div>
-              <div className="rounded-full bg-[#166534]/10 px-3 py-1 text-xs font-medium text-[#166534]">
-                {intelligence?.interview?.stage || "initial_job_understanding"}
-              </div>
-            </div>
-            {intelligence?.interview?.recommended_questions?.length ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {intelligence.interview.recommended_questions.slice(0, 5).map((question) => (
-                  <span key={question} className="rounded-full bg-[#F3EDE3] px-3 py-1 text-xs text-[#4B5563]">
-                    {question}
-                  </span>
+
+              <div ref={chatScrollRef} className="min-h-[280px] max-h-[600px] space-y-4 overflow-y-auto pr-2">
+                {finalTranscript.length === 0 && !isLive && (
+                  <div className="rounded-3xl border border-dashed border-[#D6D6D6] bg-white p-8 text-center text-sm text-[#6B7280]">
+                    Click start to begin voice intake. Your transcript will appear here as the conversation progresses.
+                  </div>
+                )}
+
+                {finalTranscript.length === 0 && isLive && (
+                  <div className="rounded-3xl border border-dashed border-[#D6D6D6] bg-white p-8 text-center text-sm text-[#6B7280]">
+                    Listening for audio. Speech will appear as each turn is recognized.
+                  </div>
+                )}
+
+                {finalTranscript.length > 0 && finalTranscript.map((msg, i) => (
+                  <div key={msg.id || `${msg.role}-${i}`} className="rounded-3xl border border-[#E5E7EB] bg-white p-4 shadow-sm">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs uppercase tracking-[0.18em] text-[#6B7280]">
+                      <span className="font-semibold">{msg.speaker}</span>
+                      <time>{new Date(msg.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time>
+                    </div>
+                    <p className="whitespace-pre-wrap break-words text-sm leading-7 text-[#111827]">
+                      {msg.content}
+                      {msg.isStreaming && <span className="ml-1 inline-block align-middle text-[#6B7280]">|</span>}
+                    </p>
+                  </div>
                 ))}
               </div>
-            ) : null}
-          </div>
-        )}
+            </div>
 
-        <div className="space-y-6">
-          {/* Empty state */}
-          {(isIdle || isErrorState) && finalTranscript.length === 0 && (
-            <div className="flex min-h-[180px] items-center justify-center rounded-2xl border border-dashed border-[#D6C8B6] bg-[#F9FAFB] px-6 text-center">
-              <div className="max-w-xl space-y-2">
-                <p className="font-body text-base font-medium text-[#111827]">Click start to begin voice intake</p>
-                <p className="font-body text-sm text-[#6B7280]">
-                  The transcript will expand into a full-page feed so every turn remains readable.
-                </p>
+            <div className="rounded-3xl border border-[#E5E7EB] bg-white p-4 shadow-sm">
+              <p className="mb-3 text-sm font-semibold text-[#111827]">Raw transcript</p>
+              <div className="min-h-[120px] rounded-3xl border border-[#E5E7EB] bg-[#F9FAFB] p-4 text-sm leading-6 text-[#374151]">
+                {fullTranscriptText ? (
+                  <pre className="whitespace-pre-wrap break-words text-sm">{fullTranscriptText}</pre>
+                ) : (
+                  <p className="text-[#6B7280]">No transcript captured yet. Start the call to begin listening.</p>
+                )}
               </div>
             </div>
-          )}
+          </div>
 
-          {/* Chat bubbles */}
-          {showChat && (
-            <div
-              ref={chatScrollRef}
-              className="space-y-5 rounded-3xl bg-[#F8FAFC] p-4 md:p-6"
-            >
-              {finalTranscript.length === 0 && (callStatus === "connecting" || callStatus === "listening") && (
-                <p className="rounded-2xl border border-dashed border-[#D6C8B6] bg-white px-4 py-4 text-center text-sm text-gray-500">
-                  Waiting for Adam...
-                </p>
-              )}
-              {finalTranscript.map((msg, i) => (
-                <div key={msg.id || `${msg.role}-${i}`} className="space-y-2 rounded-xl px-0 py-0">
-                  <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[#4B5563]">
-                    <span className="font-semibold uppercase tracking-[0.12em]">
-                      {transcriptRoleMeta(msg.role).name}
-                    </span>
-                    <time className="text-xs text-[#6B7280]">
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
-                    </time>
-                  </div>
-                  <p className="whitespace-pre-wrap break-words text-base leading-7 text-[#111827]">
-                    {msg.content}
-                    {msg.isStreaming && <span className="ml-1 inline-block align-middle text-[#6B7280]">|</span>}
-                  </p>
-                </div>
-              ))}
+          <div className="space-y-4">
+            <div className="rounded-3xl border border-[#E5E7EB] bg-[#F8FAFC] p-5 shadow-sm">
+              <p className="mb-2 text-sm font-semibold uppercase tracking-[0.18em] text-[#4B5563]">Current status</p>
+              <p className="text-sm text-[#111827]">{callStatusLabel[callStatus] || "Ready to capture voice."}</p>
             </div>
-          )}
 
-          {/* Wave animation while live */}
-          <AnimatePresence mode="wait">
-            {isLive && (
-              <motion.div
-                key="wave"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.22 }}
-                className="flex min-h-[80px] items-center justify-center"
-              >
-                <WaveAnimation isActive />
-              </motion.div>
-            )}
-          </AnimatePresence>
+            <div className="rounded-3xl border border-[#E5E7EB] bg-white p-5 shadow-sm">
+              <p className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-[#4B5563]">Call controls</p>
+              <div className="flex flex-col gap-3">
+                {(isIdle || isErrorState) && (
+                  <button
+                    onClick={handleStart}
+                    className="rounded-2xl bg-[#1F6F4A] px-5 py-3 text-sm font-semibold text-white hover:bg-[#184E3C]"
+                  >
+                    {isErrorState ? "Retry voice intake" : "Start voice intake"}
+                  </button>
+                )}
+                {isLive && (
+                  <button
+                    onClick={handleEndCall}
+                    className="rounded-2xl border border-red-500 px-5 py-3 text-sm font-semibold text-red-600 hover:bg-red-50"
+                  >
+                    End call now
+                  </button>
+                )}
+                {pipelineStatus === "error" && (
+                  <button
+                    onClick={() => { void handleStart(); }}
+                    className="rounded-2xl border border-gray-300 px-5 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                  >
+                    Try again
+                  </button>
+                )}
+              </div>
+            </div>
 
-          {/* Pipeline status — shown after call ends */}
-          {(isProcessingCall || isErrorState) && pipelineStatus !== "idle" && (
-            <motion.div
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`flex items-center gap-3 rounded-xl px-5 py-4 ${
-                pipelineStatus === "error" ? "bg-red-50" : "bg-[#F3F4F6]"
-              }`}
-            >
-              {pipelineStatus !== "error" && pipelineStatus !== "done" && (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
-              )}
-              {pipelineStatus === "done" && (
-                <span className="text-green-600">✓</span>
-              )}
-              <span className={`font-body text-sm ${pipelineStatus === "error" ? "text-red-600" : "text-[#6B7280]"}`}>
-                {pipelineLabel[pipelineStatus]}
-              </span>
-            </motion.div>
-          )}
-
-          {/* Action buttons */}
-          <div className="mt-6 flex gap-3">
-            {(isIdle || isErrorState) && (
-              <button
-                onClick={handleStart}
-                className="rounded-xl bg-[#1F6F4A] px-6 py-3 font-body text-base font-semibold text-white"
-              >
-                {isErrorState ? "Start Conversation Again" : "Start Conversation"}
-              </button>
-            )}
-
-            {/* Retry button on error */}
-            {pipelineStatus === "error" && (
-              <button
-                onClick={() => { void handleStart(); }}
-                className="rounded-xl border border-gray-300 px-6 py-3 font-body text-base font-semibold text-gray-700 hover:bg-gray-50"
-              >
-                Try Again
-              </button>
+            {(isProcessingCall || pipelineStatus !== "idle") && (
+              <div className={`rounded-3xl p-4 text-sm ${pipelineStatus === "error" ? "bg-red-50 text-red-700" : "bg-[#F3F4F6] text-[#374151]"}`}>
+                <div className="flex items-center gap-2">
+                  {pipelineStatus !== "error" && pipelineStatus !== "done" ? (
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
+                  ) : null}
+                  {pipelineStatus === "done" ? <span className="text-green-600">✓</span> : null}
+                  <span>{pipelineLabel[pipelineStatus]}</span>
+                </div>
+              </div>
             )}
           </div>
         </div>
