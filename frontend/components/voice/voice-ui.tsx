@@ -242,15 +242,24 @@ function accumulateTranscript(previous: string, incoming: string, isFinal = fals
 }
 
 function mergeTranscriptEventContent(previous: string, incoming: string, isFinal: boolean): string {
-  const mergedContent = accumulateTranscript(previous, incoming, isFinal);
-  if (!mergedContent) return "";
-
-  const candidateContent = isFinal ? normalizeFinalTranscriptText(mergedContent) : mergedContent;
   const prev = normalize(previous);
+  const next = normalize(incoming);
+  if (!prev) return isFinal ? normalizeFinalTranscriptText(next) : next;
+  if (!next) return prev;
 
-  if (prev && candidateContent.length < prev.length) {
-    return prev;
+  if (!isFinal) {
+    if (next.startsWith(prev)) return next;
+    if (prev.startsWith(next)) return prev;
+
+    const appended = `${prev} ${next}`.replace(/\s+/g, " ").trim();
+    return appended.length >= prev.length ? appended : prev;
   }
+
+  const mergedContent = accumulateTranscript(prev, next, true);
+  if (!mergedContent) return prev;
+
+  const candidateContent = normalizeFinalTranscriptText(mergedContent);
+  if (candidateContent.length < prev.length) return prev;
 
   return candidateContent;
 }
