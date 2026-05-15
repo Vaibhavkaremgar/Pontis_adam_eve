@@ -19,6 +19,7 @@ import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
+import { ChatBubble } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -354,18 +355,10 @@ export function VoiceUi() {
   }, [finalTranscript]);
   const selectionMood = job.vettingMode || "volume";
 
-  const adamTranscript = finalTranscript
-    .filter((msg) => msg.role === "assistant")
-    .map((msg) => msg.content)
-    .join("\n\n");
-
-  const recruiterTranscript = finalTranscript
-    .filter((msg) => msg.role === "user")
-    .map((msg) => msg.content)
-    .join("\n\n");
-
   const activeStreamingMessage = finalTranscript.find((msg) => msg.isStreaming);
   const activeSpeaker = activeStreamingMessage?.role || null;
+  const activeSpeakerLabel =
+    activeSpeaker === "assistant" ? "Adam is speaking" : activeSpeaker === "user" ? "Recruiter is speaking" : "Waiting for speech";
 
   const callStatusLabel: Record<string, string> = {
     idle: "Ready to start voice intake.",
@@ -803,9 +796,6 @@ export function VoiceUi() {
   const isIdle = callStatus === "idle";
   const isErrorState = callStatus === "error";
   const isLive = callStatus === "connecting" || callStatus === "listening" || callStatus === "speaking";
-  const isSpeaking = callStatus === "speaking";
-  const isProcessingCall = callStatus === "processing" || callStatus === "completed";
-  const showChat = !isIdle || finalTranscript.length > 0;
 
   const pipelineLabel: Record<typeof pipelineStatus, string> = {
     idle: "",
@@ -821,30 +811,31 @@ export function VoiceUi() {
         <div className="mb-5 flex flex-col gap-3">
           <p className="text-2xl font-semibold text-[#111827]">Live voice transcript</p>
           <p className="max-w-2xl text-sm text-[#6B7280]">
-            Only the recruiter and Adam bubbles are shown. Speech is appended live to the active speaker bubble.
+            Each Adam and recruiter turn is shown as a WhatsApp-style bubble, in full, in chronological order.
           </p>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#166534]">
+            <span className="h-2 w-2 rounded-full bg-[#1F6F4A]" />
+            <span>{activeSpeakerLabel}</span>
+          </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className={`rounded-[28px] border p-5 shadow-sm ${activeSpeaker === "assistant" ? "border-[#1F6F4A] bg-[#ECFDF5]" : "border-[#E5E7EB] bg-white"}`}>
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="text-sm font-semibold text-[#111827]">Adam</span>
-              <span className="rounded-full bg-[#D1FAE5] px-2 py-1 text-xs font-semibold text-[#166534]">Assistant</span>
+        <div
+          ref={chatScrollRef}
+          className="max-h-[70vh] space-y-4 overflow-y-auto rounded-[28px] border border-[#E7E0D4] bg-[linear-gradient(180deg,#FFFDF9_0%,#F7F2E8_100%)] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6"
+        >
+          {finalTranscript.length > 0 ? (
+            finalTranscript.map((message) => (
+              <ChatBubble
+                key={message.id}
+                message={message}
+                isInterim={message.isStreaming}
+              />
+            ))
+          ) : (
+            <div className="rounded-[24px] border border-dashed border-[#D8CCBA] bg-white/70 px-5 py-8 text-center text-sm text-[#6B7280]">
+              Start the call and the full Adam and recruiter transcript will appear here.
             </div>
-            <div className="min-h-[180px] whitespace-pre-wrap break-words text-sm leading-7 text-[#111827]">
-              {adamTranscript || "Adam's speech will appear here."}
-            </div>
-          </div>
-
-          <div className={`rounded-[28px] border p-5 shadow-sm ${activeSpeaker === "user" ? "border-[#2563EB] bg-[#EFF6FF]" : "border-[#E5E7EB] bg-white"}`}>
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <span className="text-sm font-semibold text-[#111827]">Recruiter</span>
-              <span className="rounded-full bg-[#DBEAFE] px-2 py-1 text-xs font-semibold text-[#1D4ED8]">User</span>
-            </div>
-            <div className="min-h-[180px] whitespace-pre-wrap break-words text-sm leading-7 text-[#111827]">
-              {recruiterTranscript || "Recruiter speech will appear here."}
-            </div>
-          </div>
+          )}
         </div>
 
         <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
