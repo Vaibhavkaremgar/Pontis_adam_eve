@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 import unittest
 from unittest.mock import patch
+from uuid import UUID, uuid4
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_integration.db")
 os.environ.setdefault("JWT_SECRET", "integration-secret")
@@ -878,6 +879,47 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(outreach_repo.list_for_job(self.job.id), [])
         self.assertIsNone(outreach_repo.get_by_provider_message_id("source-app-msg-1"))
         self.assertIsNone(token_repo.get_by_token("token-source-app-1"))
+
+    def test_latest_by_candidate_ids_converts_uuid_inputs_to_text(self) -> None:
+        repo = CandidateProfileRepository(self.db)
+        candidate_a = str(uuid4())
+        candidate_b = str(uuid4())
+
+        repo.upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_a,
+            name="Avery",
+            role="Platform Engineer",
+            company="Northstar",
+            summary="First profile for UUID lookup regression.",
+            skills=["Python"],
+            raw_data={"name": "Avery"},
+            fit_score=4.2,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        repo.upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_b,
+            name="Blair",
+            role="Platform Engineer",
+            company="Northstar",
+            summary="Second profile for UUID lookup regression.",
+            skills=["Python"],
+            raw_data={"name": "Blair"},
+            fit_score=4.1,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+
+        result = repo.latest_by_candidate_ids(
+            job_id=self.job.id,
+            candidate_ids=[UUID(candidate_a), UUID(candidate_b)],
+        )
+
+        self.assertEqual(set(result.keys()), {candidate_a, candidate_b})
+        self.assertEqual(result[candidate_a].candidate_id, candidate_a)
+        self.assertEqual(result[candidate_b].candidate_id, candidate_b)
 
     def test_resend_inbound_not_interested_updates_declined(self) -> None:
         reply_email = {

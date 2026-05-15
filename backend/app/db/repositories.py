@@ -885,7 +885,7 @@ class CandidateProfileRepository:
         return int(count or 0)
 
     def latest_by_candidate_ids(self, *, job_id: str, candidate_ids: list[str]) -> dict[str, CandidateProfileEntity]:
-        unique_ids = list(dict.fromkeys(candidate_ids))
+        unique_ids = [str(candidate_id) for candidate_id in candidate_ids if str(candidate_id).strip()]
         if not unique_ids:
             return {}
 
