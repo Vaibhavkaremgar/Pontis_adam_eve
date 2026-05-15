@@ -236,7 +236,9 @@ function accumulateTranscript(previous: string, incoming: string, isFinal = fals
     return revised;
   }
 
-  return `${prev} ${next}`.replace(/\s+/g, " ").trim();
+  const separator = /[.!?]$/.test(prev) ? "\n" : " ";
+  const appended = `${prev}${separator}${next}`.replace(/\s+\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+  return appended;
 }
 
 function mergeTranscriptEventContent(previous: string, incoming: string, isFinal: boolean): string {
@@ -251,6 +253,27 @@ function mergeTranscriptEventContent(previous: string, incoming: string, isFinal
   }
 
   return candidateContent;
+}
+
+function debugTranscriptUpdate(details: {
+  role: TranscriptRole;
+  isFinal: boolean;
+  previous: string;
+  incoming: string;
+  merged: string;
+  reason: string;
+}) {
+  debugVoice("transcript_update", {
+    role: details.role,
+    isFinal: details.isFinal,
+    previousLength: details.previous.length,
+    incomingLength: details.incoming.length,
+    mergedLength: details.merged.length,
+    reason: details.reason,
+    previousPreview: details.previous.slice(0, 120),
+    incomingPreview: details.incoming.slice(0, 120),
+    mergedPreview: details.merged.slice(0, 160),
+  });
 }
 
 function debugVoice(event: string, details?: Record<string, unknown>) {
@@ -379,17 +402,47 @@ export function VoiceUi() {
     setFinalTranscript((prev) => {
       const next = [...prev];
       const last = next[next.length - 1];
+      const previousContent = last && last.role === role ? last.content : "";
       const normalizedContent = last && last.role === role
         ? mergeTranscriptEventContent(last.content, incoming, isFinal)
         : mergeTranscriptEventContent("", incoming, isFinal);
       if (!normalizedContent) return prev;
+
+      if (last && last.role === role) {
+        const reason =
+          normalizedContent.length < previousContent.length
+            ? "rejected_shorter_update"
+            : normalizedContent === previousContent
+              ? "no_change"
+              : previousContent && normalizedContent.startsWith(previousContent)
+                ? "append_or_extend"
+                : "revision_or_append";
+
+        debugTranscriptUpdate({
+          role,
+          isFinal,
+          previous: previousContent,
+          incoming,
+          merged: normalizedContent.length < previousContent.length ? previousContent : normalizedContent,
+          reason,
+        });
+      } else {
+        debugTranscriptUpdate({
+          role,
+          isFinal,
+          previous: "",
+          incoming,
+          merged: normalizedContent,
+          reason: "new_bubble",
+        });
+      }
 
       // Keep every speaker turn as a single bubble by merging same-speaker fragments.
       if (last && last.role === role) {
         next[next.length - 1] = {
           ...last,
           speaker,
-          content: normalizedContent,
+          content: normalizedContent.length < previousContent.length ? previousContent : normalizedContent,
           isStreaming: !isFinal,
           isFinal,
           timestamp,
@@ -441,6 +494,12 @@ export function VoiceUi() {
   }, [setCallStatus]);
 
   const processTranscriptEvent = useCallback((event: { role: TranscriptRole; text: string; isFinal: boolean }) => {
+    debugVoice("transcript_event", {
+      role: event.role,
+      isFinal: event.isFinal,
+      textLength: event.text.length,
+      preview: event.text.slice(0, 120),
+    });
     upsertStreamingMessage(event.role, event.text, event.isFinal);
     if (event.role === "user" && event.isFinal && shouldAutoCloseCall(event.text)) {
       if (autoEndTimerRef.current !== null) {
