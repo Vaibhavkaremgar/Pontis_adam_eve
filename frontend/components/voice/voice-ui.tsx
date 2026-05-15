@@ -214,31 +214,83 @@ function mergeASRRevision(previous: string, incoming: string): string {
   return next;
 }
 
-function accumulateTranscript(previous: string, incoming: string, isFinal = false): string {
+function collapseRepeatedPhrases(text: string): string {
+  const normalized = normalize(text);
+  if (!normalized) return "";
+
+  const tokens = normalized.split(" ");
+  if (tokens.length < 4) return normalized;
+
+  const maxWindow = Math.min(12, Math.floor(tokens.length / 2));
+  for (let window = maxWindow; window >= 2; window -= 1) {
+    const limit = tokens.length - window * 2 + 1;
+    for (let start = 0; start < limit; start += 1) {
+      const first = tokens.slice(start, start + window).join(" ");
+      const second = tokens.slice(start + window, start + window * 2).join(" ");
+      if (first.toLowerCase() === second.toLowerCase()) {
+        return collapseRepeatedPhrases([
+          ...tokens.slice(0, start),
+          ...tokens.slice(start, start + window),
+          ...tokens.slice(start + window * 2),
+        ].join(" "));
+      }
+    }
+  }
+
+  const dedupedWords: string[] = [];
+  for (const token of tokens) {
+    const last = dedupedWords[dedupedWords.length - 1];
+    if (last && last.toLowerCase() === token.toLowerCase()) {
+      continue;
+    }
+    dedupedWords.push(token);
+  }
+
+  return dedupedWords.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function mergeTranscriptFragments(previous: string, incoming: string): string {
   const prev = normalize(previous);
   const next = normalize(incoming);
+  if (!prev) return collapseRepeatedPhrases(next);
   if (!next) return prev;
-  if (!prev) return next;
 
   const prevLower = prev.toLowerCase();
   const nextLower = next.toLowerCase();
 
   if (nextLower === prevLower) return prev;
-  if (nextLower.startsWith(prevLower)) return next;
-  if (prevLower.startsWith(nextLower)) return prev;
-  if (prevLower.includes(nextLower)) return prev;
-  if (nextLower.includes(prevLower)) return next;
+  if (nextLower.startsWith(prevLower)) return collapseRepeatedPhrases(next);
+  if (prevLower.startsWith(nextLower)) return collapseRepeatedPhrases(prev);
+  if (prevLower.includes(nextLower)) return collapseRepeatedPhrases(prev);
+  if (nextLower.includes(prevLower)) return collapseRepeatedPhrases(next);
 
-  const revised = mergeASRRevision(prev, next);
-  if (revised.toLowerCase() === prevLower) return prev;
-  if (revised.toLowerCase() === nextLower) return next;
-  if (revised && revised.length >= prev.length && revised.toLowerCase().includes(prevLower)) {
-    return revised;
+  const prevWords = prev.split(" ");
+  const nextWords = next.split(" ");
+  const maxOverlap = Math.min(14, prevWords.length, nextWords.length);
+
+  for (let size = maxOverlap; size >= 2; size -= 1) {
+    const prevTail = prevWords.slice(-size).join(" ").toLowerCase();
+    const nextHead = nextWords.slice(0, size).join(" ").toLowerCase();
+    if (prevTail === nextHead) {
+      return collapseRepeatedPhrases([...prevWords, ...nextWords.slice(size)].join(" "));
+    }
   }
 
-  const separator = /[.!?]$/.test(prev) ? "\n" : " ";
-  const appended = `${prev}${separator}${next}`.replace(/\s+\n/g, "\n").replace(/[ \t]+/g, " ").trim();
-  return appended;
+  const candidateAppend = collapseRepeatedPhrases(`${prev} ${next}`);
+  if (candidateAppend.length >= prev.length) return candidateAppend;
+
+  return collapseRepeatedPhrases(next);
+}
+
+function accumulateTranscript(previous: string, incoming: string, isFinal = false): string {
+  const prev = normalize(previous);
+  const next = normalize(incoming);
+  if (!next) return prev;
+  if (!prev) return collapseRepeatedPhrases(next);
+
+  const revised = mergeASRRevision(prev, next);
+  const merged = mergeTranscriptFragments(prev, revised);
+  return collapseRepeatedPhrases(merged);
 }
 
 function mergeTranscriptEventContent(previous: string, incoming: string, isFinal: boolean): string {
@@ -248,11 +300,8 @@ function mergeTranscriptEventContent(previous: string, incoming: string, isFinal
   if (!next) return prev;
 
   if (!isFinal) {
-    if (next.startsWith(prev)) return next;
-    if (prev.startsWith(next)) return prev;
-
-    const appended = `${prev} ${next}`.replace(/\s+/g, " ").trim();
-    return appended.length >= prev.length ? appended : prev;
+    const merged = collapseRepeatedPhrases(mergeTranscriptFragments(prev, next));
+    return merged.length >= prev.length ? merged : prev;
   }
 
   const mergedContent = accumulateTranscript(prev, next, true);
