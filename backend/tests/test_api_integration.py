@@ -906,6 +906,46 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["candidateId"], "candidate-1")
 
+    def test_voice_refine_cleans_repeated_recruiter_noise(self) -> None:
+        from app.services import voice_service as voice_module
+
+        noisy_transcript = (
+            "Recruiter: Yes. Thanks for the message. We are looking for a message. "
+            "We are looking for our sales executive with 2 years of experience 2 years of experience. "
+            "In those sales of Yeah."
+        )
+
+        with patch.object(voice_module, "ensure_all_collections", lambda: None), \
+            patch.object(voice_module, "delete_job_vectors", lambda *_args, **_kwargs: None), \
+            patch.object(voice_module, "upsert_job_chunks", lambda *_args, **_kwargs: None), \
+            patch.object(voice_module, "get_embedding", lambda *_args, **_kwargs: [0.0] * 384):
+            result = voice_module.refine_job_with_voice(
+                db=self.db,
+                job_id=self.job.id,
+                voice_notes=[noisy_transcript],
+                transcript=noisy_transcript,
+            )
+
+        self.assertTrue(result["refined"])
+
+        job = JobRepository(self.db).get(self.job.id)
+        self.assertIsNotNone(job)
+        structured = dict(job.structured_data or {})
+        clean_transcript = str(structured.get("voiceTranscriptClean") or "")
+
+        self.assertIn("sales executive", clean_transcript.lower())
+        self.assertIn("2 years of experience", clean_transcript.lower())
+        self.assertNotIn("we are looking for a message. we are looking for our sales executive", clean_transcript.lower())
+        self.assertNotIn("experience experience", clean_transcript.lower())
+
+        job_intake_row = self.db.execute(
+            text("SELECT transcript FROM job_intakes WHERE job_id = :job_id"),
+            {"job_id": self.job.id},
+        ).fetchone()
+        self.assertIsNotNone(job_intake_row)
+        self.assertIn("sales executive", str(job_intake_row[0]).lower())
+        self.assertNotIn("experience experience", str(job_intake_row[0]).lower())
+
     def test_latest_by_candidate_ids_converts_uuid_inputs_to_text(self) -> None:
         repo = CandidateProfileRepository(self.db)
         candidate_a = str(uuid4())

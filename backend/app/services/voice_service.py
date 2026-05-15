@@ -334,10 +334,86 @@ def _transcript_fingerprint(transcript: str) -> str:
     return hashlib.sha256((transcript or "").strip().encode("utf-8")).hexdigest()
 
 
+def _collapse_repeated_phrases(text: str) -> str:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+
+    tokens = normalized.split(" ")
+    if len(tokens) < 4:
+        return normalized
+
+    max_window = min(12, len(tokens) // 2)
+    for window in range(max_window, 1, -1):
+        limit = len(tokens) - (window * 2) + 1
+        for start in range(max(0, limit)):
+            first = " ".join(tokens[start : start + window]).lower()
+            second = " ".join(tokens[start + window : start + window * 2]).lower()
+            if first == second:
+                return _collapse_repeated_phrases(" ".join(tokens[:start] + tokens[start : start + window] + tokens[start + window * 2 :]))
+
+    deduped: list[str] = []
+    for token in tokens:
+        last = deduped[-1] if deduped else ""
+        if last and last.lower() == token.lower():
+            continue
+        deduped.append(token)
+
+    return " ".join(deduped).replace("  ", " ").strip()
+
+
 def _cleanup_transcript_text(transcript: str) -> str:
-    text = re.sub(r"\s+", " ", (transcript or "").strip())
+    text = _collapse_repeated_phrases(transcript)
     if not text:
-      return ""
+        return ""
+
+    clauses = re.findall(r"[^.!?\n]+[.!?]?", text) or [text]
+    cleaned: list[str] = []
+
+    for raw_clause in clauses:
+        clause = _collapse_repeated_phrases(raw_clause)
+        clause = re.sub(r"\s+", " ", clause).strip()
+        if not clause:
+            continue
+
+        clause_core = re.sub(r"[.!?]+$", "", clause).lower()
+        if not clause_core:
+            continue
+
+        last = cleaned[-1] if cleaned else ""
+        if not last:
+            cleaned.append(clause)
+            continue
+
+        last_core = re.sub(r"[.!?]+$", "", last).lower()
+        if not last_core:
+            cleaned[-1] = clause
+            continue
+
+        if last_core == clause_core:
+            continue
+
+        if last_core in clause_core and len(clause) > len(last):
+            cleaned[-1] = clause
+            continue
+
+        if clause_core in last_core and len(last) >= len(clause):
+            continue
+
+        last_words = last_core.split()
+        clause_words = clause_core.split()
+        overlap = min(8, len(last_words), len(clause_words))
+        merged = False
+        for size in range(overlap, 2, -1):
+            if " ".join(last_words[-size:]) == " ".join(clause_words[:size]):
+                if len(clause) > len(last):
+                    cleaned[-1] = clause
+                merged = True
+                break
+        if not merged:
+            cleaned.append(clause)
+
+    text = " ".join(cleaned)
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     text = re.sub(r"([,.;:!?])(?!\s|$)", r"\1 ", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -367,6 +443,7 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     logger.info("voice_refine_start job_id=%s transcript_length=%s", job_id, len(raw_text))
 
     transcript_hash = _transcript_fingerprint(raw_text)
+    cleaned_text = _cleanup_transcript_text(raw_text) or raw_text
     structured_data = getattr(job, "structured_data", None)
     if isinstance(structured_data, dict):
         voice_extraction = structured_data.get("voiceExtraction")
@@ -392,9 +469,9 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
                 },
             }
 
-    extraction_raw = _extract_structured_hiring_data(transcript=raw_text)
+    extraction_raw = _extract_structured_hiring_data(transcript=cleaned_text)
     used_fallback = extraction_raw is None
-    fallback_raw = extract_structured_data_fallback(raw_text)
+    fallback_raw = extract_structured_data_fallback(cleaned_text)
     structured_payload = extraction_raw or fallback_raw
     structured = _sanitize_structured_payload(structured_payload or {})
 
@@ -420,7 +497,7 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     merged_company_description = existing_company_description or extracted_company["description"]
 
     # Use the full transcript (both sides) for richer description refinement.
-    notes_for_refinement = [raw_text] if raw_text else voice_notes
+    notes_for_refinement = [cleaned_text] if cleaned_text else voice_notes
     refined_description = _refine_description(description=job.description, voice_notes=notes_for_refinement)
     enriched_description = _enhance_description(
         refined_description=refined_description,
@@ -495,14 +572,16 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
                 "company": extracted_company,
                 "confidence": confidence,
                 "success": True,
-                "transcript": raw_text,
-                "cleanedTranscript": _cleanup_transcript_text(raw_text),
+                "transcript": cleaned_text,
+                "cleanedTranscript": cleaned_text,
+                "rawTranscript": raw_text,
                 "transcriptHash": transcript_hash,
                 "fallback": fallback_raw,
                 "fields": extracted_fields if not used_fallback else fallback_fields,
             },
-            "voiceTranscript": raw_text,
-            "voiceTranscriptClean": _cleanup_transcript_text(raw_text),
+            "voiceTranscript": cleaned_text,
+            "voiceTranscriptClean": cleaned_text,
+            "voiceTranscriptRaw": raw_text,
         },
     )
     if not updated:
@@ -516,7 +595,7 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     )
     JobIntakeRepository(db).upsert_completed_intake(
         job_id=job_id,
-        transcript=raw_text,
+        transcript=cleaned_text,
         structured_data_json={
             "voiceExtraction": {
                 "source": "fallback" if used_fallback else "openai",
@@ -524,14 +603,16 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
                 "company": extracted_company,
                 "confidence": confidence,
                 "success": True,
-                "transcript": raw_text,
-                "cleanedTranscript": _cleanup_transcript_text(raw_text),
+                "transcript": cleaned_text,
+                "cleanedTranscript": cleaned_text,
+                "rawTranscript": raw_text,
                 "transcriptHash": transcript_hash,
                 "fallback": fallback_raw,
                 "fields": extracted_fields if not used_fallback else fallback_fields,
             },
-            "voiceTranscript": raw_text,
-            "voiceTranscriptClean": _cleanup_transcript_text(raw_text),
+            "voiceTranscript": cleaned_text,
+            "voiceTranscriptClean": cleaned_text,
+            "voiceTranscriptRaw": raw_text,
         },
         intake_status="completed",
         completed_at=datetime.now(timezone.utc),
@@ -541,7 +622,7 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
 
     # Re-embed the enriched job and upsert to Qdrant.
     # Do NOT call fetch_ranked_candidates here — frontend triggers that separately with refresh=true.
-    vector_source = build_job_text(updated, structured_data=updated.structured_data, transcript=raw_text)
+    vector_source = build_job_text(updated, structured_data=updated.structured_data, transcript=cleaned_text)
     chunks = chunk_text(vector_source)
     vectors = [get_embedding(chunk) for chunk in chunks]
     ensure_all_collections()

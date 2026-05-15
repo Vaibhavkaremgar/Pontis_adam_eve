@@ -64,7 +64,7 @@ function toErrorMessage(error: unknown): string {
 
 function buildFullTranscript(turns: VoiceTurn[]): string {
   return turns
-    .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${t.text}`)
+    .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${cleanVoiceTranscriptText(t.text)}`)
     .join("\n");
 }
 
@@ -249,6 +249,75 @@ function collapseRepeatedPhrases(text: string): string {
   return dedupedWords.join(" ").replace(/\s+/g, " ").trim();
 }
 
+function collapseRepeatedClauses(text: string): string {
+  const normalized = normalize(text);
+  if (!normalized) return "";
+
+  const clauses = normalized.match(/[^.!?\n]+[.!?]?/g) ?? [normalized];
+  const kept: string[] = [];
+
+  for (const rawClause of clauses) {
+    const clause = collapseRepeatedPhrases(rawClause).replace(/\s+/g, " ").trim();
+    if (!clause) continue;
+
+    const clauseCore = clause.replace(/[.!?]+$/g, "").toLowerCase();
+    if (!clauseCore) continue;
+
+    const last = kept[kept.length - 1];
+    if (!last) {
+      kept.push(clause);
+      continue;
+    }
+
+    const lastCore = last.replace(/[.!?]+$/g, "").toLowerCase();
+    if (!lastCore) {
+      kept[kept.length - 1] = clause;
+      continue;
+    }
+
+    if (lastCore === clauseCore) {
+      continue;
+    }
+
+    if (lastCore.includes(clauseCore) && last.length >= clause.length) {
+      continue;
+    }
+
+    if (clauseCore.includes(lastCore) && clause.length > last.length) {
+      kept[kept.length - 1] = clause;
+      continue;
+    }
+
+    const lastWords = lastCore.split(" ");
+    const clauseWords = clauseCore.split(" ");
+    const overlap = Math.min(8, lastWords.length, clauseWords.length);
+    let merged = false;
+
+    for (let size = overlap; size >= 3; size -= 1) {
+      const lastTail = lastWords.slice(-size).join(" ");
+      const clauseHead = clauseWords.slice(0, size).join(" ");
+      if (lastTail === clauseHead) {
+        if (clause.length > last.length) {
+          kept[kept.length - 1] = clause;
+        }
+        merged = true;
+        break;
+      }
+    }
+
+    if (!merged) {
+      kept.push(clause);
+    }
+  }
+
+  return kept.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function cleanVoiceTranscriptText(text: string): string {
+  const collapsed = collapseRepeatedClauses(text);
+  return normalizeFinalTranscriptText(collapsed);
+}
+
 function mergeTranscriptFragments(previous: string, incoming: string): string {
   const prev = normalize(previous);
   const next = normalize(incoming);
@@ -296,18 +365,18 @@ function accumulateTranscript(previous: string, incoming: string, isFinal = fals
 function mergeTranscriptEventContent(previous: string, incoming: string, isFinal: boolean): string {
   const prev = normalize(previous);
   const next = normalize(incoming);
-  if (!prev) return isFinal ? normalizeFinalTranscriptText(next) : next;
+  if (!prev) return isFinal ? cleanVoiceTranscriptText(next) : collapseRepeatedClauses(next);
   if (!next) return prev;
 
   if (!isFinal) {
-    const merged = collapseRepeatedPhrases(mergeTranscriptFragments(prev, next));
+    const merged = collapseRepeatedClauses(mergeTranscriptFragments(prev, next));
     return merged.length >= prev.length ? merged : prev;
   }
 
   const mergedContent = accumulateTranscript(prev, next, true);
   if (!mergedContent) return prev;
 
-  const candidateContent = normalizeFinalTranscriptText(mergedContent);
+  const candidateContent = cleanVoiceTranscriptText(mergedContent);
   if (candidateContent.length < prev.length) return prev;
 
   return candidateContent;
@@ -531,7 +600,7 @@ export function VoiceUi() {
       ];
     });
 
-    turnsRef.current = upsertTurn(turnsRef.current, role, incoming, isFinal);
+    turnsRef.current = upsertTurn(turnsRef.current, role, cleanVoiceTranscriptText(incoming), isFinal);
   }, []);
 
   const requestCallStop = useCallback(async () => {
@@ -578,7 +647,7 @@ export function VoiceUi() {
 
     const fullTranscript = buildFullTranscript(turns);
     const cleanedTranscript = turns
-      .map((turn) => `${turn.role === "assistant" ? "Adam" : "Recruiter"}: ${normalizeFinalTranscriptText(turn.text)}`)
+      .map((turn) => `${turn.role === "assistant" ? "Adam" : "Recruiter"}: ${cleanVoiceTranscriptText(turn.text)}`)
       .join("\n");
     const endedAt = Date.now();
 
@@ -842,7 +911,7 @@ export function VoiceUi() {
       ? interviewQuestions.map((question, index) => `${index + 1}. ${question}`).join("\n")
       : firstQuestion;
     const firstMessage = companyName && jobTitle
-      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}. At the end, I'll summarize the intake, ask whether you want to add anything else, thank you for the input, and close the call once you confirm we're good.`
+      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}. At the end, I'll summarize the intake, ask whether you want to add anything else, and close the call once you confirm we're good.`
       : `Let's refine your job requirements. ${firstQuestion}. I'll summarize what I captured, ask if you'd like to add anything, and then close the call once you confirm we're good.`;
     const closingInstructions = [
       "When the recruiter confirms the intake is complete, acknowledge it briefly, say thanks for the input, and end the call.",
