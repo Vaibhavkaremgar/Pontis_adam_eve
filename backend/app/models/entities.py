@@ -83,6 +83,7 @@ class JobEntity(Base):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
     job_status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     vetting_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="volume")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -140,6 +141,7 @@ class InterviewEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -375,6 +377,7 @@ class OutreachEventEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -481,6 +484,26 @@ class InterviewSessionEntity(Base):
 
     company_record: Mapped["CompanyEntity"] = relationship(back_populates="interview_sessions")
     outreach_event: Mapped["OutreachEventEntity | None"] = relationship()
+
+
+class NotificationWorkflowTokenEntity(Base):
+    __tablename__ = "notification_workflow_tokens"
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_notification_workflow_tokens_token"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    workflow_name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    token: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class OtpEntity(Base):

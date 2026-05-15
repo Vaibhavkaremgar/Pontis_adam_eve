@@ -940,11 +940,7 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
 
         if not row and email_from:
             logger.info("fallback_used reply_lookup=email")
-            row = db.scalar(
-                select(OutreachEventEntity)
-                .where(OutreachEventEntity.to_email == email_from)
-                .order_by(OutreachEventEntity.created_at.desc())
-            )
+            row = repo.find_latest_by_email(email_from)
 
         if not row and job_id and candidate_id:
             logger.info("fallback_used reply_lookup=job_candidate")

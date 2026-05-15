@@ -4,12 +4,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import config_diagnostics
 from app.db.repositories import CandidateProfileRepository, OutreachEventRepository, RankingRunRepository
-from app.models.entities import AuditEventEntity, OutreachEventEntity
+from app.models.entities import AuditEventEntity
 from app.services.candidate_refresh_service import refresh_candidate
 from app.services.embedding_registry_service import promote_embedding_version
 from app.services.job_queue_service import (
@@ -58,7 +57,7 @@ def get_outreach_analytics(db: Session, job_id: str | None = None) -> dict[str, 
     if job_id:
         rows = repo.list_for_job(job_id)
     else:
-        rows = db.scalars(select(OutreachEventEntity).order_by(OutreachEventEntity.updated_at.desc()).limit(500)).all()
+        rows = repo.list_recent(limit=500)
 
     totals = {"queued": 0, "sending": 0, "sent": 0, "failed": 0, "replied": 0, "bounced": 0, "unsubscribed": 0, "opened": 0}
     for row in rows:

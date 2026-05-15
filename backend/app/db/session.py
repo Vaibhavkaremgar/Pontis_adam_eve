@@ -56,6 +56,7 @@ def _verify_migrated_schema() -> None:
             "candidate_profiles",
             "interviews",
             "outreach_events",
+            "notification_workflow_tokens",
             "inbound_email_replies",
             "inbound_email_attachments",
         }
@@ -106,6 +107,7 @@ def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool,
         "companies": ["id", "name", "website", "description", "user_id", "created_at"],
         "jobs": [
             "id",
+            "source_app",
             "job_status",
             "vetting_mode",
             "title",
@@ -122,7 +124,7 @@ def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool,
             "updated_at",
             "created_at",
         ],
-        "interviews": ["id", "job_id", "company_id", "candidate_id", "status", "created_at"],
+        "interviews": ["id", "source_app", "job_id", "company_id", "candidate_id", "status", "created_at"],
     }
 
     for table_name, columns in expected_columns.items():
@@ -161,6 +163,8 @@ def _ensure_optional_schema_columns() -> None:
 
         if "jobs" in table_names:
             job_columns = {column["name"] for column in inspector.get_columns("jobs")}
+            if "source_app" not in job_columns:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard'"))
             if "job_status" not in job_columns:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN job_status VARCHAR(32) NOT NULL DEFAULT 'active'"))
             if "vetting_mode" not in job_columns:
@@ -259,12 +263,41 @@ def _ensure_optional_schema_columns() -> None:
 
         if "outreach_events" in table_names:
             outreach_columns = {column["name"] for column in inspector.get_columns("outreach_events")}
+            if "source_app" not in outreach_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard'"))
             if "company_id" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "reply_intent" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN reply_intent VARCHAR(64) NOT NULL DEFAULT ''"))
             if "sent_at" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN sent_at TIMESTAMPTZ NULL DEFAULT NULL"))
+
+        if "interviews" in table_names:
+            interview_columns = {column["name"] for column in inspector.get_columns("interviews")}
+            if "source_app" not in interview_columns:
+                conn.execute(text("ALTER TABLE interviews ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard'"))
+
+        if "notification_workflow_tokens" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE notification_workflow_tokens (
+                        id VARCHAR(36) PRIMARY KEY,
+                        source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard',
+                        job_id VARCHAR(36) NOT NULL,
+                        candidate_id VARCHAR(128) NOT NULL,
+                        workflow_name VARCHAR(64) NOT NULL DEFAULT '',
+                        token VARCHAR(255) NOT NULL UNIQUE,
+                        status VARCHAR(32) NOT NULL DEFAULT 'active',
+                        payload JSON NOT NULL DEFAULT {json_empty_object_default},
+                        expires_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        consumed_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
 
         if "inbound_email_replies" in table_names:
             inbound_columns = {column["name"] for column in inspector.get_columns("inbound_email_replies")}

@@ -133,7 +133,7 @@ from sqlalchemy import text
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_SECRET
 from app.core.security import create_access_token, create_csrf_token
-from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, JobRepository, OutreachEventRepository, UserRepository
+from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal, engine
 from app.models.entities import Base
 from app.services.resend_inbound_service import process_resend_inbound_webhook
@@ -815,6 +815,69 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNotNone(outreach_row)
         self.assertEqual(outreach_row[0], "sent")
         self.assertEqual(outreach_row[1], "msg-789")
+
+    def test_adam_source_app_isolated_from_dashboard_rows(self) -> None:
+        job_repo = JobRepository(self.db)
+        interview_repo = InterviewRepository(self.db)
+        outreach_repo = OutreachEventRepository(self.db)
+        token_repo = NotificationWorkflowTokenRepository(self.db)
+
+        adam_job = job_repo.create(
+            company_id=self.company.id,
+            created_by=self.user.id,
+            title="Isolation Check",
+            description="Verify source app isolation.",
+            location="Remote",
+            compensation="$1",
+            work_authorization="required",
+            responsibilities=[],
+            skills_required=[],
+        )
+        self.assertEqual(adam_job.source_app, "adam")
+
+        adam_interview = interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-source-app",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+        self.assertEqual(adam_interview.source_app, "adam")
+
+        adam_outreach = outreach_repo.upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            provider="resend",
+            to_email="candidate@example.com",
+            subject="Hello",
+            body="Hi",
+            status="sent",
+            sent_at=None,
+            next_follow_up_at=None,
+            provider_message_id="source-app-msg-1",
+        )
+        self.assertEqual(adam_outreach.source_app, "adam")
+
+        adam_token = token_repo.create(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            workflow_name="interview_invite",
+            token="token-source-app-1",
+            payload={"step": "invite"},
+        )
+        self.assertEqual(adam_token.source_app, "adam")
+
+        self.db.execute(text("UPDATE jobs SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_job.id})
+        self.db.execute(text("UPDATE interviews SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_interview.id})
+        self.db.execute(text("UPDATE outreach_events SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_outreach.id})
+        self.db.execute(text("UPDATE notification_workflow_tokens SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_token.id})
+        self.db.commit()
+
+        self.assertIsNone(job_repo.get(adam_job.id))
+        self.assertNotIn(adam_job.id, [row.id for row in job_repo.list_recent(limit=20)])
+        self.assertEqual(interview_repo.list_for_job(self.job.id), [])
+        self.assertEqual(outreach_repo.list_for_job(self.job.id), [])
+        self.assertIsNone(outreach_repo.get_by_provider_message_id("source-app-msg-1"))
+        self.assertIsNone(token_repo.get_by_token("token-source-app-1"))
 
     def test_resend_inbound_not_interested_updates_declined(self) -> None:
         reply_email = {
