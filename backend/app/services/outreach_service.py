@@ -33,6 +33,7 @@ from app.db.repositories import (
     InterviewRepository,
     JobRepository,
     OutreachEventRepository,
+    _candidate_email_value,
 )
 from app.db.session import SessionLocal
 from app.models.entities import OutreachEventEntity
@@ -309,21 +310,20 @@ def _extract_email(raw: dict) -> str:
             return ""
         return candidate
 
-    for key in ("work_email", "email", "personal_email"):
-        value = raw.get(key)
-        if isinstance(value, str):
-            normalized = _normalize_valid_email(value)
-            if normalized:
-                return normalized
-    for key in ("personal_emails", "emails"):
-        value = raw.get(key)
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, str):
-                    normalized = _normalize_valid_email(item)
-                    if normalized:
-                        return normalized
-    return ""
+    if not isinstance(raw, dict):
+        return ""
+
+    if bool(raw.get("is_mock_email")) or str(raw.get("email_source") or "").strip().lower() == "generated":
+        return ""
+
+    candidate_email = _candidate_email_value(raw)
+    if not candidate_email:
+        return ""
+
+    normalized = _normalize_valid_email(candidate_email)
+    if not normalized or normalized.endswith("@test.local"):
+        return ""
+    return normalized
 
 
 def _build_heuristic_email(*, candidate_profile, job) -> tuple[str, str]:

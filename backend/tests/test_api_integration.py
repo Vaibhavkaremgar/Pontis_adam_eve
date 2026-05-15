@@ -946,6 +946,57 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("sales executive", str(job_intake_row[0]).lower())
         self.assertNotIn("experience experience", str(job_intake_row[0]).lower())
 
+    def test_outreach_uses_nested_extracted_email_before_fallback(self) -> None:
+        from app.services import outreach_service as outreach_module
+
+        candidate_id = "candidate-nested-email"
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            name="Nested Email Candidate",
+            role="Software Engineer",
+            company="Tech Solutions Pvt Ltd",
+            summary="Candidate with email nested in parsed data.",
+            skills=["Python"],
+            raw_data={
+                "name": "Nested Email Candidate",
+                "parsedData": {
+                    "contact": {
+                        "email": "suramsaivignesh@gmail.com",
+                    }
+                },
+                "profileData": {
+                    "email": "suramsaivignesh@gmail.com",
+                },
+            },
+            fit_score=4.0,
+            decision="shortlisted",
+            strategy="HIGH",
+        )
+        InterviewRepository(self.db).upsert_status(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+        self.db.commit()
+
+        with patch.object(outreach_module, "_send_shortlist_outreach_email", return_value=(True, "", "msg-nested-1")):
+            result = outreach_module._trigger_candidate_outreach_sync(candidate_id=candidate_id, job_id=self.job.id)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["candidateEmail"], "suramsaivignesh@gmail.com")
+        self.assertFalse(result["fallbackUsed"])
+
+        outreach_row = self.db.execute(
+            text("SELECT to_email, status, last_error FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"),
+            {"job_id": self.job.id, "candidate_id": candidate_id},
+        ).fetchone()
+        self.assertIsNotNone(outreach_row)
+        self.assertEqual(outreach_row[0], "suramsaivignesh@gmail.com")
+        self.assertEqual(outreach_row[1], "sent")
+        self.assertEqual(outreach_row[2], "")
+
     def test_latest_by_candidate_ids_converts_uuid_inputs_to_text(self) -> None:
         repo = CandidateProfileRepository(self.db)
         candidate_a = str(uuid4())
