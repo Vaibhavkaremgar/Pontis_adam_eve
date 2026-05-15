@@ -90,7 +90,7 @@ def _job_company_id(db: Session, job_id: str) -> str | None:
 
 
 def _ensure_candidate_profile_email(row: CandidateProfileEntity) -> bool:
-    raw_data = dict(row.raw_data or {})
+    raw_data = dict(row.raw_data) if isinstance(row.raw_data, dict) else {}
     parsed_data = raw_data.get("parsed_data") or raw_data.get("parsedData")
     if not isinstance(parsed_data, dict):
         parsed_data = {}

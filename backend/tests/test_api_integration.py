@@ -880,6 +880,32 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(outreach_repo.get_by_provider_message_id("source-app-msg-1"))
         self.assertIsNone(token_repo.get_by_token("token-source-app-1"))
 
+    def test_interviews_endpoint_handles_non_dict_candidate_raw_data(self) -> None:
+        interview_repo = InterviewRepository(self.db)
+        interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+        self.db.execute(
+            text("UPDATE candidate_profiles SET raw_data = :raw_data WHERE job_id = :job_id AND candidate_id = :candidate_id"),
+            {
+                "raw_data": json.dumps(["legacy", "payload"]),
+                "job_id": self.job.id,
+                "candidate_id": "candidate-1",
+            },
+        )
+        self.db.commit()
+
+        response = self.client.get(f"/api/interviews?jobId={self.job.id}")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(len(body["data"]), 1)
+        self.assertEqual(body["data"][0]["candidateId"], "candidate-1")
+
     def test_latest_by_candidate_ids_converts_uuid_inputs_to_text(self) -> None:
         repo = CandidateProfileRepository(self.db)
         candidate_a = str(uuid4())
