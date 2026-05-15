@@ -133,7 +133,7 @@ from sqlalchemy import text
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_SECRET
 from app.core.security import create_access_token, create_csrf_token
-from app.db.repositories import CandidateProfileRepository, CompanyRepository, JobRepository, OutreachEventRepository, UserRepository
+from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, JobRepository, OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal, engine
 from app.models.entities import Base
 from app.services.resend_inbound_service import process_resend_inbound_webhook
@@ -757,6 +757,64 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(session_row[1], outreach_event_id)
         self.assertTrue(str(session_row[2] or "").startswith("http"))
         self.assertEqual(session_row[3], "pending")
+
+    def test_process_outreach_uses_completed_selection_session_candidates(self) -> None:
+        from app.services import outreach_service as outreach_module
+
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-2",
+            name="Blair",
+            role="Platform Engineer",
+            company="Northstar",
+            raw_data={
+                "name": "Blair",
+                "role": "Platform Engineer",
+                "company": "Northstar",
+                "summary": "Built queue-backed retrieval systems with Python, Redis, and Qdrant.",
+                "skills": ["Python", "Redis", "Qdrant"],
+                "work_email": "candidate2@example.com",
+                "email": "candidate2@example.com",
+                "personal_email": "candidate2@example.com",
+            },
+            summary="Built queue-backed retrieval systems with Python, Redis, and Qdrant.",
+            skills=["Python", "Redis", "Qdrant"],
+            fit_score=4.7,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+
+        session = CandidateSelectionSessionRepository(self.db).create(
+            job_id=self.job.id,
+            candidate_pool_snapshot=[],
+            batch_plan=[],
+        )
+        session.status = "completed"
+        session.selected_candidate_ids = ["candidate-2"]
+        session.completed_at = session.updated_at
+        self.db.commit()
+
+        with patch.object(outreach_module, "OUTREACH_DRY_RUN", False), \
+            patch.object(outreach_module, "ENABLE_REAL_EMAIL_SENDING", True), \
+            patch.object(outreach_module, "_send_outreach_email", return_value=(True, "", "msg-789")):
+            result = outreach_module.process_outreach(
+                db=self.db,
+                job_id=self.job.id,
+                selected_candidates=[],
+                custom_body="",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["sent"], 1)
+
+        outreach_row = self.db.execute(
+            text("SELECT status, provider_message_id FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"),
+            {"job_id": self.job.id, "candidate_id": "candidate-2"},
+        ).fetchone()
+        self.assertIsNotNone(outreach_row)
+        self.assertEqual(outreach_row[0], "sent")
+        self.assertEqual(outreach_row[1], "msg-789")
 
     def test_resend_inbound_not_interested_updates_declined(self) -> None:
         reply_email = {

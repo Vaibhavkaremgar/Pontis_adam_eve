@@ -29,6 +29,7 @@ from app.core.config import (
 )
 from app.db.repositories import (
     CandidateProfileRepository,
+    CandidateSelectionSessionRepository,
     InterviewRepository,
     JobRepository,
     OutreachEventRepository,
@@ -1096,28 +1097,59 @@ def process_outreach(
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
-    if not selected_candidates:
-        raise APIError("selectedCandidates is required", status_code=400)
-
-    interviews = InterviewRepository(db)
     profiles = CandidateProfileRepository(db)
+    selection_sessions = CandidateSelectionSessionRepository(db)
+    interviews = InterviewRepository(db)
     outreach_events = OutreachEventRepository(db)
     recruiter_id = JobRepository(db).get_recruiter_id(job_id)
 
     # ── Enforce shortlisted-only ──────────────────────────────────────────────
-    unique_selected_candidates = list(dict.fromkeys(selected_candidates))
-    interview_status_map: dict[str, str] = {
-        row.candidate_id: (row.status or "").strip().lower()
-        for row in interviews.list_for_job(job_id)
-    }
-    valid_candidates = [c for c in unique_selected_candidates if interview_status_map.get(c, "new") == "shortlisted"]
+    session = selection_sessions.get_by_job(job_id)
+    session_status = ""
+    session_selected_candidate_ids: list[str] = []
+    if session:
+        session_status = (session.status or "").strip().lower()
+        session_selected_candidate_ids = [
+            str(candidate_id).strip()
+            for candidate_id in (session.selected_candidate_ids or [])
+            if str(candidate_id).strip()
+        ]
+        logger.info(
+            "outreach_selection_session_loaded job_id=%s session_id=%s status=%s selected_count=%s",
+            job_id,
+            session.id,
+            session_status,
+            len(session_selected_candidate_ids),
+        )
+        if session_status != "completed":
+            logger.warning(
+                "outreach_selection_session_not_completed job_id=%s session_id=%s status=%s",
+                job_id,
+                session.id,
+                session_status,
+            )
+    else:
+        logger.info("outreach_selection_session_missing job_id=%s", job_id)
+
+    unique_selected_candidates = list(
+        dict.fromkeys(session_selected_candidate_ids if session else selected_candidates)
+    )
+    if not unique_selected_candidates:
+        raise APIError(
+            "No shortlisted candidates in selection. Accept candidates in the Review step before sending outreach.",
+            status_code=400,
+        )
+
+    candidate_profiles = profiles.latest_by_candidate_ids(job_id=job_id, candidate_ids=unique_selected_candidates)
+    valid_candidates = [candidate_id for candidate_id in unique_selected_candidates if candidate_id in candidate_profiles]
     rejected_count = len(unique_selected_candidates) - len(valid_candidates)
 
-    for cid in unique_selected_candidates:
-        if interview_status_map.get(cid, "new") != "shortlisted":
+    for candidate_id in unique_selected_candidates:
+        if candidate_id not in candidate_profiles:
             logger.warning(
-                "outreach_rejected_non_shortlisted job_id=%s candidate_id=%s status=%s",
-                job_id, cid, interview_status_map.get(cid, "new"),
+                "outreach_profile_missing job_id=%s candidate_id=%s",
+                job_id,
+                candidate_id,
             )
 
     logger.info(
@@ -1143,21 +1175,8 @@ def process_outreach(
 
     for candidate_id in valid_candidates:
         processed += 1
-        profile = profiles.get(job_id=job_id, candidate_id=candidate_id)
-        current_status = interview_status_map.get(candidate_id, "new")
-        if not profile:
-            logger.warning("outreach_profile_missing job_id=%s candidate_id=%s", job_id, candidate_id)
-            logger.warning(
-                "invalid_candidate_reference_detected table=outreach_events job_id=%s candidate_id=%s",
-                job_id,
-                candidate_id,
-            )
-            skipped += 1
-            reason = "candidate_profile_not_found"
-            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
-            details.append({"candidateId": candidate_id, "status": "skipped", "reason": reason})
-            skipped_candidates.append({"candidateId": candidate_id, "reason": reason})
-            continue
+        profile = candidate_profiles[candidate_id]
+        current_status = "shortlisted"
 
         raw_data = profile.raw_data or {}
         delivery_target = _resolve_outreach_recipient(raw_data=raw_data)
