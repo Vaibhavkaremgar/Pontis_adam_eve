@@ -1561,9 +1561,16 @@ class ScoringProfileRepository:
             return row
 
         row = ScoringProfileEntity(id=str(uuid4()), job_id=job_id)
-        self.db.add(row)
-        self.db.flush()
-        return row
+        try:
+            self.db.add(row)
+            self.db.flush()
+            return row
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.get(job_id=job_id)
+            if existing:
+                return existing
+            raise
 
     def apply_feedback_adjustment(self, *, job_id: str, feedback: str) -> ScoringProfileEntity:
         row = self.get_or_create(job_id=job_id)

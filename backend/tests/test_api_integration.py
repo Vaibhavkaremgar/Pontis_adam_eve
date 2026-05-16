@@ -136,7 +136,7 @@ from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_S
 from app.core.security import create_access_token, create_csrf_token
 from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal, engine
-from app.models.entities import Base
+from app.models.entities import Base, ScoringProfileEntity
 from app.services.resend_inbound_service import process_resend_inbound_webhook
 from app.services.webhook_security import verify_resend_webhook
 from app.services.webhook_security import WEBHOOK_SIGNATURE_HEADER, WEBHOOK_TIMESTAMP_HEADER, verify_shared_secret_webhook
@@ -1016,6 +1016,19 @@ class IntegrationTests(unittest.TestCase):
         token_repo = NotificationWorkflowTokenRepository(self.db)
         self.assertIsNone(token_repo.get_by_token(token, source_app="dashboard"))
         self.assertIsNotNone(token_repo.get_by_token(token, source_app="adam"))
+
+    def test_scoring_profile_get_or_create_returns_existing_row(self) -> None:
+        from app.db.repositories import ScoringProfileRepository
+
+        existing = ScoringProfileEntity(id=str(uuid4()), job_id=self.job.id)
+        self.db.add(existing)
+        self.db.commit()
+
+        repo = ScoringProfileRepository(self.db)
+        row = repo.get_or_create(job_id=self.job.id)
+
+        self.assertEqual(row.id, existing.id)
+        self.assertEqual(row.job_id, self.job.id)
 
     def test_interviews_endpoint_handles_non_dict_candidate_raw_data(self) -> None:
         interview_repo = InterviewRepository(self.db)
