@@ -396,7 +396,7 @@ def _send_resume_request_followup(*, to_email: str, job_title: str, company_name
         subject=subject,
         body=body,
         from_email="info@pontis.one",
-        reply_to="info@pontis.one",
+        reply_to="replies@mueolduer.resend.app",
         text=body,
         html=body.replace("\n\n", "<br><br>").replace("\n", "<br>"),
         tags={"product": "pontis", "flow": "resume_request_followup"},

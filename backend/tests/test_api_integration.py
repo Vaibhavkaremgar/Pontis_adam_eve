@@ -645,6 +645,9 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"]["status"], "processed")
         send_email_mock.assert_called_once()
+        followup_kwargs = send_email_mock.call_args.kwargs
+        self.assertEqual(followup_kwargs["reply_to"], "replies@mueolduer.resend.app")
+        self.assertEqual(followup_kwargs["from_email"], "info@pontis.one")
 
         profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
         self.assertEqual(profile.candidate_status, "awaiting_resume")
