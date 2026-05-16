@@ -30,11 +30,12 @@ type VoiceTurn = {
 };
 
 type TranscriptRole = VoiceTurn["role"];
-type StreamingMessage = {
+type TranscriptTurn = {
   id: string;
   role: "assistant" | "user";
   speaker: "Adam" | "Recruiter";
-  content: string;
+  finalTranscript: string;
+  liveTranscript: string;
   isStreaming: boolean;
   isFinal: boolean;
   timestamp: string;
@@ -44,6 +45,10 @@ type StreamingMessage = {
 
 function normalize(value: string) {
   return value.trim().replace(/\s+/g, " ");
+}
+
+function comparisonToken(token: string) {
+  return token.replace(/^[^\w]+|[^\w]+$/g, "").toLowerCase();
 }
 
 function toErrorMessage(error: unknown): string {
@@ -62,9 +67,9 @@ function toErrorMessage(error: unknown): string {
   return String(error);
 }
 
-function buildFullTranscript(turns: VoiceTurn[]): string {
+function buildFullTranscript(turns: TranscriptTurn[]): string {
   return turns
-    .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${cleanVoiceTranscriptText(t.text)}`)
+    .map((t) => `${t.role === "assistant" ? "Adam" : "Recruiter"}: ${cleanTranscript(t.finalTranscript)}`)
     .join("\n");
 }
 
@@ -106,7 +111,7 @@ function upsertTurn(turns: VoiceTurn[], role: TranscriptRole, text: string, isFi
   if (last?.role === role) {
     next[next.length - 1] = {
       role,
-      text: accumulateTranscript(last.text, normalized, isFinal),
+      text: normalized,
     };
     return next;
   }
@@ -221,22 +226,34 @@ function collapseRepeatedPhrases(text: string): string {
   const tokens = normalized.split(" ");
   if (tokens.length < 4) return normalized;
 
-  const maxWindow = Math.min(12, Math.floor(tokens.length / 2));
-  for (let window = maxWindow; window >= 2; window -= 1) {
-    const limit = tokens.length - window * 2 + 1;
-    for (let start = 0; start < limit; start += 1) {
-      const first = tokens.slice(start, start + window).join(" ");
-      const second = tokens.slice(start + window, start + window * 2).join(" ");
-      if (first.toLowerCase() === second.toLowerCase()) {
-        return collapseRepeatedPhrases([
-          ...tokens.slice(0, start),
-          ...tokens.slice(start, start + window),
-          ...tokens.slice(start + window * 2),
-        ].join(" "));
+  let changed = true;
+  while (changed && tokens.length >= 4) {
+    changed = false;
+    const maxWindow = Math.min(12, Math.floor(tokens.length / 2));
+    for (let window = maxWindow; window >= 2; window -= 1) {
+      const limit = tokens.length - window * 2 + 1;
+      for (let start = 0; start < limit; start += 1) {
+        const first = tokens.slice(start, start + window).map(comparisonToken).join(" ");
+        const second = tokens.slice(start + window, start + window * 2).map(comparisonToken).join(" ");
+        if (first !== second) {
+          continue;
+        }
+        tokens.splice(start + window, window);
+        changed = true;
+        break;
       }
+      if (changed) break;
     }
   }
 
+  return tokens.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function dedupeConsecutiveWords(text: string): string {
+  const normalized = normalize(text);
+  if (!normalized) return "";
+
+  const tokens = normalized.split(" ");
   const dedupedWords: string[] = [];
   for (const token of tokens) {
     const last = dedupedWords[dedupedWords.length - 1];
@@ -313,73 +330,120 @@ function collapseRepeatedClauses(text: string): string {
   return kept.join(" ").replace(/\s+/g, " ").trim();
 }
 
-function cleanVoiceTranscriptText(text: string): string {
+function cleanTranscript(text: string): string {
   const collapsed = collapseRepeatedClauses(text);
-  return normalizeFinalTranscriptText(collapsed);
+  const deduped = dedupeConsecutiveWords(collapsed);
+  return normalizeFinalTranscriptText(deduped);
 }
 
-function mergeTranscriptFragments(previous: string, incoming: string): string {
+function cleanVoiceTranscriptText(text: string): string {
+  return cleanTranscript(text);
+}
+
+function appendCommittedTranscript(previous: string, incoming: string): string {
   const prev = normalize(previous);
   const next = normalize(incoming);
-  if (!prev) return collapseRepeatedPhrases(next);
+  if (!prev) return cleanTranscript(next);
   if (!next) return prev;
 
   const prevLower = prev.toLowerCase();
   const nextLower = next.toLowerCase();
-
   if (nextLower === prevLower) return prev;
-  if (nextLower.startsWith(prevLower)) return collapseRepeatedPhrases(next);
-  if (prevLower.startsWith(nextLower)) return collapseRepeatedPhrases(prev);
-  if (prevLower.includes(nextLower)) return collapseRepeatedPhrases(prev);
-  if (nextLower.includes(prevLower)) return collapseRepeatedPhrases(next);
+  if (nextLower.startsWith(prevLower)) return cleanTranscript(next);
+  if (prevLower.startsWith(nextLower)) return prev;
+  if (prevLower.includes(nextLower)) return prev;
+  if (nextLower.includes(prevLower)) return next;
 
   const prevWords = prev.split(" ");
   const nextWords = next.split(" ");
-  const maxOverlap = Math.min(14, prevWords.length, nextWords.length);
-
+  const maxOverlap = Math.min(12, prevWords.length, nextWords.length);
   for (let size = maxOverlap; size >= 2; size -= 1) {
     const prevTail = prevWords.slice(-size).join(" ").toLowerCase();
     const nextHead = nextWords.slice(0, size).join(" ").toLowerCase();
     if (prevTail === nextHead) {
-      return collapseRepeatedPhrases([...prevWords, ...nextWords.slice(size)].join(" "));
+      return cleanTranscript([...prevWords, ...nextWords.slice(size)].join(" "));
     }
   }
 
-  const candidateAppend = collapseRepeatedPhrases(`${prev} ${next}`);
-  if (candidateAppend.length >= prev.length) return candidateAppend;
-
-  return collapseRepeatedPhrases(next);
+  return cleanTranscript(`${prev} ${next}`);
 }
 
-function accumulateTranscript(previous: string, incoming: string, isFinal = false): string {
-  const prev = normalize(previous);
-  const next = normalize(incoming);
-  if (!next) return prev;
-  if (!prev) return collapseRepeatedPhrases(next);
-
-  const revised = mergeASRRevision(prev, next);
-  const merged = mergeTranscriptFragments(prev, revised);
-  return collapseRepeatedPhrases(merged);
+function turnDisplayText(turn: TranscriptTurn): string {
+  return [turn.finalTranscript, turn.liveTranscript].map((part) => normalize(part)).filter(Boolean).join(turn.finalTranscript && turn.liveTranscript ? " " : "");
 }
 
-function mergeTranscriptEventContent(previous: string, incoming: string, isFinal: boolean): string {
-  const prev = normalize(previous);
-  const next = normalize(incoming);
-  if (!prev) return isFinal ? cleanVoiceTranscriptText(next) : collapseRepeatedClauses(next);
-  if (!next) return prev;
+function finalizeTurn(turn: TranscriptTurn): TranscriptTurn {
+  const committedLive = cleanTranscript(turn.liveTranscript);
+  const finalTranscript = committedLive
+    ? appendCommittedTranscript(turn.finalTranscript, committedLive)
+    : normalize(turn.finalTranscript);
+  return {
+    ...turn,
+    finalTranscript,
+    liveTranscript: "",
+    isStreaming: false,
+    isFinal: true,
+    timestamp: new Date().toISOString(),
+  };
+}
 
-  if (!isFinal) {
-    const merged = collapseRepeatedClauses(mergeTranscriptFragments(prev, next));
-    return merged.length >= prev.length ? merged : prev;
+function finalizeTurns(turns: TranscriptTurn[]): TranscriptTurn[] {
+  return turns.map((turn) => finalizeTurn(turn));
+}
+
+function updateTranscriptTurns(
+  turns: TranscriptTurn[],
+  role: TranscriptRole,
+  incoming: string,
+  isFinal = false,
+): TranscriptTurn[] {
+  const normalizedIncoming = normalize(incoming);
+  if (!normalizedIncoming) return turns;
+
+  const next = [...turns];
+  const timestamp = new Date().toISOString();
+  const last = next[next.length - 1];
+
+  if (!last || last.role !== role) {
+    if (last && last.isStreaming) {
+      next[next.length - 1] = finalizeTurn(last);
+    }
+    next.push({
+      id: createMessageId(role),
+      role,
+      speaker: speakerLabel(role),
+      finalTranscript: isFinal ? cleanTranscript(normalizedIncoming) : "",
+      liveTranscript: isFinal ? "" : normalizedIncoming,
+      isStreaming: !isFinal,
+      isFinal,
+      timestamp,
+    });
+    return next;
   }
 
-  const mergedContent = accumulateTranscript(prev, next, true);
-  if (!mergedContent) return prev;
+  if (isFinal) {
+    const cleanedIncoming = cleanTranscript(normalizedIncoming);
+    next[next.length - 1] = {
+      ...last,
+      speaker: speakerLabel(role),
+      finalTranscript: appendCommittedTranscript(last.finalTranscript, cleanedIncoming || last.liveTranscript),
+      liveTranscript: "",
+      isStreaming: false,
+      isFinal: true,
+      timestamp,
+    };
+    return next;
+  }
 
-  const candidateContent = cleanVoiceTranscriptText(mergedContent);
-  if (candidateContent.length < prev.length) return prev;
-
-  return candidateContent;
+  next[next.length - 1] = {
+    ...last,
+    speaker: speakerLabel(role),
+    liveTranscript: normalizedIncoming,
+    isStreaming: true,
+    isFinal: false,
+    timestamp,
+  };
+  return next;
 }
 
 function debugTranscriptUpdate(details: {
@@ -463,7 +527,7 @@ export function VoiceUi() {
   const router = useRouter();
   const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
 
-  const [finalTranscript, setFinalTranscript] = useState<StreamingMessage[]>([]);
+  const [transcriptTurns, setTranscriptTurns] = useState<TranscriptTurn[]>([]);
   const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
   const [pipelineError, setPipelineError] = useState("");
   const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
@@ -471,7 +535,7 @@ export function VoiceUi() {
 
   // Refs — never cause re-renders, safe to read inside Vapi callbacks
   const vapiRef = useRef<Vapi | null>(null);
-  const turnsRef = useRef<VoiceTurn[]>([]);       // full structured conversation
+  const turnsRef = useRef<TranscriptTurn[]>([]);  // committed + live transcript turns
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
   const autoEndTimerRef = useRef<number | null>(null);
@@ -502,10 +566,10 @@ export function VoiceUi() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [finalTranscript]);
+  }, [transcriptTurns]);
   const selectionMood = job.vettingMode || "volume";
 
-  const activeStreamingMessage = finalTranscript.find((msg) => msg.isStreaming);
+  const activeStreamingMessage = transcriptTurns.find((msg) => msg.isStreaming);
   const activeSpeaker = activeStreamingMessage?.role || null;
   const activeSpeakerLabel =
     activeSpeaker === "assistant" ? "Adam is speaking" : activeSpeaker === "user" ? "Recruiter is speaking" : "Waiting for speech";
@@ -521,86 +585,24 @@ export function VoiceUi() {
   };
 
   const upsertStreamingMessage = useCallback((role: TranscriptRole, text: string, isFinal: boolean) => {
-    const speaker = speakerLabel(role);
-    const timestamp = new Date().toISOString();
     const incoming = normalize(text);
     if (!incoming) return;
 
-    setFinalTranscript((prev) => {
-      const next = [...prev];
+    setTranscriptTurns((prev) => {
+      const next = updateTranscriptTurns(prev, role, incoming, isFinal);
       const last = next[next.length - 1];
-      const previousContent = last && last.role === role ? last.content : "";
-      const normalizedContent = last && last.role === role
-        ? mergeTranscriptEventContent(last.content, incoming, isFinal)
-        : mergeTranscriptEventContent("", incoming, isFinal);
-      if (!normalizedContent) return prev;
-
-      if (last && last.role === role) {
-        const reason =
-          normalizedContent.length < previousContent.length
-            ? "rejected_shorter_update"
-            : normalizedContent === previousContent
-              ? "no_change"
-              : previousContent && normalizedContent.startsWith(previousContent)
-                ? "append_or_extend"
-                : "revision_or_append";
-
-        debugTranscriptUpdate({
-          role,
-          isFinal,
-          previous: previousContent,
-          incoming,
-          merged: normalizedContent.length < previousContent.length ? previousContent : normalizedContent,
-          reason,
-        });
-      } else {
-        debugTranscriptUpdate({
-          role,
-          isFinal,
-          previous: "",
-          incoming,
-          merged: normalizedContent,
-          reason: "new_bubble",
-        });
-      }
-
-      // Keep every speaker turn as a single bubble by merging same-speaker fragments.
-      if (last && last.role === role) {
-        next[next.length - 1] = {
-          ...last,
-          speaker,
-          content: normalizedContent.length < previousContent.length ? previousContent : normalizedContent,
-          isStreaming: !isFinal,
-          isFinal,
-          timestamp,
-        };
-        return next;
-      }
-
-      if (last && last.isStreaming) {
-        next[next.length - 1] = {
-          ...last,
-          isStreaming: false,
-          isFinal: true,
-          timestamp,
-        };
-      }
-
-      return [
-        ...next,
-        {
-          id: createMessageId(role),
-          role,
-          speaker,
-          content: normalizedContent,
-          isStreaming: !isFinal,
-          isFinal,
-          timestamp,
-        },
-      ];
+      debugTranscriptUpdate({
+        role,
+        isFinal,
+        previous: "",
+        incoming,
+        merged: last ? turnDisplayText(last) : "",
+        reason: isFinal ? "finalized" : "streaming_update",
+      });
+      return next;
     });
 
-    turnsRef.current = upsertTurn(turnsRef.current, role, cleanVoiceTranscriptText(incoming), isFinal);
+    turnsRef.current = updateTranscriptTurns(turnsRef.current, role, incoming, isFinal);
   }, []);
 
   const requestCallStop = useCallback(async () => {
@@ -641,14 +643,12 @@ export function VoiceUi() {
   }, [requestCallStop, upsertStreamingMessage]);
 
   // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
-  const runPipeline = useCallback(async (turns: VoiceTurn[]) => {
+  const runPipeline = useCallback(async (turns: TranscriptTurn[]) => {
     if (firedRef.current) return;
     firedRef.current = true;
 
-    const fullTranscript = buildFullTranscript(turns);
-    const cleanedTranscript = turns
-      .map((turn) => `${turn.role === "assistant" ? "Adam" : "Recruiter"}: ${cleanVoiceTranscriptText(turn.text)}`)
-      .join("\n");
+    const finalizedTurns = finalizeTurns(turns);
+    const fullTranscript = buildFullTranscript(finalizedTurns);
     const endedAt = Date.now();
 
     if (!fullTranscript.trim()) {
@@ -664,13 +664,13 @@ export function VoiceUi() {
     });
 
     // Store voiceNotes for any downstream consumers (outreach, etc.)
-    setVoiceNotes([cleanedTranscript || fullTranscript]);
+    setVoiceNotes([fullTranscript]);
 
     if (user && jobId) {
       const intelligenceResult = await updateRecruiterIntelligence(user.id, jobId, {
         jobId,
-        transcript: cleanedTranscript || fullTranscript,
-        voiceSummary: cleanedTranscript || fullTranscript,
+        transcript: fullTranscript,
+        voiceSummary: fullTranscript,
         entities: {},
       });
       if (intelligenceResult.success && intelligenceResult.data) {
@@ -681,8 +681,8 @@ export function VoiceUi() {
     setPipelineStatus("refining");
     const refineResult = await refineWithVoice({
       jobId,
-      voiceNotes: [cleanedTranscript || fullTranscript],
-      transcript: cleanedTranscript || fullTranscript,
+      voiceNotes: [fullTranscript],
+      transcript: fullTranscript,
     });
 
     if (!refineResult.success) {
@@ -706,8 +706,8 @@ export function VoiceUi() {
 
     setCandidates(candidatesResult.data);
     setIsRefined(true);
-      setPipelineStatus("done");
-      terminalStateRef.current = "done";
+    setPipelineStatus("done");
+    terminalStateRef.current = "done";
 
     // Auto-navigate to review after a short pause so recruiter sees "done"
     setTimeout(() => router.push("/review"), 1200);
@@ -802,23 +802,11 @@ export function VoiceUi() {
 
       setCallStatus("completed");
       terminalStateRef.current = "done";
-      setFinalTranscript((prev) => {
-        if (prev.length === 0) return prev;
-        const next = [...prev];
-        const lastIndex = next.length - 1;
-        const last = next[lastIndex];
-        if (last && last.isStreaming) {
-          next[lastIndex] = {
-            ...last,
-            isStreaming: false,
-            isFinal: true,
-            timestamp: new Date().toISOString(),
-          };
-        }
-        return next;
-      });
+      const finalizedTurns = finalizeTurns(turnsRef.current);
+      turnsRef.current = finalizedTurns;
+      setTranscriptTurns(finalizedTurns);
       // Auto-trigger pipeline with everything captured so far
-      void runPipeline(turnsRef.current);
+      void runPipeline(finalizedTurns);
     });
 
     vapiRef.current = vapi;
@@ -872,7 +860,7 @@ export function VoiceUi() {
     }
 
     // Reset state
-    setFinalTranscript([]);
+    setTranscriptTurns([]);
     turnsRef.current = [];
     firedRef.current = false;
     callStartedAtRef.current = null;
@@ -1009,17 +997,25 @@ export function VoiceUi() {
           ref={chatScrollRef}
           className="max-h-[70vh] space-y-4 overflow-y-auto rounded-[28px] border border-[#E7E0D4] bg-[linear-gradient(180deg,#FFFDF9_0%,#F7F2E8_100%)] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6"
         >
-          {finalTranscript.length > 0 ? (
-            finalTranscript.map((message) => (
+          {transcriptTurns.length > 0 ? (
+            transcriptTurns.map((message) => (
               <ChatBubble
                 key={message.id}
-                message={message}
+                message={{
+                  id: message.id,
+                  role: message.role,
+                  speaker: message.speaker,
+                  content: turnDisplayText(message),
+                  isStreaming: message.isStreaming,
+                  isFinal: message.isFinal,
+                  timestamp: message.timestamp,
+                }}
                 isInterim={message.isStreaming}
               />
             ))
           ) : (
             <div className="rounded-[24px] border border-dashed border-[#D8CCBA] bg-white/70 px-5 py-8 text-center text-sm text-[#6B7280]">
-              Start the call and the full Adam and recruiter transcript will appear here.
+              Start the call and the final Adam and recruiter transcript will appear here. Live ASR text is shown inline while streaming.
             </div>
           )}
         </div>

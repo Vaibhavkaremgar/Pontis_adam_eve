@@ -1074,6 +1074,16 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(body["data"][0]["candidateId"], str(candidate_uuid))
         self.assertEqual(body["data"][0]["name"], "UUID Candidate")
 
+    def test_voice_transcript_cleanup_removes_duplicate_words(self) -> None:
+        from app.services.voice_service import clean_transcript
+
+        self.assertEqual(clean_transcript("a good idea a good idea actually"), "A good idea actually")
+
+    def test_voice_transcript_cleanup_removes_duplicate_phrases(self) -> None:
+        from app.services.voice_service import clean_transcript
+
+        self.assertEqual(clean_transcript("the familiarity with the familiarity with Django"), "The familiarity with Django")
+
     def test_voice_refine_cleans_repeated_recruiter_noise(self) -> None:
         from app.services import voice_service as voice_module
 

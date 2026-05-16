@@ -97,6 +97,10 @@ def _normalize_text(value: Any) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _comparison_token(token: str) -> str:
+    return re.sub(r"^[^\w]+|[^\w]+$", "", token).lower()
+
+
 def _normalize_list(values: Any, *, max_items: int = 20) -> list[str]:
     if not isinstance(values, list):
         return []
@@ -343,27 +347,52 @@ def _collapse_repeated_phrases(text: str) -> str:
     if len(tokens) < 4:
         return normalized
 
-    max_window = min(12, len(tokens) // 2)
-    for window in range(max_window, 1, -1):
-        limit = len(tokens) - (window * 2) + 1
-        for start in range(max(0, limit)):
-            first = " ".join(tokens[start : start + window]).lower()
-            second = " ".join(tokens[start + window : start + window * 2]).lower()
-            if first == second:
-                return _collapse_repeated_phrases(" ".join(tokens[:start] + tokens[start : start + window] + tokens[start + window * 2 :]))
+    changed = True
+    while changed and len(tokens) >= 4:
+        changed = False
+        max_window = min(12, len(tokens) // 2)
+        for window in range(max_window, 1, -1):
+            limit = len(tokens) - (window * 2) + 1
+            for start in range(max(0, limit)):
+                first = " ".join(_comparison_token(token) for token in tokens[start : start + window])
+                second = " ".join(_comparison_token(token) for token in tokens[start + window : start + window * 2])
+                if first != second:
+                    continue
+                tokens = tokens[:start] + tokens[start : start + window] + tokens[start + window * 2 :]
+                changed = True
+                break
+            if changed:
+                break
 
+    return " ".join(tokens).replace("  ", " ").strip()
+
+
+def _dedupe_consecutive_words(text: str) -> str:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+
+    tokens = normalized.split(" ")
     deduped: list[str] = []
     for token in tokens:
         last = deduped[-1] if deduped else ""
         if last and last.lower() == token.lower():
             continue
         deduped.append(token)
-
     return " ".join(deduped).replace("  ", " ").strip()
 
 
-def _cleanup_transcript_text(transcript: str) -> str:
-    text = _collapse_repeated_phrases(transcript)
+def _common_prefix_length(left: list[str], right: list[str]) -> int:
+    length = 0
+    for left_token, right_token in zip(left, right):
+        if left_token.lower() != right_token.lower():
+            break
+        length += 1
+    return length
+
+
+def clean_transcript(transcript: str) -> str:
+    text = _normalize_text(transcript)
     if not text:
         return ""
 
@@ -372,6 +401,7 @@ def _cleanup_transcript_text(transcript: str) -> str:
 
     for raw_clause in clauses:
         clause = _collapse_repeated_phrases(raw_clause)
+        clause = _dedupe_consecutive_words(clause)
         clause = re.sub(r"\s+", " ", clause).strip()
         if not clause:
             continue
@@ -402,24 +432,34 @@ def _cleanup_transcript_text(transcript: str) -> str:
 
         last_words = last_core.split()
         clause_words = clause_core.split()
+        prefix_len = _common_prefix_length(last_words, clause_words)
+        if prefix_len >= 3:
+            cleaned[-1] = clause
+            continue
+
         overlap = min(8, len(last_words), len(clause_words))
         merged = False
         for size in range(overlap, 2, -1):
             if " ".join(last_words[-size:]) == " ".join(clause_words[:size]):
-                if len(clause) > len(last):
-                    cleaned[-1] = clause
+                cleaned[-1] = " ".join(last_words + clause_words[size:]).strip()
                 merged = True
                 break
         if not merged:
             cleaned.append(clause)
 
     text = " ".join(cleaned)
+    text = _collapse_repeated_phrases(text)
+    text = _dedupe_consecutive_words(text)
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     text = re.sub(r"([,.;:!?])(?!\s|$)", r"\1 ", text)
     text = re.sub(r"\s+", " ", text).strip()
     if text:
         text = text[0].upper() + text[1:]
     return text
+
+
+def _cleanup_transcript_text(transcript: str) -> str:
+    return clean_transcript(transcript)
 
 
 def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], transcript: str = "") -> dict:
