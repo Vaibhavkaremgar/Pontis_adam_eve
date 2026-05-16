@@ -22,6 +22,13 @@ def _legacy_booking_url(token: str) -> str:
     return f"https://interview.pontis.one/booking.html?token={token}"
 
 
+def _build_token_payload(*, profile: Any, job: Any, company_name: str = "") -> dict[str, Any]:
+    return build_slot_booking_payload(
+        candidate=profile,
+        job={"title": getattr(job, "title", "") or "", "company_name": company_name or ""},
+    )
+
+
 def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
     return {
         "id": row.id,
@@ -61,17 +68,23 @@ def create_interview_session(
         if profile:
             token_repo = NotificationWorkflowTokenRepository(db)
             existing_workflow_token = token_repo.get_by_token(existing_session.token, source_app=source_app)
-            if not existing_workflow_token:
+            token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
+            if existing_workflow_token:
+                existing_workflow_token.payload = token_payload
+                existing_workflow_token.expires_at = existing_session.expires_at
+                existing_workflow_token.is_active = True
+                existing_workflow_token.status = "active"
+                existing_workflow_token.job_id = job_id
+                existing_workflow_token.candidate_id = candidate_id
+                db.flush()
+            else:
                 create_notification_workflow_token(
                     db=db,
                     job_id=job_id,
                     candidate_id=candidate_id,
                     workflow_name="slot_booking",
                     token=existing_session.token,
-                    payload=build_slot_booking_payload(
-                        candidate=profile,
-                        job={"title": job.title, "company_name": company.name if company else ""},
-                    ),
+                    payload=token_payload,
                     expires_at=existing_session.expires_at,
                     token_type="slot_booking",
                     is_active=True,
@@ -105,11 +118,9 @@ def create_interview_session(
         source_app=source_app,
         token_type="slot_booking",
     )
+    token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
     if existing_workflow_token:
-        existing_workflow_token.payload = build_slot_booking_payload(
-            candidate=profile,
-            job={"title": job.title, "company_name": company.name if company else ""},
-        )
+        existing_workflow_token.payload = token_payload
         existing_workflow_token.expires_at = expires_at
         existing_workflow_token.is_active = True
         existing_workflow_token.status = "active"
@@ -123,10 +134,7 @@ def create_interview_session(
             candidate_id=candidate_id,
             workflow_name="slot_booking",
             token=token,
-            payload=build_slot_booking_payload(
-                candidate=profile,
-                job={"title": job.title, "company_name": company.name if company else ""},
-            ),
+            payload=token_payload,
             expires_at=expires_at,
             token_type="slot_booking",
             is_active=True,

@@ -1129,6 +1129,88 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(token_repo.get_by_token(token, source_app="dashboard"))
         self.assertIsNotNone(token_repo.get_by_token(token, source_app="adam"))
 
+    def test_interview_session_refreshes_existing_token_payload_from_resume_profile(self) -> None:
+        from app.services import interview_session_service as interview_session_module
+
+        interview_repo = InterviewRepository(self.db)
+        interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            name="Book Me",
+            role="Software Engineer",
+            company="Tech Solutions Pvt Ltd",
+            summary="Ready to book.",
+            skills=["Python"],
+            raw_data={
+                "name": "Book Me",
+                "email": "bookme@example.com",
+                "phone": "+91 91111 11111",
+                "linkedin_url": "https://linkedin.com/in/bookme",
+                "github_url": "https://github.com/bookme",
+                "current_company": "Tech Solutions Pvt Ltd",
+                "current_title": "Software Engineer",
+                "total_experience_years": 3.5,
+                "skills": ["Python"],
+                "parsed_resume_text": "Initial resume text.",
+            },
+            fit_score=4.9,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+
+        first_session = interview_session_module.create_interview_session(
+            db=self.db,
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+        )
+        token = str(first_session["token"])
+
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertIsNotNone(profile)
+        profile.parsed_resume_text = "Updated resume text from candidate reply."
+        profile.parsed_resume_json = {
+            "full_name": "Book Me",
+            "headline": "Software Engineer",
+            "years_experience": 4.0,
+            "skills": ["Python", "Redis"],
+            "companies": ["Tech Solutions Pvt Ltd"],
+            "education": ["B.Tech"],
+            "projects": ["Interview booking"],
+            "certifications": ["AWS"],
+            "location": "Remote",
+            "summary": "Ready to book with updated resume.",
+            "domain_experience": ["Recruiting"],
+        }
+        self.db.commit()
+
+        second_session = interview_session_module.create_interview_session(
+            db=self.db,
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+        )
+        self.assertEqual(str(second_session["token"]), token)
+
+        token_row = self.db.execute(
+            text(
+                "SELECT payload, source_app FROM notification_workflow_tokens WHERE token = :token"
+            ),
+            {"token": token},
+        ).fetchone()
+        self.assertIsNotNone(token_row)
+        self.assertEqual(token_row[1], "adam")
+        payload = json.loads(token_row[0])
+        self.assertEqual(payload["resume_text"], "Updated resume text from candidate reply.")
+        self.assertEqual(payload["parsed_resume_text"], "Updated resume text from candidate reply.")
+        self.assertEqual(payload["parsed_resume_json"]["years_experience"], 4.0)
+        self.assertEqual(payload["resume_metadata"]["skills"], ["Python", "Redis"])
+
     def test_scoring_profile_get_or_create_returns_existing_row(self) -> None:
         from app.db.repositories import ScoringProfileRepository
 

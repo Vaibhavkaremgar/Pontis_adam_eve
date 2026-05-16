@@ -51,6 +51,10 @@ function comparisonToken(token: string) {
   return token.replace(/^[^\w]+|[^\w]+$/g, "").toLowerCase();
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function toErrorMessage(error: unknown): string {
   if (!error) return "Unknown error";
   if (typeof error === "string") return error;
@@ -149,28 +153,12 @@ function classifyVoiceError(error: unknown): { kind: string; message: string } {
   return { kind: type || "unknown", message: message || "Voice assistant failed to connect." };
 }
 
-const AUTO_CLOSE_PHRASES = [
-  "that's fine",
-  "thats fine",
-  "we are good to go",
-  "we're good to go",
-  "we're good",
-  "we are good",
-  "that is everything",
-  "that's everything",
-  "that is all",
-  "that's all",
-  "no that's all",
-  "no thanks that's all",
-  "nothing else",
-  "nothing more",
-];
-
-function shouldAutoCloseCall(text: string): boolean {
-  const normalized = normalize(text).toLowerCase();
-  if (!normalized) return false;
-  if (/\b(not|nope|don't|do not)\b/.test(normalized)) return false;
-  return AUTO_CLOSE_PHRASES.some((phrase) => normalized.includes(phrase));
+function stripTranscriptNoise(text: string) {
+  return normalize(text)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s.+-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeFinalTranscriptText(text: string): string {
@@ -338,6 +326,166 @@ function cleanTranscript(text: string): string {
 
 function cleanVoiceTranscriptText(text: string): string {
   return cleanTranscript(text);
+}
+
+type IntakeCompletionSignal = {
+  ready: boolean;
+  coverage: number;
+  requiredTopics: string[];
+  satisfiedTopics: string[];
+  latestNovelty: number;
+  recruiterFinalTurns: number;
+  assistantFinalTurns: number;
+  reason: string;
+};
+
+function buildRequiredIntakeTopics(job: Record<string, unknown> | null | undefined) {
+  const topics: Array<{ key: string; patterns: RegExp[]; minMatches?: number }> = [];
+  const jobRecord = (job || {}) as Record<string, any>;
+  const title = normalize(String(jobRecord.title || ""));
+  const location = normalize(String(jobRecord.location || ""));
+  const compensation = normalize(String(jobRecord.compensation || ""));
+  const experienceRequired = normalize(String(jobRecord.experienceRequired || jobRecord.experience_required || ""));
+  const workAuthorization = normalize(String(jobRecord.workAuthorization || jobRecord.work_authorization || ""));
+  const remotePolicy = normalize(String(jobRecord.remotePolicy || jobRecord.remote_policy || ""));
+  const skillsRequired = Array.isArray(jobRecord.skillsRequired)
+    ? jobRecord.skillsRequired.filter(Boolean)
+    : Array.isArray(jobRecord.skills_required)
+      ? jobRecord.skills_required.filter(Boolean)
+      : [];
+  const titleTokens = title
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+    .slice(0, 4);
+
+  if (titleTokens.length > 0) {
+    topics.push({
+      key: "role",
+      patterns: [
+        ...titleTokens.map((token) => new RegExp(`\\b${escapeRegExp(token)}\\b`, "i")),
+        /\b(role|title|position|hiring for|looking for|need a|need an|need the)\b/i,
+      ],
+    });
+  }
+
+  if (location) {
+    const locationTokens = location.split(/[^a-z0-9]+/i).map((token) => token.trim()).filter((token) => token.length >= 3).slice(0, 4);
+    topics.push({
+      key: "location",
+      patterns: [
+        ...locationTokens.map((token) => new RegExp(`\\b${escapeRegExp(token)}\\b`, "i")),
+        /\b(remote|hybrid|onsite|on-site|location|based in|relocation)\b/i,
+      ],
+    });
+  }
+
+  if (compensation) {
+    topics.push({
+      key: "compensation",
+      patterns: [
+        /\b(salary|compensation|ctc|pay|package|budget|rate|lpa|stipend)\b/i,
+        /\b\d+(?:\.\d+)?\s*(?:k|lpa|lakhs?|crores?|usd|inr|eur|gbp)\b/i,
+      ],
+    });
+  }
+
+  if (experienceRequired) {
+    topics.push({
+      key: "experience",
+      patterns: [
+        /\b\d+(?:\.\d+)?\+?\s*(?:years?|yrs?)\b/i,
+        /\b(junior|mid|senior|lead|staff|principal|experienced)\b/i,
+      ],
+    });
+  }
+
+  if (workAuthorization) {
+    topics.push({
+      key: "authorization",
+      patterns: [
+        /\b(work authorization|work authorisation|visa|sponsorship|eligible|citizen|permit)\b/i,
+      ],
+    });
+  }
+
+  if (remotePolicy) {
+    topics.push({
+      key: "remotePolicy",
+      patterns: [
+        /\b(remote|hybrid|onsite|on-site|office|in-person)\b/i,
+      ],
+    });
+  }
+
+  if (skillsRequired.length > 0) {
+    topics.push({
+      key: "skills",
+      minMatches: Math.min(2, skillsRequired.length),
+      patterns: [
+        ...skillsRequired.slice(0, 8).map((skill) => new RegExp(`\\b${escapeRegExp(String(skill).trim())}\\b`, "i")),
+      ],
+    });
+  }
+
+  return topics;
+}
+
+function computeNoveltyRatio(latestText: string, priorText: string) {
+  const latestTokens = stripTranscriptNoise(latestText).split(" ").filter(Boolean);
+  const priorTokens = new Set(stripTranscriptNoise(priorText).split(" ").filter(Boolean));
+  if (latestTokens.length === 0) return 0;
+  const uniqueLatest = Array.from(new Set(latestTokens));
+  const novelCount = uniqueLatest.filter((token) => !priorTokens.has(token)).length;
+  return novelCount / uniqueLatest.length;
+}
+
+function evaluateIntakeCompletion(turns: TranscriptTurn[], job: Record<string, unknown> | null | undefined): IntakeCompletionSignal {
+  const finalizedTurns = turns.filter((turn) => turn.isFinal);
+  const recruiterTurns = finalizedTurns.filter((turn) => turn.role === "user");
+  const assistantTurns = finalizedTurns.filter((turn) => turn.role === "assistant");
+  const hasStreamingTurn = turns.some((turn) => turn.isStreaming);
+  const requiredTopics = buildRequiredIntakeTopics(job);
+  const transcriptByTurn = finalizedTurns.map((turn) => turnDisplayText(turn)).join("\n");
+  const satisfiedTopics = requiredTopics.filter((topic) => {
+    const matches = topic.patterns.filter((pattern) => pattern.test(transcriptByTurn)).length;
+    return matches >= (topic.minMatches || 1);
+  }).map((topic) => topic.key);
+  const coverage = requiredTopics.length > 0 ? satisfiedTopics.length / requiredTopics.length : 0;
+  const latestRecruiterTurn = recruiterTurns[recruiterTurns.length - 1];
+  const priorRecruiterText = recruiterTurns.slice(0, -1).map((turn) => turnDisplayText(turn)).join("\n");
+  const latestRecruiterText = latestRecruiterTurn ? turnDisplayText(latestRecruiterTurn) : "";
+  const latestNovelty = latestRecruiterText ? computeNoveltyRatio(latestRecruiterText, `${priorRecruiterText}\n${assistantTurns.map((turn) => turnDisplayText(turn)).join("\n")}`) : 0;
+  const latestWordCount = stripTranscriptNoise(latestRecruiterText).split(" ").filter(Boolean).length;
+  const sufficientHistory = recruiterTurns.length >= 3 && assistantTurns.length >= 2;
+  const highCoverage = requiredTopics.length > 0 ? coverage >= 0.8 : finalizedTurns.length >= 8;
+  const lowNovelty = latestNovelty <= 0.25;
+  const conciseWrapUp = latestWordCount > 0 && latestWordCount <= 18;
+  const ready = Boolean(latestRecruiterTurn) && !hasStreamingTurn && sufficientHistory && highCoverage && (lowNovelty || conciseWrapUp || coverage >= 0.9);
+
+  let reason = "waiting_for_more_context";
+  if (ready) {
+    reason = coverage >= 0.9 ? "coverage_complete" : lowNovelty ? "low_novelty_after_complete_coverage" : "concise_confirmation_after_complete_coverage";
+  } else if (!latestRecruiterTurn) {
+    reason = "waiting_for_recruiter_input";
+  } else if (!sufficientHistory) {
+    reason = "insufficient_conversation_history";
+  } else if (!highCoverage) {
+    reason = "intake_topics_still_open";
+  } else if (!lowNovelty && !conciseWrapUp) {
+    reason = "latest_turn_added_new_information";
+  }
+
+  return {
+    ready,
+    coverage,
+    requiredTopics: requiredTopics.map((topic) => topic.key),
+    satisfiedTopics,
+    latestNovelty,
+    recruiterFinalTurns: recruiterTurns.length,
+    assistantFinalTurns: assistantTurns.length,
+    reason,
+  };
 }
 
 function appendCommittedTranscript(previous: string, incoming: string): string {
@@ -630,7 +778,19 @@ export function VoiceUi() {
       preview: event.text.slice(0, 120),
     });
     upsertStreamingMessage(event.role, event.text, event.isFinal);
-    if (event.role === "user" && event.isFinal && shouldAutoCloseCall(event.text)) {
+    const completion = evaluateIntakeCompletion(turnsRef.current, job as Record<string, unknown> | null | undefined);
+    debugVoice("intake_completion_check", {
+      ready: completion.ready,
+      reason: completion.reason,
+      coverage: completion.coverage,
+      requiredTopics: completion.requiredTopics,
+      satisfiedTopics: completion.satisfiedTopics,
+      latestNovelty: completion.latestNovelty,
+      recruiterFinalTurns: completion.recruiterFinalTurns,
+      assistantFinalTurns: completion.assistantFinalTurns,
+    });
+
+    if (completion.ready) {
       if (autoEndTimerRef.current !== null) {
         window.clearTimeout(autoEndTimerRef.current);
       }
@@ -638,9 +798,15 @@ export function VoiceUi() {
         if (terminalStateRef.current === "live") {
           void requestCallStop();
         }
-      }, 700);
+      }, 1200);
+      return;
     }
-  }, [requestCallStop, upsertStreamingMessage]);
+
+    if (autoEndTimerRef.current !== null) {
+      window.clearTimeout(autoEndTimerRef.current);
+      autoEndTimerRef.current = null;
+    }
+  }, [job, requestCallStop, upsertStreamingMessage]);
 
   // ── pipeline: refine → fetch candidates → navigate ─────────────────────────
   const runPipeline = useCallback(async (turns: TranscriptTurn[]) => {
@@ -900,10 +1066,11 @@ export function VoiceUi() {
       : firstQuestion;
     const firstMessage = companyName && jobTitle
       ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this : ${firstQuestion}. `
-      : `Let's refine your job requirements. ${firstQuestion}. I'll summarize what I captured, ask if you'd like to add anything, and then close the call once you confirm we're good.`;
+      : `Let's refine your job requirements. ${firstQuestion}. I'll keep track of the requirements, summarize what I captured, and close the call only after the conversation looks complete.`;
     const closingInstructions = [
-      "When the recruiter confirms the intake is complete, acknowledge it briefly, say thanks for the input, and end the call.",
-      "If the recruiter wants to add anything else, capture it first before closing.",
+      "Keep collecting requirements until the conversation feels complete.",
+      "When the answers appear complete, briefly summarize the captured requirements, ask if anything important is still missing, and then end the call.",
+      "If the recruiter adds new information, keep the call open and update the intake first.",
     ].join(" ");
 
     try {
