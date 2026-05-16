@@ -899,12 +899,11 @@ export function VoiceUi() {
       ? interviewQuestions.map((question, index) => `${index + 1}. ${question}`).join("\n")
       : firstQuestion;
     const firstMessage = companyName && jobTitle
-      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this first: ${firstQuestion}. At the end, I'll summarize the intake, ask whether you want to add anything else, and close the call once you confirm we're good.`
+      ? `You're hiring a ${jobTitle} at ${companyName}${location ? ` in ${location}` : ""}. Let's focus on this : ${firstQuestion}. `
       : `Let's refine your job requirements. ${firstQuestion}. I'll summarize what I captured, ask if you'd like to add anything, and then close the call once you confirm we're good.`;
     const closingInstructions = [
       "When the recruiter confirms the intake is complete, acknowledge it briefly, say thanks for the input, and end the call.",
       "If the recruiter wants to add anything else, capture it first before closing.",
-      "If the recruiter says 'that's fine', 'we're good to go', 'good to go', 'nothing else', or similar confirmation, end the call right after thanking them.",
     ].join(" ");
 
     try {
@@ -984,9 +983,6 @@ export function VoiceUi() {
       <div className="rounded-[28px] border border-gray-200 bg-white p-6 shadow-sm md:p-8">
         <div className="mb-5 flex flex-col gap-3">
           <p className="text-2xl font-semibold text-[#111827]">Live voice transcript</p>
-          <p className="max-w-2xl text-sm text-[#6B7280]">
-            Each Adam and recruiter turn is shown as a WhatsApp-style bubble, in full, in chronological order.
-          </p>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#166534]">
             <span className="h-2 w-2 rounded-full bg-[#1F6F4A]" />
             <span>{activeSpeakerLabel}</span>
@@ -1015,7 +1011,7 @@ export function VoiceUi() {
             ))
           ) : (
             <div className="rounded-[24px] border border-dashed border-[#D8CCBA] bg-white/70 px-5 py-8 text-center text-sm text-[#6B7280]">
-              Start the call and the final Adam and recruiter transcript will appear here. Live ASR text is shown inline while streaming.
+              Start the call and the final Adam and recruiter transcript will appear here.
             </div>
           )}
         </div>

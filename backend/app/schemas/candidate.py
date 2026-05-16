@@ -74,6 +74,7 @@ class OutreachRequest(BaseModel):
     jobId: str
     selectedCandidates: list[str]
     customBody: str = ""
+    recipientEmail: str = ""
 
 
 class OutreachReplyRequest(BaseModel):

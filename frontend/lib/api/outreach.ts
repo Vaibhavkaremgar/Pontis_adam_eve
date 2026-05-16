@@ -18,6 +18,7 @@ type OutreachPayload = {
   jobId: string;
   selectedCandidates: string[];
   customBody?: string;
+  recipientEmail?: string;
 };
 
 type OutreachData = {
@@ -32,7 +33,6 @@ type OutreachData = {
     toEmail?: string;
     providerId?: string;
     originalEmail?: string;
-    fallbackRecipient?: string;
   }[];
   skippedCandidates: { candidateId: string; reason: string }[];
   skipReasons: Record<string, number>;
@@ -42,7 +42,6 @@ type OutreachData = {
     fromEmail?: string;
     providerConfigured?: boolean;
     dryRun?: boolean;
-    fallbackRecipient?: string;
   };
 };
 
@@ -67,8 +66,8 @@ export type EmailPreview = {
   subject: string;
   body: string;
   toEmail: string;
-  originalToEmail?: string;
-  usingFallbackEmail?: boolean;
+  candidateEmail?: string;
+  manualRequired?: boolean;
   fallbackReason?: string;
 };
 

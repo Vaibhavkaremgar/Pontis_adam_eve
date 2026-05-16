@@ -33,6 +33,7 @@ def send_outreach(payload: OutreachRequest, request: Request, _: dict = Depends(
         job_id=payload.jobId,
         selected_candidates=payload.selectedCandidates,
         custom_body=payload.customBody,
+        recipient_email=payload.recipientEmail,
     )
     record_audit_event(
         db=db,

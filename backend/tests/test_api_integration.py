@@ -1074,6 +1074,23 @@ class IntegrationTests(unittest.TestCase):
             decision="strong_match",
             strategy="HIGH",
         )
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertIsNotNone(profile)
+        profile.parsed_resume_text = "Bookable candidate with full resume text."
+        profile.parsed_resume_json = {
+            "full_name": "Book Me",
+            "headline": "Software Engineer",
+            "years_experience": 3.5,
+            "skills": ["Python"],
+            "companies": ["Tech Solutions Pvt Ltd"],
+            "education": ["B.Tech"],
+            "projects": ["Booking platform"],
+            "certifications": ["AWS"],
+            "location": "Remote",
+            "summary": "Ready to book.",
+            "domain_experience": ["Recruiting"],
+        }
+        self.db.commit()
 
         session_data = interview_session_module.create_interview_session(
             db=self.db,
@@ -1100,6 +1117,12 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(bool(token_row[2]))
         payload = json.loads(token_row[3])
         self.assertEqual(payload["email"], "bookme@example.com")
+        self.assertEqual(payload["resume_text"], "Bookable candidate with full resume text.")
+        self.assertEqual(payload["parsed_resume_text"], "Bookable candidate with full resume text.")
+        self.assertEqual(payload["parsed_resume_json"]["full_name"], "Book Me")
+        self.assertEqual(payload["resume_metadata"]["full_name"], "Book Me")
+        self.assertEqual(payload["resume_metadata"]["skills"], ["Python"])
+        self.assertEqual(payload["resume"]["text"], "Bookable candidate with full resume text.")
         self.assertEqual(payload["job_title"], self.job.title)
 
         token_repo = NotificationWorkflowTokenRepository(self.db)
@@ -1253,7 +1276,7 @@ class IntegrationTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(result["candidateEmail"], "suramsaivignesh@gmail.com")
-        self.assertFalse(result["fallbackUsed"])
+        self.assertFalse(result["manualRequired"])
 
         outreach_row = self.db.execute(
             text("SELECT to_email, status, last_error FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"),

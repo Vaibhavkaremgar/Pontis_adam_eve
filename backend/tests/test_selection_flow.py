@@ -205,13 +205,23 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertIn("<table", payload.get("html", ""))
         self.assertEqual(payload["text"], "Hello there,\n\nPlease reply with your updated resume.")
 
-    def test_invalid_email_falls_back_to_debug_mailbox(self) -> None:
+    def test_invalid_email_requires_manual_entry(self) -> None:
         result = outreach_service._resolve_outreach_recipient(raw_data={"email": "not-an-email"})
 
-        self.assertEqual(result["original_email"], "")
-        self.assertEqual(result["to_email"], "vaibhavkar0009@gmail.com")
-        self.assertTrue(result["fallback_used"])
-        self.assertIn("fallback", result["reason"])
+        self.assertEqual(result["original_email"], "not-an-email")
+        self.assertEqual(result["to_email"], "")
+        self.assertTrue(result["manual_required"])
+        self.assertIn(result["reason"], {"missing_email", "invalid_email", "invalid_email_domain"})
+
+    def test_manual_override_email_can_be_used_when_provided(self) -> None:
+        result = outreach_service._resolve_outreach_recipient(
+            raw_data={"email": "not-an-email"},
+            recipient_email="candidate@example.com",
+        )
+
+        self.assertEqual(result["original_email"], "not-an-email")
+        self.assertEqual(result["to_email"], "candidate@example.com")
+        self.assertFalse(result["manual_required"])
 
     def test_nested_candidate_email_values_are_extracted(self) -> None:
         nested_payload = {

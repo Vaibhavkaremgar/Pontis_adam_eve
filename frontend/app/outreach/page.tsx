@@ -37,7 +37,10 @@ function OutreachContent() {
   const [emailBody, setEmailBody] = useState("");
   const [emailSubject, setEmailSubject] = useState("");
   const [previewToEmail, setPreviewToEmail] = useState("");
-  const [usingFallbackEmail, setUsingFallbackEmail] = useState(false);
+  const [previewCandidateEmail, setPreviewCandidateEmail] = useState("");
+  const [previewManualRequired, setPreviewManualRequired] = useState(false);
+  const [previewValidationReason, setPreviewValidationReason] = useState("");
+  const [manualRecipientEmail, setManualRecipientEmail] = useState("");
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
@@ -45,10 +48,10 @@ function OutreachContent() {
   const [isOutreachComplete, setIsOutreachComplete] = useState(false);
   const [outreachStatuses, setOutreachStatuses] = useState<OutreachStatusItem[]>([]);
   const [sendDebug, setSendDebug] = useState<{
-    details: { candidateId: string; status: string; reason?: string; toEmail?: string; providerId?: string; originalEmail?: string; fallbackRecipient?: string }[];
+    details: { candidateId: string; status: string; reason?: string; toEmail?: string; providerId?: string; originalEmail?: string }[];
     skipReasons: Record<string, number>;
     warnings: string[];
-    debug?: { provider?: string; fromEmail?: string; providerConfigured?: boolean; dryRun?: boolean; fallbackRecipient?: string };
+    debug?: { provider?: string; fromEmail?: string; providerConfigured?: boolean; dryRun?: boolean };
   } | null>(null);
 
   // Auth + flow guard
@@ -126,6 +129,10 @@ function OutreachContent() {
       setEmailSubject("");
       setEmailBody("");
       setPreviewToEmail("");
+      setPreviewCandidateEmail("");
+      setPreviewManualRequired(false);
+      setPreviewValidationReason("");
+      setManualRecipientEmail("");
       return;
     }
 
@@ -137,7 +144,10 @@ function OutreachContent() {
           setEmailSubject(result.data.subject);
           setEmailBody(result.data.body);
           setPreviewToEmail(result.data.toEmail);
-          setUsingFallbackEmail(result.data.usingFallbackEmail ?? false);
+          setPreviewCandidateEmail(result.data.candidateEmail ?? "");
+          setPreviewManualRequired(result.data.manualRequired ?? false);
+          setPreviewValidationReason(result.data.fallbackReason ?? "");
+          setManualRecipientEmail(result.data.manualRequired ? (result.data.candidateEmail ?? "") : "");
         }
         setIsLoadingPreview(false);
       });
@@ -150,12 +160,21 @@ function OutreachContent() {
       "Select a single candidate to preview and edit their specific email before sending."
     );
     setPreviewToEmail("");
+    setPreviewCandidateEmail("");
+    setPreviewManualRequired(false);
+    setPreviewValidationReason("");
+    setManualRecipientEmail("");
     return () => controller.abort();
   }, [selectedCandidates, jobId]);
 
   const canSubmit = useMemo(
-    () => selectedCandidates.length > 0 && !isSubmitting,
-    [isSubmitting, selectedCandidates]
+    () => {
+      if (selectedCandidates.length === 0 || isSubmitting) return false;
+      if (selectedCandidates.length !== 1) return true;
+      if (!previewManualRequired) return true;
+      return /^\S+@\S+\.\S+$/.test(manualRecipientEmail.trim());
+    },
+    [isSubmitting, manualRecipientEmail, previewManualRequired, selectedCandidates.length]
   );
 
   const toggleCandidate = (candidateId: string) => {
@@ -175,7 +194,14 @@ function OutreachContent() {
     setSendDebug(null);
 
     const customBody = selectedCandidates.length === 1 ? emailBody.trim() : "";
-    const result = await sendOutreach({ jobId, selectedCandidates, customBody });
+    const recipientEmail = selectedCandidates.length === 1 && previewManualRequired ? manualRecipientEmail.trim() : "";
+    if (selectedCandidates.length === 1 && previewManualRequired && !/^\S+@\S+\.\S+$/.test(recipientEmail)) {
+      setError("Enter a valid email address for this candidate before sending.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    const result = await sendOutreach({ jobId, selectedCandidates, customBody, recipientEmail });
     if (!result.success || !result.data) {
       setError(result.error || "Failed to send outreach.");
       setIsSubmitting(false);
@@ -266,12 +292,9 @@ function OutreachContent() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold text-gray-900">Email Preview</p>
-              {selectedCandidates.length === 1 && previewToEmail && (
+              {selectedCandidates.length === 1 && previewToEmail && !previewManualRequired && (
                 <p className="text-xs text-gray-500">
                   To: {previewToEmail}
-                  {usingFallbackEmail && (
-                    <span className="ml-2 text-amber-600">(using fallback mailbox)</span>
-                  )}
                 </p>
               )}
             </div>
@@ -288,6 +311,24 @@ function OutreachContent() {
                   <span className="font-medium text-gray-700">Subject: </span>
                   {isLoadingPreview ? "Loading..." : emailSubject}
                 </div>
+                {selectedCandidates.length === 1 && previewManualRequired && (
+                  <div className="space-y-2 rounded-xl border border-red-200 bg-red-50 p-4">
+                    <p className="text-sm font-medium text-red-800">
+                      Invalid mail detected{previewCandidateEmail ? `: ${previewCandidateEmail}` : ""}
+                    </p>
+                    <p className="text-xs text-red-700">
+                      {previewValidationReason || "This candidate profile does not have a valid email. Enter the correct outreach address before sending."}
+                    </p>
+                    <input
+                      type="email"
+                      className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-red-400"
+                      placeholder="Enter candidate email"
+                      value={manualRecipientEmail}
+                      onChange={(e) => setManualRecipientEmail(e.target.value)}
+                      disabled={isLoadingPreview || isSubmitting}
+                    />
+                  </div>
+                )}
                 <Textarea
                   className="min-h-[200px] text-sm text-gray-800 leading-relaxed"
                   value={isLoadingPreview ? "Loading preview..." : emailBody}
@@ -344,9 +385,6 @@ function OutreachContent() {
                 <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
                   <div>Provider configured: {String(sendDebug.debug.providerConfigured ?? false)}</div>
                   <div>From: {sendDebug.debug.fromEmail || "n/a"}</div>
-                  {sendDebug.debug.fallbackRecipient && (
-                    <div>Fallback mailbox: {sendDebug.debug.fallbackRecipient}</div>
-                  )}
                 </div>
               )}
 
@@ -383,7 +421,6 @@ function OutreachContent() {
                       {item.originalEmail && <p className="mt-1">Original: {item.originalEmail}</p>}
                       {item.reason && <p className="mt-1">Reason: {item.reason}</p>}
                       {item.toEmail && <p>To: {item.toEmail}</p>}
-                      {item.fallbackRecipient && <p>Fallback: {item.fallbackRecipient}</p>}
                       {item.providerId && <p>Provider id: {item.providerId}</p>}
                     </div>
                   ))}

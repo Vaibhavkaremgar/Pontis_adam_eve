@@ -121,7 +121,7 @@ test('review shortlist carries into outreach and queues the selected candidates'
   );
 
   let selectionStep = 0;
-  let queuedOutreachPayload = null;
+  let sentOutreachPayload = null;
   const swipeCalls = [];
   const statusesByCandidate = Object.fromEntries(selectedIds.map((candidateId) => [candidateId, 'queued']));
 
@@ -344,7 +344,8 @@ test('review shortlist carries into outreach and queues the selected candidates'
             subject: `Hello ${candidateId || 'candidate'}`,
             body: 'We would love to talk.',
             toEmail: `${candidateId || 'candidate'}@example.com`,
-            usingFallbackEmail: false,
+            candidateEmail: `${candidateId || 'candidate'}@example.com`,
+            manualRequired: false,
           },
           error: null,
         }),
@@ -352,9 +353,9 @@ test('review shortlist carries into outreach and queues the selected candidates'
       return;
     }
 
-    if (pathname === '/api/backend/outreach/queue' && method === 'POST') {
-      queuedOutreachPayload = request.postDataJSON();
-      selectedIds.forEach((candidateId) => {
+    if (pathname === '/api/backend/outreach' && method === 'POST') {
+      sentOutreachPayload = request.postDataJSON();
+      sentOutreachPayload.selectedCandidates.forEach((candidateId) => {
         statusesByCandidate[candidateId] = 'sent';
       });
       await route.fulfill({
@@ -363,9 +364,25 @@ test('review shortlist carries into outreach and queues the selected candidates'
         body: JSON.stringify({
           success: true,
           data: {
-            queued: true,
+            success: true,
+            processed: sentOutreachPayload.selectedCandidates.length,
+            sent: sentOutreachPayload.selectedCandidates.length,
+            skipped: 0,
+            details: sentOutreachPayload.selectedCandidates.map((candidateId) => ({
+              candidateId,
+              status: 'sent',
+              toEmail: `${candidateId}@example.com`,
+            })),
+            skippedCandidates: [],
+            skipReasons: {},
+            warnings: [],
+            debug: {
+              provider: 'resend',
+              fromEmail: 'info@pontis.one',
+              providerConfigured: true,
+              dryRun: false,
+            },
             job_id: 'job-1',
-            selected_count: queuedOutreachPayload.selectedCandidates.length,
           },
           error: null,
         }),
@@ -435,11 +452,11 @@ test('review shortlist carries into outreach and queues the selected candidates'
   await expect(page.getByText('3 shortlisted candidates selected for outreach.')).toBeVisible();
 
   await page.getByRole('button', { name: 'Send Outreach' }).click();
-  await expect(page.getByText('Outreach queued for 3 candidates.')).toBeVisible();
+  await expect(page.getByText('Outreach processed: 3 sent, 0 skipped.')).toBeVisible();
 
   expect(swipeCalls).toHaveLength(3);
   expect(swipeCalls.map((item) => item.candidateId).sort()).toEqual(selectedIds.slice().sort());
-  expect(queuedOutreachPayload).not.toBeNull();
-  expect(queuedOutreachPayload.selectedCandidates).toEqual(selectedIds);
-  expect(queuedOutreachPayload.customBody).toBe('');
+  expect(sentOutreachPayload).not.toBeNull();
+  expect(sentOutreachPayload.selectedCandidates).toEqual(selectedIds);
+  expect(sentOutreachPayload.customBody).toBe('');
 });
