@@ -17,19 +17,20 @@ def list_interviews(*, db: Session, job_id: str) -> list[InterviewItem]:
         raise APIError("Job not found", status_code=404)
 
     interviews = InterviewRepository(db).list_for_job(job_id)
-    profiles = {row.candidate_id: row for row in CandidateProfileRepository(db).list_for_job(job_id)}
+    profiles = {str(row.candidate_id): row for row in CandidateProfileRepository(db).list_for_job(job_id)}
     items: list[InterviewItem] = []
     for row in interviews:
-        profile = profiles.get(row.candidate_id)
+        candidate_id = str(row.candidate_id) if row.candidate_id else ""
+        profile = profiles.get(candidate_id)
         if not profile:
             logger.warning(
                 "invalid_candidate_reference_detected table=interviews job_id=%s candidate_id=%s",
                 job_id,
-                row.candidate_id,
+                candidate_id,
             )
         items.append(
             InterviewItem(
-                candidateId=row.candidate_id,
+                candidateId=candidate_id,
                 name=profile.name if profile else "",
                 status=row.status,
             )

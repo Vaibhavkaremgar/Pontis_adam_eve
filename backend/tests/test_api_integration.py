@@ -864,6 +864,7 @@ class IntegrationTests(unittest.TestCase):
             workflow_name="interview_invite",
             token="token-source-app-1",
             payload={"step": "invite"},
+            source_app="adam",
         )
         self.assertEqual(adam_token.source_app, "adam")
 
@@ -878,7 +879,143 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(interview_repo.list_for_job(self.job.id), [])
         self.assertEqual(outreach_repo.list_for_job(self.job.id), [])
         self.assertIsNone(outreach_repo.get_by_provider_message_id("source-app-msg-1"))
-        self.assertIsNone(token_repo.get_by_token("token-source-app-1"))
+        self.assertIsNone(token_repo.get_by_token("token-source-app-1", source_app="adam"))
+        self.assertIsNotNone(token_repo.get_by_token("token-source-app-1", source_app="dashboard"))
+
+    def test_shortlisted_candidates_create_adam_workflow_tokens(self) -> None:
+        interview_repo = InterviewRepository(self.db)
+        interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            name="Sai Vignesh",
+            role="Software Engineer",
+            company="Tech Solutions Pvt Ltd",
+            summary="Full-stack engineer with strong product delivery experience.",
+            skills=["Python", "React", "PostgreSQL"],
+            raw_data={
+                "name": "Sai Vignesh",
+                "email": "suramsaivignesh@gmail.com",
+                "phone": "+91 90000 00000",
+                "linkedin_url": "https://linkedin.com/in/saivignesh",
+                "github_url": "https://github.com/saivignesh",
+                "current_company": "Tech Solutions Pvt Ltd",
+                "current_title": "Software Engineer",
+                "total_experience_years": 2.0,
+                "skills": ["Python", "React", "PostgreSQL"],
+                "parsed_resume_text": "Seasoned software engineer.",
+            },
+            fit_score=4.25,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+
+        response = self.client.get(f"/api/candidates/shortlisted?jobId={self.job.id}")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(len(body["data"]), 1)
+
+        token_row = self.db.execute(
+            text(
+                "SELECT source_app, token_type, is_active, payload, token "
+                "FROM notification_workflow_tokens WHERE job_id = :job_id AND candidate_id = :candidate_id"
+            ),
+            {"job_id": self.job.id, "candidate_id": "candidate-1"},
+        ).fetchone()
+        self.assertIsNotNone(token_row)
+        self.assertEqual(token_row[0], "adam")
+        self.assertEqual(token_row[1], "slot_booking")
+        self.assertTrue(bool(token_row[2]))
+
+        payload = json.loads(token_row[3])
+        self.assertEqual(payload["name"], "Sai Vignesh")
+        self.assertEqual(payload["email"], "suramsaivignesh@gmail.com")
+        self.assertEqual(payload["phone"], "+91 90000 00000")
+        self.assertEqual(payload["linkedin_url"], "https://linkedin.com/in/saivignesh")
+        self.assertEqual(payload["github_url"], "https://github.com/saivignesh")
+        self.assertEqual(payload["current_company"], "Tech Solutions Pvt Ltd")
+        self.assertEqual(payload["current_title"], "Software Engineer")
+        self.assertEqual(payload["total_experience_years"], 2.0)
+        self.assertEqual(payload["skills"], ["Python", "React", "PostgreSQL"])
+        self.assertEqual(payload["resume_text"], "Seasoned software engineer.")
+        self.assertEqual(payload["fit_score"], 4.25)
+        self.assertEqual(payload["job_title"], self.job.title)
+        self.assertEqual(payload["company_name"], self.company.name)
+
+    def test_notification_workflow_token_booking_links_use_token_query_param(self) -> None:
+        from app.services import interview_session_service as interview_session_module
+
+        interview_repo = InterviewRepository(self.db)
+        interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            name="Book Me",
+            role="Software Engineer",
+            company="Tech Solutions Pvt Ltd",
+            summary="Ready to book.",
+            skills=["Python"],
+            raw_data={
+                "name": "Book Me",
+                "email": "bookme@example.com",
+                "phone": "+91 91111 11111",
+                "linkedin_url": "https://linkedin.com/in/bookme",
+                "github_url": "https://github.com/bookme",
+                "current_company": "Tech Solutions Pvt Ltd",
+                "current_title": "Software Engineer",
+                "total_experience_years": 3.5,
+                "skills": ["Python"],
+                "parsed_resume_text": "Bookable candidate.",
+            },
+            fit_score=4.9,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+
+        session_data = interview_session_module.create_interview_session(
+            db=self.db,
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+        )
+
+        token = str(session_data["token"])
+        booking_link = str(session_data["bookingLink"])
+        self.assertTrue(booking_link.startswith("https://interview.pontis.one/booking.html?token="))
+        self.assertIn(token, booking_link)
+        self.assertEqual(str(session_data["slot_link"]), booking_link)
+
+        token_row = self.db.execute(
+            text(
+                "SELECT source_app, token_type, is_active, payload FROM notification_workflow_tokens "
+                "WHERE token = :token"
+            ),
+            {"token": token},
+        ).fetchone()
+        self.assertIsNotNone(token_row)
+        self.assertEqual(token_row[0], "adam")
+        self.assertEqual(token_row[1], "slot_booking")
+        self.assertTrue(bool(token_row[2]))
+        payload = json.loads(token_row[3])
+        self.assertEqual(payload["email"], "bookme@example.com")
+        self.assertEqual(payload["job_title"], self.job.title)
+
+        token_repo = NotificationWorkflowTokenRepository(self.db)
+        self.assertIsNone(token_repo.get_by_token(token, source_app="dashboard"))
+        self.assertIsNotNone(token_repo.get_by_token(token, source_app="adam"))
 
     def test_interviews_endpoint_handles_non_dict_candidate_raw_data(self) -> None:
         interview_repo = InterviewRepository(self.db)
@@ -905,6 +1042,24 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(len(body["data"]), 1)
         self.assertEqual(body["data"][0]["candidateId"], "candidate-1")
+
+    def test_interviews_endpoint_serializes_uuid_candidate_ids(self) -> None:
+        from app.services import interview_service as interview_module
+
+        candidate_uuid = uuid4()
+        interview_row = types.SimpleNamespace(candidate_id=candidate_uuid, status="shortlisted")
+        profile_row = types.SimpleNamespace(candidate_id=candidate_uuid, name="UUID Candidate")
+
+        with patch.object(interview_module.InterviewRepository, "list_for_job", return_value=[interview_row]), \
+            patch.object(interview_module.CandidateProfileRepository, "list_for_job", return_value=[profile_row]):
+            response = self.client.get(f"/api/interviews?jobId={self.job.id}")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(len(body["data"]), 1)
+        self.assertEqual(body["data"][0]["candidateId"], str(candidate_uuid))
+        self.assertEqual(body["data"][0]["name"], "UUID Candidate")
 
     def test_voice_refine_cleans_repeated_recruiter_noise(self) -> None:
         from app.services import voice_service as voice_module

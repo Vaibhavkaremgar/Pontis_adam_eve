@@ -128,8 +128,9 @@ def _send_interview_invite(
         job_id=job_id,
         candidate_id=candidate_id,
         outreach_event_id=outreach_event_id,
+        source_app="adam",
     )
-    booking_link = str(session.get("bookingLink") or session.get("bookingUrl") or "")
+    booking_link = str(session.get("slot_link") or session.get("slotLink") or session.get("bookingLink") or session.get("bookingUrl") or "")
     subject, body = _build_invite_template(candidate_name=candidate_name, role=role, booking_link=booking_link)
     html_body = _build_invite_html(candidate_name=candidate_name, role=role, booking_link=booking_link)
 

@@ -286,8 +286,10 @@ def _ensure_optional_schema_columns() -> None:
                         source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard',
                         job_id VARCHAR(36) NOT NULL,
                         candidate_id VARCHAR(128) NOT NULL,
+                        token_type VARCHAR(64) NOT NULL DEFAULT '',
                         workflow_name VARCHAR(64) NOT NULL DEFAULT '',
                         token VARCHAR(255) NOT NULL UNIQUE,
+                        is_active BOOLEAN NOT NULL DEFAULT TRUE,
                         status VARCHAR(32) NOT NULL DEFAULT 'active',
                         payload JSON NOT NULL DEFAULT {json_empty_object_default},
                         expires_at TIMESTAMPTZ NULL DEFAULT NULL,
@@ -298,6 +300,12 @@ def _ensure_optional_schema_columns() -> None:
                     """
                 )
             )
+        else:
+            token_columns = {column["name"] for column in inspector.get_columns("notification_workflow_tokens")}
+            if "token_type" not in token_columns:
+                conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN token_type VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "is_active" not in token_columns:
+                conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
 
         if "inbound_email_replies" in table_names:
             inbound_columns = {column["name"] for column in inspector.get_columns("inbound_email_replies")}

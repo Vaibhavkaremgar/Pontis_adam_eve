@@ -1036,8 +1036,9 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
                     job_id=row.job_id,
                     candidate_id=row.candidate_id,
                     outreach_event_id=row.id,
+                    source_app="adam",
                 )
-                booking_link = session.get("bookingLink", session.get("bookingUrl", ""))
+                booking_link = session.get("slot_link", session.get("slotLink", session.get("bookingLink", session.get("bookingUrl", ""))))
                 logger.info(
                     "decision_taken interview_session_created job_id=%s candidate_id=%s token=%s booking_url=%s",
                     row.job_id,

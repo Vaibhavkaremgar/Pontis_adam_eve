@@ -31,8 +31,10 @@ from app.db.repositories import (
     CandidateFeedbackRepository,
     CandidateProfileRepository,
     CandidateSelectionSessionRepository,
+    CompanyRepository,
     InterviewRepository,
     JobRepository,
+    NotificationWorkflowTokenRepository,
     OutreachEventRepository,
     RankingExplanationRepository,
     RankingRunRepository,
@@ -47,6 +49,7 @@ from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt
 from app.services.evaluation_service import record_candidate_fetch, record_shortlist_event
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
+from app.services.notification_service import build_slot_booking_payload, create_notification_workflow_token
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
 from app.services.ranking_service import build_match_explanation, compute_final_score, compute_match_score
 from app.services.retrieval_quality_service import rerank_candidates, retrieval_explanation
@@ -3355,6 +3358,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
 
     profile_repo = CandidateProfileRepository(db)
     profiles = profile_repo.latest_by_candidate_ids(job_id=job_id, candidate_ids=shortlisted_ids)
+    company = CompanyRepository(db).get_by_id(job.company_id)
     outreach_status_map = {
         row.candidate_id: (row.status or "").strip().lower()
         for row in OutreachEventRepository(db).list_for_job(job_id)
@@ -3363,6 +3367,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
 
     results: list[CandidateResult] = []
     interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
+    updated_workflow_tokens = False
     for candidate_id in shortlisted_ids:
         profile = profiles.get(candidate_id)
         if not profile:
@@ -3372,6 +3377,40 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                 candidate_id,
             )
             continue
+        slot_payload = build_slot_booking_payload(
+            candidate=profile,
+            job={"title": job.title, "company_name": company.name if company else ""},
+        )
+        notification_row = NotificationWorkflowTokenRepository(db).get_active_by_candidate(
+            job_id=job_id,
+            candidate_id=candidate_id,
+            source_app="adam",
+            token_type="slot_booking",
+        )
+        if not notification_row:
+            notification_data = create_notification_workflow_token(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                workflow_name="slot_booking",
+                payload=slot_payload,
+                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+                token_type="slot_booking",
+                is_active=True,
+                source_app="adam",
+            )
+            notification_row = NotificationWorkflowTokenRepository(db).get_by_token(
+                str(notification_data.get("token") or ""),
+                source_app="adam",
+            )
+            updated_workflow_tokens = True
+        else:
+            notification_row.payload = slot_payload
+            notification_row.expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+            notification_row.is_active = True
+            notification_row.status = "active"
+            updated_workflow_tokens = True
+        db.flush()
         final_score = max(0.0, min(1.0, profile.fit_score / 5.0))
         profile_details = _candidate_profile_details(profile=profile)
         results.append(
@@ -3428,6 +3467,8 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                 ats_export_status=ats_export_status_map.get(candidate_id, "not_sent"),
             )
         )
+    if updated_workflow_tokens:
+        db.commit()
     sorted_results = sorted(results, key=lambda r: r.fitScore, reverse=True)
     record_shortlist_event(job_id=job_id, shortlisted_count=len(sorted_results))
     return sorted_results

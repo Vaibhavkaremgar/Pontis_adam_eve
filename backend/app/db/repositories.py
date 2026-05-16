@@ -2167,16 +2167,50 @@ class NotificationWorkflowTokenRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def get_by_token(self, token: str) -> NotificationWorkflowTokenEntity | None:
+    @staticmethod
+    def _normalize_source_app(source_app: str | None) -> str:
+        return (source_app or "dashboard").strip().lower() or "dashboard"
+
+    def get_by_token(self, token: str, *, source_app: str = "dashboard") -> NotificationWorkflowTokenEntity | None:
         normalized = (token or "").strip()
         if not normalized:
             return None
         return self.db.scalar(
             select(NotificationWorkflowTokenEntity).where(
                 NotificationWorkflowTokenEntity.token == normalized,
-                NotificationWorkflowTokenEntity.source_app == ADAM_SOURCE_APP,
+                NotificationWorkflowTokenEntity.source_app == self._normalize_source_app(source_app),
             )
         )
+
+    def get_active_by_candidate(
+        self,
+        *,
+        job_id: str,
+        candidate_id: str,
+        source_app: str = "dashboard",
+        token_type: str = "",
+    ) -> NotificationWorkflowTokenEntity | None:
+        normalized_job_id = (job_id or "").strip()
+        normalized_candidate_id = (candidate_id or "").strip()
+        normalized_source_app = self._normalize_source_app(source_app)
+        normalized_token_type = (token_type or "").strip().lower()
+        if not normalized_job_id or not normalized_candidate_id:
+            return None
+        conditions = [
+            NotificationWorkflowTokenEntity.job_id == normalized_job_id,
+            NotificationWorkflowTokenEntity.candidate_id == normalized_candidate_id,
+            NotificationWorkflowTokenEntity.source_app == normalized_source_app,
+            NotificationWorkflowTokenEntity.is_active.is_(True),
+        ]
+        if normalized_token_type:
+            conditions.append(NotificationWorkflowTokenEntity.token_type == normalized_token_type)
+        conditions.append(
+            or_(
+                NotificationWorkflowTokenEntity.expires_at.is_(None),
+                NotificationWorkflowTokenEntity.expires_at > datetime.now(timezone.utc),
+            )
+        )
+        return self.db.scalar(select(NotificationWorkflowTokenEntity).where(*conditions))
 
     def create(
         self,
@@ -2184,22 +2218,35 @@ class NotificationWorkflowTokenRepository:
         job_id: str,
         candidate_id: str,
         workflow_name: str,
-        token: str,
+        token: str | None = None,
         payload: dict | None = None,
-        status: str = "active",
+        token_type: str = "",
+        is_active: bool = True,
+        status: str | None = None,
         expires_at: datetime | None = None,
+        source_app: str = "dashboard",
     ) -> NotificationWorkflowTokenEntity:
         job = JobRepository(self.db).get(job_id)
         if not job:
             raise APIError("Job not found", status_code=404)
+        token_value = (token or "").strip()
+        if not token_value:
+            raise APIError("token is required", status_code=400)
+        normalized_source_app = self._normalize_source_app(source_app)
+        normalized_token_type = (token_type or workflow_name or "").strip().lower()
+        normalized_workflow_name = (workflow_name or normalized_token_type or "").strip()
+        normalized_status = (status or "").strip().lower() or ("active" if is_active else "consumed")
+        normalized_is_active = bool(is_active) if status is None else normalized_status == "active"
         row = NotificationWorkflowTokenEntity(
             id=str(uuid4()),
-            source_app=ADAM_SOURCE_APP,
+            source_app=normalized_source_app,
             job_id=job_id,
             candidate_id=(candidate_id or "").strip(),
-            workflow_name=(workflow_name or "").strip(),
-            token=(token or "").strip(),
-            status=(status or "active").strip().lower() or "active",
+            token_type=normalized_token_type,
+            workflow_name=normalized_workflow_name,
+            token=token_value,
+            is_active=normalized_is_active,
+            status=normalized_status,
             payload=dict(payload or {}),
             expires_at=expires_at,
         )
@@ -2207,11 +2254,12 @@ class NotificationWorkflowTokenRepository:
         self.db.flush()
         return row
 
-    def mark_consumed(self, token: str) -> NotificationWorkflowTokenEntity | None:
-        row = self.get_by_token(token)
+    def mark_consumed(self, token: str, *, source_app: str = "dashboard") -> NotificationWorkflowTokenEntity | None:
+        row = self.get_by_token(token, source_app=source_app)
         if not row:
             return None
         row.status = "consumed"
+        row.is_active = False
         row.consumed_at = datetime.now(timezone.utc)
         row.updated_at = row.consumed_at
         self.db.flush()
