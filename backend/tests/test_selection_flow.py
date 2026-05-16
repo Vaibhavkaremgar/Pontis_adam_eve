@@ -119,7 +119,7 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(candidate_selection_service._final_shortlist_limit(elite_job), 5)
         self.assertEqual(candidate_selection_service._final_shortlist_limit(volume_job), 10)
 
-    def test_shortlist_email_bccs_test_mailbox(self) -> None:
+    def test_shortlist_email_does_not_bcc_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []
 
         def fake_send(payload):
@@ -146,9 +146,9 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(len(fake_send_calls), 1)
         payload = fake_send_calls[0]
         self.assertEqual(payload["to"], ["candidate@example.com"])
-        self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
+        self.assertNotIn("bcc", payload)
 
-    def test_regular_outreach_email_bccs_test_mailbox(self) -> None:
+    def test_regular_outreach_email_does_not_bcc_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []
 
         def fake_send(payload):
@@ -175,7 +175,7 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(len(fake_send_calls), 1)
         payload = fake_send_calls[0]
         self.assertEqual(payload["to"], ["candidate@example.com"])
-        self.assertEqual(payload.get("bcc"), ["vaibhavkar0009@gmail.com"])
+        self.assertNotIn("bcc", payload)
 
     def test_regular_outreach_email_includes_html_payload(self) -> None:
         fake_send_calls: list[dict] = []

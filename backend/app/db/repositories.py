@@ -76,6 +76,33 @@ def _candidate_email_value(value: object) -> str:
     return match.group(0).lower() if match else ""
 
 
+def _candidate_email_values(value: object) -> list[str]:
+    values: list[str] = []
+
+    def _collect(item: object) -> None:
+        if isinstance(item, dict):
+            for nested in item.values():
+                _collect(nested)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                _collect(nested)
+            return
+        email = _candidate_email_value(item)
+        if email and not email.endswith("@test.local"):
+            values.append(email)
+
+    _collect(value)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for email in values:
+        if email in seen:
+            continue
+        seen.add(email)
+        unique.append(email)
+    return unique
+
+
 def _build_dev_email(*, name: str, candidate_id: str) -> str:
     safe_name = re.sub(r"[^a-z0-9]+", "", _normalize_text(name).lower()) or "candidate"
     safe_id = re.sub(r"[^a-z0-9]+", "", _normalize_text(candidate_id).lower())[:6] or "000000"
@@ -91,23 +118,8 @@ def _job_company_id(db: Session, job_id: str) -> str | None:
 
 def _ensure_candidate_profile_email(row: CandidateProfileEntity) -> bool:
     raw_data = dict(row.raw_data) if isinstance(row.raw_data, dict) else {}
-    parsed_data = raw_data.get("parsed_data") or raw_data.get("parsedData")
-    if not isinstance(parsed_data, dict):
-        parsed_data = {}
-    existing = (
-        _candidate_email_value(raw_data.get("work_email"))
-        or _candidate_email_value(raw_data.get("email"))
-        or _candidate_email_value(raw_data.get("personal_email"))
-        or _candidate_email_value(raw_data.get("emails_primary"))
-        or _candidate_email_value(raw_data.get("raw_resume_text"))
-        or _candidate_email_value(raw_data.get("rawResumeText"))
-        or _candidate_email_value(parsed_data.get("work_email"))
-        or _candidate_email_value(parsed_data.get("email"))
-        or _candidate_email_value(parsed_data.get("personal_email"))
-        or _candidate_email_value(parsed_data.get("emails_primary"))
-        or _candidate_email_value(parsed_data.get("raw_resume_text"))
-        or _candidate_email_value(parsed_data.get("rawResumeText"))
-    )
+    existing_candidates = _candidate_email_values(raw_data)
+    existing = existing_candidates[0] if existing_candidates else ""
     if existing:
         raw_data.update(
             {
@@ -695,30 +707,7 @@ class CandidateProfileRepository:
     @staticmethod
     def _profile_email_values(row: CandidateProfileEntity) -> list[str]:
         raw_data = row.raw_data if isinstance(row.raw_data, dict) else {}
-        values = [
-            _candidate_email_value(raw_data.get("work_email")),
-            _candidate_email_value(raw_data.get("email")),
-            _candidate_email_value(raw_data.get("personal_email")),
-            _candidate_email_value(raw_data.get("emails_primary")),
-            _candidate_email_value(raw_data.get("raw_resume_text")),
-            _candidate_email_value(raw_data.get("rawResumeText")),
-            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("work_email"))
-            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
-            else "",
-            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("email"))
-            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
-            else "",
-            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("personal_email"))
-            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
-            else "",
-            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("emails_primary"))
-            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
-            else "",
-            _candidate_email_value((raw_data.get("parsed_data") or raw_data.get("parsedData") or {}).get("raw_resume_text"))
-            if isinstance(raw_data.get("parsed_data") or raw_data.get("parsedData"), dict)
-            else "",
-        ]
-        return [value for value in values if value]
+        return _candidate_email_values(raw_data)
 
     def find_by_email(self, email: str) -> CandidateProfileEntity | None:
         normalized = _candidate_email_value(email)

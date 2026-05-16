@@ -618,11 +618,7 @@ def _extract_resend_message_id(response: Any) -> str:
 
 
 def _shortlist_bcc_recipients(*, main_recipient: str | None = None) -> list[str]:
-    recipients = [_OUTREACH_TEST_COPY_EMAIL] if _OUTREACH_TEST_COPY_EMAIL else []
-    normalized_main = _extract_email_from_text(main_recipient or "")
-    if normalized_main:
-        recipients = [recipient for recipient in recipients if recipient.lower() != normalized_main]
-    return recipients
+    return []
 
 
 def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str, str]:
@@ -1478,7 +1474,7 @@ def process_outreach(
             "fromEmail": OUTREACH_FROM_EMAIL,
             "providerConfigured": provider_configured,
             "dryRun": OUTREACH_DRY_RUN,
-            "fallbackRecipient": _OUTREACH_TEST_COPY_EMAIL,
+            "fallbackRecipient": "",
         },
     }
     if warnings:

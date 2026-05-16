@@ -657,6 +657,92 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(outreach[1], "interested")
         self.assertEqual(outreach[2], 1)
 
+    def test_resend_inbound_matches_nested_candidate_email(self) -> None:
+        from app.services import resend_inbound_service as inbound_service
+
+        candidate_id = "candidate-nested-match"
+        nested_email = "suramsaivignesh@gmail.com"
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            name="Nested Match Candidate",
+            role="Platform Engineer",
+            company="Northstar",
+            summary="Nested email test candidate.",
+            skills=["Python"],
+            raw_data={
+                "contact": {
+                    "primary": {
+                        "email": nested_email,
+                    }
+                },
+                "profileData": {
+                    "emails": [
+                        {"address": nested_email},
+                    ],
+                },
+            },
+            fit_score=4.0,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        OutreachEventRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            provider="resend",
+            to_email=nested_email,
+            subject="Opportunity: Platform Engineer",
+            body="<p>Outreach</p>",
+            status="sent",
+            sent_at=None,
+            next_follow_up_at=None,
+            provider_message_id="nested-match-outreach",
+        )
+        self.db.commit()
+
+        webhook_id = "msg_nested_email_match_123"
+        reply_email = {
+            "object": "email",
+            "id": "email-nested-email-match-123",
+            "to": ["inbound@pontis.one"],
+            "from": f"Nested Match Candidate <{nested_email}>",
+            "created_at": "2026-05-11T00:00:00+00:00",
+            "subject": "Re: Opportunity at Acme",
+            "html": "<p>Yes, I am interested.</p>",
+            "text": "Yes, I am interested.",
+            "headers": {
+                "message-id": "<reply-message-id-129>",
+                "in-reply-to": "<nested-match-outreach>",
+            },
+        }
+        attachments_list = {"object": "list", "has_more": False, "data": []}
+
+        with patch.object(inbound_service, "send_email") as send_email_mock:
+            response = self._post_resend_inbound_reply(
+                webhook_id=webhook_id,
+                email_id="email-nested-email-match-123",
+                reply_email=reply_email,
+                attachments_list=attachments_list,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["status"], "processed")
+        send_email_mock.assert_called_once()
+
+        inbound = self.db.execute(
+            text("SELECT match_status, candidate_id, job_id, intent FROM inbound_email_replies WHERE svix_id = :svix_id"),
+            {"svix_id": webhook_id},
+        ).fetchone()
+        self.assertIsNotNone(inbound)
+        self.assertEqual(inbound[0], "matched")
+        self.assertEqual(inbound[1], candidate_id)
+        self.assertEqual(inbound[2], self.job.id)
+        self.assertEqual(inbound[3], "interested")
+
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id=candidate_id)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile.candidate_status, "awaiting_resume")
+
     def test_job_intake_outreach_and_interview_session_persist_new_schema_fields(self) -> None:
         from app.services import outreach_service as outreach_module
         from app.services import voice_service as voice_module
