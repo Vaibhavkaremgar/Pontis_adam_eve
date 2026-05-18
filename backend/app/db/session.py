@@ -386,6 +386,18 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "outreach_event_id" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN outreach_event_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "scheduled_at" not in interview_session_columns:
+                scheduled_column_type = "TIMESTAMPTZ" if dialect == "postgresql" else "DATETIME"
+                conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN scheduled_at {scheduled_column_type} NULL DEFAULT NULL"))
+            elif dialect == "postgresql":
+                scheduled_column = next((column for column in inspector.get_columns("interview_sessions") if column["name"] == "scheduled_at"), None)
+                if scheduled_column and scheduled_column.get("type") and scheduled_column["type"].__class__.__name__.lower() not in {"datetime", "timestamptz"}:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE interview_sessions "
+                            "ALTER COLUMN scheduled_at TYPE TIMESTAMPTZ USING NULLIF(scheduled_at, '')::timestamptz"
+                        )
+                    )
             if "booking_url" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN booking_url VARCHAR(1024) NOT NULL DEFAULT ''"))
 

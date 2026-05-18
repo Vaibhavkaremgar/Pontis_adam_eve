@@ -191,6 +191,7 @@ class InterviewSessionData(BaseModel):
     status: str
     expiresAt: str
     bookedAt: str | None = None
+    scheduledAt: str | None = None
     bookingLink: str = ""
     bookingUrl: str = ""
 
@@ -205,4 +206,5 @@ class InterviewBookingData(BaseModel):
     status: str
     jobId: str
     candidateId: str
+    scheduledAt: str | None = None
     meetingLink: str = ""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 import secrets
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,19 @@ def _legacy_booking_url(token: str) -> str:
     return f"https://interview.pontis.one/booking.html?token={token}"
 
 
+def _utc_isoformat(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return normalized.astimezone(timezone.utc).isoformat()
+
+
+def _ensure_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def _build_token_payload(*, profile: Any, job: Any, company_name: str = "") -> dict[str, Any]:
     return build_slot_booking_payload(
         candidate=profile,
@@ -39,13 +53,44 @@ def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
         "email": row.email,
         "token": row.token,
         "status": row.status,
-        "expiresAt": row.expires_at.isoformat(),
-        "bookedAt": row.booked_at.isoformat() if row.booked_at else None,
+        "expiresAt": _utc_isoformat(row.expires_at) or row.expires_at.isoformat(),
+        "bookedAt": _utc_isoformat(row.booked_at),
+        "scheduledAt": _utc_isoformat(getattr(row, "scheduled_at", None)),
         "bookingLink": booking_link,
         "bookingUrl": booking_link,
         "slotLink": booking_link,
         "slot_link": booking_link,
     }
+
+
+def _parse_scheduled_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        scheduled_at = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise APIError("scheduledAt must be a valid ISO-8601 datetime", status_code=400) from exc
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+    return scheduled_at.astimezone(timezone.utc)
+
+
+def _validate_booking_token(*, db: Session, token: str) -> Any:
+    token_row = NotificationWorkflowTokenRepository(db).get_by_token(token, source_app="adam")
+    if not token_row:
+        raise APIError("Interview session not found", status_code=404)
+    now = datetime.now(timezone.utc)
+    expires_at = _ensure_utc_datetime(token_row.expires_at)
+    if expires_at and expires_at <= now:
+        raise APIError("Interview session expired", status_code=410)
+    if not token_row.is_active or token_row.consumed_at is not None:
+        raise APIError("Interview session already used", status_code=410)
+    return token_row
 
 
 def create_interview_session(
@@ -63,7 +108,8 @@ def create_interview_session(
     session_repo = InterviewSessionRepository(db)
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     existing_session = session_repo.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
-    if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
+    existing_expires_at = _ensure_utc_datetime(getattr(existing_session, "expires_at", None))
+    if existing_session and (existing_expires_at is None or existing_expires_at > datetime.now(timezone.utc)):
         company = CompanyRepository(db).get_by_id(job.company_id)
         if profile:
             token_repo = NotificationWorkflowTokenRepository(db)
@@ -72,24 +118,26 @@ def create_interview_session(
             if existing_workflow_token:
                 existing_workflow_token.payload = token_payload
                 existing_workflow_token.expires_at = existing_session.expires_at
-                existing_workflow_token.is_active = True
-                existing_workflow_token.status = "active"
                 existing_workflow_token.job_id = job_id
                 existing_workflow_token.candidate_id = candidate_id
+                if existing_workflow_token.consumed_at is None and (existing_session.status or "").strip().lower() != "booked":
+                    existing_workflow_token.is_active = True
+                    existing_workflow_token.status = "active"
                 db.flush()
             else:
-                create_notification_workflow_token(
-                    db=db,
-                    job_id=job_id,
-                    candidate_id=candidate_id,
-                    workflow_name="slot_booking",
-                    token=existing_session.token,
-                    payload=token_payload,
-                    expires_at=existing_session.expires_at,
-                    token_type="slot_booking",
-                    is_active=True,
-                    source_app=source_app,
-                )
+                if (existing_session.status or "").strip().lower() != "booked":
+                    create_notification_workflow_token(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        workflow_name="slot_booking",
+                        token=existing_session.token,
+                        payload=token_payload,
+                        expires_at=existing_session.expires_at,
+                        token_type="slot_booking",
+                        is_active=True,
+                        source_app=source_app,
+                    )
         booking_link = existing_session.booking_url or _legacy_booking_url(existing_session.token)
         if not existing_session.booking_url:
             existing_session.booking_url = booking_link
@@ -157,18 +205,13 @@ def create_interview_session(
 
 
 def get_interview_session(*, db: Session, token: str) -> dict[str, str | None]:
-    token_row = NotificationWorkflowTokenRepository(db).get_by_token(token, source_app="adam")
-    if not token_row:
-        raise APIError("Interview session not found", status_code=404)
-    if token_row.expires_at and token_row.expires_at <= datetime.now(timezone.utc):
-        raise APIError("Interview session expired", status_code=410)
-    if not token_row.is_active:
-        raise APIError("Interview session not found", status_code=404)
+    _validate_booking_token(db=db, token=token)
 
     row = InterviewSessionRepository(db).get_by_token(token)
     if not row:
         raise APIError("Interview session not found", status_code=404)
-    if row.expires_at <= datetime.now(timezone.utc):
+    row_expires_at = _ensure_utc_datetime(row.expires_at)
+    if row_expires_at and row_expires_at <= datetime.now(timezone.utc):
         raise APIError("Interview session expired", status_code=410)
 
     job = JobRepository(db).get(row.job_id)
@@ -178,19 +221,15 @@ def get_interview_session(*, db: Session, token: str) -> dict[str, str | None]:
 
 
 def book_interview_session(*, db: Session, token: str, scheduled_at: str | None = None) -> dict[str, str]:
-    token_row = NotificationWorkflowTokenRepository(db).get_by_token(token, source_app="adam")
-    if not token_row:
-        raise APIError("Interview session not found", status_code=404)
-    if token_row.expires_at and token_row.expires_at <= datetime.now(timezone.utc):
-        raise APIError("Interview session expired", status_code=410)
-    if not token_row.is_active:
-        raise APIError("Interview session not found", status_code=404)
+    _validate_booking_token(db=db, token=token)
+    scheduled_at_value = _parse_scheduled_at(scheduled_at)
 
     repo = InterviewSessionRepository(db)
     row = repo.get_by_token(token)
     if not row:
         raise APIError("Interview session not found", status_code=404)
-    if row.expires_at <= datetime.now(timezone.utc):
+    row_expires_at = _ensure_utc_datetime(row.expires_at)
+    if row_expires_at and row_expires_at <= datetime.now(timezone.utc):
         raise APIError("Interview session expired", status_code=410)
     if (row.status or "").strip().lower() == "booked":
         raise APIError("Interview session already booked", status_code=409)
@@ -198,13 +237,17 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
     row = repo.mark_booked(token)
     if not row:
         raise APIError("Interview session not found", status_code=404)
+    row.scheduled_at = scheduled_at_value
 
     job = JobRepository(db).get(row.job_id)
     profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
-    scheduled_time = scheduled_at or (row.booked_at.isoformat() if row.booked_at else None)
+    scheduled_time = _utc_isoformat(row.scheduled_at) or _utc_isoformat(row.booked_at)
     meeting_link = get_interview_link(profile, job, scheduled_time) if job and profile else ""
 
     InterviewRepository(db).upsert_status(job_id=row.job_id, candidate_id=row.candidate_id, status="booked")
+    consumed_token = NotificationWorkflowTokenRepository(db).mark_consumed(token=token, source_app="adam")
+    if not consumed_token:
+        raise APIError("Interview session not found", status_code=404)
     recruiter_id = JobRepository(db).get_recruiter_id(row.job_id)
     if recruiter_id and profile:
         update_recruiter_preferences(
@@ -222,5 +265,6 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         "status": row.status,
         "jobId": row.job_id,
         "candidateId": row.candidate_id,
+        "scheduledAt": _utc_isoformat(row.scheduled_at),
         "meetingLink": meeting_link,
     }

@@ -23,6 +23,7 @@ export type InterviewSession = {
   status: string;
   expiresAt: string;
   bookedAt: string | null;
+  scheduledAt?: string | null;
   bookingLink?: string;
   bookingUrl?: string;
   meetingLink?: string;

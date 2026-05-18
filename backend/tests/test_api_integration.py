@@ -8,6 +8,7 @@ import os
 import sys
 import types
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -134,7 +135,7 @@ from sqlalchemy import text
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_SECRET
 from app.core.security import create_access_token, create_csrf_token
-from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, UserRepository
+from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal, engine
 from app.models.entities import Base, ScoringProfileEntity
 from app.services.resend_inbound_service import process_resend_inbound_webhook
@@ -1210,6 +1211,137 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(payload["parsed_resume_text"], "Updated resume text from candidate reply.")
         self.assertEqual(payload["parsed_resume_json"]["years_experience"], 4.0)
         self.assertEqual(payload["resume_metadata"]["skills"], ["Python", "Redis"])
+
+    @staticmethod
+    def _normalize_datetime_value(value):
+        if value is None:
+            return None
+        if hasattr(value, "isoformat"):
+            return value.astimezone(timezone.utc).isoformat() if getattr(value, "tzinfo", None) else value.replace(tzinfo=timezone.utc).isoformat()
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc).isoformat()
+        return str(value)
+
+    def _create_bookable_interview_session(self):
+        from app.services import interview_session_service as interview_session_module
+
+        interview_repo = InterviewRepository(self.db)
+        interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            name="Book Me",
+            role="Software Engineer",
+            company="Tech Solutions Pvt Ltd",
+            summary="Ready to book.",
+            skills=["Python"],
+            raw_data={
+                "name": "Book Me",
+                "email": "bookme@example.com",
+                "phone": "+91 91111 11111",
+                "linkedin_url": "https://linkedin.com/in/bookme",
+                "github_url": "https://github.com/bookme",
+                "current_company": "Tech Solutions Pvt Ltd",
+                "current_title": "Software Engineer",
+                "total_experience_years": 3.5,
+                "skills": ["Python"],
+                "parsed_resume_text": "Bookable candidate.",
+            },
+            fit_score=4.9,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertIsNotNone(profile)
+        profile.parsed_resume_text = "Bookable candidate with full resume text."
+        profile.parsed_resume_json = {
+            "full_name": "Book Me",
+            "headline": "Software Engineer",
+            "years_experience": 3.5,
+            "skills": ["Python"],
+            "companies": ["Tech Solutions Pvt Ltd"],
+            "education": ["B.Tech"],
+            "projects": ["Booking platform"],
+            "certifications": ["AWS"],
+            "location": "Remote",
+            "summary": "Ready to book.",
+            "domain_experience": ["Recruiting"],
+        }
+        self.db.commit()
+        return interview_session_module.create_interview_session(
+            db=self.db,
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+        )
+
+    def test_booking_persists_scheduled_at(self) -> None:
+        session_data = self._create_bookable_interview_session()
+        token = str(session_data["token"])
+        selected_time = datetime(2026, 5, 18, 14, 30, tzinfo=timezone.utc)
+
+        response = self.client.post(
+            "/api/interview/book",
+            json={"token": token, "scheduledAt": selected_time.isoformat()},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["data"]["scheduledAt"], selected_time.isoformat())
+
+        session_row = self.db.execute(
+            text("SELECT scheduled_at, status, booked_at FROM interview_sessions WHERE token = :token"),
+            {"token": token},
+        ).fetchone()
+        self.assertIsNotNone(session_row)
+        self.assertEqual(self._normalize_datetime_value(session_row[0]), selected_time.isoformat())
+        self.assertEqual(session_row[1], "booked")
+        self.assertIsNotNone(session_row[2])
+
+    def test_booking_consumes_token(self) -> None:
+        session_data = self._create_bookable_interview_session()
+        token = str(session_data["token"])
+        selected_time = datetime(2026, 5, 18, 15, 45, tzinfo=timezone.utc)
+
+        response = self.client.post(
+            "/api/interview/book",
+            json={"token": token, "scheduledAt": selected_time.isoformat()},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        token_row = self.db.execute(
+            text("SELECT is_active, consumed_at, status FROM notification_workflow_tokens WHERE token = :token"),
+            {"token": token},
+        ).fetchone()
+        self.assertIsNotNone(token_row)
+        self.assertFalse(bool(token_row[0]))
+        self.assertIsNotNone(token_row[1])
+        self.assertEqual(token_row[2], "consumed")
+
+    def test_consumed_token_cannot_be_reused(self) -> None:
+        session_data = self._create_bookable_interview_session()
+        token = str(session_data["token"])
+        selected_time = datetime(2026, 5, 18, 16, 15, tzinfo=timezone.utc)
+
+        first_response = self.client.post(
+            "/api/interview/book",
+            json={"token": token, "scheduledAt": selected_time.isoformat()},
+        )
+        self.assertEqual(first_response.status_code, 200)
+
+        second_response = self.client.post(
+            "/api/interview/book",
+            json={"token": token, "scheduledAt": selected_time.isoformat()},
+        )
+        self.assertIn(second_response.status_code, {409, 410})
 
     def test_scoring_profile_get_or_create_returns_existing_row(self) -> None:
         from app.db.repositories import ScoringProfileRepository
