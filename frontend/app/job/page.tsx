@@ -268,7 +268,9 @@ export default function JobPage() {
             ) : (
               <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
                 <div className="flex-1 space-y-2">
-                  <Label htmlFor="ats-provider">Select ATS</Label>
+                  <Label htmlFor="ats-provider">
+                    Select ATS <span className="text-gray-500">(optional)</span>
+                  </Label>
                   <select
                     id="ats-provider"
                     value={selectedATS}
@@ -319,7 +321,9 @@ export default function JobPage() {
           <CardContent className="space-y-4 px-6 py-6">
             <div className="flex flex-col gap-3 lg:flex-row">
               <div className="flex-1 space-y-2">
-                <Label htmlFor="job-url">Import from Job Posting URL</Label>
+                <Label htmlFor="job-url">
+                  Import from Job Posting URL <span className="text-gray-500">(optional)</span>
+                </Label>
                 <Input
                   id="job-url"
                   placeholder="https://company.com/careers/senior-frontend-engineer"
@@ -345,7 +349,9 @@ export default function JobPage() {
           </CardHeader>
           <CardContent className="space-y-5 px-6 py-6">
             <div className="space-y-2">
-              <Label htmlFor="job-title">Job Title *</Label>
+              <Label htmlFor="job-title">
+                Job Title <span className="text-red-500">*</span>
+              </Label>
               <Input
                 id="job-title"
                 placeholder="Senior Frontend Engineer"
@@ -356,7 +362,9 @@ export default function JobPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="job-description">Job Description *</Label>
+              <Label htmlFor="job-description">
+                Job Description <span className="text-red-500">*</span>
+              </Label>
               <Textarea
                 id="job-description"
                 placeholder="Describe responsibilities, must-have skills, and desired outcomes."
@@ -368,7 +376,9 @@ export default function JobPage() {
 
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="location">Location</Label>
+                <Label htmlFor="location">
+                  Location <span className="text-gray-500">(optional)</span>
+                </Label>
                 <Input
                   id="location"
                   placeholder="San Francisco / Remote"
@@ -378,7 +388,9 @@ export default function JobPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="compensation">Compensation</Label>
+                <Label htmlFor="compensation">
+                  Compensation <span className="text-gray-500">(optional)</span>
+                </Label>
                 <Input
                   id="compensation"
                   placeholder="$140k - $180k + Equity"
@@ -399,7 +411,9 @@ export default function JobPage() {
           <CardContent className="space-y-5 px-6 py-6">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="remote-policy">Remote Policy</Label>
+                <Label htmlFor="remote-policy">
+                  Remote Policy <span className="text-gray-500">(optional)</span>
+                </Label>
                 <select
                   id="remote-policy"
                   value={(form.remotePolicy as RemotePolicyValue) || "hybrid"}
@@ -418,7 +432,9 @@ export default function JobPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="work-authorization">Work Authorization</Label>
+                <Label htmlFor="work-authorization">
+                  Work Authorization <span className="text-gray-500">(optional)</span>
+                </Label>
                 <select
                   id="work-authorization"
                   value={form.workAuthorization}
@@ -441,7 +457,9 @@ export default function JobPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="experience-required">Experience Required</Label>
+              <Label htmlFor="experience-required">
+                Experience Required <span className="text-gray-500">(optional)</span>
+              </Label>
               <Input
                 id="experience-required"
                 placeholder="3-5 years"

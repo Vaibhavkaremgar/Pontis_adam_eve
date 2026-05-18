@@ -194,7 +194,9 @@ export default function CompanyPage() {
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-2">
-            <Label htmlFor="company-name">Company Name *</Label>
+            <Label htmlFor="company-name">
+              Company Name <span className="text-red-500">*</span>
+            </Label>
             <Input
               id="company-name"
               placeholder="Pontis Labs"
@@ -205,7 +207,9 @@ export default function CompanyPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="company-website">Website *</Label>
+            <Label htmlFor="company-website">
+              Website <span className="text-red-500">*</span>
+            </Label>
             <Input
               id="company-website"
               placeholder="https://example.com"
@@ -216,7 +220,9 @@ export default function CompanyPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="company-description">Description</Label>
+            <Label htmlFor="company-description">
+              Description <span className="text-gray-500">(optional)</span>
+            </Label>
             <Textarea
               id="company-description"
               placeholder="What does your company do and what is your hiring culture?"
@@ -255,7 +261,9 @@ export default function CompanyPage() {
               <div className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-end">
                   <div className="space-y-2">
-                    <Label htmlFor="ats-provider">Select ATS</Label>
+                    <Label htmlFor="ats-provider">
+                      Select ATS <span className="text-gray-500">(optional)</span>
+                    </Label>
                     <select
                       id="ats-provider"
                       value={selectedProvider}

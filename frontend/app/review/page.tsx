@@ -499,18 +499,18 @@ function CandidateCard({
         <div className="mt-auto pt-6">
           <div className="border-t border-[#ECE7DE]" />
           <div className="pt-6">
-          {showSelectButton && onSelect && (
-            <Button
-              className="h-14 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelect();
-              }}
-              disabled={selectionLocked || isSelecting || isSelected}
-            >
-              {isSelecting ? "Saving choice..." : isSelected ? "Selected" : "Select this candidate"}
-            </Button>
-          )}
+            {showSelectButton && onSelect && (
+              <Button
+                className="h-14 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSelect();
+                }}
+                disabled={selectionLocked || isSelecting || isSelected}
+              >
+                {isSelected ? "Selected" : isSelecting ? "Saving choice..." : "Select this candidate"}
+              </Button>
+            )}
           </div>
         </div>
       </CardContent>
@@ -596,6 +596,40 @@ export default function ReviewPage() {
     return completedShortlistedIds.length;
   }, [completed, completedShortlistedIds, session?.selectedCandidateIds.length]);
 
+  const markFinalSelectionLocally = (candidateId: string) => {
+    setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
+              candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
+            ),
+            topCandidates: (prev.topCandidates || []).map((candidate) =>
+              candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
+            ),
+          }
+        : prev
+    );
+  };
+
+  const revertFinalSelectionLocally = (candidateId: string) => {
+    setFinalShortlistedIds((prev) => prev.filter((id) => id !== candidateId));
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
+              candidate.id === candidateId ? { ...candidate, status: "new" } : candidate
+            ),
+            topCandidates: (prev.topCandidates || []).map((candidate) =>
+              candidate.id === candidateId ? { ...candidate, status: "new" } : candidate
+            ),
+          }
+        : prev
+    );
+  };
+
   const syncFinalShortlist = async () => {
     if (!jobId || !completed || completedShortlistedIds.length === 0) {
       return true;
@@ -627,29 +661,16 @@ export default function ReviewPage() {
     setSelectedCandidateId(candidateId);
 
     if (completed) {
+      markFinalSelectionLocally(candidateId);
       const result = await swipeCandidate({ jobId, candidateId, action: "accept" });
       if (!result.success || !result.data) {
+        revertFinalSelectionLocally(candidateId);
         setError(result.error || "Could not shortlist candidate for outreach.");
         setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\nerror=${result.error || "Unknown error"}`);
         setIsAdvancing(false);
         setSelectedCandidateId("");
         return;
       }
-
-      setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
-      setSession((prev) =>
-        prev
-          ? {
-              ...prev,
-              finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
-                candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
-              ),
-              topCandidates: (prev.topCandidates || []).map((candidate) =>
-                candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
-              ),
-            }
-          : prev
-      );
       setSelectionDebug("");
       setActiveCandidate(null);
       setIsAdvancing(false);
