@@ -518,6 +518,106 @@ function CandidateCard({
   );
 }
 
+function CandidateListRow({
+  candidate,
+  rankLabel,
+  isSelected,
+  isSelecting,
+  selectionLocked,
+  onOpenDetails,
+  onSelect,
+}: {
+  candidate: Candidate;
+  rankLabel: string;
+  isSelected: boolean;
+  isSelecting: boolean;
+  selectionLocked: boolean;
+  onOpenDetails: () => void;
+  onSelect: () => void;
+}) {
+  return (
+    <Card
+      role="button"
+      tabIndex={0}
+      onClick={onOpenDetails}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpenDetails();
+        }
+      }}
+      className={`group flex cursor-pointer flex-col rounded-[18px] border border-[#E8E0D4] bg-white p-5 text-left shadow-[0_6px_18px_rgba(0,0,0,0.03)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#DCCFBF] hover:shadow-[0_12px_24px_rgba(0,0,0,0.06)] ${
+        isSelected ? "ring-2 ring-[#DDF5E6]" : ""
+      }`}
+    >
+      <div className="flex items-start gap-4">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-[#E7F5EF] font-heading text-[14px] font-semibold text-[#0F6B3A]">
+          {rankLabel}
+        </div>
+
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h3 className="font-heading text-[20px] font-semibold leading-tight text-[#111827]">
+              {candidate.name || candidate.id.slice(0, 8)}
+            </h3>
+            <span className="text-[#A18E7C] transition-opacity group-hover:text-[#7D6A57]">↗</span>
+          </div>
+          <p className="font-body text-[14px] text-[#8A6F55]">{candidateSubtitle(candidate)}</p>
+          <p style={clampLines(3)} className="max-w-4xl overflow-hidden font-body text-[15px] leading-6 text-[#5F564D]">
+            {trimText(candidate.summary || candidate.headline || candidate.role || "No summary provided", 260)}
+          </p>
+        </div>
+
+        <div className="flex shrink-0 flex-col items-end gap-1 pl-2 text-right">
+          <div className="font-heading text-[28px] font-semibold leading-none text-[#0F6B3A]">{candidate.fitScore.toFixed(1)}</div>
+          <div className="font-body text-[12px] text-[#8A6F55]">fit score</div>
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        {candidate.location && (
+          <span className="rounded-full bg-[#F7F3EB] px-3 py-1 text-[12px] font-medium text-[#7D6A57]">
+            {candidate.location}
+          </span>
+        )}
+        {candidate.company && (
+          <span className="rounded-full bg-[#F7F3EB] px-3 py-1 text-[12px] font-medium text-[#7D6A57]">
+            {candidate.company}
+          </span>
+        )}
+        {candidate.skills?.slice(0, 3).map((skill) => (
+          <span key={`${candidate.id}-${skill}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
+            {skill}
+          </span>
+        ))}
+      </div>
+
+      <div className="mt-5 flex items-center justify-end gap-3">
+        <Button
+          variant="outline"
+          className="rounded-[12px] border-[#E3D9CA] bg-white px-4 py-2 text-[14px] font-semibold text-[#403325] hover:bg-[#FBF7F0]"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenDetails();
+          }}
+        >
+          View details
+        </Button>
+        <Button
+          className="rounded-[12px] bg-[#0F6B3A] px-4 py-2 text-[14px] font-semibold text-white hover:bg-[#0C5A31]"
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect();
+          }}
+          disabled={selectionLocked || isSelecting || isSelected}
+        >
+          {isSelected ? "Selected" : isSelecting ? "Saving..." : "Select"}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 export default function ReviewPage() {
   const router = useRouter();
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
@@ -881,25 +981,29 @@ export default function ReviewPage() {
                 </Card>
               )}
 
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="font-body text-sm font-semibold text-gray-900">Top reranked candidates</p>
+              <div className="rounded-[32px] border border-[#E7E0D4] bg-white p-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <p className="font-heading text-[22px] font-semibold text-[#111827]">Here are your top candidates</p>
+                    <p className="font-body text-sm text-[#8A6F55]">We found potential matches and evaluated them for you</p>
+                  </div>
                   <Badge variant="high">{finalCandidates.length} candidates</Badge>
                 </div>
 
-                <div className="grid gap-8 md:grid-cols-2">
-                {finalCandidates.map((candidate) => {
-                  return (
-                    <CandidateCard
-                      key={candidate.id}
-                      candidate={candidate}
-                      badgeLabel="This profile is part of the reranked shortlist"
-                      isSelected={finalShortlistedIds.includes(candidate.id) || candidate.status === "shortlisted"}
-                      isSelecting={false}
-                      selectionLocked={false}
-                      onOpenDetails={() => setActiveCandidate(candidate)}
+                <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
+                  {finalCandidates.map((candidate, index) => {
+                    const rankLabel = `#${index + 1}`;
+                    const selected = finalShortlistedIds.includes(candidate.id) || candidate.status === "shortlisted";
+                    return (
+                      <CandidateListRow
+                        key={candidate.id}
+                        candidate={candidate}
+                        rankLabel={rankLabel}
+                        isSelected={selected}
+                        isSelecting={isAdvancing && selectedCandidateId === candidate.id}
+                        selectionLocked={isAdvancing && selectedCandidateId !== candidate.id}
+                        onOpenDetails={() => setActiveCandidate(candidate)}
                         onSelect={() => void handleSelect(candidate.id)}
-                        showSelectButton
                       />
                     );
                   })}

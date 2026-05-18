@@ -12,12 +12,14 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Vapi from "@vapi-ai/web";
+import { Mic, Sparkles } from "lucide-react";
 
 import { useAppContext } from "@/context/AppContext";
 import { getCandidatesWithMode } from "@/lib/api/candidates";
 import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
+import { Button } from "@/components/ui/button";
 
 import { ChatBubble } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
@@ -327,6 +329,34 @@ function cleanTranscript(text: string): string {
 function cleanVoiceTranscriptText(text: string): string {
   return cleanTranscript(text);
 }
+
+const EXPECTATION_STEPS = [
+  {
+    id: 1,
+    title: "Discovery",
+    duration: "~5-8 min",
+    details: [
+      "Why this role exists now",
+      "What they'll own end-to-end",
+      "What success looks like at 1 year",
+      "Ideal traits and background",
+      "Red flags to avoid",
+    ],
+  },
+  {
+    id: 2,
+    title: "Calibration",
+    duration: "~3-5 min",
+    details:
+      "We’ll show 3-4 candidate pairs and ask which you prefer. This reveals your true priorities, like startup vs enterprise or top school vs top company.",
+  },
+  {
+    id: 3,
+    title: "Summary",
+    duration: "~1 min",
+    details: "We’ll confirm what we learned before generating your sourcing report.",
+  },
+] as const;
 
 type IntakeCompletionSignal = {
   ready: boolean;
@@ -1145,11 +1175,101 @@ export function VoiceUi() {
     error: pipelineError,
   };
 
+  const showIntro = (isIdle || isErrorState) && transcriptTurns.length === 0;
+
+  if (showIntro) {
+    return (
+      <div className="mx-auto flex w-full max-w-[1100px] justify-center px-4 py-6 sm:px-6 lg:px-8">
+        <div className="w-full max-w-[900px] rounded-[36px] border border-[#E7E0D4] bg-white px-6 py-8 shadow-[0_10px_30px_rgba(0,0,0,0.06)] sm:px-8 sm:py-10 lg:px-10 lg:py-12">
+          <div className="flex flex-col items-center text-center">
+            <div className="flex h-24 w-24 items-center justify-center rounded-full border-2 border-[#92B7F8] bg-[#F7FAFF] shadow-[0_4px_14px_rgba(146,183,248,0.18)]">
+              <Sparkles className="h-11 w-11 text-[#14532D]" />
+            </div>
+            <h1 className="mt-8 font-heading text-[40px] font-semibold tracking-[-0.03em] text-[#111827] sm:text-[48px]">
+              {company.name ? `Chat with ${company.name}` : "Voice intake"}
+            </h1>
+            <p className="mt-4 max-w-2xl font-body text-[19px] leading-8 text-[#A39A90]">
+              Have a conversation with our AI about your hiring needs.
+            </p>
+          </div>
+
+          <div className="mt-8 rounded-[28px] border border-[#E7E0D4] bg-[#FBF8F2] p-5 sm:p-6">
+            <div className="flex items-center gap-3">
+              <span className="text-xl">📋</span>
+              <p className="font-heading text-[22px] font-semibold text-[#111827]">What to Expect</p>
+            </div>
+
+            <div className="mt-6 space-y-6">
+              {EXPECTATION_STEPS.map((step) => (
+                <div key={step.id} className="grid grid-cols-[auto_1fr_auto] gap-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#14532D] font-semibold text-white">
+                    {step.id}
+                  </div>
+                  <div className="space-y-1">
+                    <p className="font-body text-[18px] font-medium text-[#111827]">{step.title}</p>
+                    {Array.isArray(step.details) ? (
+                      <>
+                        <p className="font-body text-[14px] text-[#A39A90]">We&apos;ll ask about:</p>
+                        <ul className="space-y-1 pl-4 font-body text-[14px] leading-6 text-[#A39A90]">
+                          {step.details.map((item) => (
+                            <li key={`${step.id}-${item}`} className="list-disc">
+                              {item}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : (
+                      <p className="max-w-2xl font-body text-[14px] leading-6 text-[#A39A90]">{step.details}</p>
+                    )}
+                  </div>
+                  <div className="pt-1 font-body text-[14px] text-[#A39A90]">{step.duration}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-6 border-t border-[#E8DDCB] pt-5 text-center font-body text-[18px] text-[#A39A90]">
+              Total: ~10-15 minutes
+            </div>
+          </div>
+
+          <div className="mt-10 flex flex-col items-center gap-4">
+            <Button
+              size="lg"
+              onClick={handleStart}
+              className="min-w-[230px] rounded-full bg-[#14532D] px-8 py-4 text-[18px] font-semibold text-white shadow-[0_10px_24px_rgba(20,83,45,0.18)] hover:bg-[#0F3F23]"
+            >
+              <Mic className="mr-2 h-5 w-5" />
+              Start Conversation
+            </Button>
+
+            <div className="max-w-2xl rounded-2xl px-4 py-2 text-center">
+              <p className="text-sm font-medium text-[#111827]">Current status</p>
+              <p className="text-sm text-[#6B7280]">{callStatusLabel[callStatus] || "Ready to capture voice."}</p>
+            </div>
+          </div>
+
+          {(pipelineStatus !== "idle" || isErrorState) && (
+            <div className={`mt-5 rounded-3xl p-4 text-sm ${pipelineStatus === "error" ? "bg-red-50 text-red-700" : "bg-[#F3F4F6] text-[#374151]"}`}>
+              {pipelineStatus !== "error" && pipelineStatus !== "done" ? (
+                <div className="flex items-center gap-2">
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
+                  <span>{pipelineLabel[pipelineStatus]}</span>
+                </div>
+              ) : (
+                <span>{pipelineLabel[pipelineStatus]}</span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-[28px] border border-gray-200 bg-white p-6 shadow-sm md:p-8">
         <div className="mb-5 flex flex-col gap-3">
-          <p className="text-2xl font-semibold text-[#111827]">Live voice transcript</p>
+          <p className="font-heading text-[34px] font-semibold text-[#111827]">Live voice transcript</p>
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#166534]">
             <span className="h-2 w-2 rounded-full bg-[#1F6F4A]" />
             <span>{activeSpeakerLabel}</span>
