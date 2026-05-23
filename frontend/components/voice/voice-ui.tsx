@@ -1186,8 +1186,8 @@ export function VoiceUi() {
             <div className="flex h-[72px] w-[72px] items-center justify-center overflow-hidden rounded-full border border-[#D7E2F2] bg-[#F7FAFF] shadow-[0_4px_14px_rgba(146,183,248,0.14)]">
               <Image src="/images/ada.png" alt="Ada avatar" width={72} height={72} className="h-full w-full object-cover" priority />
             </div>
-            <h1 className="mt-6 font-heading text-[32px] font-semibold tracking-[-0.03em] text-[#111827] sm:text-[38px]">
-              {company.name ? `Chat with ${company.name}` : "Voice intake"}
+            <h1 className="mt-6 font-heading text-[28px] font-semibold tracking-[-0.03em] text-[#111827] sm:text-[30px]">
+              Chat with Adam
             </h1>
             <p className="mt-3 max-w-xl font-body text-[15px] leading-6 text-[#8D857C]">
               Have a conversation with our AI about your hiring needs.
