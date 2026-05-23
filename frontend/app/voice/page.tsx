@@ -59,10 +59,10 @@ export default function VoicePage() {
   }
 
   return (
-    <AppShell activeStep={3} contentClassName="mx-auto w-full max-w-3xl px-4 py-6 md:px-6 lg:px-8">
+    <AppShell activeStep={3} contentClassName="mx-auto w-full max-w-2xl px-4 py-5 md:px-5 lg:px-6">
       <VoiceUi />
 
-      <div className="mt-8 flex justify-end">
+      <div className="mt-6 flex justify-end">
         <Button
           onClick={() => router.push("/review")}
           disabled={!isRefined || !jobId}

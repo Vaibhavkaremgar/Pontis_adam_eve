@@ -508,7 +508,7 @@ function CandidateCard({
                 }}
                 disabled={selectionLocked || isSelecting || isSelected}
               >
-                {isSelected ? "Selected" : isSelecting ? "Saving choice..." : "Select this candidate"}
+                {isSelected ? "Selected" : isSelecting ? "Selecting candidate..." : "Select this candidate"}
               </Button>
             )}
           </div>
@@ -611,7 +611,7 @@ function CandidateListRow({
           }}
           disabled={selectionLocked || isSelecting || isSelected}
         >
-          {isSelected ? "Selected" : isSelecting ? "Saving..." : "Select"}
+          {isSelected ? "Selected" : isSelecting ? "Selecting candidate..." : "Select"}
         </Button>
       </div>
     </Card>
@@ -1055,7 +1055,7 @@ export default function ReviewPage() {
                     disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"}
                   >
                     {isAdvancing && selectedCandidateId === activeCandidate.id
-                      ? "Saving choice..."
+                      ? "Selecting candidate..."
                       : finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"
                         ? "Selected"
                         : "Select this candidate"}

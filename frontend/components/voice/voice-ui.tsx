@@ -12,7 +12,8 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Vapi from "@vapi-ai/web";
-import { Mic, Sparkles } from "lucide-react";
+import Image from "next/image";
+import { Mic } from "lucide-react";
 
 import { useAppContext } from "@/context/AppContext";
 import { getCandidatesWithMode } from "@/lib/api/candidates";
@@ -1179,38 +1180,38 @@ export function VoiceUi() {
 
   if (showIntro) {
     return (
-      <div className="mx-auto flex w-full max-w-[1100px] justify-center px-4 py-6 sm:px-6 lg:px-8">
-        <div className="w-full max-w-[900px] rounded-[36px] border border-[#E7E0D4] bg-white px-6 py-8 shadow-[0_10px_30px_rgba(0,0,0,0.06)] sm:px-8 sm:py-10 lg:px-10 lg:py-12">
+      <div className="mx-auto flex w-full max-w-[980px] justify-center px-4 py-5 sm:px-5 lg:px-6">
+        <div className="w-full max-w-[780px] rounded-[30px] border border-[#E7E0D4] bg-white px-5 py-6 shadow-[0_10px_24px_rgba(0,0,0,0.05)] sm:px-6 sm:py-7 lg:px-8 lg:py-8">
           <div className="flex flex-col items-center text-center">
-            <div className="flex h-24 w-24 items-center justify-center rounded-full border-2 border-[#92B7F8] bg-[#F7FAFF] shadow-[0_4px_14px_rgba(146,183,248,0.18)]">
-              <Sparkles className="h-11 w-11 text-[#14532D]" />
+            <div className="flex h-[72px] w-[72px] items-center justify-center overflow-hidden rounded-full border border-[#D7E2F2] bg-[#F7FAFF] shadow-[0_4px_14px_rgba(146,183,248,0.14)]">
+              <Image src="/images/ada.png" alt="Ada avatar" width={72} height={72} className="h-full w-full object-cover" priority />
             </div>
-            <h1 className="mt-8 font-heading text-[40px] font-semibold tracking-[-0.03em] text-[#111827] sm:text-[48px]">
+            <h1 className="mt-6 font-heading text-[32px] font-semibold tracking-[-0.03em] text-[#111827] sm:text-[38px]">
               {company.name ? `Chat with ${company.name}` : "Voice intake"}
             </h1>
-            <p className="mt-4 max-w-2xl font-body text-[19px] leading-8 text-[#A39A90]">
+            <p className="mt-3 max-w-xl font-body text-[15px] leading-6 text-[#8D857C]">
               Have a conversation with our AI about your hiring needs.
             </p>
           </div>
 
-          <div className="mt-8 rounded-[28px] border border-[#E7E0D4] bg-[#FBF8F2] p-5 sm:p-6">
+          <div className="mt-6 rounded-[24px] border border-[#E7E0D4] bg-[#FBF8F2] p-4 sm:p-5">
             <div className="flex items-center gap-3">
-              <span className="text-xl">📋</span>
-              <p className="font-heading text-[22px] font-semibold text-[#111827]">What to Expect</p>
+              <span className="text-lg">📋</span>
+              <p className="font-heading text-[18px] font-semibold text-[#111827]">What to Expect</p>
             </div>
 
-            <div className="mt-6 space-y-6">
+            <div className="mt-5 space-y-4">
               {EXPECTATION_STEPS.map((step) => (
-                <div key={step.id} className="grid grid-cols-[auto_1fr_auto] gap-4">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#14532D] font-semibold text-white">
+                <div key={step.id} className="grid grid-cols-[auto_1fr_auto] gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#14532D] text-sm font-semibold text-white">
                     {step.id}
                   </div>
                   <div className="space-y-1">
-                    <p className="font-body text-[18px] font-medium text-[#111827]">{step.title}</p>
+                    <p className="font-body text-[15px] font-medium text-[#111827]">{step.title}</p>
                     {Array.isArray(step.details) ? (
                       <>
-                        <p className="font-body text-[14px] text-[#A39A90]">We&apos;ll ask about:</p>
-                        <ul className="space-y-1 pl-4 font-body text-[14px] leading-6 text-[#A39A90]">
+                        <p className="font-body text-[13px] text-[#8D857C]">We&apos;ll ask about:</p>
+                        <ul className="space-y-1 pl-4 font-body text-[13px] leading-5 text-[#8D857C]">
                           {step.details.map((item) => (
                             <li key={`${step.id}-${item}`} className="list-disc">
                               {item}
@@ -1219,40 +1220,40 @@ export function VoiceUi() {
                         </ul>
                       </>
                     ) : (
-                      <p className="max-w-2xl font-body text-[14px] leading-6 text-[#A39A90]">{step.details}</p>
+                      <p className="max-w-2xl font-body text-[13px] leading-5 text-[#8D857C]">{step.details}</p>
                     )}
                   </div>
-                  <div className="pt-1 font-body text-[14px] text-[#A39A90]">{step.duration}</div>
+                  <div className="pt-0.5 font-body text-[12px] text-[#8D857C]">{step.duration}</div>
                 </div>
               ))}
             </div>
 
-            <div className="mt-6 border-t border-[#E8DDCB] pt-5 text-center font-body text-[18px] text-[#A39A90]">
+            <div className="mt-5 border-t border-[#E8DDCB] pt-4 text-center font-body text-[14px] text-[#8D857C]">
               Total: ~10-15 minutes
             </div>
           </div>
 
-          <div className="mt-10 flex flex-col items-center gap-4">
+          <div className="mt-8 flex flex-col items-center gap-3">
             <Button
               size="lg"
               onClick={handleStart}
-              className="min-w-[230px] rounded-full bg-[#14532D] px-8 py-4 text-[18px] font-semibold text-white shadow-[0_10px_24px_rgba(20,83,45,0.18)] hover:bg-[#0F3F23]"
+              className="min-w-[200px] rounded-full bg-[#14532D] px-7 py-3 text-[15px] font-semibold text-white shadow-[0_10px_20px_rgba(20,83,45,0.16)] hover:bg-[#0F3F23]"
             >
-              <Mic className="mr-2 h-5 w-5" />
+              <Mic className="mr-2 h-4 w-4" />
               Start Conversation
             </Button>
 
-            <div className="max-w-2xl rounded-2xl px-4 py-2 text-center">
-              <p className="text-sm font-medium text-[#111827]">Current status</p>
-              <p className="text-sm text-[#6B7280]">{callStatusLabel[callStatus] || "Ready to capture voice."}</p>
+            <div className="max-w-xl rounded-2xl px-3 py-2 text-center">
+              <p className="text-xs font-medium text-[#111827]">Current status</p>
+              <p className="text-xs text-[#6B7280]">{callStatusLabel[callStatus] || "Ready to capture voice."}</p>
             </div>
           </div>
 
           {(pipelineStatus !== "idle" || isErrorState) && (
-            <div className={`mt-5 rounded-3xl p-4 text-sm ${pipelineStatus === "error" ? "bg-red-50 text-red-700" : "bg-[#F3F4F6] text-[#374151]"}`}>
+            <div className={`mt-4 rounded-2xl p-3 text-sm ${pipelineStatus === "error" ? "bg-red-50 text-red-700" : "bg-[#F3F4F6] text-[#374151]"}`}>
               {pipelineStatus !== "error" && pipelineStatus !== "done" ? (
                 <div className="flex items-center gap-2">
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
                   <span>{pipelineLabel[pipelineStatus]}</span>
                 </div>
               ) : (
@@ -1266,11 +1267,11 @@ export function VoiceUi() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="rounded-[28px] border border-gray-200 bg-white p-6 shadow-sm md:p-8">
-        <div className="mb-5 flex flex-col gap-3">
-          <p className="font-heading text-[34px] font-semibold text-[#111827]">Live voice transcript</p>
-          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-[#166534]">
+    <div className="space-y-5">
+      <div className="rounded-[24px] border border-gray-200 bg-white p-5 shadow-sm md:p-6">
+        <div className="mb-4 flex flex-col gap-2">
+          <p className="font-heading text-[28px] font-semibold text-[#111827]">Live voice transcript</p>
+          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#166534]">
             <span className="h-2 w-2 rounded-full bg-[#1F6F4A]" />
             <span>{activeSpeakerLabel}</span>
           </div>
@@ -1278,7 +1279,7 @@ export function VoiceUi() {
 
         <div
           ref={chatScrollRef}
-          className="max-h-[70vh] space-y-4 overflow-y-auto rounded-[28px] border border-[#E7E0D4] bg-[linear-gradient(180deg,#FFFDF9_0%,#F7F2E8_100%)] p-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6"
+          className="max-h-[68vh] space-y-3 overflow-y-auto rounded-[24px] border border-[#E7E0D4] bg-[linear-gradient(180deg,#FFFDF9_0%,#F7F2E8_100%)] p-3 shadow-[0_8px_22px_rgba(0,0,0,0.04)] md:p-4"
         >
           {transcriptTurns.length > 0 ? (
             transcriptTurns.map((message) => (
@@ -1297,23 +1298,23 @@ export function VoiceUi() {
               />
             ))
           ) : (
-            <div className="rounded-[24px] border border-dashed border-[#D8CCBA] bg-white/70 px-5 py-8 text-center text-sm text-[#6B7280]">
+            <div className="rounded-[20px] border border-dashed border-[#D8CCBA] bg-white/70 px-4 py-6 text-center text-sm text-[#6B7280]">
               Start the call and the final Adam and recruiter transcript will appear here.
             </div>
           )}
         </div>
 
-        <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-medium text-[#111827]">Current status</p>
-            <p className="text-sm text-[#6B7280]">{callStatusLabel[callStatus] || "Ready to capture voice."}</p>
+            <p className="text-xs font-medium text-[#111827]">Current status</p>
+            <p className="text-xs text-[#6B7280]">{callStatusLabel[callStatus] || "Ready to capture voice."}</p>
           </div>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
             {(isIdle || isErrorState) && (
               <button
                 onClick={handleStart}
-                className="rounded-2xl bg-[#1F6F4A] px-5 py-3 text-sm font-semibold text-white hover:bg-[#184E3C]"
+                className="rounded-xl bg-[#1F6F4A] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#184E3C]"
               >
                 {isErrorState ? "Retry voice intake" : "Start voice intake"}
               </button>
@@ -1321,7 +1322,7 @@ export function VoiceUi() {
             {isLive && (
               <button
                 onClick={handleEndCall}
-                className="rounded-2xl border border-red-500 px-5 py-3 text-sm font-semibold text-red-600 hover:bg-red-50"
+                className="rounded-xl border border-red-500 px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50"
               >
                 End call now
               </button>
@@ -1330,10 +1331,10 @@ export function VoiceUi() {
         </div>
 
         {(pipelineStatus !== "idle" || isErrorState) && (
-          <div className={`mt-4 rounded-3xl p-4 text-sm ${pipelineStatus === "error" ? "bg-red-50 text-red-700" : "bg-[#F3F4F6] text-[#374151]"}`}>
+          <div className={`mt-4 rounded-2xl p-3 text-sm ${pipelineStatus === "error" ? "bg-red-50 text-red-700" : "bg-[#F3F4F6] text-[#374151]"}`}>
             {pipelineStatus !== "error" && pipelineStatus !== "done" ? (
               <div className="flex items-center gap-2">
-                <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-[#1F6F4A]" />
                 <span>{pipelineLabel[pipelineStatus]}</span>
               </div>
             ) : (
