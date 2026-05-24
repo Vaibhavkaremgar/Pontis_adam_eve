@@ -51,6 +51,26 @@ export type RecruiterIntelligenceSession = {
     telemetry?: Record<string, number>;
     voice_summary?: string;
   };
+  calibration?: {
+    status?: string;
+    stage?: string;
+    current_round_index?: number;
+    rounds?: Array<{
+      round_index: number;
+      candidate_ids: string[];
+      candidates: Array<Record<string, unknown>>;
+      signal_quality: number;
+      contrast_axes: string[];
+      rationale: string;
+      pair_explanation?: Record<string, unknown>;
+    }>;
+    current_pair?: Record<string, unknown>;
+    intent_profile?: Record<string, unknown>;
+    recommended_questions?: string[];
+    telemetry?: Record<string, number>;
+    voice_summary?: string;
+    archetype_sets?: Array<Record<string, unknown>>;
+  };
 };
 
 export type RecruiterIntelligenceUpdatePayload = {
@@ -58,6 +78,11 @@ export type RecruiterIntelligenceUpdatePayload = {
   transcript: string;
   voiceSummary?: string;
   entities?: Record<string, unknown>;
+};
+
+export type RecruiterCalibrationChoicePayload = {
+  jobId: string;
+  candidateId: string;
 };
 
 export async function getRecruiterIntelligence(
@@ -85,3 +110,17 @@ export async function updateRecruiterIntelligence(
   });
 }
 
+export async function chooseRecruiterCalibrationArchetype(
+  recruiterId: string,
+  jobId: string,
+  payload: RecruiterCalibrationChoicePayload
+): Promise<ApiResponse<RecruiterIntelligenceSession>> {
+  return requestApi<RecruiterIntelligenceSession>({
+    url: `${API_BASE_URL.replace(/\/$/, "")}/recruiters/${encodeURIComponent(recruiterId)}/intelligence/jobs/${encodeURIComponent(jobId)}/choice`,
+    method: "POST",
+    payload: {
+      ...payload,
+      jobId
+    }
+  });
+}

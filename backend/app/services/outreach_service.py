@@ -37,6 +37,7 @@ from app.db.repositories import (
 )
 from app.db.session import SessionLocal
 from app.models.entities import OutreachEventEntity
+from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.job_queue_service import enqueue_job
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
@@ -1092,6 +1093,19 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
             provider_message_id or (row.provider_message_id or ""),
             intent,
         )
+        record_job_lifecycle_event(
+            db=db,
+            job_id=row.job_id,
+            event_type="OUTREACH_REPLIED",
+            payload={
+                "jobId": row.job_id,
+                "candidateId": row.candidate_id,
+                "providerMessageId": provider_message_id or (row.provider_message_id or ""),
+                "intent": intent,
+                "status": row.status,
+            },
+            source="outreach",
+        )
         if intent == "interested":
             try:
                 from app.services.interview_session_service import create_interview_session
@@ -1193,14 +1207,34 @@ def process_outreach(
     else:
         logger.info("outreach_selection_session_missing job_id=%s", job_id)
 
-    unique_selected_candidates = list(
-        dict.fromkeys(session_selected_candidate_ids if session else selected_candidates)
-    )
+    unique_selected_candidates = list(dict.fromkeys((candidate_id or "").strip() for candidate_id in selected_candidates if str(candidate_id or "").strip()))
+    if not unique_selected_candidates and session_selected_candidate_ids:
+        if len(session_selected_candidate_ids) == 1:
+            unique_selected_candidates = list(session_selected_candidate_ids)
+        else:
+            logger.warning(
+                "outreach_session_has_multiple_selected_candidates job_id=%s session_id=%s selected_count=%s",
+                job_id,
+                session.id if session else "",
+                len(session_selected_candidate_ids),
+            )
     if not unique_selected_candidates:
         raise APIError(
-            "No shortlisted candidates in selection. Accept candidates in the Review step before sending outreach.",
+            "No selected candidate available for outreach. Select exactly one candidate before sending outreach.",
             status_code=400,
         )
+    if len(unique_selected_candidates) != 1:
+        raise APIError(
+            "Outreach is now selection-driven and must target exactly one candidate.",
+            status_code=400,
+        )
+    if session and session_status == "completed" and session_selected_candidate_ids:
+        selected_candidate_id = unique_selected_candidates[0]
+        if selected_candidate_id not in session_selected_candidate_ids:
+            raise APIError(
+                "Selected candidate is not part of the active selection session.",
+                status_code=409,
+            )
 
     candidate_profiles = profiles.latest_by_candidate_ids(job_id=job_id, candidate_ids=unique_selected_candidates)
     valid_candidates = [candidate_id for candidate_id in unique_selected_candidates if candidate_id in candidate_profiles]
@@ -1222,7 +1256,7 @@ def process_outreach(
 
     if not valid_candidates:
         raise APIError(
-            "No shortlisted candidates in selection. Accept candidates in the Review step before sending outreach.",
+            "No selected candidate available for outreach. Select exactly one candidate before sending outreach.",
             status_code=400,
         )
 
@@ -1421,6 +1455,19 @@ def process_outreach(
             db.commit()
             sent += 1
             follow_up_scheduled += 1
+            record_job_lifecycle_event(
+                db=db,
+                job_id=job_id,
+                event_type="OUTREACH_SENT",
+                payload={
+                    "jobId": job_id,
+                    "candidateId": candidate_id,
+                    "toEmail": to_email,
+                    "status": "simulated",
+                    "simulated": True,
+                },
+                source="outreach",
+            )
             logger.info(
                 "outreach_simulated job_id=%s candidate_id=%s to_email=%s simulated=%s",
                 job_id,
@@ -1541,6 +1588,19 @@ def process_outreach(
                     candidate_id,
                     to_email,
                     msg_id,
+                )
+                record_job_lifecycle_event(
+                    db=db,
+                    job_id=job_id,
+                    event_type="OUTREACH_SENT",
+                    payload={
+                        "jobId": job_id,
+                        "candidateId": candidate_id,
+                        "providerMessageId": msg_id,
+                        "toEmail": to_email,
+                        "status": "sent",
+                    },
+                    source="outreach",
                 )
                 log_metric("outreach_usage", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, action="send")
                 log_metric("outreach_email_sent", job_id=job_id, candidate_id=candidate_id, provider=OUTREACH_PROVIDER, provider_id=msg_id)
@@ -1695,26 +1755,14 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 to_email=original_to_email,
                 subject=subject,
                 body=email_template,
-                status="manual_required",
+                status="failed",
                 last_error=block_reason or "missing_email",
                 sent_at=None,
                 next_follow_up_at=None,
                 provider_message_id=None,
             )
             db.commit()
-            return {
-                "success": True,
-                "jobId": job_id,
-                "candidateId": candidate_id,
-                "candidateName": name,
-                "candidateEmail": original_to_email,
-                "linkedinUrl": linkedin_url,
-                "status": "manual_required",
-                "outreachStatus": "manual_required",
-                "subject": subject,
-                "html": email_template,
-                "providerMessageId": "",
-            }
+            raise APIError("Selected candidate must have a valid email before outreach", status_code=422)
 
         if recruiter_id and not _daily_quota_allowed(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id, limit=_DEFAULT_DAILY_OUTREACH_QUOTA):
             outreach_repo.upsert(
@@ -1866,9 +1914,20 @@ async def trigger_candidate_outreach(candidate_id: str, job_id: str, channel_id:
 
 
 def queue_outreach_delivery(*, job_id: str, selected_candidates: list[str], custom_body: str = "") -> dict:
+    unique_selected_candidates = list(dict.fromkeys((candidate_id or "").strip() for candidate_id in selected_candidates if str(candidate_id or "").strip()))
+    if not unique_selected_candidates:
+        raise APIError(
+            "No selected candidate available for outreach. Select exactly one candidate before queueing outreach.",
+            status_code=400,
+        )
+    if len(unique_selected_candidates) != 1:
+        raise APIError(
+            "Outreach is now selection-driven and must target exactly one candidate.",
+            status_code=400,
+        )
     idempotency_material = {
         "job_id": job_id,
-        "selected_candidates": list(dict.fromkeys(selected_candidates)),
+        "selected_candidates": unique_selected_candidates,
         "custom_body": custom_body.strip(),
     }
     idempotency_key = hashlib.sha256(
@@ -1878,7 +1937,7 @@ def queue_outreach_delivery(*, job_id: str, selected_candidates: list[str], cust
         "outreach_send",
         {
             "job_id": job_id,
-            "selected_candidates": list(dict.fromkeys(selected_candidates)),
+            "selected_candidates": unique_selected_candidates,
             "custom_body": custom_body,
         },
         idempotency_key=idempotency_key,
@@ -1886,13 +1945,13 @@ def queue_outreach_delivery(*, job_id: str, selected_candidates: list[str], cust
     logger.info(
         "request_started outreach_queued job_id=%s selected_count=%s mode=%s",
         job_id,
-        len(selected_candidates),
+        len(unique_selected_candidates),
         result.get("mode", "redis"),
     )
     return {
         "queued": bool(result.get("queued", True)),
         "job_id": result.get("job_id") or job_id,
-        "selected_count": len(selected_candidates),
+        "selected_count": len(unique_selected_candidates),
         "mode": result.get("mode", "redis"),
         "deduplicated": bool(result.get("deduplicated")),
     }

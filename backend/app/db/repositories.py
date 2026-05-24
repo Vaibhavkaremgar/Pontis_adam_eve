@@ -28,6 +28,8 @@ from app.models.entities import (
     InterviewSessionEntity,
     JobEntity,
     OtpEntity,
+    OrchestrationEventEntity,
+    OrchestrationSessionEntity,
     OutreachEventEntity,
     NotificationWorkflowTokenEntity,
     RankingExplanationEntity,
@@ -528,6 +530,172 @@ class JobIntakeRepository:
         row.updated_at = now
         self.db.flush()
         return row
+
+
+class OrchestrationSessionRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get(self, session_id: str) -> OrchestrationSessionEntity | None:
+        normalized = (session_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(OrchestrationSessionEntity).where(OrchestrationSessionEntity.id == normalized))
+
+    def get_by_token(self, session_token: str) -> OrchestrationSessionEntity | None:
+        normalized = (session_token or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(OrchestrationSessionEntity).where(OrchestrationSessionEntity.session_token == normalized))
+
+    def get_by_job(self, job_id: str) -> OrchestrationSessionEntity | None:
+        normalized = (job_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(OrchestrationSessionEntity)
+            .where(OrchestrationSessionEntity.job_id == normalized)
+            .order_by(OrchestrationSessionEntity.updated_at.desc(), OrchestrationSessionEntity.created_at.desc())
+        )
+
+    def get_active_by_slack_context(
+        self,
+        *,
+        slack_team_id: str = "",
+        slack_channel_id: str = "",
+        slack_thread_ts: str = "",
+        slack_user_id: str = "",
+        source: str = "slack",
+    ) -> OrchestrationSessionEntity | None:
+        normalized_source = (source or "slack").strip().lower() or "slack"
+        conditions = [OrchestrationSessionEntity.source == normalized_source]
+        if slack_team_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_team_id == slack_team_id.strip())
+        if slack_channel_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_channel_id == slack_channel_id.strip())
+        if slack_thread_ts.strip():
+            conditions.append(OrchestrationSessionEntity.slack_thread_ts == slack_thread_ts.strip())
+        if slack_user_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_user_id == slack_user_id.strip())
+        conditions.extend(
+            [
+                or_(OrchestrationSessionEntity.expires_at.is_(None), OrchestrationSessionEntity.expires_at > datetime.now(timezone.utc)),
+                OrchestrationSessionEntity.completed_at.is_(None),
+            ]
+        )
+        stmt = select(OrchestrationSessionEntity).where(*conditions).order_by(OrchestrationSessionEntity.updated_at.desc())
+        return self.db.scalar(stmt)
+
+    def create(
+        self,
+        *,
+        session_token: str,
+        source: str = "slack",
+        current_stage: str = "initiated",
+        slack_team_id: str = "",
+        slack_channel_id: str = "",
+        slack_thread_ts: str = "",
+        slack_user_id: str = "",
+        intake_mode: str = "slack",
+        selected_path: str = "",
+        current_question: str = "",
+        current_question_key: str = "",
+        structured_context: dict | None = None,
+        raw_conversation: list | None = None,
+        normalized_intake: dict | None = None,
+        voice_context: dict | None = None,
+        slack_context: dict | None = None,
+        expires_at: datetime | None = None,
+        company_id: str | None = None,
+        job_id: str | None = None,
+    ) -> OrchestrationSessionEntity:
+        row = OrchestrationSessionEntity(
+            id=str(uuid4()),
+            session_token=(session_token or "").strip(),
+            source=(source or "slack").strip().lower() or "slack",
+            current_stage=(current_stage or "initiated").strip().lower() or "initiated",
+            slack_team_id=(slack_team_id or "").strip(),
+            slack_channel_id=(slack_channel_id or "").strip(),
+            slack_thread_ts=(slack_thread_ts or "").strip(),
+            slack_user_id=(slack_user_id or "").strip(),
+            intake_mode=(intake_mode or "slack").strip().lower() or "slack",
+            selected_path=(selected_path or "").strip().lower(),
+            current_question=(current_question or "").strip(),
+            current_question_key=(current_question_key or "").strip(),
+            current_question_type="",
+            current_question_schema={},
+            structured_context=dict(structured_context or {}),
+            raw_conversation=list(raw_conversation or []),
+            normalized_intake=dict(normalized_intake or {}),
+            voice_context=dict(voice_context or {}),
+            slack_context=dict(slack_context or {}),
+            state_version=0,
+            last_processed_message_ts="",
+            last_processed_action_hash="",
+            last_processed_transcript_hash="",
+            intake_version="v1",
+            expires_at=expires_at,
+            company_id=(company_id or "").strip() or None,
+            job_id=(job_id or "").strip() or None,
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def update(self, row: OrchestrationSessionEntity, **fields: object) -> OrchestrationSessionEntity:
+        for key, value in fields.items():
+            if not hasattr(row, key):
+                continue
+            setattr(row, key, value)
+        if hasattr(row, "state_version"):
+            try:
+                row.state_version = int(getattr(row, "state_version", 0) or 0) + 1
+            except (TypeError, ValueError):
+                row.state_version = 1
+        row.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
+        return row
+
+    def list_recent(self, *, limit: int = 100) -> list[OrchestrationSessionEntity]:
+        rows = self.db.scalars(
+            select(OrchestrationSessionEntity)
+            .order_by(OrchestrationSessionEntity.updated_at.desc(), OrchestrationSessionEntity.created_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+
+class OrchestrationEventRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def create(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        event_payload: dict | None = None,
+        source: str = "slack",
+    ) -> OrchestrationEventEntity:
+        row = OrchestrationEventEntity(
+            id=str(uuid4()),
+            session_id=session_id,
+            event_type=(event_type or "").strip().upper(),
+            event_payload=dict(event_payload or {}),
+            source=(source or "slack").strip().lower() or "slack",
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def list_for_session(self, session_id: str, *, limit: int = 500) -> list[OrchestrationEventEntity]:
+        rows = self.db.scalars(
+            select(OrchestrationEventEntity)
+            .where(OrchestrationEventEntity.session_id == session_id)
+            .order_by(OrchestrationEventEntity.created_at.asc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
 
 
 class InterviewRepository:

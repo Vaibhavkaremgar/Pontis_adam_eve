@@ -14,9 +14,18 @@ import time
 from contextlib import contextmanager
 from typing import Generator
 
-import redis as redis_lib
-from redis import Redis
-from redis.exceptions import RedisError
+try:
+    import redis as redis_lib
+    from redis import Redis
+    from redis.exceptions import RedisError
+except ImportError:  # pragma: no cover - demo/runtime hardening fallback
+    redis_lib = None  # type: ignore[assignment]
+
+    class Redis:  # type: ignore[no-redef]
+        pass
+
+    class RedisError(Exception):
+        pass
 
 from app.core.config import REDIS_URL
 
@@ -45,6 +54,10 @@ def get_redis() -> Redis | None:
     url = (REDIS_URL or "").strip()
     if not url:
         logger.warning("redis_unavailable reason=REDIS_URL_not_set")
+        _client_failed = True
+        return None
+    if redis_lib is None:
+        logger.warning("redis_unavailable reason=redis_package_missing")
         _client_failed = True
         return None
 

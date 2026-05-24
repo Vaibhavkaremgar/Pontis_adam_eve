@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 import secrets
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.db.repositories import NotificationWorkflowTokenRepository
@@ -156,6 +158,28 @@ def _build_booking_link(token: str) -> str:
     return f"{BOOKING_BASE_URL}?{query}" if query else BOOKING_BASE_URL
 
 
+def _serialize_workflow_token(row) -> dict[str, Any]:
+    booking_link = _build_booking_link(row.token)
+    return {
+        "id": row.id,
+        "jobId": row.job_id,
+        "candidateId": row.candidate_id,
+        "tokenType": row.token_type,
+        "workflowName": row.workflow_name,
+        "token": row.token,
+        "status": row.status,
+        "isActive": row.is_active,
+        "sourceApp": row.source_app,
+        "payload": row.payload,
+        "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
+        "consumedAt": row.consumed_at.isoformat() if row.consumed_at else None,
+        "bookingLink": booking_link,
+        "bookingUrl": booking_link,
+        "slotLink": booking_link,
+        "slot_link": booking_link,
+    }
+
+
 def build_slot_booking_payload(*, candidate: Any, job: Any) -> dict[str, Any]:
     source = _candidate_source(candidate)
     parsed_resume_json = _candidate_value(candidate, "parsed_resume_json", "parsedResumeJson")
@@ -172,12 +196,12 @@ def build_slot_booking_payload(*, candidate: Any, job: Any) -> dict[str, Any]:
     )
     name = _candidate_value(candidate, "name", "full_name", "fullName") or parsed_resume_json.get("full_name") or parsed_resume_json.get("fullName")
     headline = _candidate_value(candidate, "current_title", "currentTitle", "role", "title") or parsed_resume_json.get("headline") or parsed_resume_json.get("title")
-    skills = _candidate_value(candidate, "skills") or parsed_resume_json.get("skills") or []
-    companies = _candidate_value(candidate, "companies") or parsed_resume_json.get("companies") or []
-    education = _candidate_value(candidate, "education") or parsed_resume_json.get("education") or []
-    projects = _candidate_value(candidate, "projects") or parsed_resume_json.get("projects") or []
-    certifications = _candidate_value(candidate, "certifications") or parsed_resume_json.get("certifications") or []
-    domain_experience = _candidate_value(candidate, "domain_experience", "domainExperience") or parsed_resume_json.get("domain_experience") or parsed_resume_json.get("domainExperience") or []
+    skills = parsed_resume_json.get("skills") or _candidate_value(candidate, "skills") or []
+    companies = parsed_resume_json.get("companies") or _candidate_value(candidate, "companies") or []
+    education = parsed_resume_json.get("education") or _candidate_value(candidate, "education") or []
+    projects = parsed_resume_json.get("projects") or _candidate_value(candidate, "projects") or []
+    certifications = parsed_resume_json.get("certifications") or _candidate_value(candidate, "certifications") or []
+    domain_experience = parsed_resume_json.get("domain_experience") or parsed_resume_json.get("domainExperience") or _candidate_value(candidate, "domain_experience", "domainExperience") or []
     location = _candidate_value(candidate, "location") or parsed_resume_json.get("location") or ""
     summary = _candidate_value(candidate, "summary") or parsed_resume_json.get("summary") or ""
     total_experience_years = _candidate_value(candidate, "total_experience_years", "years_experience", "yearsExperience")
@@ -243,6 +267,94 @@ def build_slot_booking_payload(*, candidate: Any, job: Any) -> dict[str, Any]:
     }
 
 
+def upsert_notification_workflow_token(
+    *,
+    db: Session,
+    job_id: str,
+    candidate_id: str,
+    workflow_name: str,
+    token: str | None = None,
+    payload: dict[str, Any] | None = None,
+    expires_at: datetime | None = None,
+    token_type: str = "",
+    is_active: bool = True,
+    source_app: str = "dashboard",
+    force_token: bool = False,
+    retry_attempts: int = 3,
+) -> dict[str, Any]:
+    repository = NotificationWorkflowTokenRepository(db)
+    normalized_source_app = repository._normalize_source_app(source_app)
+    normalized_token_type = (token_type or workflow_name or "").strip().lower()
+    normalized_workflow_name = (workflow_name or normalized_token_type or "").strip()
+    token_value = (token or "").strip() or secrets.token_urlsafe(32)
+
+    def _apply(row) -> dict[str, Any]:
+        row.workflow_name = normalized_workflow_name
+        row.token_type = normalized_token_type
+        row.payload = dict(payload or {})
+        row.expires_at = expires_at
+        row.is_active = bool(is_active)
+        row.status = "active" if is_active else "consumed"
+        row.updated_at = datetime.now(timezone.utc)
+        db.flush()
+        return _serialize_workflow_token(row)
+
+    existing_by_token = repository.get_by_token(token_value, source_app=normalized_source_app)
+    if existing_by_token:
+        return _apply(existing_by_token)
+
+    if not force_token:
+        existing_active = repository.get_active_by_candidate(
+            job_id=job_id,
+            candidate_id=candidate_id,
+            source_app=normalized_source_app,
+            token_type=normalized_token_type,
+        )
+        if existing_active:
+            return _apply(existing_active)
+
+    attempts = max(1, int(retry_attempts or 1))
+    for attempt in range(attempts):
+        try:
+            with db.begin_nested():
+                row = repository.create(
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    workflow_name=normalized_workflow_name,
+                    token=token_value,
+                    payload=payload,
+                    expires_at=expires_at,
+                    token_type=normalized_token_type,
+                    is_active=is_active,
+                    source_app=normalized_source_app,
+                )
+            return _serialize_workflow_token(row)
+        except IntegrityError:
+            row = repository.get_by_token(token_value, source_app=normalized_source_app)
+            if row:
+                return _apply(row)
+            if not force_token:
+                existing_active = repository.get_active_by_candidate(
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    source_app=normalized_source_app,
+                    token_type=normalized_token_type,
+                )
+                if existing_active:
+                    return _apply(existing_active)
+            if attempt + 1 >= attempts:
+                raise
+        except OperationalError as exc:
+            error_text = str(exc).lower()
+            if "locked" not in error_text and "busy" not in error_text:
+                raise
+            if attempt + 1 >= attempts:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+    raise RuntimeError("Unable to persist notification workflow token")
+
+
 def create_notification_workflow_token(
     *,
     db: Session,
@@ -256,37 +368,19 @@ def create_notification_workflow_token(
     is_active: bool = True,
     source_app: str = "dashboard",
 ) -> dict[str, Any]:
-    token_value = token or secrets.token_urlsafe(32)
-    row = NotificationWorkflowTokenRepository(db).create(
+    return upsert_notification_workflow_token(
+        db=db,
         job_id=job_id,
         candidate_id=candidate_id,
         workflow_name=workflow_name,
-        token=token_value,
+        token=token,
         payload=payload,
         expires_at=expires_at,
         token_type=token_type,
         is_active=is_active,
         source_app=source_app,
+        force_token=False,
     )
-    booking_link = _build_booking_link(row.token)
-    return {
-        "id": row.id,
-        "jobId": row.job_id,
-        "candidateId": row.candidate_id,
-        "tokenType": row.token_type,
-        "workflowName": row.workflow_name,
-        "token": row.token,
-        "status": row.status,
-        "isActive": row.is_active,
-        "sourceApp": row.source_app,
-        "payload": row.payload,
-        "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
-        "consumedAt": row.consumed_at.isoformat() if row.consumed_at else None,
-        "bookingLink": booking_link,
-        "bookingUrl": booking_link,
-        "slotLink": booking_link,
-        "slot_link": booking_link,
-    }
 
 
 def consume_notification_workflow_token(*, db: Session, token: str, source_app: str = "dashboard") -> dict[str, Any] | None:

@@ -12,12 +12,13 @@ from app.schemas.candidate import OutreachReplyRequest, OutreachRequest
 from app.services.audit_service import record_audit_event
 from app.services.outreach_service import (
     build_email_preview,
+    handle_email_reply,
     list_outreach_status,
     process_outreach,
-    queue_outreach_delivery,
     record_outreach_open,
 )
 from app.services.ownership import assert_job_ownership
+from app.utils.observability import emit_trace
 from app.utils.responses import success_response
 
 logger = logging.getLogger(__name__)
@@ -50,23 +51,7 @@ def send_outreach(payload: OutreachRequest, request: Request, _: dict = Depends(
 
 @router.post("/outreach/queue")
 def queue_outreach(payload: OutreachRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
-    data = queue_outreach_delivery(
-        job_id=payload.jobId,
-        selected_candidates=payload.selectedCandidates,
-        custom_body=payload.customBody,
-    )
-    record_audit_event(
-        db=db,
-        actor_id=request.state.user["id"],
-        action="outreach_queued",
-        entity_type="job",
-        entity_id=payload.jobId,
-        metadata={"selected_candidates": len(payload.selectedCandidates), "queue_only": True},
-        request_id=str(getattr(request.state, "request_id", "") or ""),
-    )
-    db.commit()
-    return success_response(data)
+    raise HTTPException(status_code=410, detail="Deprecated endpoint. Outreach is selection-driven and should use /outreach only.")
 
 
 @router.get("/outreach/status")
@@ -91,6 +76,12 @@ def get_email_preview(
 
 @router.post("/outreach/reply")
 def reply_webhook(payload: OutreachReplyRequest, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    emit_trace(
+        logger,
+        "outreach_reply_received",
+        event_id=getattr(payload, "eventId", "") or getattr(payload, "event_id", "") or "",
+        provider_message_id=getattr(payload, "providerMessageId", "") or getattr(payload, "provider_message_id", "") or "",
+    )
     data = handle_email_reply(payload.model_dump(), db=db)
     return success_response(data)
 

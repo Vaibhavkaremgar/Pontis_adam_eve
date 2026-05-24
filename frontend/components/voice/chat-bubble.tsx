@@ -39,14 +39,14 @@ export function ChatBubble({
       <div className={`flex ${shellClasses} gap-2.5 animate-[fadeIn_220ms_ease-out] ${isInterim ? "opacity-75" : ""}`}>
         <Image
           src="/images/ada.png"
-          alt="Ada avatar"
+          alt="Adam avatar"
           width={24}
           height={24}
           className="mt-0.5 h-6 w-6 rounded-full object-cover ring-2 ring-white/90"
         />
         <div className={bubbleClasses}>
           <div className="mb-2 flex items-center justify-between gap-3">
-            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Ada</p>
+            <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Adam</p>
             <p className="text-[9px] font-medium text-[#9CA3AF]">{timeLabel}</p>
           </div>
           <div className="whitespace-pre-wrap break-words">

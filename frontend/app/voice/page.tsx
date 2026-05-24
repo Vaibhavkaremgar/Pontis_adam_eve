@@ -10,16 +10,19 @@
  * How it fits in the pipeline:
  * Uses the same navbar and stepper as the other intake steps for a consistent experience.
  */
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
+import { SlackVoiceUi } from "@/components/voice/slack-voice-ui";
 import { VoiceUi } from "@/components/voice/voice-ui";
 import { Button } from "@/components/ui/button";
 import { useAppContext } from "@/context/AppContext";
 
-export default function VoicePage() {
+function VoicePageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const slackToken = (searchParams.get("token") || "").trim();
   const { user, isSessionReady, jobId, job, company, isRefined } = useAppContext();
   const isPendingJobCreation = !jobId && Boolean(job.title.trim() || company.name.trim());
 
@@ -36,6 +39,10 @@ export default function VoicePage() {
       return;
     }
   }, [isPendingJobCreation, isSessionReady, jobId, router, user]);
+
+  if (slackToken) {
+    return <SlackVoiceUi token={slackToken} />;
+  }
 
   if (isPendingJobCreation && !jobId) {
     return (
@@ -71,5 +78,13 @@ export default function VoicePage() {
         </Button>
       </div>
     </AppShell>
+  );
+}
+
+export default function VoicePage() {
+  return (
+    <Suspense fallback={<div className="mx-auto w-full max-w-2xl px-4 py-6 text-sm text-gray-600">Loading voice intake...</div>}>
+      <VoicePageContent />
+    </Suspense>
   );
 }

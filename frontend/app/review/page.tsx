@@ -39,8 +39,11 @@ import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
 import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
+import { sendOutreach } from "@/lib/api/outreach";
+import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
 import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession } from "@/types";
+import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
 function statusLabel(candidate: Candidate): string {
   if (candidate.status === "shortlisted") return "Selected";
@@ -130,6 +133,30 @@ function getPairRationale(session: CandidateSelectionSession | null | undefined)
     String(explanation.why_selected ?? explanation.summary ?? "").trim() ||
     "This pair is chosen to expose different recruiter preferences."
   );
+}
+
+function calibrationText(value: unknown, fallback = ""): string {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean)
+      .join(", ");
+  }
+  return fallback;
+}
+
+function getCalibrationCurrentArchetypes(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): Array<Record<string, unknown>> {
+  const currentPair = (calibration?.current_pair ?? {}) as Record<string, unknown>;
+  const archetypes = currentPair.archetypes;
+  return Array.isArray(archetypes) ? archetypes.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
+}
+
+function getCalibrationRoundLabel(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
+  if (!calibration) return "1 / 3";
+  const current = Number(calibration.current_round_index || 1);
+  const total = Array.isArray(calibration.archetype_sets) ? calibration.archetype_sets.length || 3 : 3;
+  return `${current} / ${total}`;
 }
 
 const STARTUP_TERMS = ["startup", "seed", "series a", "series b", "early-stage", "fast-paced", "scrappy"];
@@ -501,6 +528,7 @@ function CandidateCard({
           <div className="pt-6">
             {showSelectButton && onSelect && (
               <Button
+                data-testid={`batch-select-${candidate.id}`}
                 className="h-14 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
                 onClick={(event) => {
                   event.stopPropagation();
@@ -594,6 +622,7 @@ function CandidateListRow({
 
       <div className="mt-5 flex items-center justify-end gap-3">
         <Button
+          data-testid={`review-details-${candidate.id}`}
           variant="outline"
           className="rounded-[12px] border-[#E3D9CA] bg-white px-4 py-2 text-[14px] font-semibold text-[#403325] hover:bg-[#FBF7F0]"
           onClick={(event) => {
@@ -604,6 +633,7 @@ function CandidateListRow({
           View details
         </Button>
         <Button
+          data-testid={`review-select-${candidate.id}`}
           className="rounded-[12px] bg-[#0F6B3A] px-4 py-2 text-[14px] font-semibold text-white hover:bg-[#0C5A31]"
           onClick={(event) => {
             event.stopPropagation();
@@ -623,10 +653,15 @@ export default function ReviewPage() {
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
 
   const [session, setSession] = useState<CandidateSelectionSession | null>(null);
+  const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCalibrationLoading, setIsCalibrationLoading] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [isContinuingToOutreach, setIsContinuingToOutreach] = useState(false);
   const [error, setError] = useState("");
+  const [calibrationError, setCalibrationError] = useState("");
+  const [calibrationSelectionId, setCalibrationSelectionId] = useState("");
+  const [feedbackMessage, setFeedbackMessage] = useState("");
   const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
@@ -649,19 +684,45 @@ export default function ReviewPage() {
     let cancelled = false;
     const load = async () => {
       setIsLoading(true);
+      setCalibrationError("");
       setError("");
 
-      const result = await getFirstSelectionBatch(jobId);
+      const intelligenceResult = await getRecruiterIntelligence(user.id, jobId);
       if (cancelled) return;
 
-      if (!result.success || !result.data) {
-        setError(result.error || "Could not load candidate selection.");
+      if (!intelligenceResult.success || !intelligenceResult.data) {
+        setCalibrationError(intelligenceResult.error || "Could not load recruiter calibration.");
+        setIntelligence(null);
+        setIsLoading(false);
+        return;
+      }
+
+      setIntelligence(intelligenceResult.data);
+
+      const calibration = intelligenceResult.data.calibration;
+      const calibrationReady = Boolean(calibration && calibration.stage === "real_sourcing_ready");
+      const hasCurrentCalibration = Boolean(getCalibrationCurrentArchetypes(calibration).length > 0);
+
+      if (!calibrationReady && hasCurrentCalibration) {
+        setSession(null);
+        setActiveCandidate(null);
+        setFinalShortlistedIds([]);
         setSelectionDebug("");
         setIsLoading(false);
         return;
       }
 
-      setSession(result.data);
+      const selectionResult = await getFirstSelectionBatch(jobId);
+      if (cancelled) return;
+
+      if (!selectionResult.success || !selectionResult.data) {
+        setError(selectionResult.error || "Could not load candidate selection.");
+        setSelectionDebug("");
+        setIsLoading(false);
+        return;
+      }
+
+      setSession(selectionResult.data);
       setActiveCandidate(null);
       setFinalShortlistedIds([]);
       setIsLoading(false);
@@ -682,6 +743,10 @@ export default function ReviewPage() {
   const pairContrast = useMemo(() => pairAxes.map(humanizeContrastAxis), [pairAxes]);
   const pairRationale = useMemo(() => getPairRationale(session), [session]);
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
+  const calibration = intelligence?.calibration ?? null;
+  const calibrationArchetypes = useMemo(() => getCalibrationCurrentArchetypes(calibration), [calibration]);
+  const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
+  const calibrationComplete = calibration?.stage === "real_sourcing_ready";
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of finalCandidates) {
@@ -754,6 +819,52 @@ export default function ReviewPage() {
     return true;
   };
 
+  const handleCalibrationSelect = async (archetypeId: string) => {
+    if (!jobId || !user || isCalibrationLoading) return;
+    setIsCalibrationLoading(true);
+    setCalibrationError("");
+    setCalibrationSelectionId(archetypeId);
+
+    const result = await chooseRecruiterCalibrationArchetype(user.id, jobId, {
+      jobId,
+      candidateId: archetypeId,
+    });
+
+    const calibrationResult = result.data ?? null;
+    if (!result.success || !calibrationResult) {
+      setCalibrationError(result.error || "Could not save calibration choice.");
+      setCalibrationSelectionId("");
+      setIsCalibrationLoading(false);
+      return;
+    }
+
+    setIntelligence((prev) =>
+      prev
+        ? {
+            ...prev,
+            calibration: calibrationResult.calibration ?? calibrationResult.selection ?? prev.calibration,
+          }
+        : prev
+    );
+
+    const nextCalibration = calibrationResult.calibration ?? calibrationResult.selection ?? null;
+    const nextStage = String(nextCalibration?.stage || "").trim();
+    if (nextStage === "real_sourcing_ready") {
+      const selectionResult = await getFirstSelectionBatch(jobId);
+      if (!selectionResult.success || !selectionResult.data) {
+        setCalibrationError(selectionResult.error || "Calibration is complete, but candidate sourcing could not load.");
+      } else {
+        setSession(selectionResult.data);
+        setActiveCandidate(null);
+        setFinalShortlistedIds([]);
+        setSelectionDebug("");
+      }
+    }
+
+    setCalibrationSelectionId("");
+    setIsCalibrationLoading(false);
+  };
+
   const handleSelect = async (candidateId: string) => {
     if (!jobId || !session || isAdvancing) return;
     setIsAdvancing(true);
@@ -771,7 +882,14 @@ export default function ReviewPage() {
         setSelectedCandidateId("");
         return;
       }
-      setSelectionDebug("");
+
+      const outreachResult = await sendOutreach({ jobId, selectedCandidates: [candidateId] });
+      if (!outreachResult.success || !outreachResult.data) {
+        setError(outreachResult.error || "Selection saved, but outreach could not be sent.");
+        setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\noutreachError=${outreachResult.error || "Unknown error"}`);
+      } else {
+        setFeedbackMessage(`Outreach sent to ${outreachResult.data.sent} candidate${outreachResult.data.sent === 1 ? "" : "s"}.`);
+      }
       setActiveCandidate(null);
       setIsAdvancing(false);
       setSelectedCandidateId("");
@@ -823,7 +941,7 @@ export default function ReviewPage() {
       );
       storeShortlistedCandidateIds(jobId, completedShortlistedIds);
       storeShortlistedCandidates(jobId, shortlistedCandidates);
-      router.push("/outreach");
+      router.push("/ready");
     }
 
     setIsContinuingToOutreach(false);
@@ -887,6 +1005,107 @@ export default function ReviewPage() {
               <summary className="cursor-pointer font-medium">Debug details</summary>
               <pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-relaxed text-amber-950">{selectionDebug}</pre>
             </details>
+          )}
+
+          {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length > 0 && (
+            <div className="space-y-8 pt-4 md:pt-6">
+              <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
+                <div className="space-y-2 md:pr-4">
+                  <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
+                    Preference calibration {calibrationRoundLabel}
+                  </p>
+                  <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
+                    Adam generated two hiring archetypes for this set. Choose the one that best matches your preferred hiring style.
+                  </p>
+                </div>
+                <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
+                  Calibration gate
+                </Badge>
+              </div>
+
+              <div className="grid gap-6 md:grid-cols-2">
+                {calibrationArchetypes.map((archetype) => {
+                  const archetypeId = String(archetype.id || archetype.archetype_id || archetype.title || archetype.name || "").trim();
+                  const title = String(archetype.title || archetype.name || archetype.role || "Archetype").trim();
+                  const profileData = (archetype.profileData && typeof archetype.profileData === "object" ? archetype.profileData : {}) as Record<string, unknown>;
+                  const strengths = Array.isArray(profileData.strengths)
+                    ? profileData.strengths.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                    : Array.isArray(archetype.strengths)
+                      ? archetype.strengths.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                      : [];
+                  const isChoosing = calibrationSelectionId === archetypeId;
+                  const workStyle = calibrationText(profileData.workStyle || profileData.work_style || archetype.work_style || archetype.workStyle);
+                  const ownership = calibrationText(profileData.ownershipLevel || profileData.ownership_level || archetype.ownership_level || archetype.ownershipLevel);
+                  const environment = calibrationText(profileData.idealEnvironment || profileData.ideal_environment || archetype.ideal_environment || archetype.idealEnvironment);
+                  const communication = calibrationText(profileData.communicationStyle || profileData.communication_style || archetype.communication_style || archetype.communicationStyle);
+                  const execution = calibrationText(profileData.executionStyle || profileData.execution_style || archetype.execution_style || archetype.executionStyle);
+                  const risk = calibrationText(profileData.riskTolerance || profileData.risk_tolerance || archetype.risk_tolerance || archetype.riskTolerance);
+                  const leadership = calibrationText(profileData.leadershipSignals || profileData.leadership_signals || archetype.leadership_signals || archetype.leadershipSignals);
+                  const fitNote = calibrationText(profileData.fitNote || profileData.fit_note || archetype.fit_note || archetype.fitNote);
+
+                  return (
+                    <Card key={archetypeId || title} className="rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+                      <CardHeader className="space-y-3">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="space-y-2">
+                            <CardTitle className="font-heading text-[24px] font-semibold text-[#111827]">{title}</CardTitle>
+                            {fitNote && <CardDescription className="font-body text-sm leading-6 text-[#6B7280]">{fitNote}</CardDescription>}
+                          </div>
+                          <Badge className="rounded-full bg-[#F5E7B8] px-3 py-1 text-[12px] font-semibold text-[#8A5A00] shadow-none">
+                            Archetype
+                          </Badge>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {strengths.length > 0 && (
+                          <div>
+                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Strengths</p>
+                            <div className="flex flex-wrap gap-2">
+                              {strengths.slice(0, 4).map((strength) => (
+                                <span key={`${archetypeId}-${strength}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
+                                  {strength}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
+                          {workStyle && <p><span className="font-semibold text-[#111827]">Work style:</span> {workStyle}</p>}
+                          {ownership && <p><span className="font-semibold text-[#111827]">Ownership:</span> {ownership}</p>}
+                          {environment && <p><span className="font-semibold text-[#111827]">Environment:</span> {environment}</p>}
+                          {communication && <p><span className="font-semibold text-[#111827]">Communication:</span> {communication}</p>}
+                          {execution && <p><span className="font-semibold text-[#111827]">Execution:</span> {execution}</p>}
+                          {risk && <p><span className="font-semibold text-[#111827]">Risk tolerance:</span> {risk}</p>}
+                          {leadership && <p><span className="font-semibold text-[#111827]">Leadership:</span> {leadership}</p>}
+                        </div>
+                        <Button
+                          data-testid={`calibration-select-${archetypeId}`}
+                          className="h-12 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
+                          onClick={() => void handleCalibrationSelect(archetypeId)}
+                          disabled={isCalibrationLoading || !archetypeId}
+                        >
+                          {isChoosing ? "Saving selection..." : "Select archetype"}
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length === 0 && (
+            <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
+              Calibration is being prepared. Adam will show the archetype sets here shortly.
+            </div>
+          )}
+
+          {calibrationError && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{calibrationError}</p>}
+
+          {!isLoading && calibrationComplete && !session && (
+            <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-3 text-sm text-[#6B7280]">
+              Calibration is complete. Adam is now building your personalized shortlist.
+            </div>
           )}
 
           {!isLoading && !completed && currentBatch.length > 0 && (
@@ -1014,6 +1233,7 @@ export default function ReviewPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <Button
+                  data-testid="continue-to-outreach"
                   className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
                   onClick={() => void handleContinueToOutreach()}
                   disabled={shortlistedCount === 0 || isAdvancing || isContinuingToOutreach}
@@ -1050,6 +1270,7 @@ export default function ReviewPage() {
 
                 <div className="flex flex-col gap-3 md:flex-row">
                   <Button
+                    data-testid={`final-select-${activeCandidate.id}`}
                     className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
                     onClick={() => void handleSelect(activeCandidate.id)}
                     disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"}

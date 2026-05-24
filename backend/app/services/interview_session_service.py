@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.config import INTERVIEW_SESSION_TTL_MINUTES, PUBLIC_APP_URL
 from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository
 from app.services.candidate_service import ensure_candidate_email
-from app.services.notification_service import build_slot_booking_payload, create_notification_workflow_token
+from app.services.lifecycle_service import record_job_lifecycle_event
+from app.services.notification_service import build_slot_booking_payload, upsert_notification_workflow_token
 from app.services.interview_link_providers import get_interview_link
 from app.services.metrics_service import log_metric
 from app.services.recruiter_preference_service import update_recruiter_preferences
@@ -112,32 +113,21 @@ def create_interview_session(
     if existing_session and (existing_expires_at is None or existing_expires_at > datetime.now(timezone.utc)):
         company = CompanyRepository(db).get_by_id(job.company_id)
         if profile:
-            token_repo = NotificationWorkflowTokenRepository(db)
-            existing_workflow_token = token_repo.get_by_token(existing_session.token, source_app=source_app)
             token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
-            if existing_workflow_token:
-                existing_workflow_token.payload = token_payload
-                existing_workflow_token.expires_at = existing_session.expires_at
-                existing_workflow_token.job_id = job_id
-                existing_workflow_token.candidate_id = candidate_id
-                if existing_workflow_token.consumed_at is None and (existing_session.status or "").strip().lower() != "booked":
-                    existing_workflow_token.is_active = True
-                    existing_workflow_token.status = "active"
-                db.flush()
-            else:
-                if (existing_session.status or "").strip().lower() != "booked":
-                    create_notification_workflow_token(
-                        db=db,
-                        job_id=job_id,
-                        candidate_id=candidate_id,
-                        workflow_name="slot_booking",
-                        token=existing_session.token,
-                        payload=token_payload,
-                        expires_at=existing_session.expires_at,
-                        token_type="slot_booking",
-                        is_active=True,
-                        source_app=source_app,
-                    )
+            if (existing_session.status or "").strip().lower() != "booked":
+                upsert_notification_workflow_token(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    workflow_name="slot_booking",
+                    token=existing_session.token,
+                    payload=token_payload,
+                    expires_at=existing_session.expires_at,
+                    token_type="slot_booking",
+                    is_active=True,
+                    source_app=source_app,
+                    force_token=True,
+                )
         booking_link = existing_session.booking_url or _legacy_booking_url(existing_session.token)
         if not existing_session.booking_url:
             existing_session.booking_url = booking_link
@@ -157,37 +147,23 @@ def create_interview_session(
     company = CompanyRepository(db).get_by_id(job.company_id)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=INTERVIEW_SESSION_TTL_MINUTES)
     token = secrets.token_urlsafe(32)
-    booking_link = _legacy_booking_url(token)
 
-    token_repo = NotificationWorkflowTokenRepository(db)
-    existing_workflow_token = token_repo.get_active_by_candidate(
+    token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
+    token_data = upsert_notification_workflow_token(
+        db=db,
         job_id=job_id,
         candidate_id=candidate_id,
-        source_app=source_app,
+        workflow_name="slot_booking",
+        token=token,
+        payload=token_payload,
+        expires_at=expires_at,
         token_type="slot_booking",
+        is_active=True,
+        source_app=source_app,
+        force_token=False,
     )
-    token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
-    if existing_workflow_token:
-        existing_workflow_token.payload = token_payload
-        existing_workflow_token.expires_at = expires_at
-        existing_workflow_token.is_active = True
-        existing_workflow_token.status = "active"
-        token = existing_workflow_token.token
-        booking_link = _legacy_booking_url(token)
-        db.flush()
-    else:
-        create_notification_workflow_token(
-            db=db,
-            job_id=job_id,
-            candidate_id=candidate_id,
-            workflow_name="slot_booking",
-            token=token,
-            payload=token_payload,
-            expires_at=expires_at,
-            token_type="slot_booking",
-            is_active=True,
-            source_app=source_app,
-        )
+    token = str(token_data.get("token") or token)
+    booking_link = _legacy_booking_url(token)
 
     row = session_repo.create(
         job_id=job_id,
@@ -201,6 +177,19 @@ def create_interview_session(
     booking_link = row.booking_url or _legacy_booking_url(token)
     db.commit()
     logger.info("interview_session_created job_id=%s candidate_id=%s token=%s", job_id, candidate_id, token)
+    record_job_lifecycle_event(
+        db=db,
+        job_id=job_id,
+        event_type="INTERVIEW_CREATED",
+        payload={
+            "jobId": job_id,
+            "candidateId": candidate_id,
+            "token": token,
+            "outreachEventId": outreach_event_id,
+            "scheduledAt": None,
+        },
+        source="interview",
+    )
     return _session_payload(row=row, booking_link=booking_link)
 
 
@@ -260,6 +249,19 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
     db.commit()
     logger.info("interview_session_booked job_id=%s candidate_id=%s token=%s", row.job_id, row.candidate_id, token)
     log_metric("interview_booked", job_id=row.job_id, candidate_id=row.candidate_id)
+    record_job_lifecycle_event(
+        db=db,
+        job_id=row.job_id,
+        event_type="INTERVIEW_COMPLETED",
+        payload={
+            "jobId": row.job_id,
+            "candidateId": row.candidate_id,
+            "token": token,
+            "scheduledAt": _utc_isoformat(row.scheduled_at),
+            "meetingLink": meeting_link,
+        },
+        source="interview",
+    )
     return {
         "token": row.token,
         "status": row.status,

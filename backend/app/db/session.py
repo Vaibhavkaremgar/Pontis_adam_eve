@@ -4,6 +4,7 @@ import logging
 
 from sqlalchemy import inspect, text
 from sqlalchemy import create_engine
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import AUTO_RECREATE_SCHEMA, DATABASE_URL, USE_INTERNAL_CANDIDATE_DB
@@ -12,7 +13,23 @@ logger = logging.getLogger(__name__)
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is required")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine_kwargs: dict[str, object] = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
+
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _configure_sqlite_connection(dbapi_connection, _connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+        except Exception:
+            logger.debug("sqlite_pragmas_skipped", exc_info=True)
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
@@ -53,6 +70,8 @@ def _verify_migrated_schema() -> None:
             "companies",
             "jobs",
             "job_intakes",
+            "orchestration_sessions",
+            "orchestration_events",
             "candidate_profiles",
             "interviews",
             "outreach_events",
@@ -427,6 +446,137 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE job_intakes ADD COLUMN completed_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "updated_at" not in job_intake_columns:
                 conn.execute(text("ALTER TABLE job_intakes ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+
+        if "orchestration_sessions" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE orchestration_sessions (
+                        id VARCHAR(36) PRIMARY KEY,
+                        session_token VARCHAR(255) NOT NULL UNIQUE,
+                        source VARCHAR(32) NOT NULL DEFAULT 'slack',
+                        current_stage VARCHAR(32) NOT NULL DEFAULT 'initiated',
+                        slack_team_id VARCHAR(64) NOT NULL DEFAULT '',
+                        slack_channel_id VARCHAR(64) NOT NULL DEFAULT '',
+                        slack_thread_ts VARCHAR(64) NOT NULL DEFAULT '',
+                        slack_user_id VARCHAR(64) NOT NULL DEFAULT '',
+                        intake_mode VARCHAR(32) NOT NULL DEFAULT 'slack',
+                        selected_path VARCHAR(32) NOT NULL DEFAULT '',
+                        current_question TEXT NOT NULL DEFAULT '',
+                        current_question_key VARCHAR(128) NOT NULL DEFAULT '',
+                        structured_context JSON NOT NULL DEFAULT {json_empty_object_default},
+                        raw_conversation JSON NOT NULL DEFAULT {json_empty_list_default},
+                        normalized_intake JSON NOT NULL DEFAULT {json_empty_object_default},
+                        voice_context JSON NOT NULL DEFAULT {json_empty_object_default},
+                        slack_context JSON NOT NULL DEFAULT {json_empty_object_default},
+                        voice_handoff_token VARCHAR(255) NOT NULL DEFAULT '',
+                        voice_handoff_expires_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        voice_handoff_consumed_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        voice_token_used BOOLEAN NOT NULL DEFAULT FALSE,
+                        expires_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        completed_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        company_id VARCHAR(36) NULL DEFAULT NULL,
+                        job_id VARCHAR(36) NULL DEFAULT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+        else:
+            orchestration_columns = {column["name"] for column in inspector.get_columns("orchestration_sessions")}
+            if "session_token" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN session_token VARCHAR(255) NOT NULL DEFAULT ''"))
+            if "source" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'slack'"))
+            if "current_stage" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN current_stage VARCHAR(32) NOT NULL DEFAULT 'initiated'"))
+            if "slack_team_id" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN slack_team_id VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "slack_channel_id" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN slack_channel_id VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "slack_thread_ts" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN slack_thread_ts VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "slack_user_id" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN slack_user_id VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "intake_mode" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN intake_mode VARCHAR(32) NOT NULL DEFAULT 'slack'"))
+            if "selected_path" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN selected_path VARCHAR(32) NOT NULL DEFAULT ''"))
+            if "current_question" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN current_question TEXT NOT NULL DEFAULT ''"))
+            if "current_question_key" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN current_question_key VARCHAR(128) NOT NULL DEFAULT ''"))
+            if "current_question_type" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN current_question_type VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "current_question_schema" not in orchestration_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_sessions ADD COLUMN current_question_schema JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "structured_context" not in orchestration_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_sessions ADD COLUMN structured_context JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "raw_conversation" not in orchestration_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_sessions ADD COLUMN raw_conversation JSON NOT NULL DEFAULT {json_empty_list_default}"))
+            if "normalized_intake" not in orchestration_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_sessions ADD COLUMN normalized_intake JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "voice_context" not in orchestration_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_sessions ADD COLUMN voice_context JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "slack_context" not in orchestration_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_sessions ADD COLUMN slack_context JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "voice_handoff_token" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN voice_handoff_token VARCHAR(255) NOT NULL DEFAULT ''"))
+            if "voice_handoff_expires_at" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN voice_handoff_expires_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "voice_handoff_consumed_at" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN voice_handoff_consumed_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "voice_token_used" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN voice_token_used BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "expires_at" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN expires_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "completed_at" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN completed_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "state_version" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0"))
+            if "last_processed_message_ts" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN last_processed_message_ts VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "last_processed_action_hash" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN last_processed_action_hash VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "last_processed_transcript_hash" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN last_processed_transcript_hash VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "intake_version" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN intake_version VARCHAR(32) NOT NULL DEFAULT 'v1'"))
+            if "company_id" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN company_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "job_id" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN job_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "updated_at" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+
+        if "orchestration_events" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE orchestration_events (
+                        id VARCHAR(36) PRIMARY KEY,
+                        session_id VARCHAR(36) NOT NULL,
+                        event_type VARCHAR(64) NOT NULL DEFAULT '',
+                        event_payload JSON NOT NULL DEFAULT {json_empty_object_default},
+                        source VARCHAR(32) NOT NULL DEFAULT 'slack',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+        else:
+            orchestration_event_columns = {column["name"] for column in inspector.get_columns("orchestration_events")}
+            if "session_id" not in orchestration_event_columns:
+                conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN session_id VARCHAR(36) NOT NULL DEFAULT ''"))
+            if "event_type" not in orchestration_event_columns:
+                conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN event_type VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "event_payload" not in orchestration_event_columns:
+                conn.execute(text(f"ALTER TABLE orchestration_events ADD COLUMN event_payload JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "source" not in orchestration_event_columns:
+                conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN source VARCHAR(32) NOT NULL DEFAULT 'slack'"))
+            if "created_at" not in orchestration_event_columns:
+                conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
 
         if "ats_exports" in table_names:
             ats_columns = {column["name"] for column in inspector.get_columns("ats_exports")}

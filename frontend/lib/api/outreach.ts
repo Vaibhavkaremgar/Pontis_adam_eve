@@ -18,7 +18,6 @@ type OutreachPayload = {
   jobId: string;
   selectedCandidates: string[];
   customBody?: string;
-  recipientEmail?: string;
 };
 
 type OutreachData = {
@@ -45,12 +44,6 @@ type OutreachData = {
   };
 };
 
-type QueueOutreachData = {
-  queued: boolean;
-  job_id: string;
-  selected_count: number;
-};
-
 export type OutreachStatusItem = {
   candidateId: string;
   status: Candidate["outreachStatus"];
@@ -75,14 +68,6 @@ export type EmailPreview = {
 export async function sendOutreach(payload: OutreachPayload): Promise<ApiResponse<OutreachData>> {
   return requestApi<OutreachData>({
     url: `${API_BASE_URL}/outreach`,
-    method: "POST",
-    payload
-  });
-}
-
-export async function queueOutreach(payload: OutreachPayload): Promise<ApiResponse<QueueOutreachData>> {
-  return requestApi<QueueOutreachData>({
-    url: `${API_BASE_URL}/outreach/queue`,
     method: "POST",
     payload
   });

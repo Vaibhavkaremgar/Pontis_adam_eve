@@ -59,7 +59,8 @@ sys.modules.setdefault("slack_sdk.errors", fake_slack_sdk_errors)
 
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.db.repositories import _candidate_email_value
-from app.services.candidate_service import build_selection_candidate_snapshot
+from app.services.candidate_service import _candidate_identity_key, build_selection_candidate_snapshot
+import app.services.candidate_service as candidate_service
 from app.services import candidate_selection_service
 from app.services.preference_pair_service import generate_three_round_plan
 from app.services import outreach_service
@@ -112,6 +113,95 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(len(snapshot), 8)
         self.assertEqual([candidate.id for candidate in snapshot][:2], ["real-candidate-0", "real-candidate-1"])
 
+    @patch("app.services.candidate_service.fetch_ranked_candidates")
+    def test_selection_snapshot_skips_candidates_without_real_email(self, mock_fetch_ranked_candidates) -> None:
+        mock_fetch_ranked_candidates.return_value = [
+            CandidateResult(
+                id="candidate-no-email",
+                name="No Email",
+                role="Engineer",
+                company="Company",
+                email="",
+                skills=["Python"],
+                summary="No email",
+                fitScore=4.8,
+                decision="strong_match",
+                explanation=CandidateExplanation(
+                    semanticScore=0.9,
+                    skillOverlap=0.8,
+                    finalScore=0.9,
+                    pdlRelevance=0.8,
+                    recencyScore=0.7,
+                    engineeringScore=0.85,
+                    penalties={},
+                ),
+                strategy="HIGH",
+            ),
+            CandidateResult(
+                id="candidate-mock-email",
+                name="Mock Email",
+                role="Engineer",
+                company="Company",
+                email="mock@test.local",
+                isMockEmail=True,
+                skills=["Python"],
+                summary="Mock email",
+                fitScore=4.7,
+                decision="strong_match",
+                explanation=CandidateExplanation(
+                    semanticScore=0.9,
+                    skillOverlap=0.8,
+                    finalScore=0.9,
+                    pdlRelevance=0.8,
+                    recencyScore=0.7,
+                    engineeringScore=0.85,
+                    penalties={},
+                ),
+                strategy="HIGH",
+            ),
+            CandidateResult(
+                id="candidate-real-1",
+                name="Real One",
+                role="Engineer",
+                company="Company",
+                email="real-1@example.com",
+                skills=["Python"],
+                summary="Real email",
+                fitScore=4.6,
+                decision="strong_match",
+                explanation=CandidateExplanation(
+                    semanticScore=0.9,
+                    skillOverlap=0.8,
+                    finalScore=0.9,
+                    pdlRelevance=0.8,
+                    recencyScore=0.7,
+                    engineeringScore=0.85,
+                    penalties={},
+                ),
+                strategy="HIGH",
+            ),
+        ]
+
+        snapshot = build_selection_candidate_snapshot(db=object(), job_id="job-1", limit=2)
+
+        self.assertEqual([candidate.id for candidate in snapshot], ["candidate-real-1"])
+
+    def test_candidate_identity_key_prefers_linkedin_then_github(self) -> None:
+        linkedin_candidate = {
+            "email": "",
+            "linkedin_url": "https://www.linkedin.com/in/Example/",
+            "github_url": "https://github.com/example",
+            "full_name": "Example Person",
+        }
+        github_candidate = {
+            "email": "",
+            "github_url": "https://github.com/Example/",
+            "full_name": "Example Person",
+        }
+
+        self.assertEqual(_candidate_identity_key(linkedin_candidate), "linkedin:linkedin.com/in/example")
+        self.assertEqual(_candidate_identity_key(github_candidate), "github:github.com/example")
+
     def test_final_shortlist_limit_differs_by_mode(self) -> None:
         elite_job = types.SimpleNamespace(vetting_mode="elite")
         volume_job = types.SimpleNamespace(vetting_mode="volume")
@@ -147,6 +237,32 @@ class SelectionFlowTests(unittest.TestCase):
         payload = fake_send_calls[0]
         self.assertEqual(payload["to"], ["candidate@example.com"])
         self.assertNotIn("bcc", payload)
+
+    def test_recruiter_memory_changes_ranking_weights(self) -> None:
+        low_existing, low_recruiter, low_session, low_strength = candidate_service._dynamic_ranking_weights(
+            recruiter_feedback_count=0
+        )
+        high_existing, high_recruiter, high_session, high_strength = candidate_service._dynamic_ranking_weights(
+            recruiter_feedback_count=6
+        )
+        low_score, _, _ = candidate_service._blend_final_score(
+            existing_score=0.62,
+            recruiter_score=0.58,
+            session_signal=0.12,
+            recruiter_feedback_count=0,
+        )
+        high_score, _, _ = candidate_service._blend_final_score(
+            existing_score=0.62,
+            recruiter_score=0.92,
+            session_signal=0.12,
+            recruiter_feedback_count=6,
+        )
+
+        self.assertLess(low_recruiter, high_recruiter)
+        self.assertLess(low_strength, high_strength)
+        self.assertGreater(low_existing, high_existing)
+        self.assertNotEqual(low_score, high_score)
+        self.assertGreater(high_score, low_score)
 
     def test_regular_outreach_email_does_not_bcc_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []

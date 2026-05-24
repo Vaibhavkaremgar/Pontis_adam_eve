@@ -10,8 +10,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+try:
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+except ImportError:  # pragma: no cover - demo/runtime hardening fallback
+    WebClient = None  # type: ignore[assignment]
+
+    class SlackApiError(Exception):
+        pass
 
 from app.core.config import SLACK_BOT_TOKEN, SLACK_SKIP_SIGNATURE_VERIFICATION, SLACK_SIGNING_SECRET
 
@@ -20,7 +26,7 @@ logger = logging.getLogger(__name__)
 SLACK_SIGNATURE_VERSION = "v0"
 SLACK_TIMESTAMP_TOLERANCE_SECONDS = 60 * 5
 
-slack_client = WebClient(token=SLACK_BOT_TOKEN) if SLACK_BOT_TOKEN else None
+slack_client = WebClient(token=SLACK_BOT_TOKEN) if (SLACK_BOT_TOKEN and WebClient is not None) else None
 
 
 @dataclass(frozen=True)
@@ -93,8 +99,10 @@ def _matched_skills_line(explanation: Any) -> str:
 
 def _decision_label(decision: str) -> str:
     normalized = (decision or "").strip().lower()
-    if normalized in {"accept", "shortlist"}:
-        return "\u2705 Shortlisted"
+    if normalized in {"accept", "shortlist", "select", "calibration_select"}:
+        return "\u2705 Selected"
+    if normalized == "save":
+        return "\U0001F4BE Saved"
     if normalized == "reject":
         return "\u274c Rejected"
     return normalized.title() or "Processed"
@@ -136,10 +144,16 @@ def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[di
                 "elements": [
                     {
                         "type": "button",
-                        "action_id": "shortlist",
-                        "text": {"type": "plain_text", "text": "Shortlist"},
+                        "action_id": "select",
+                        "text": {"type": "plain_text", "text": "Select"},
                         "style": "primary",
-                        "value": f"shortlist:{candidate_id}:{job_id}",
+                        "value": f"select:{candidate_id}:{job_id}",
+                    },
+                    {
+                        "type": "button",
+                        "action_id": "save",
+                        "text": {"type": "plain_text", "text": "Save"},
+                        "value": f"save:{candidate_id}:{job_id}",
                     },
                     {
                         "type": "button",
@@ -148,18 +162,122 @@ def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[di
                         "style": "danger",
                         "value": f"reject:{candidate_id}:{job_id}",
                     },
-                    {
-                        "type": "button",
-                        "action_id": "schedule",
-                        "text": {"type": "plain_text", "text": "Schedule Interview"},
-                        "value": f"schedule:{candidate_id}:{job_id}",
-                    },
                 ],
             }
         )
         if index < len(candidate_rows) - 1:
             blocks.append({"type": "divider"})
     return blocks
+
+
+def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], current_index: int, total_sets: int) -> list[dict[str, Any]]:
+    set_title = str(calibration_set.get("set_title") or f"Calibration set {current_index}").strip()
+    set_theme = str(calibration_set.get("set_theme") or "").strip()
+    archetypes = list(calibration_set.get("archetypes") or [])
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Preference calibration {current_index}/{total_sets}*\n*{set_title}*\n{set_theme}" if set_theme else f"*Preference calibration {current_index}/{total_sets}*\n*{set_title}*",
+            },
+        }
+    ]
+
+    for index, archetype in enumerate(archetypes):
+        archetype_id = str(archetype.get("id") or "").strip()
+        archetype_title = str(archetype.get("name") or archetype.get("role") or "Archetype").strip()
+        summary = str(archetype.get("summary") or "").strip()
+        profile = archetype.get("profileData") or {}
+        strengths = profile.get("strengths") or []
+        communication_style = str(profile.get("communicationStyle") or "").strip()
+        work_style = str(profile.get("workStyle") or "").strip()
+        ownership_level = str(profile.get("ownershipLevel") or "").strip()
+        ideal_environment = str(profile.get("idealEnvironment") or "").strip()
+        execution_style = str(profile.get("executionStyle") or "").strip()
+        risk_tolerance = str(profile.get("riskTolerance") or "").strip()
+        leadership_signals = profile.get("leadershipSignals") or []
+
+        description_lines = [f"*{archetype_title}*"]
+        if summary:
+            description_lines.append(summary)
+        if strengths:
+            description_lines.append(f"*Strengths:* {', '.join(str(item) for item in strengths[:4] if str(item).strip())}")
+        if work_style:
+            description_lines.append(f"*Work style:* {work_style}")
+        if ownership_level:
+            description_lines.append(f"*Ownership:* {ownership_level}")
+        if ideal_environment:
+            description_lines.append(f"*Ideal environment:* {ideal_environment}")
+        if communication_style:
+            description_lines.append(f"*Communication:* {communication_style}")
+        if execution_style:
+            description_lines.append(f"*Execution:* {execution_style}")
+        if risk_tolerance:
+            description_lines.append(f"*Risk tolerance:* {risk_tolerance}")
+        if leadership_signals:
+            description_lines.append(f"*Leadership signals:* {', '.join(str(item) for item in leadership_signals[:4] if str(item).strip())}")
+
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(description_lines)},
+            }
+        )
+        blocks.append(
+            {
+                "type": "actions",
+                "block_id": f"calibration:{job_id}:{current_index}:{archetype_id}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "action_id": "calibration_select",
+                        "text": {"type": "plain_text", "text": "Select"},
+                        "style": "primary",
+                        "value": f"calibration_select:{archetype_id}:{job_id}",
+                    }
+                ],
+            }
+        )
+        if index < len(archetypes) - 1:
+            blocks.append({"type": "divider"})
+    return blocks
+
+
+def update_calibration_message_blocks(
+    *,
+    blocks: list[dict[str, Any]],
+    job_id: str,
+    archetype_id: str,
+    decision: str,
+) -> list[dict[str, Any]]:
+    updated_blocks = copy.deepcopy(blocks)
+    target_block_id = f"calibration:{job_id}"
+    label = _decision_label(decision)
+
+    for index, block in enumerate(updated_blocks):
+        if block.get("type") != "actions":
+            continue
+        if not str(block.get("block_id") or "").strip().startswith(target_block_id):
+            continue
+        if str(block.get("block_id") or "").strip().endswith(f":{archetype_id}"):
+            if index > 0 and updated_blocks[index - 1].get("type") == "section":
+                section = updated_blocks[index - 1]
+                text_obj = section.get("text") or {}
+                text_value = str(text_obj.get("text") or "").rstrip()
+                if label not in text_value:
+                    text_obj["text"] = f"{text_value}\n{label}"
+                    section["text"] = text_obj
+
+            updated_blocks[index] = {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": label},
+            }
+            if index + 1 < len(updated_blocks) and updated_blocks[index + 1].get("type") == "divider":
+                del updated_blocks[index + 1]
+            break
+
+    return updated_blocks
 
 
 def update_candidate_message_blocks(
@@ -205,14 +323,30 @@ async def post_slack_message(
     blocks: list[dict[str, Any]] | None = None,
     thread_ts: str | None = None,
 ) -> bool:
+    result = await post_slack_message_with_result(
+        channel_id=channel_id,
+        text=text,
+        blocks=blocks,
+        thread_ts=thread_ts,
+    )
+    return bool(result)
+
+
+async def post_slack_message_with_result(
+    *,
+    channel_id: str | None,
+    text: str,
+    blocks: list[dict[str, Any]] | None = None,
+    thread_ts: str | None = None,
+) -> dict[str, Any] | None:
     if not slack_client:
         logger.error("slack_message_skipped missing_bot_token channel_id=%s", channel_id)
-        return False
+        return None
 
     target_channel = (channel_id or "").strip()
     if not target_channel:
         logger.error("slack_message_skipped missing_channel_id")
-        return False
+        return None
 
     try:
         kwargs: dict[str, Any] = {"channel": target_channel, "text": text}
@@ -220,15 +354,15 @@ async def post_slack_message(
             kwargs["blocks"] = blocks
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
-        await asyncio.to_thread(slack_client.chat_postMessage, **kwargs)
-        return True
+        response = await asyncio.to_thread(slack_client.chat_postMessage, **kwargs)
+        return response if isinstance(response, dict) else {"ok": True}
     except SlackApiError as exc:
         error = exc.response.get("error")
         logger.error("slack_message_failed channel_id=%s error=%s", target_channel, error, exc_info=exc)
-        return False
+        return None
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.error("slack_message_failed channel_id=%s error=%s", target_channel, str(exc), exc_info=exc)
-        return False
+        return None
 
 
 async def update_slack_message(

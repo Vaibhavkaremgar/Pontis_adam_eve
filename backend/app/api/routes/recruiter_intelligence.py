@@ -15,7 +15,12 @@ from app.services.recruiter_interview_orchestrator import (
     start_recruiter_interview_session,
     update_recruiter_interview_session,
 )
-from app.services.recruiter_preference_round_service import bootstrap_preference_session, build_state_response, finalize_preference_session
+from app.services.recruiter_preference_round_service import (
+    bootstrap_preference_calibration_session,
+    build_calibration_state_response,
+    finalize_preference_calibration_session,
+    record_preference_calibration_choice,
+)
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
 
@@ -29,6 +34,11 @@ class RecruiterIntelligenceUpdateRequest(BaseModel):
     entities: dict[str, Any] = Field(default_factory=dict)
 
 
+class RecruiterCalibrationChoiceRequest(BaseModel):
+    jobId: str
+    candidateId: str
+
+
 @router.get("/{recruiter_id}/intelligence/jobs/{job_id}")
 def get_recruiter_intelligence_job(
     recruiter_id: str,
@@ -40,7 +50,7 @@ def get_recruiter_intelligence_job(
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = start_recruiter_interview_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    selection_state = bootstrap_preference_session(
+    calibration_state = bootstrap_preference_calibration_session(
         db=db,
         recruiter_id=recruiter_id,
         job_id=job_id,
@@ -51,7 +61,8 @@ def get_recruiter_intelligence_job(
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_state_response(selection_state),
+            "selection": build_calibration_state_response(calibration_state),
+            "calibration": build_calibration_state_response(calibration_state),
         }
     )
 
@@ -75,7 +86,7 @@ def update_recruiter_intelligence_job(
         transcript=payload.transcript or payload.voiceSummary,
         parsed_entities=payload.entities,
     )
-    selection_state = bootstrap_preference_session(
+    calibration_state = bootstrap_preference_calibration_session(
         db=db,
         recruiter_id=recruiter_id,
         job_id=job_id,
@@ -86,7 +97,35 @@ def update_recruiter_intelligence_job(
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_state_response(selection_state),
+            "selection": build_calibration_state_response(calibration_state),
+            "calibration": build_calibration_state_response(calibration_state),
+        }
+    )
+
+
+@router.post("/{recruiter_id}/intelligence/jobs/{job_id}/choice")
+def choose_recruiter_calibration_archetype(
+    recruiter_id: str,
+    job_id: str,
+    payload: RecruiterCalibrationChoiceRequest,
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if request.state.user["id"] != recruiter_id:
+        raise APIError("Forbidden", status_code=403)
+    assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
+    calibration_state = record_preference_calibration_choice(
+        db=db,
+        recruiter_id=recruiter_id,
+        job_id=job_id,
+        selected_candidate_id=payload.candidateId,
+    )
+    db.commit()
+    return success_response(
+        {
+            "selection": build_calibration_state_response(calibration_state),
+            "calibration": build_calibration_state_response(calibration_state),
         }
     )
 
@@ -103,7 +142,7 @@ def advance_recruiter_intelligence_job(
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    selection_state = bootstrap_preference_session(
+    calibration_state = bootstrap_preference_calibration_session(
         db=db,
         recruiter_id=recruiter_id,
         job_id=job_id,
@@ -114,7 +153,8 @@ def advance_recruiter_intelligence_job(
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_state_response(selection_state),
+            "selection": build_calibration_state_response(calibration_state),
+            "calibration": build_calibration_state_response(calibration_state),
         }
     )
 
@@ -131,11 +171,12 @@ def finalize_recruiter_intelligence_job(
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    selection_state = finalize_preference_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
+    calibration_state = finalize_preference_calibration_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
     db.commit()
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_state_response(selection_state),
+            "selection": build_calibration_state_response(calibration_state),
+            "calibration": build_calibration_state_response(calibration_state),
         }
     )

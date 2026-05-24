@@ -25,6 +25,7 @@ from app.core.config import (
     RLHF_FEEDBACK_HALF_LIFE_DAYS,
     RANKING_WEIGHTS,
     SCORING_DEFAULT_MODE,
+    SERPAPI_ENABLED,
 )
 from app.db.repositories import (
     ATSExportRepository,
@@ -34,7 +35,6 @@ from app.db.repositories import (
     CompanyRepository,
     InterviewRepository,
     JobRepository,
-    NotificationWorkflowTokenRepository,
     OutreachEventRepository,
     RankingExplanationRepository,
     RankingRunRepository,
@@ -49,7 +49,8 @@ from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt
 from app.services.evaluation_service import record_candidate_fetch, record_shortlist_event
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
-from app.services.notification_service import build_slot_booking_payload, create_notification_workflow_token
+from app.services.lifecycle_service import record_job_lifecycle_event
+from app.services.notification_service import build_slot_booking_payload, upsert_notification_workflow_token
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
 from app.services.ranking_service import build_match_explanation, compute_final_score, compute_match_score
 from app.services.retrieval_quality_service import rerank_candidates, retrieval_explanation
@@ -59,6 +60,7 @@ from app.services.recruiter_preference_service import (
     load_recruiter_preference_profile,
     update_recruiter_preferences,
 )
+from app.services.serpapi_sourcing_service import discover_linkedin_xray_candidates, is_serpapi_disabled
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
     delete_candidate_vectors,
@@ -72,6 +74,7 @@ from app.services.qdrant_service import (
 from app.services.slack_service import notify_slack
 from app.services.state_machine import assert_valid_transition, is_swipe_locked, swipe_to_status
 from app.utils.exceptions import APIError
+from app.utils.observability import emit_trace
 from app.utils.text import average_vectors, chunk_text, cosine_similarity
 
 logger = logging.getLogger(__name__)
@@ -305,8 +308,48 @@ def ensure_candidate_email(candidate: Any) -> str:
     return f"{safe_name}_{safe_id}@test.local"
 
 
+def _normalize_identity_url(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = value.strip().lower()
+    if not normalized:
+        return ""
+    normalized = re.sub(r"^https?://", "", normalized)
+    normalized = re.sub(r"^www\.", "", normalized)
+    normalized = normalized.rstrip("/")
+    return normalized
+
+
+def _candidate_url_identity(candidate: dict, *keys: str) -> str:
+    for key in keys:
+        value = candidate.get(key)
+        if isinstance(value, str):
+            normalized = _normalize_identity_url(value)
+            if normalized:
+                return normalized
+    return ""
+
+
+def _is_reviewable_candidate(candidate: Any) -> bool:
+    email = ""
+    is_mock_email = False
+    if isinstance(candidate, dict):
+        email = _extract_candidate_email(candidate)
+        is_mock_email = bool(candidate.get("isMockEmail"))
+    else:
+        email = str(getattr(candidate, "email", "") or "").strip().lower()
+        is_mock_email = bool(getattr(candidate, "isMockEmail", False))
+    if not email:
+        return False
+    if is_mock_email:
+        return False
+    if email.endswith("@test.local"):
+        return False
+    return True
+
+
 def _extract_candidate_external_id(candidate: dict) -> str:
-    for key in ("id", "external_id", "profile_id", "linkedin_id", "linkedin_url"):
+    for key in ("id", "external_id", "profile_id", "linkedin_id", "linkedin_url", "github_url"):
         value = candidate.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().lower()
@@ -317,6 +360,14 @@ def _candidate_identity_key(candidate: dict) -> str:
     email = _extract_candidate_email(candidate)
     if email:
         return f"email:{email}"
+
+    linkedin_url = _candidate_url_identity(candidate, "linkedin_url", "linkedinUrl", "linkedin")
+    if linkedin_url:
+        return f"linkedin:{linkedin_url}"
+
+    github_url = _candidate_url_identity(candidate, "github_url", "githubUrl", "github")
+    if github_url:
+        return f"github:{github_url}"
 
     external_id = _extract_candidate_external_id(candidate)
     if external_id:
@@ -1170,9 +1221,9 @@ def _recruiter_feedback_count(db: Session, recruiter_id: str | None) -> int:
 
 
 def _dynamic_ranking_weights(*, recruiter_feedback_count: int) -> tuple[float, float, float, float]:
-    session_weight = 0.1
-    raw_recruiter_weight = min(0.3, 0.05 * max(0, recruiter_feedback_count))
-    recruiter_signal_strength = min(1.0, max(0, recruiter_feedback_count) / 5.0)
+    session_weight = 0.08
+    raw_recruiter_weight = min(0.4, 0.07 * max(0, recruiter_feedback_count))
+    recruiter_signal_strength = min(1.0, max(0, recruiter_feedback_count) / 4.0)
     effective_recruiter_weight = raw_recruiter_weight * recruiter_signal_strength
     existing_weight = max(0.0, 1.0 - (effective_recruiter_weight + session_weight))
     total = existing_weight + effective_recruiter_weight + session_weight
@@ -2038,14 +2089,19 @@ def _build_ranked_candidates_from_pdl(
     selection_session: Any,
     debug: bool = False,
     run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
+    source_candidates: list[dict[str, Any]] | None = None,
+    source_label: str = "pdl",
 ) -> list[CandidateResult]:
     filters = _normalize_job_filters(
         job,
         preferred_tokens=feedback_learning.preferred_tokens,
         preferred_roles=feedback_learning.preferred_roles,
     )
-    response = fetch_candidates_with_filters(filters=filters, size=size)
-    candidates = response.get("data", []) if isinstance(response, dict) else []
+    if source_candidates is None:
+        response = fetch_candidates_with_filters(filters=filters, size=size)
+        candidates = response.get("data", []) if isinstance(response, dict) else []
+    else:
+        candidates = list(source_candidates)
     if not isinstance(candidates, list):
         candidates = []
     deduped_candidates: list[dict] = []
@@ -2063,11 +2119,13 @@ def _build_ranked_candidates_from_pdl(
     if len(candidates) > size:
         candidates = candidates[:size]
     if candidates:
-        logger.info("pdl_top_k_applied count=%s job_id=%s", len(candidates), job.id)
+        logger.info("%s_top_k_applied count=%s job_id=%s", source_label, len(candidates), job.id)
 
     if not candidates:
         logger.warning(
-            "PDL fetch failed — preserving existing vectors job_id=%s", job.id
+            "%s fetch failed — preserving existing vectors job_id=%s",
+            source_label.upper(),
+            job.id,
         )
         return []
 
@@ -2103,8 +2161,9 @@ def _build_ranked_candidates_from_pdl(
         ]
     filtered_out = len(candidates) - len(filtered_candidates)
     logger.info(
-        "hard_filter_applied job_id=%s source=pdl enabled=%s total=%s kept=%s filtered_out=%s min_experience=%s min_skill_matches=%s",
+        "hard_filter_applied job_id=%s source=%s enabled=%s total=%s kept=%s filtered_out=%s min_experience=%s min_skill_matches=%s",
         job.id,
+        source_label,
         mode_config.use_hard_filtering,
         len(candidates),
         len(filtered_candidates),
@@ -2115,7 +2174,7 @@ def _build_ranked_candidates_from_pdl(
     log_metric(
         "hard_filter_applied",
         job_id=job.id,
-        source="pdl",
+        source=source_label,
         enabled=mode_config.use_hard_filtering,
         total=len(candidates),
         kept=len(filtered_candidates),
@@ -2124,27 +2183,29 @@ def _build_ranked_candidates_from_pdl(
         min_skill_matches=mode_config.min_skill_match_threshold,
     )
     logger.info(
-        "candidates_filtered_count job_id=%s source=pdl total=%s filtered_out=%s",
+        "candidates_filtered_count job_id=%s source=%s total=%s filtered_out=%s",
         job.id,
+        source_label,
         len(candidates),
         filtered_out,
     )
     log_metric(
         "candidates_filtered_count",
         job_id=job.id,
-        source="pdl",
+        source=source_label,
         total=len(candidates),
         filtered_out=filtered_out,
     )
     if mode_config.use_hard_filtering and candidates and not filtered_candidates:
         logger.info(
-            "fallback_to_unfiltered job_id=%s source=pdl reason=no_candidates_after_hard_filter",
+            "fallback_to_unfiltered job_id=%s source=%s reason=no_candidates_after_hard_filter",
             job.id,
+            source_label,
         )
         log_metric(
             "fallback_to_unfiltered",
             job_id=job.id,
-            source="pdl",
+            source=source_label,
             reason="no_candidates_after_hard_filter",
             total=len(candidates),
         )
@@ -2709,7 +2770,15 @@ def _finalize_candidate_sourcing_state(
     return stored_candidates
 
 
-def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False, debug: bool = False) -> list[CandidateResult]:
+def fetch_ranked_candidates(
+    *,
+    db: Session,
+    job_id: str,
+    mode: str | None = None,
+    refresh: bool = False,
+    debug: bool = False,
+    recruiter_id: str | None = None,
+) -> list[CandidateResult]:
     jobs = JobRepository(db)
     job = jobs.get(job_id)
     if not job:
@@ -2731,7 +2800,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
     # Load swiped IDs once — used to exclude already-decided candidates server-side.
     swiped_ids = _get_swiped_candidate_ids(db, job_id=job.id)
     feedback_learning = _build_feedback_learning_context(db, job_id=job.id)
-    recruiter_id = jobs.get_recruiter_id(job.id)
+    recruiter_id = (recruiter_id or jobs.get_recruiter_id(job.id) or "").strip()
     recruiter_preferences = load_recruiter_preference_profile(db, recruiter_id) if recruiter_id else {}
     recruiter_feedback_count = _recruiter_feedback_count(db, recruiter_id)
     selection_session = CandidateSelectionSessionRepository(db).get_by_job(job.id)
@@ -2903,6 +2972,17 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             swiped_ids,
             job_id=job.id,
         )
+        final_local = [candidate for candidate in final_local if _is_reviewable_candidate(candidate)]
+        emit_trace(
+            logger,
+            "candidate_ranking_ready",
+            job_id=job.id,
+            recruiter_id=recruiter_id,
+            source="local",
+            mode=resolved_mode,
+            returned_count=len(final_local),
+            reviewable_count=len(final_local),
+        )
         if not final_local:
             return _finalize_candidate_sourcing_state(
                 db=db,
@@ -2930,7 +3010,7 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         return final_local
 
     # PDL is required (low similarity or empty local). Check if PDL is healthy.
-    if not pdl_allowed:
+    if not pdl_allowed and not SERPAPI_ENABLED:
         logger.warning(
             "pdl_suppressed_due_to_qdrant_error job_id=%s qdrant_error=%s — serving local fallback",
             job_id,
@@ -2942,6 +3022,17 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
             _attach_candidate_workflow_state(db, job_id=job.id, candidates=local_results[: mode_config.top_k]),
             swiped_ids,
             job_id=job.id,
+        )
+        final_suppressed = [candidate for candidate in final_suppressed if _is_reviewable_candidate(candidate)]
+        emit_trace(
+            logger,
+            "candidate_ranking_ready",
+            job_id=job.id,
+            recruiter_id=recruiter_id,
+            source="local_fallback",
+            mode=resolved_mode,
+            returned_count=len(final_suppressed),
+            reviewable_count=len(final_suppressed),
         )
         if not final_suppressed:
             return _finalize_candidate_sourcing_state(
@@ -2979,21 +3070,64 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
     log_metric("pdl_call", job_id=job.id, mode=resolved_mode, reason=switch_reason)
 
     size = max(PDL_SEARCH_SIZE, mode_config.top_k)
+    pdl_results: list[CandidateResult] = []
+    serpapi_results: list[CandidateResult] = []
+    serpapi_run_metrics: dict[str, dict[str, float | bool]] = {}
+    if should_call_pdl:
+        try:
+            serpapi_candidates = discover_linkedin_xray_candidates(
+                job=job,
+                intake=getattr(job, "structured_data", None) or {},
+                limit=size,
+                recruiter_preferences=recruiter_preferences,
+            )
+            if serpapi_candidates:
+                serpapi_results = _build_ranked_candidates_from_pdl(
+                    db=db,
+                    job=job,
+                    mode=resolved_mode,
+                    size=size,
+                    mode_config=mode_config,
+                    feedback_learning=feedback_learning,
+                    exploration=exploration,
+                    recruiter_preferences=recruiter_preferences,
+                    recruiter_feedback_count=recruiter_feedback_count,
+                    selection_session=selection_session,
+                    debug=debug,
+                    run_metrics_by_candidate_id=serpapi_run_metrics,
+                    source_candidates=serpapi_candidates,
+                    source_label="serpapi",
+                )
+        except Exception as exc:
+            logger.warning("serpapi_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
+            log_metric(
+                "candidate_retrieval_error",
+                job_id=job.id,
+                mode=resolved_mode,
+                source="serpapi",
+                error_type=type(exc).__name__,
+            )
+
+    if serpapi_results:
+        pdl_results = serpapi_results
+        pdl_run_metrics = serpapi_run_metrics
+
     try:
-        pdl_results = _build_ranked_candidates_from_pdl(
-            db=db,
-            job=job,
-            mode=resolved_mode,
-            size=size,
-            mode_config=mode_config,
-            feedback_learning=feedback_learning,
-            exploration=exploration,
-            recruiter_preferences=recruiter_preferences,
-            recruiter_feedback_count=recruiter_feedback_count,
-            selection_session=selection_session,
-            debug=debug,
-            run_metrics_by_candidate_id=pdl_run_metrics,
-        )
+        if not serpapi_results and pdl_allowed:
+            pdl_results = _build_ranked_candidates_from_pdl(
+                db=db,
+                job=job,
+                mode=resolved_mode,
+                size=size,
+                mode_config=mode_config,
+                feedback_learning=feedback_learning,
+                exploration=exploration,
+                recruiter_preferences=recruiter_preferences,
+                recruiter_feedback_count=recruiter_feedback_count,
+                selection_session=selection_session,
+                debug=debug,
+                run_metrics_by_candidate_id=pdl_run_metrics,
+            )
     except Exception as exc:
         logger.warning("pdl_candidate_retrieval_failed job_id=%s mode=%s error=%s", job.id, resolved_mode, str(exc))
         log_metric(
@@ -3096,6 +3230,19 @@ def fetch_ranked_candidates(*, db: Session, job_id: str, mode: str | None = None
         swiped_ids,
         job_id=job.id,
     )
+    final_candidates = [candidate for candidate in final_candidates if _is_reviewable_candidate(candidate)]
+    emit_trace(
+        logger,
+        "candidate_ranking_ready",
+        job_id=job.id,
+        recruiter_id=recruiter_id,
+        source=resolved_mode,
+        switch=switching_mode,
+        mode=resolved_mode,
+        returned_count=len(final_candidates),
+        reviewable_count=len(final_candidates),
+        recruiter_signal_strength=recruiter_preferences.get("signal_strength", 0.0) if recruiter_preferences else 0.0,
+    )
     record_candidate_fetch(job_id=job.id, candidates=final_candidates)
     _record_ranking_run(
         db=db,
@@ -3117,18 +3264,38 @@ def build_selection_candidate_snapshot(
     limit: int = 12,
 ) -> list[CandidateResult]:
     """Return the real retrieved candidates used to seed the 3-round preference flow."""
-    candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh)
-    unique_candidates: list[CandidateResult] = []
+    def _reachable(candidate: CandidateResult) -> bool:
+        email = _normalize_text(candidate.email or "").lower()
+        if not email or "@" not in email:
+            return False
+        if candidate.isMockEmail:
+            return False
+        if email.endswith("@test.local"):
+            return False
+        return True
+
+    collected: list[CandidateResult] = []
     seen_ids: set[str] = set()
-    for candidate in candidates:
-        candidate_id = str(candidate.id or "").strip()
-        if not candidate_id or candidate_id in seen_ids:
-            continue
-        unique_candidates.append(candidate)
-        seen_ids.add(candidate_id)
-        if len(unique_candidates) >= max(2, limit):
+    attempts = 0
+    max_attempts = 3
+
+    while attempts < max_attempts and len(collected) < max(2, limit):
+        attempts += 1
+        candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh or attempts > 1)
+        for candidate in candidates:
+            candidate_id = str(candidate.id or "").strip()
+            if not candidate_id or candidate_id in seen_ids:
+                continue
+            if not _reachable(candidate):
+                continue
+            collected.append(candidate)
+            seen_ids.add(candidate_id)
+            if len(collected) >= max(2, limit):
+                break
+        if len(collected) >= max(2, limit):
             break
-    return unique_candidates
+
+    return collected
 
 
 def warm_candidate_retrieval() -> int:
@@ -3228,6 +3395,20 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             profile if action == "accept" else None,
             [] if action == "accept" else [profile],
             signal_multiplier=2.0 if action == "accept" else 0.5,
+        )
+    if is_new_feedback:
+        lifecycle_event_type = "CANDIDATE_SAVED" if action == "accept" else "CANDIDATE_REJECTED"
+        record_job_lifecycle_event(
+            db=db,
+            job_id=job_id,
+            event_type=lifecycle_event_type,
+            payload={
+                "jobId": job_id,
+                "candidateId": candidate_id,
+                "action": action,
+                "source": "candidate_feedback",
+            },
+            source="candidate_feedback",
         )
 
     # Only run RLHF weight update for genuinely new feedback signals.
@@ -3365,7 +3546,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
     }
     selection_session = CandidateSelectionSessionRepository(db).get_by_job(job_id)
 
-    results: list[CandidateResult] = []
+    shortlisted_rows: list[dict[str, Any]] = []
     interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
     updated_workflow_tokens = False
     for candidate_id in shortlisted_ids:
@@ -3377,64 +3558,85 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                 candidate_id,
             )
             continue
+        profile_details = _candidate_profile_details(profile=profile)
+        email = profile_details["email"] or ensure_candidate_email(profile)
+        if not email or email.endswith("@test.local"):
+            logger.info("outreach_review_candidate_skipped_missing_email job_id=%s candidate_id=%s", job_id, candidate_id)
+            continue
         slot_payload = build_slot_booking_payload(
             candidate=profile,
             job={"title": job.title, "company_name": company.name if company else ""},
         )
-        notification_row = NotificationWorkflowTokenRepository(db).get_active_by_candidate(
-            job_id=job_id,
-            candidate_id=candidate_id,
-            source_app="adam",
-            token_type="slot_booking",
+        shortlisted_rows.append(
+            {
+                "candidate_id": profile.candidate_id,
+                "name": profile.name,
+                "role": profile.role,
+                "company": profile.company,
+                "email": email,
+                "is_mock_email": bool(profile_details["isMockEmail"]) or email.endswith("@test.local"),
+                "headline": profile_details["headline"],
+                "location": profile_details["location"],
+                "years_experience": float(profile_details["yearsExperience"] or 0.0),
+                "skills": profile.skills or [],
+                "summary": profile.summary,
+                "education": list(profile_details["education"] or []),
+                "projects": list(profile_details["projects"] or []),
+                "certifications": list(profile_details["certifications"] or []),
+                "companies_history": list(profile_details["companiesHistory"] or []),
+                "domain_experience": list(profile_details["domainExperience"] or []),
+                "resume_text": profile_details["resumeText"],
+                "profile_data": dict(profile_details["profileData"] or {}),
+                "fit_score": round(profile.fit_score, 2),
+                "decision": profile.decision,
+                "strategy": profile.strategy,
+                "selection_signal": _selection_session_signal(selection_session, candidate_id),
+                "voice_score": 1.0 if getattr(job, "structured_data", None) else 0.0,
+                "slot_payload": slot_payload,
+            }
         )
-        if not notification_row:
-            notification_data = create_notification_workflow_token(
-                db=db,
-                job_id=job_id,
-                candidate_id=candidate_id,
-                workflow_name="slot_booking",
-                payload=slot_payload,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=7),
-                token_type="slot_booking",
-                is_active=True,
-                source_app="adam",
-            )
-            notification_row = NotificationWorkflowTokenRepository(db).get_by_token(
-                str(notification_data.get("token") or ""),
-                source_app="adam",
-            )
-            updated_workflow_tokens = True
-        else:
-            notification_row.payload = slot_payload
-            notification_row.expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-            notification_row.is_active = True
-            notification_row.status = "active"
-            updated_workflow_tokens = True
-        db.flush()
-        final_score = max(0.0, min(1.0, profile.fit_score / 5.0))
-        profile_details = _candidate_profile_details(profile=profile)
+
+    # Release the read transaction before we write workflow tokens.
+    db.commit()
+
+    results: list[CandidateResult] = []
+    for row in shortlisted_rows:
+        upsert_notification_workflow_token(
+            db=db,
+            job_id=job_id,
+            candidate_id=row["candidate_id"],
+            workflow_name="slot_booking",
+            payload=row["slot_payload"],
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            token_type="slot_booking",
+            is_active=True,
+            source_app="adam",
+            force_token=False,
+        )
+        updated_workflow_tokens = True
+        final_score = max(0.0, min(1.0, float(row["fit_score"]) / 5.0))
         results.append(
             CandidateResult(
-                id=profile.candidate_id,
-                name=profile.name,
-                role=profile.role,
-                company=profile.company,
-                email=profile_details["email"] or ensure_candidate_email(profile),
-                isMockEmail=bool(profile_details["isMockEmail"]) or ensure_candidate_email(profile).endswith("@test.local"),
-                headline=profile_details["headline"],
-                location=profile_details["location"],
-                yearsExperience=float(profile_details["yearsExperience"] or 0.0),
-                skills=profile.skills or [],
-                summary=profile.summary,
-                education=list(profile_details["education"] or []),
-                projects=list(profile_details["projects"] or []),
-                certifications=list(profile_details["certifications"] or []),
-                companiesHistory=list(profile_details["companiesHistory"] or []),
-                domainExperience=list(profile_details["domainExperience"] or []),
-                resumeText=profile_details["resumeText"],
-                profileData=dict(profile_details["profileData"] or {}),
-                fitScore=round(profile.fit_score, 2),
-                decision=profile.decision,
+                id=row["candidate_id"],
+                name=row["name"],
+                role=row["role"],
+                company=row["company"],
+                email=row["email"],
+                isMockEmail=row["is_mock_email"],
+                headline=row["headline"],
+                location=row["location"],
+                yearsExperience=float(row["years_experience"] or 0.0),
+                skills=row["skills"],
+                summary=row["summary"],
+                education=row["education"],
+                projects=row["projects"],
+                certifications=row["certifications"],
+                companiesHistory=row["companies_history"],
+                domainExperience=row["domain_experience"],
+                resumeText=row["resume_text"],
+                profileData=row["profile_data"],
+                fitScore=float(row["fit_score"]),
+                decision=row["decision"],
                 explanation=CandidateExplanation(
                     semanticScore=0.0,
                     skillOverlap=0.0,
@@ -3449,27 +3651,35 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                         structured_score=0.0,
                         recruiter_score=0.0,
                         recency_score=0.0,
-                        session_signal=_selection_session_signal(selection_session, candidate_id),
-                        voice_score=1.0 if getattr(job, "structured_data", None) else 0.0,
+                        session_signal=row["selection_signal"],
+                        voice_score=row["voice_score"],
                     ),
                     recruiterPreferenceInfluence=0.0,
-                    voiceInterviewInfluence=1.0 if getattr(job, "structured_data", None) else 0.0,
+                    voiceInterviewInfluence=row["voice_score"],
                     lexicalRetrievalInfluence=0.0,
                     vectorRetrievalInfluence=0.0,
                     freshnessInfluence=0.0,
-                    selectionRoundInfluence=_selection_session_signal(selection_session, candidate_id),
+                    selectionRoundInfluence=row["selection_signal"],
                     aiReasoning="Final shortlist inherits recruiter preference and selection-round feedback.",
                 ),
-                strategy=profile.strategy,
+                strategy=row["strategy"],
                 status="shortlisted",
-                outreachStatus=outreach_status_map.get(candidate_id, "pending"),
-                exportStatus=export_status_map.get(candidate_id, "pending"),
-                ats_export_status=ats_export_status_map.get(candidate_id, "not_sent"),
+                outreachStatus=outreach_status_map.get(row["candidate_id"], "pending"),
+                exportStatus=export_status_map.get(row["candidate_id"], "pending"),
+                ats_export_status=ats_export_status_map.get(row["candidate_id"], "not_sent"),
             )
         )
     if updated_workflow_tokens:
         db.commit()
     sorted_results = sorted(results, key=lambda r: r.fitScore, reverse=True)
+    emit_trace(
+        logger,
+        "shortlist_ready",
+        job_id=job_id,
+        shortlisted_requested=len(shortlisted_ids),
+        shortlisted_returned=len(sorted_results),
+        skipped_missing_email=len(shortlisted_ids) - len(results),
+    )
     record_shortlist_event(job_id=job_id, shortlisted_count=len(sorted_results))
     return sorted_results
 

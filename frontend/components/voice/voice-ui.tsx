@@ -6,8 +6,8 @@
  * - Starts Vapi directly with job context injected as variableValues + dynamic firstMessage
  * - Captures BOTH assistant and user turns as structured VoiceTurn[]
  * - On call-end: auto-triggers POST /voice/refine with full conversation transcript
- * - Then auto-triggers GET /candidates?refresh=true
- * - Navigates to /review on success, shows retry on failure
+ * - Then navigates to /review so calibration can run before sourcing
+ * - Shows retry on failure
  */
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -16,7 +16,6 @@ import Image from "next/image";
 import { Mic } from "lucide-react";
 
 import { useAppContext } from "@/context/AppContext";
-import { getCandidatesWithMode } from "@/lib/api/candidates";
 import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
@@ -704,10 +703,10 @@ async function loadVapiConfig() {
 
 export function VoiceUi() {
   const router = useRouter();
-  const { callStatus, setCallStatus, setVoiceNotes, setCandidates, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
+  const { callStatus, setCallStatus, setVoiceNotes, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
 
   const [transcriptTurns, setTranscriptTurns] = useState<TranscriptTurn[]>([]);
-  const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "fetching" | "done" | "error">("idle");
+  const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "done" | "error">("idle");
   const [pipelineError, setPipelineError] = useState("");
   const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
   const [intelligenceLoading, setIntelligenceLoading] = useState(false);
@@ -888,27 +887,13 @@ export function VoiceUi() {
       // Soft failure — still fetch candidates with original job
     }
 
-    setPipelineStatus("fetching");
-    const candidatesResult = await getCandidatesWithMode({
-      jobId,
-      mode: selectionMood,
-      refresh: true,
-    });
-
-    if (!candidatesResult.success || !candidatesResult.data) {
-      setPipelineStatus("error");
-      setPipelineError(candidatesResult.error || "Could not load candidates.");
-      return;
-    }
-
-    setCandidates(candidatesResult.data);
     setIsRefined(true);
     setPipelineStatus("done");
     terminalStateRef.current = "done";
 
-    // Auto-navigate to review after a short pause so recruiter sees "done"
+    // Auto-navigate to review so the calibration gate can appear before sourcing.
     setTimeout(() => router.push("/review"), 1200);
-  }, [jobId, router, selectionMood, setCandidates, setIsRefined, setVoiceNotes, user]);
+  }, [jobId, router, setIsRefined, setVoiceNotes, user]);
 
   // ── Vapi instance (created once per session) ───────────────────────────────
   const ensureVapi = useCallback((publicKey: string) => {
@@ -1171,8 +1156,7 @@ export function VoiceUi() {
   const pipelineLabel: Record<typeof pipelineStatus, string> = {
     idle: "",
     refining: "Analysing conversation and updating job profile...",
-    fetching: "Running candidate search with updated requirements...",
-    done: "Done — loading your candidates.",
+    done: "Done — loading calibration.",
     error: pipelineError,
   };
 

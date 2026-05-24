@@ -37,10 +37,6 @@ function OutreachContent() {
   const [emailBody, setEmailBody] = useState("");
   const [emailSubject, setEmailSubject] = useState("");
   const [previewToEmail, setPreviewToEmail] = useState("");
-  const [previewCandidateEmail, setPreviewCandidateEmail] = useState("");
-  const [previewManualRequired, setPreviewManualRequired] = useState(false);
-  const [previewValidationReason, setPreviewValidationReason] = useState("");
-  const [manualRecipientEmail, setManualRecipientEmail] = useState("");
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [feedback, setFeedback] = useState("");
   const [error, setError] = useState("");
@@ -90,8 +86,8 @@ function OutreachContent() {
 
         setShortlisted(shortlistedCandidates);
         setSelectedCandidates((prev) => {
-          if (prev.length > 0) return prev;
-          return shortlistedCandidates.map((candidate) => candidate.id);
+          if (prev.length > 0) return prev.slice(0, 1);
+          return shortlistedCandidates.length > 0 ? [shortlistedCandidates[0].id] : [];
         });
       } finally {
         setIsLoadingCandidates(false);
@@ -129,10 +125,6 @@ function OutreachContent() {
       setEmailSubject("");
       setEmailBody("");
       setPreviewToEmail("");
-      setPreviewCandidateEmail("");
-      setPreviewManualRequired(false);
-      setPreviewValidationReason("");
-      setManualRecipientEmail("");
       return;
     }
 
@@ -144,10 +136,6 @@ function OutreachContent() {
           setEmailSubject(result.data.subject);
           setEmailBody(result.data.body);
           setPreviewToEmail(result.data.toEmail);
-          setPreviewCandidateEmail(result.data.candidateEmail ?? "");
-          setPreviewManualRequired(result.data.manualRequired ?? false);
-          setPreviewValidationReason(result.data.fallbackReason ?? "");
-          setManualRecipientEmail(result.data.manualRequired ? (result.data.candidateEmail ?? "") : "");
         }
         setIsLoadingPreview(false);
       });
@@ -160,27 +148,18 @@ function OutreachContent() {
       "Select a single candidate to preview and edit their specific email before sending."
     );
     setPreviewToEmail("");
-    setPreviewCandidateEmail("");
-    setPreviewManualRequired(false);
-    setPreviewValidationReason("");
-    setManualRecipientEmail("");
     return () => controller.abort();
   }, [selectedCandidates, jobId]);
 
   const canSubmit = useMemo(
     () => {
-      if (selectedCandidates.length === 0 || isSubmitting) return false;
-      if (selectedCandidates.length !== 1) return true;
-      if (!previewManualRequired) return true;
-      return /^\S+@\S+\.\S+$/.test(manualRecipientEmail.trim());
+      return selectedCandidates.length === 1 && !isSubmitting;
     },
-    [isSubmitting, manualRecipientEmail, previewManualRequired, selectedCandidates.length]
+    [isSubmitting, selectedCandidates.length]
   );
 
   const toggleCandidate = (candidateId: string) => {
-    setSelectedCandidates((prev) =>
-      prev.includes(candidateId) ? prev.filter((id) => id !== candidateId) : [...prev, candidateId]
-    );
+    setSelectedCandidates((prev) => (prev[0] === candidateId ? [] : [candidateId]));
   };
 
   const selectedCount = selectedCandidates.length;
@@ -193,15 +172,14 @@ function OutreachContent() {
     setIsOutreachComplete(false);
     setSendDebug(null);
 
-    const customBody = selectedCandidates.length === 1 ? emailBody.trim() : "";
-    const recipientEmail = selectedCandidates.length === 1 && previewManualRequired ? manualRecipientEmail.trim() : "";
-    if (selectedCandidates.length === 1 && previewManualRequired && !/^\S+@\S+\.\S+$/.test(recipientEmail)) {
-      setError("Enter a valid email address for this candidate before sending.");
+    if (selectedCandidates.length !== 1) {
+      setError("Select exactly one candidate before sending outreach.");
       setIsSubmitting(false);
       return;
     }
 
-    const result = await sendOutreach({ jobId, selectedCandidates, customBody, recipientEmail });
+    const customBody = emailBody.trim();
+    const result = await sendOutreach({ jobId, selectedCandidates: [selectedCandidates[0]], customBody });
     if (!result.success || !result.data) {
       setError(result.error || "Failed to send outreach.");
       setIsSubmitting(false);
@@ -233,7 +211,7 @@ function OutreachContent() {
       <Card className="mx-auto w-full max-w-[560px]">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Candidate Outreach</CardTitle>
-          <CardDescription>Select candidates, review the email, then send</CardDescription>
+          <CardDescription>Select one candidate, review the email, then send</CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-6">
@@ -291,8 +269,8 @@ function OutreachContent() {
           {/* Email preview */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-gray-900">Email Preview</p>
-              {selectedCandidates.length === 1 && previewToEmail && !previewManualRequired && (
+              <p className="text-sm font-semibold text-gray-900">Selected Candidate Preview</p>
+              {selectedCandidates.length === 1 && previewToEmail && (
                 <p className="text-xs text-gray-500">
                   To: {previewToEmail}
                 </p>
@@ -301,7 +279,7 @@ function OutreachContent() {
 
             {selectedCandidates.length === 0 && (
               <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-500">
-                Select a candidate above to preview their outreach email.
+                Select exactly one candidate above to preview their outreach email.
               </div>
             )}
 
@@ -311,24 +289,6 @@ function OutreachContent() {
                   <span className="font-medium text-gray-700">Subject: </span>
                   {isLoadingPreview ? "Loading..." : emailSubject}
                 </div>
-                {selectedCandidates.length === 1 && previewManualRequired && (
-                  <div className="space-y-2 rounded-xl border border-red-200 bg-red-50 p-4">
-                    <p className="text-sm font-medium text-red-800">
-                      Invalid mail detected{previewCandidateEmail ? `: ${previewCandidateEmail}` : ""}
-                    </p>
-                    <p className="text-xs text-red-700">
-                      {previewValidationReason || "This candidate profile does not have a valid email. Enter the correct outreach address before sending."}
-                    </p>
-                    <input
-                      type="email"
-                      className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:border-red-400"
-                      placeholder="Enter candidate email"
-                      value={manualRecipientEmail}
-                      onChange={(e) => setManualRecipientEmail(e.target.value)}
-                      disabled={isLoadingPreview || isSubmitting}
-                    />
-                  </div>
-                )}
                 <Textarea
                   className="min-h-[200px] text-sm text-gray-800 leading-relaxed"
                   value={isLoadingPreview ? "Loading preview..." : emailBody}
@@ -336,12 +296,12 @@ function OutreachContent() {
                   disabled={isLoadingPreview || isSubmitting || selectedCandidates.length > 1}
                   placeholder="Email body will appear here once you select a candidate."
                 />
-                {selectedCandidates.length === 1 && (
-                  <p className="text-xs text-gray-400">
-                    You can edit this email before sending. Changes apply only to this send.
-                  </p>
-                )}
-              </>
+            {selectedCandidates.length === 1 && (
+              <p className="text-xs text-gray-400">
+                You can edit this email before sending. Changes apply only to this send.
+              </p>
+            )}
+          </>
             )}
           </div>
 
@@ -350,11 +310,11 @@ function OutreachContent() {
             onClick={handleSendOutreach}
             disabled={!canSubmit || shortlisted.length === 0}
           >
-            {isSubmitting ? "Sending..." : "Send Outreach"}
+            {isSubmitting ? "Sending..." : "Select & Send"}
           </Button>
           {selectedCount > 0 && shortlisted.length > 0 && (
             <p className="text-xs text-gray-500">
-              {selectedCount} shortlisted candidate{selectedCount === 1 ? "" : "s"} selected for outreach.
+              {selectedCount} shortlisted candidate selected for outreach.
             </p>
           )}
 

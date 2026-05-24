@@ -77,6 +77,7 @@ class CompanyEntity(Base):
     outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="company_record")
     inbound_email_replies: Mapped[list["InboundEmailReplyEntity"]] = relationship(back_populates="company_record")
     interview_sessions: Mapped[list["InterviewSessionEntity"]] = relationship(back_populates="company_record")
+    orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="company_record")
 
 
 class JobEntity(Base):
@@ -113,6 +114,7 @@ class JobEntity(Base):
     feedback_items: Mapped[list["CandidateFeedbackEntity"]] = relationship(back_populates="job")
     ats_exports: Mapped[list["ATSExportEntity"]] = relationship(back_populates="job")
     outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="job")
+    orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="job_record")
 
 
 class JobIntakeEntity(Base):
@@ -347,6 +349,63 @@ class CandidateSelectionSessionEntity(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class OrchestrationSessionEntity(Base):
+    __tablename__ = "orchestration_sessions"
+    __table_args__ = (UniqueConstraint("session_token", name="uq_orchestration_sessions_session_token"),)
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    session_token: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="slack")
+    current_stage: Mapped[str] = mapped_column(String(32), nullable=False, default="initiated")
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_channel_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_thread_ts: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    intake_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="slack")
+    selected_path: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    current_question: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    current_question_key: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    current_question_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    current_question_schema: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    structured_context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    raw_conversation: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    normalized_intake: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    voice_context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    slack_context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    voice_handoff_token: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    voice_handoff_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    voice_handoff_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    voice_token_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    state_version: Mapped[int] = mapped_column(nullable=False, default=0)
+    last_processed_message_ts: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    last_processed_action_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    last_processed_transcript_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    intake_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    company_record: Mapped["CompanyEntity | None"] = relationship(back_populates="orchestration_sessions")
+    job_record: Mapped["JobEntity | None"] = relationship(back_populates="orchestration_sessions")
+    events: Mapped[list["OrchestrationEventEntity"]] = relationship(back_populates="session_record")
+
+
+class OrchestrationEventEntity(Base):
+    __tablename__ = "orchestration_events"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    session_id: Mapped[str] = mapped_column(GUID(), ForeignKey("orchestration_sessions.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    event_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="slack")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    session_record: Mapped["OrchestrationSessionEntity"] = relationship(back_populates="events")
 
 
 class ATSExportEntity(Base):

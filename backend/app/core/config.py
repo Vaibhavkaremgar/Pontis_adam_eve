@@ -67,6 +67,15 @@ PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
 PDL_ENABLED = os.getenv("PDL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
+SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip()
+SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
+SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "10"))
+SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "3"))
+SERPAPI_RETRY_ATTEMPTS = int(os.getenv("SERPAPI_RETRY_ATTEMPTS", "3"))
+SERPAPI_MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("SERPAPI_MIN_REQUEST_INTERVAL_SECONDS", "0.35"))
+SERPAPI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("SERPAPI_REQUEST_TIMEOUT_SECONDS", "15"))
 USE_INTERNAL_CANDIDATE_DB = os.getenv("USE_INTERNAL_CANDIDATE_DB", "false").strip().lower() in {"1", "true", "yes", "on"}
 PROXYCURL_URL = os.getenv("PROXYCURL_URL", "https://api.ninjapear.com/v1/person/search")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
@@ -85,6 +94,22 @@ if not FRONTEND_ORIGIN and PUBLIC_APP_URL:
     FRONTEND_ORIGIN = PUBLIC_APP_URL
 if not FRONTEND_ORIGIN:
     FRONTEND_ORIGIN = "https://adam.pontis.one"
+
+
+def _is_local_sqlite_allowed_environment() -> bool:
+    return APP_ENV in {"development", "dev", "local", "test"}
+
+
+def _is_railway_environment() -> bool:
+    return any(
+        os.getenv(name, "").strip()
+        for name in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_DEPLOYMENT_ID",
+        )
+    )
 
 def _normalize_origin(value: str) -> str:
     parsed = urlparse(value.strip())
@@ -207,6 +232,8 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
     if PDL_ENABLED and not PDL_API_KEY:
         warnings.append("PDL_API_KEY is missing; candidate enrichment will skip PDL.")
+    if SERPAPI_ENABLED and not SERPAPI_API_KEY:
+        warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will skip SerpApi.")
     if not REDIS_URL:
         warnings.append("REDIS_URL is missing; cache will use in-memory fallback.")
     if not GOOGLE_OAUTH_CLIENT_ID:
@@ -254,8 +281,17 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
 
     if DATABASE_URL and not str(DATABASE_URL).startswith(("postgresql://", "postgres://", "sqlite:///")):
         issues.append(ConfigIssue(key="DATABASE_URL", severity="critical", message="DATABASE_URL must be a valid database URL"))
-    if resolved_production and str(DATABASE_URL or "").startswith("sqlite:///"):
-        issues.append(ConfigIssue(key="DATABASE_URL", severity="critical", message="SQLite is not allowed in production"))
+    sqlite_url = str(DATABASE_URL or "").startswith("sqlite:///")
+    if sqlite_url:
+        sqlite_allowed = _is_local_sqlite_allowed_environment() and not _is_railway_environment()
+        if not sqlite_allowed:
+            issues.append(
+                ConfigIssue(
+                    key="DATABASE_URL",
+                    severity="critical",
+                    message="SQLite is only allowed for explicit local/test fallback, never on Railway or production-like environments",
+                )
+            )
 
     if PUBLIC_APP_URL and not _is_valid_url(PUBLIC_APP_URL):
         issues.append(ConfigIssue(key="PUBLIC_APP_URL", severity="critical", message="PUBLIC_APP_URL must be an absolute URL"))

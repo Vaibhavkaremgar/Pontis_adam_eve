@@ -17,6 +17,7 @@ from app.db.repositories import (
 )
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_service import fetch_ranked_candidates
+from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.recruiter_preference_round_service import (
     bootstrap_preference_session,
@@ -400,6 +401,18 @@ def _store_selection_feedback(
     )
     scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback="accept")
     interview_repo.upsert_status(job_id=job_id, candidate_id=selected_candidate_id, status="shortlisted", create_default="shortlisted")
+    record_job_lifecycle_event(
+        db=db,
+        job_id=job_id,
+        event_type="CANDIDATE_SAVED",
+        payload={
+            "jobId": job_id,
+            "candidateId": selected_candidate_id,
+            "selectionSessionId": session_id,
+            "status": "shortlisted",
+        },
+        source="selection",
+    )
 
     for candidate_id in rejected_candidate_ids:
         if not candidate_id or candidate_id == selected_candidate_id:
@@ -424,6 +437,18 @@ def _store_selection_feedback(
         )
         scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback="reject")
         interview_repo.upsert_status(job_id=job_id, candidate_id=candidate_id, status="rejected", create_default="rejected")
+        record_job_lifecycle_event(
+            db=db,
+            job_id=job_id,
+            event_type="CANDIDATE_REJECTED",
+            payload={
+                "jobId": job_id,
+                "candidateId": candidate_id,
+                "selectionSessionId": session_id,
+                "status": "rejected",
+            },
+            source="selection",
+        )
 
 
 def _session_payload(

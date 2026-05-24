@@ -58,6 +58,14 @@ function dedupeCandidates(candidates: Candidate[]): Candidate[] {
   return Array.from(byId.values());
 }
 
+function hasReachableEmail(candidate: Candidate): boolean {
+  const email = (candidate.email || "").trim().toLowerCase();
+  if (!email || !email.includes("@")) return false;
+  if (candidate.isMockEmail) return false;
+  if (email.endsWith("@test.local")) return false;
+  return true;
+}
+
 export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const { candidates, isRefined, jobId, setCandidates } = useAppContext();
   const [pipelineTab, setPipelineTab] = useState<PipelineTab>("all");
@@ -68,7 +76,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [actionLoadingId, setActionLoadingId] = useState("");
 
-  const uniqueCandidates = useMemo(() => dedupeCandidates(candidates), [candidates]);
+  const uniqueCandidates = useMemo(() => dedupeCandidates(candidates).filter(hasReachableEmail), [candidates]);
 
   const counts = useMemo(
     () => ({
@@ -349,7 +357,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
           onClick={() => handleSingleOutreach(candidate.id)}
           disabled={actionLoadingId === candidate.id}
         >
-          {actionLoadingId === candidate.id ? "Sending..." : "Send Outreach"}
+          {actionLoadingId === candidate.id ? "Sending..." : "Select & Outreach"}
         </Button>
         <Button
           className="justify-center"
