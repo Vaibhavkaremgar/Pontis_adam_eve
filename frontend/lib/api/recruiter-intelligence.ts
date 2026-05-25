@@ -36,8 +36,10 @@ export type RecruiterIntelligenceSession = {
   selection: {
     status?: string;
     stage?: string;
+    current_calibration_set_id?: string;
     rounds?: Array<{
       round_index: number;
+      calibration_set_id?: string;
       candidate_ids: string[];
       candidates: Array<Record<string, unknown>>;
       signal_quality: number;
@@ -55,8 +57,11 @@ export type RecruiterIntelligenceSession = {
     status?: string;
     stage?: string;
     current_round_index?: number;
+    current_calibration_set_id?: string;
+    orchestration_session_id?: string;
     rounds?: Array<{
       round_index: number;
+      calibration_set_id?: string;
       candidate_ids: string[];
       candidates: Array<Record<string, unknown>>;
       signal_quality: number;
@@ -83,6 +88,7 @@ export type RecruiterIntelligenceUpdatePayload = {
 export type RecruiterCalibrationChoicePayload = {
   jobId: string;
   candidateId: string;
+  calibrationSetId?: string;
 };
 
 export async function getRecruiterIntelligence(

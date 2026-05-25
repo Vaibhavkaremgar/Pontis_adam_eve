@@ -247,6 +247,89 @@ class IntegrationTests(unittest.TestCase):
         self.assertIn("/api/slack/commands", paths)
         self.assertIn("/api/slack/interactions", paths)
 
+    def test_slack_intake_surfaces_path_selection_before_completion(self) -> None:
+        from app.db.repositories import OrchestrationSessionRepository
+        from app.services import orchestration_service as orchestration_module
+        from app.services.orchestration_service import process_slack_answer, start_or_resume_slack_intake
+
+        team_id = "T-INTEGRATION"
+        channel_id = "C-INTEGRATION"
+        user_id = self.user.id
+
+        start_result = start_or_resume_slack_intake(
+            db=self.db,
+            slack_team_id=team_id,
+            slack_channel_id=channel_id,
+            slack_user_id=user_id,
+            initial_brief="frontend developer",
+        )
+        self.assertFalse(start_result.get("pathSelectionNeeded"))
+
+        session_repo = OrchestrationSessionRepository(self.db)
+        session = session_repo.get_active_by_slack_context(
+            slack_team_id=team_id,
+            slack_channel_id=channel_id,
+            slack_thread_ts="",
+            slack_user_id=user_id,
+            source="slack",
+        )
+        self.assertIsNotNone(session)
+        assert session is not None
+        session.slack_thread_ts = "thread-1"
+        session.current_question_key = "hiring_signals"
+        session.current_question = "What signals would make this candidate stand out?"
+        session.normalized_intake = {
+            "company_name": "Acme Inc",
+            "role_title": "Frontend Developer",
+            "must_have_requirements": ["React", "TypeScript"],
+            "success_profile": "product-minded and collaborative",
+            "skills": ["React", "TypeScript"],
+            "seniority": "senior",
+            "location": "Remote",
+            "compensation": "$180k",
+            "hiring_signals": [],
+            "tech_stack": ["React"],
+            "hiring_priorities": ["ownership", "speed"],
+            "culture_fit": "collaborative and product-minded",
+            "communication_style": "clear stakeholder communication",
+            "team_maturity": "scaling",
+            "leadership_expectations": "mentors juniors",
+            "architecture_complexity": "moderate frontend architecture",
+            "urgency": "soon",
+            "team_structure": "small product squad",
+            "stakeholder_management": "light but important",
+        }
+        self.db.commit()
+
+        def fake_generate(prompt, expect_json=False):
+            prompt_text = str(prompt)
+            if "Extract structured hiring intake data" in prompt_text:
+                return {
+                    "field_name": "company_name",
+                    "field_value": "Acme Inc",
+                    "confidence": 0.95,
+                    "accepted": True,
+                    "field_status": "accepted",
+                    "completion_confidence": 0.95,
+                    "summary": "Acme Inc",
+                }
+            return {"question": "What company is hiring for this role?", "question_key": "company_name", "confidence": 0.75}
+
+        with patch.object(orchestration_module, "generate", side_effect=fake_generate):
+            followup = process_slack_answer(
+                db=self.db,
+                slack_team_id=team_id,
+                slack_channel_id=channel_id,
+                slack_user_id=user_id,
+                thread_ts="thread-1",
+                answer="frontend quality, product thinking",
+                timestamp="1234567890.1",
+            )
+
+        self.assertFalse(followup["completed"])
+        self.assertTrue(followup["pathSelectionNeeded"])
+        self.assertEqual(followup["nextQuestionKey"], "path_selection")
+
     def _post_resend_inbound_reply(
         self,
         *,

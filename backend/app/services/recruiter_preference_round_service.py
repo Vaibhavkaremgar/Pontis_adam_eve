@@ -140,6 +140,61 @@ def _ordered_unique(values: list[str]) -> list[str]:
     return ordered
 
 
+def _stable_calibration_set_id(round_index: int) -> str:
+    return f"calibration-set-{max(1, int(round_index or 1))}"
+
+
+def _stable_archetype_id(calibration_set_id: str, option_index: int) -> str:
+    safe_set_id = _normalize_text(calibration_set_id) or _stable_calibration_set_id(1)
+    return f"{safe_set_id}-archetype-{max(1, int(option_index or 0) + 1)}"
+
+
+def _json_safe_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, set):
+        return [_json_safe_value(item) for item in sorted(value, key=lambda item: str(item))]
+    if hasattr(value, "__dict__"):
+        return _json_safe_value(vars(value))
+    if hasattr(value, "dict") and callable(getattr(value, "dict")):
+        try:
+            return _json_safe_value(value.dict())  # type: ignore[call-arg]
+        except Exception:
+            pass
+    if hasattr(value, "model_dump") and callable(getattr(value, "model_dump")):
+        try:
+            return _json_safe_value(value.model_dump())  # type: ignore[call-arg]
+        except Exception:
+            pass
+    return _normalize_text(value)
+
+
+def _calibration_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    snapshot = _json_safe_value(state)
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    snapshot["rounds"] = _json_safe_value(list(state.get("rounds") or []))
+    snapshot["archetype_sets"] = _json_safe_value(list(state.get("archetype_sets") or []))
+    snapshot["archetype_pool"] = _json_safe_value(list(state.get("archetype_pool") or []))
+    snapshot["history"] = _json_safe_value(list(state.get("history") or []))
+    snapshot["selected_archetype_ids"] = list(state.get("selected_archetype_ids") or [])
+    snapshot["selected_candidate_ids"] = list(state.get("selected_candidate_ids") or [])
+    snapshot["rejected_candidate_ids"] = list(state.get("rejected_candidate_ids") or [])
+    snapshot["recommended_questions"] = list(state.get("recommended_questions") or [])
+    snapshot["current_pair"] = _json_safe_value(dict(state.get("current_pair") or {}))
+    snapshot["telemetry"] = _json_safe_value(dict(state.get("telemetry") or {}))
+    snapshot["intent_profile"] = _json_safe_value(dict(state.get("intent_profile") or {}))
+    snapshot["gap_analysis"] = _json_safe_value(dict(state.get("gap_analysis") or {}))
+    snapshot["calibration_set_ids"] = [str(item.get("calibration_set_id") or "").strip() for item in list(state.get("archetype_sets") or []) if str(item.get("calibration_set_id") or "").strip()]
+    return snapshot
+
+
 def _job_mode(job: Any) -> str:
     value = _normalize_text(getattr(job, "vetting_mode", "") or getattr(job, "vettingMode", "") or "volume").lower()
     return value if value in {"volume", "elite"} else "volume"
@@ -856,7 +911,7 @@ def _load_calibration_state(*, recruiter_id: str, job_id: str) -> dict[str, Any]
 
 def _save_calibration_state(*, recruiter_id: str, job_id: str, state: dict[str, Any]) -> dict[str, Any]:
     redis = get_redis()
-    state = dict(state)
+    state = _calibration_state_snapshot(state)
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     if redis is not None:
         try:
@@ -864,6 +919,42 @@ def _save_calibration_state(*, recruiter_id: str, job_id: str, state: dict[str, 
         except Exception:
             pass
     return state
+
+
+def _load_calibration_state_from_job(*, db: Session, recruiter_id: str, job_id: str) -> dict[str, Any] | None:
+    job = JobRepository(db).get(job_id)
+    if not job:
+        return None
+
+    structured = dict(job.structured_data or {})
+    calibration = structured.get("recruiterCalibration")
+    if not isinstance(calibration, dict):
+        return None
+
+    snapshot = calibration.get("state")
+    if not isinstance(snapshot, dict):
+        return None
+
+    snapshot_recruiter_id = _normalize_text(snapshot.get("recruiter_id") or snapshot.get("recruiterId"))
+    if snapshot_recruiter_id and snapshot_recruiter_id != _normalize_text(recruiter_id):
+        return None
+
+    restored = dict(snapshot)
+    restored.setdefault("job_id", job_id)
+    restored.setdefault("recruiter_id", _normalize_text(recruiter_id))
+    restored.setdefault("archetype_sets", [])
+    restored.setdefault("rounds", [])
+    restored.setdefault("history", [])
+    restored.setdefault("selected_candidate_ids", [])
+    restored.setdefault("selected_archetype_ids", [])
+    restored.setdefault("rejected_candidate_ids", [])
+    restored.setdefault("telemetry", {})
+    restored.setdefault("intent_profile", {})
+    restored.setdefault("gap_analysis", {})
+    restored.setdefault("recommended_questions", [])
+    restored.setdefault("current_pair", {})
+    restored.setdefault("orchestration_session_id", _normalize_text(calibration.get("orchestrationSessionId") or calibration.get("orchestration_session_id") or snapshot.get("orchestration_session_id") or snapshot.get("orchestrationSessionId")))
+    return restored
 
 
 def _job_text_field(job: Any, *keys: str) -> str:
@@ -945,7 +1036,14 @@ def _normalize_archetype_field(value: Any) -> str:
     return _normalize_text_value(value)
 
 
-def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: int, option_index: int) -> dict[str, Any]:
+def _normalize_archetype_option(
+    option: dict[str, Any],
+    *,
+    job: Any,
+    set_index: int,
+    option_index: int,
+    calibration_set_id: str,
+) -> dict[str, Any]:
     set_suffix = f"r{set_index + 1}-{chr(ord('a') + option_index)}"
     fallback_headline = f"{_job_text_field(job, 'title') or 'Candidate'} {set_suffix}".strip()
     candidate_headline = _candidate_headline_from_option(option, fallback=fallback_headline)
@@ -992,6 +1090,7 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
     job_title = _job_text_field(job, "title") or "the role"
     role = title
     skills = _ordered_unique([*technical_strengths, *strengths, *leadership_profile, *hiring_tradeoffs])
+    archetype_id = _stable_archetype_id(calibration_set_id, option_index)
     summary = (
         f"{candidate_headline} is a believable ideal candidate for {job_title}. "
         f"Experience snapshot: {experience_snapshot or 'not specified'}. "
@@ -1029,7 +1128,10 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
         },
     )
     return {
-        "id": f"archetype-{set_suffix}",
+        "id": archetype_id,
+        "archetype_id": archetype_id,
+        "calibration_set_id": calibration_set_id,
+        "calibrationSetId": calibration_set_id,
         "name": candidate_headline,
         "role": candidate_headline,
         "company": "Preference Calibration",
@@ -1062,6 +1164,10 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
         "profileData": {
             "source": "groq_archetype_calibration",
             "isArchetype": True,
+            "calibrationSetId": calibration_set_id,
+            "calibration_set_id": calibration_set_id,
+            "archetypeId": archetype_id,
+            "archetype_id": archetype_id,
             "setIndex": set_index + 1,
             "optionIndex": option_index + 1,
             "setTitle": _normalize_archetype_field(option.get("set_title") or option.get("setTitle") or ""),
@@ -1204,13 +1310,22 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
     ]
     sets: list[dict[str, Any]] = []
     for index, (title, theme, archetypes) in enumerate(templates[:_CALIBRATION_SET_COUNT]):
+        calibration_set_id = _stable_calibration_set_id(index + 1)
         sets.append(
             {
                 "round_index": index + 1,
+                "calibration_set_id": calibration_set_id,
+                "calibrationSetId": calibration_set_id,
                 "set_title": title,
                 "set_theme": theme,
                 "archetypes": [
-                    _normalize_archetype_option({**archetype, "set_title": title, "set_theme": theme}, job=job, set_index=index, option_index=option_index)
+                    _normalize_archetype_option(
+                        {**archetype, "set_title": title, "set_theme": theme},
+                        job=job,
+                        set_index=index,
+                        option_index=option_index,
+                        calibration_set_id=calibration_set_id,
+                    )
                     for option_index, archetype in enumerate(archetypes[:_CALIBRATION_OPTIONS_PER_SET])
                 ],
             }
@@ -1239,17 +1354,25 @@ def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict
         archetypes = raw_set.get("archetypes") or raw_set.get("items") or []
         if not isinstance(archetypes, list):
             continue
+        calibration_set_id = _stable_calibration_set_id(int(raw_set.get("round_index") or set_index + 1))
         normalized_sets.append(
             {
                 "round_index": int(raw_set.get("round_index") or set_index + 1),
+                "calibration_set_id": calibration_set_id,
+                "calibrationSetId": calibration_set_id,
                 "set_title": _normalize_archetype_field(raw_set.get("set_title") or raw_set.get("title") or f"Calibration set {set_index + 1}"),
                 "set_theme": _normalize_archetype_field(raw_set.get("set_theme") or raw_set.get("theme") or ""),
                 "archetypes": [
                     _normalize_archetype_option(
-                        {**(archetype if isinstance(archetype, dict) else {}), "set_title": raw_set.get("set_title") or raw_set.get("title") or "", "set_theme": raw_set.get("set_theme") or raw_set.get("theme") or ""},
+                        {
+                            **(archetype if isinstance(archetype, dict) else {}),
+                            "set_title": raw_set.get("set_title") or raw_set.get("title") or "",
+                            "set_theme": raw_set.get("set_theme") or raw_set.get("theme") or "",
+                        },
                         job=job,
                         set_index=set_index,
                         option_index=option_index,
+                        calibration_set_id=calibration_set_id,
                     )
                     for option_index, archetype in enumerate(archetypes[:_CALIBRATION_OPTIONS_PER_SET])
                     if isinstance(archetype, dict)
@@ -1274,6 +1397,7 @@ def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict
 def _flatten_archetype_sets(archetype_sets: list[dict[str, Any]]) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
     for set_index, archetype_set in enumerate(archetype_sets):
+        calibration_set_id = str(archetype_set.get("calibration_set_id") or archetype_set.get("calibrationSetId") or _stable_calibration_set_id(set_index + 1)).strip()
         for option_index, archetype in enumerate(archetype_set.get("archetypes") or []):
             flattened.append(
                 {
@@ -1282,6 +1406,8 @@ def _flatten_archetype_sets(archetype_sets: list[dict[str, Any]]) -> list[dict[s
                     "optionIndex": option_index + 1,
                     "setTitle": archetype_set.get("set_title", ""),
                     "setTheme": archetype_set.get("set_theme", ""),
+                    "calibration_set_id": calibration_set_id,
+                    "calibrationSetId": calibration_set_id,
                 }
             )
     return flattened
@@ -1298,8 +1424,15 @@ def _persist_calibration_snapshot(*, db: Session, job_id: str, state: dict[str, 
     structured["recruiterCalibration"] = {
         "source": state.get("candidate_source", "groq_archetypes"),
         "archetypeCount": len(archetype_pool),
+        "calibrationSetIds": [str(item.get("calibration_set_id") or "").strip() for item in list(state.get("archetype_sets") or []) if str(item.get("calibration_set_id") or "").strip()],
+        "currentCalibrationSetId": str((state.get("current_pair") or {}).get("calibration_set_id") or "").strip(),
         "selectedArchetypeIds": list(state.get("selected_archetype_ids") or []),
+        "selectedCandidateIds": list(state.get("selected_candidate_ids") or []),
+        "rejectedCandidateIds": list(state.get("rejected_candidate_ids") or []),
         "setTitles": [str(item.get("set_title") or "").strip() for item in list(state.get("archetype_sets") or []) if str(item.get("set_title") or "").strip()],
+        "currentRoundIndex": int(state.get("current_round_index") or 1),
+        "history": list(state.get("history") or []),
+        "state": _calibration_state_snapshot(state),
         "updatedAt": datetime.now(timezone.utc).isoformat(),
     }
     job_repo.update_structured_fields(job_id=job_id, structured_data=structured)
@@ -1312,6 +1445,7 @@ def bootstrap_preference_calibration_session(
     job_id: str,
     voice_summary: str = "",
     gap_analysis: dict[str, Any] | None = None,
+    orchestration_session_id: str = "",
 ) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
@@ -1321,6 +1455,11 @@ def bootstrap_preference_calibration_session(
     existing_state = _load_calibration_state(recruiter_id=recruiter_id, job_id=job_id)
     if existing_state:
         return existing_state
+
+    restored_state = _load_calibration_state_from_job(db=db, recruiter_id=recruiter_id, job_id=job_id)
+    if restored_state:
+        _save_calibration_state(recruiter_id=recruiter_id, job_id=job_id, state=restored_state)
+        return restored_state
 
     gap_analysis = gap_analysis or analyze_job_gap(job=job, voice_summary=voice_summary)
     intent_profile = build_recruiter_intent_profile(
@@ -1341,9 +1480,11 @@ def bootstrap_preference_calibration_session(
         intent_profile=intent_profile,
     )
     archetype_pool = _flatten_archetype_sets(archetype_sets)
+    current_pair = dict(archetype_sets[0] or {}) if archetype_sets else {}
     state = {
         "job_id": job_id,
         "recruiter_id": recruiter_id,
+        "orchestration_session_id": _normalize_text(orchestration_session_id),
         "status": "active",
         "stage": "archetype_calibration",
         "current_round_index": 1,
@@ -1352,6 +1493,7 @@ def bootstrap_preference_calibration_session(
         "rounds": [
             {
                 "round_index": item.get("round_index", index + 1),
+                "calibration_set_id": str(item.get("calibration_set_id") or item.get("calibrationSetId") or _stable_calibration_set_id(index + 1)).strip(),
                 "candidate_ids": [archetype.get("id", "") for archetype in item.get("archetypes", [])],
                 "candidates": [dict(archetype) for archetype in item.get("archetypes", [])],
                 "signal_quality": round(0.75 - (index * 0.05), 4),
@@ -1365,7 +1507,8 @@ def bootstrap_preference_calibration_session(
             }
             for index, item in enumerate(archetype_sets)
         ],
-        "current_pair": (archetype_sets[0] or {}).copy() if archetype_sets else {},
+        "current_pair": current_pair,
+        "current_calibration_set_id": str(current_pair.get("calibration_set_id") or current_pair.get("calibrationSetId") or "").strip(),
         "selected_candidate_ids": [],
         "selected_archetype_ids": [],
         "rejected_candidate_ids": [],
@@ -1404,27 +1547,79 @@ def _calibration_current_set(state: dict[str, Any]) -> dict[str, Any]:
     return sets[0] if sets else {}
 
 
+def _calibration_set_by_id(state: dict[str, Any], calibration_set_id: str) -> dict[str, Any]:
+    target = _normalize_text(calibration_set_id)
+    if not target:
+        return {}
+    for item in list(state.get("archetype_sets") or []):
+        item_set_id = _normalize_text(item.get("calibration_set_id") or item.get("calibrationSetId"))
+        if item_set_id == target:
+            return item
+    return {}
+
+
+def _calibration_history_for_set(state: dict[str, Any], calibration_set_id: str) -> dict[str, Any] | None:
+    target = _normalize_text(calibration_set_id)
+    if not target:
+        return None
+    for item in list(state.get("history") or []):
+        if _normalize_text(item.get("calibration_set_id") or item.get("calibrationSetId")) == target:
+            return item
+    return None
+
+
 def record_preference_calibration_choice(
     *,
     db: Session,
     recruiter_id: str,
     job_id: str,
     selected_candidate_id: str,
+    calibration_set_id: str = "",
 ) -> dict[str, Any]:
     recruiter_id = _normalize_text(recruiter_id)
+    selected_candidate_id = _normalize_text(selected_candidate_id)
+    calibration_set_id = _normalize_text(calibration_set_id)
     job = JobRepository(db).get(job_id)
     if not job:
         raise ValueError("Job not found")
 
     state = _load_calibration_state(recruiter_id=recruiter_id, job_id=job_id)
     if not state:
-        state = bootstrap_preference_calibration_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
+        state = _load_calibration_state_from_job(db=db, recruiter_id=recruiter_id, job_id=job_id)
+    if not state:
+        raise ValueError("Calibration state is missing or expired")
 
-    current_set = _calibration_current_set(state)
+    active_set = _calibration_current_set(state)
+    current_set = _calibration_set_by_id(state, calibration_set_id) if calibration_set_id else _calibration_current_set(state)
+    if not current_set and calibration_set_id:
+        current_set = _calibration_current_set(state)
+    if not current_set:
+        raise ValueError("Calibration set is missing or expired")
+
+    resolved_set_id = _normalize_text(current_set.get("calibration_set_id") or current_set.get("calibrationSetId") or calibration_set_id)
+    if not resolved_set_id:
+        resolved_set_id = _stable_calibration_set_id(int(current_set.get("round_index") or state.get("current_round_index") or 1))
+
+    active_set_id = _normalize_text(active_set.get("calibration_set_id") or active_set.get("calibrationSetId"))
+    if active_set_id and resolved_set_id != active_set_id:
+        previous_selection = _calibration_history_for_set(state, resolved_set_id)
+        if previous_selection:
+            previous_selected_id = _normalize_text(previous_selection.get("selected_archetype_id") or previous_selection.get("selectedArchetypeId"))
+            if previous_selected_id == selected_candidate_id:
+                return state
+        raise ValueError("Archetype is not part of the active calibration set")
+
+    previous_selection = _calibration_history_for_set(state, resolved_set_id)
+    if previous_selection:
+        previous_selected_id = _normalize_text(previous_selection.get("selected_archetype_id") or previous_selection.get("selectedArchetypeId"))
+        if previous_selected_id == selected_candidate_id:
+            return state
+        raise ValueError("Calibration set has already been resolved")
+
     current_options = list(current_set.get("archetypes") or [])
     option_lookup = {str(option.get("id") or "").strip(): option for option in current_options if str(option.get("id") or "").strip()}
     if selected_candidate_id not in option_lookup:
-        raise ValueError("Archetype is not part of the active calibration set")
+        raise ValueError("Archetype is not part of the selected calibration set")
 
     selected_option = option_lookup[selected_candidate_id]
     rejected_options = [option for option in current_options if option.get("id") != selected_candidate_id]
@@ -1447,7 +1642,10 @@ def record_preference_calibration_choice(
 
     history_entry = {
         "round_index": int(state.get("current_round_index") or 1),
+        "calibration_set_id": resolved_set_id,
+        "calibrationSetId": resolved_set_id,
         "selected_archetype_id": selected_candidate_id,
+        "selectedArchetypeId": selected_candidate_id,
         "selected_archetype_title": selected_option.get("name") or selected_option.get("role") or "",
         "rejected_archetype_ids": [str(option.get("id") or "").strip() for option in rejected_options if str(option.get("id") or "").strip()],
         "selected_at": datetime.now(timezone.utc).isoformat(),
@@ -1460,6 +1658,7 @@ def record_preference_calibration_choice(
         dict.fromkeys([*state.get("rejected_candidate_ids", []), *history_entry["rejected_archetype_ids"]])
     )
     state["history"] = [*list(state.get("history") or []), history_entry]
+    state["current_calibration_set_id"] = resolved_set_id
     state["telemetry"] = {
         **dict(state.get("telemetry") or {}),
         "preference_learning_gain": round(min(1.0, (int(state.get("current_round_index") or 1) / float(_CALIBRATION_SET_COUNT)) * 0.4), 4),
@@ -1473,13 +1672,15 @@ def record_preference_calibration_choice(
     if next_round_index <= _CALIBRATION_SET_COUNT:
         state["current_round_index"] = next_round_index
         next_set = next((item for item in state.get("archetype_sets") or [] if int(item.get("round_index") or 0) == next_round_index), {})
-        state["current_pair"] = next_set
+        state["current_pair"] = dict(next_set) if isinstance(next_set, dict) else {}
+        state["current_calibration_set_id"] = str((state["current_pair"] or {}).get("calibration_set_id") or (state["current_pair"] or {}).get("calibrationSetId") or "").strip()
         state["status"] = "active"
         state["stage"] = "archetype_calibration"
     else:
         state["status"] = "completed"
         state["stage"] = "real_sourcing_ready"
         state["current_pair"] = {}
+        state["current_calibration_set_id"] = ""
 
     final_state = _save_calibration_state(recruiter_id=recruiter_id, job_id=job_id, state=state)
     _persist_calibration_snapshot(db=db, job_id=job_id, state=final_state)
@@ -1520,11 +1721,13 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
             "stage": "archetype_calibration",
             "rounds": [],
             "current_pair": {},
+            "current_calibration_set_id": "",
             "history": [],
             "intent_profile": {},
             "recommended_questions": [],
             "telemetry": {},
             "archetype_sets": [],
+            "orchestration_session_id": "",
         }
 
     return {
@@ -1535,6 +1738,7 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
         "rounds": list(state.get("rounds") or []),
         "current_round_index": int(state.get("current_round_index") or 1),
         "current_pair": state.get("current_pair") or {},
+        "current_calibration_set_id": str(state.get("current_calibration_set_id") or (state.get("current_pair") or {}).get("calibration_set_id") or (state.get("current_pair") or {}).get("calibrationSetId") or "").strip(),
         "history": list(state.get("history") or []),
         "gap_analysis": state.get("gap_analysis") or {},
         "recommended_questions": list(state.get("recommended_questions") or []),
@@ -1542,4 +1746,5 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
         "telemetry": state.get("telemetry") or {},
         "voice_summary": state.get("voice_summary", ""),
         "archetype_sets": list(state.get("archetype_sets") or []),
+        "orchestration_session_id": str(state.get("orchestration_session_id") or "").strip(),
     }

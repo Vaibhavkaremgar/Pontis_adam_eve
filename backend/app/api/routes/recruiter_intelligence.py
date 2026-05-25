@@ -37,6 +37,7 @@ class RecruiterIntelligenceUpdateRequest(BaseModel):
 class RecruiterCalibrationChoiceRequest(BaseModel):
     jobId: str
     candidateId: str
+    calibrationSetId: str = ""
 
 
 @router.get("/{recruiter_id}/intelligence/jobs/{job_id}")
@@ -120,6 +121,7 @@ def choose_recruiter_calibration_archetype(
         recruiter_id=recruiter_id,
         job_id=job_id,
         selected_candidate_id=payload.candidateId,
+        calibration_set_id=payload.calibrationSetId,
     )
     db.commit()
     return success_response(

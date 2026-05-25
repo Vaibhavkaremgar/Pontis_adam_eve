@@ -61,8 +61,9 @@ from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.db.repositories import _candidate_email_value
 from app.services.candidate_service import _candidate_identity_key, build_selection_candidate_snapshot
 import app.services.candidate_service as candidate_service
+import app.services.recruiter_preference_round_service as calibration_service
 from app.services import candidate_selection_service
-from app.services.slack_integration import build_calibration_blocks
+from app.services.slack_integration import build_calibration_blocks, extract_button_action
 from app.services.preference_pair_service import generate_three_round_plan
 from app.services import outreach_service
 
@@ -305,6 +306,199 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertIn("*Technical strengths:* Python, FastAPI, Postgres", rendered)
         self.assertIn("*Leadership profile:* Mentors juniors, Handles ambiguity well", rendered)
         self.assertNotIn("P, y, t, h, o, n", rendered)
+
+    def test_slack_calibration_payload_uses_stable_calibration_set_id(self) -> None:
+        blocks = build_calibration_blocks(
+            job_id="job-1",
+            current_index=1,
+            total_sets=3,
+            calibration_set={
+                "calibration_set_id": "calibration-set-1",
+                "set_title": "Startup Depth vs Scaled Reliability",
+                "archetypes": [
+                    {
+                        "id": "calibration-set-1-archetype-1",
+                        "profileData": {"candidateHeadline": "Senior Backend Engineer"},
+                    }
+                ],
+            },
+        )
+
+        action_block = next(block for block in blocks if isinstance(block, dict) and block.get("type") == "actions")
+        button = action_block["elements"][0]
+
+        self.assertEqual(button["value"], "calibration_select:calibration-set-1:calibration-set-1-archetype-1:job-1")
+        self.assertEqual(
+            extract_button_action({"actions": [{"value": button["value"], "action_id": "calibration_select"}]}),
+            ("calibration_select", "calibration-set-1-archetype-1", "job-1", "calibration-set-1"),
+        )
+
+    def test_calibration_choice_is_stable_and_replay_safe(self) -> None:
+        selected_id = "calibration-set-1-archetype-1"
+        other_id = "calibration-set-1-archetype-2"
+        calibration_state = {
+            "job_id": "job-1",
+            "recruiter_id": "recruiter-1",
+            "status": "active",
+            "stage": "archetype_calibration",
+            "current_round_index": 1,
+            "current_pair": {
+                "round_index": 1,
+                "calibration_set_id": "calibration-set-1",
+                "set_title": "Startup Depth vs Scaled Reliability",
+                "archetypes": [
+                    {"id": selected_id, "name": "Senior Backend Engineer"},
+                    {"id": other_id, "name": "Staff Platform Engineer"},
+                ],
+            },
+            "current_calibration_set_id": "calibration-set-1",
+            "archetype_sets": [
+                {
+                    "round_index": 1,
+                    "calibration_set_id": "calibration-set-1",
+                    "set_title": "Startup Depth vs Scaled Reliability",
+                    "archetypes": [
+                        {"id": selected_id, "name": "Senior Backend Engineer"},
+                        {"id": other_id, "name": "Staff Platform Engineer"},
+                    ],
+                },
+                {
+                    "round_index": 2,
+                    "calibration_set_id": "calibration-set-2",
+                    "set_title": "Product Focus vs Delivery Muscle",
+                    "archetypes": [
+                        {"id": "calibration-set-2-archetype-1", "name": "Product-Minded Fullstack Engineer"},
+                        {"id": "calibration-set-2-archetype-2", "name": "Startup GTM Operator"},
+                    ],
+                },
+            ],
+            "archetype_pool": [],
+            "rounds": [],
+            "selected_candidate_ids": [],
+            "selected_archetype_ids": [],
+            "rejected_candidate_ids": [],
+            "history": [],
+            "gap_analysis": {},
+            "recommended_questions": [],
+            "vetting_mode": "volume",
+            "candidate_source": "groq_archetypes",
+            "intent_profile": {},
+            "voice_summary": "",
+            "telemetry": {},
+            "orchestration_session_id": "",
+        }
+
+        class _DummyJob:
+            id = "job-1"
+
+        with patch.object(calibration_service.JobRepository, "get", return_value=_DummyJob()), patch.object(
+            calibration_service, "_load_calibration_state", return_value=calibration_state
+        ), patch.object(calibration_service, "_save_calibration_state", side_effect=lambda **kwargs: kwargs["state"]), patch.object(
+            calibration_service, "_persist_calibration_snapshot", return_value=None
+        ), patch.object(
+            calibration_service, "update_recruiter_preferences", return_value={}
+        ) as mock_update_preferences, patch.object(
+            calibration_service, "save_cached_intent_profile", return_value=None
+        ), patch.object(
+            calibration_service, "log_metric", return_value=None
+        ):
+            first_result = calibration_service.record_preference_calibration_choice(
+                db=object(),
+                recruiter_id="recruiter-1",
+                job_id="job-1",
+                selected_candidate_id=selected_id,
+                calibration_set_id="calibration-set-1",
+            )
+            replay_result = calibration_service.record_preference_calibration_choice(
+                db=object(),
+                recruiter_id="recruiter-1",
+                job_id="job-1",
+                selected_candidate_id=selected_id,
+                calibration_set_id="calibration-set-1",
+            )
+
+        self.assertEqual(first_result["current_round_index"], 2)
+        self.assertEqual(first_result["history"][0]["calibration_set_id"], "calibration-set-1")
+        self.assertEqual(first_result["history"][0]["selected_archetype_id"], selected_id)
+        self.assertEqual(replay_result["history"][0]["calibration_set_id"], "calibration-set-1")
+        self.assertEqual(mock_update_preferences.call_count, 1)
+
+    def test_stale_calibration_set_is_rejected_when_not_replayed(self) -> None:
+        selected_id = "calibration-set-1-archetype-1"
+        calibration_state = {
+            "job_id": "job-1",
+            "recruiter_id": "recruiter-1",
+            "status": "active",
+            "stage": "archetype_calibration",
+            "current_round_index": 2,
+            "current_pair": {
+                "round_index": 2,
+                "calibration_set_id": "calibration-set-2",
+                "set_title": "Product Focus vs Delivery Muscle",
+                "archetypes": [
+                    {"id": "calibration-set-2-archetype-1", "name": "Product-Minded Fullstack Engineer"},
+                    {"id": "calibration-set-2-archetype-2", "name": "Startup GTM Operator"},
+                ],
+            },
+            "current_calibration_set_id": "calibration-set-2",
+            "archetype_sets": [
+                {
+                    "round_index": 1,
+                    "calibration_set_id": "calibration-set-1",
+                    "set_title": "Startup Depth vs Scaled Reliability",
+                    "archetypes": [
+                        {"id": selected_id, "name": "Senior Backend Engineer"},
+                        {"id": "calibration-set-1-archetype-2", "name": "Staff Platform Engineer"},
+                    ],
+                },
+                {
+                    "round_index": 2,
+                    "calibration_set_id": "calibration-set-2",
+                    "set_title": "Product Focus vs Delivery Muscle",
+                    "archetypes": [
+                        {"id": "calibration-set-2-archetype-1", "name": "Product-Minded Fullstack Engineer"},
+                        {"id": "calibration-set-2-archetype-2", "name": "Startup GTM Operator"},
+                    ],
+                },
+            ],
+            "archetype_pool": [],
+            "rounds": [],
+            "selected_candidate_ids": [],
+            "selected_archetype_ids": [],
+            "rejected_candidate_ids": [],
+            "history": [],
+            "gap_analysis": {},
+            "recommended_questions": [],
+            "vetting_mode": "volume",
+            "candidate_source": "groq_archetypes",
+            "intent_profile": {},
+            "voice_summary": "",
+            "telemetry": {},
+            "orchestration_session_id": "",
+        }
+
+        class _DummyJob:
+            id = "job-1"
+
+        with patch.object(calibration_service.JobRepository, "get", return_value=_DummyJob()), patch.object(
+            calibration_service, "_load_calibration_state", return_value=calibration_state
+        ), patch.object(calibration_service, "_save_calibration_state", side_effect=lambda **kwargs: kwargs["state"]), patch.object(
+            calibration_service, "_persist_calibration_snapshot", return_value=None
+        ), patch.object(
+            calibration_service, "update_recruiter_preferences", return_value={}
+        ), patch.object(
+            calibration_service, "save_cached_intent_profile", return_value=None
+        ), patch.object(
+            calibration_service, "log_metric", return_value=None
+        ):
+            with self.assertRaisesRegex(ValueError, "Archetype is not part of the active calibration set"):
+                calibration_service.record_preference_calibration_choice(
+                    db=object(),
+                    recruiter_id="recruiter-1",
+                    job_id="job-1",
+                    selected_candidate_id=selected_id,
+                    calibration_set_id="calibration-set-1",
+                )
 
     def test_regular_outreach_email_does_not_bcc_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []

@@ -1422,6 +1422,7 @@ def start_or_resume_slack_intake(
     slack_channel_id: str,
     slack_thread_ts: str = "",
     slack_user_id: str = "",
+    initial_brief: str = "",
 ) -> dict[str, Any]:
     session_row = _ensure_session_row(
         db,
@@ -1430,6 +1431,14 @@ def start_or_resume_slack_intake(
         slack_thread_ts=slack_thread_ts,
         slack_user_id=slack_user_id,
     )
+    brief = _normalize_text(initial_brief)
+    if brief:
+        session_row.structured_context = {
+            **dict(session_row.structured_context or {}),
+            "initialBrief": brief,
+            "initialBriefSource": "slash_command",
+        }
+        session_row.updated_at = _now()
     intake = session_row.normalized_intake or _initial_intake_state()
     next_question = _next_core_question(intake)
     path_selection_needed = next_question is None
@@ -1475,6 +1484,7 @@ def start_or_resume_slack_intake(
             "questionKey": next_question_key,
             "questionSchema": question_schema,
             "source": "slack",
+            "initialBrief": brief,
             "stateVersion": session_row.state_version,
         },
     )
@@ -1574,6 +1584,28 @@ def process_slack_answer(
     )
 
     accepted = bool(extracted.get("accepted"))
+    path_selection_needed = _next_core_question(session_row.normalized_intake or _initial_intake_state()) is None
+    if _session_is_complete(session_row) and path_selection_needed:
+        session_row.current_stage = ORCHESTRATION_STAGE_SLACK
+        session_row.selected_path = "slack"
+        session_row.current_question_key = "path_selection"
+        session_row.current_question = "Core intake looks good. Choose whether to continue in Slack or switch to Voice."
+        session_row.current_question_type = _question_schema("path_selection").get("questionType", "")
+        session_row.current_question_schema = _question_schema("path_selection")
+        session_row.updated_at = _now()
+        session_row.state_version = int(getattr(session_row, "state_version", 0) or 0) + 1
+        db.commit()
+        return {
+            "completed": False,
+            "session": _session_payload(session_row),
+            "nextQuestion": session_row.current_question,
+            "nextQuestionKey": "path_selection",
+            "questionConfidence": 1.0,
+            "normalizedIntake": session_row.normalized_intake,
+            "pathSelectionNeeded": True,
+            "needsClarification": False,
+        }
+
     if _session_is_complete(session_row):
         _mark_session_complete(session_row)
         _append_event(db, session_id=session_row.id, event_type="INTAKE_COMPLETED", payload={"source": "slack"})
@@ -1887,14 +1919,29 @@ def complete_voice_handoff(
     transcript_hash = _stable_hash(session_row.id, token, combined_text)
     if _normalize_text(getattr(session_row, "last_processed_transcript_hash", "")) == transcript_hash:
         logger.info("voice_transcript_duplicate session_id=%s token=%s", session_row.id, token[:8])
+        calibration_state = None
+        finalization = None
+        if session_row.job_id:
+            finalization = {
+                "jobId": session_row.job_id,
+                "companyId": session_row.company_id,
+            }
+            recruiter_id = _normalize_text(session_row.slack_user_id or (dict(session_row.slack_context or {})).get("userId") or "")
+            if recruiter_id:
+                calibration_state = bootstrap_preference_calibration_session(
+                    db=db,
+                    recruiter_id=recruiter_id,
+                    job_id=session_row.job_id,
+                    voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
+                    gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
+                )
+                finalization["calibration"] = build_calibration_state_response(calibration_state)
         return {
             "completed": _session_is_complete(session_row),
             "session": _session_payload(session_row),
             "duplicate": True,
-            "finalization": {
-                "jobId": session_row.job_id,
-                "companyId": session_row.company_id,
-            } if session_row.job_id else None,
+            "finalization": finalization if session_row.job_id else None,
+            "calibration": build_calibration_state_response(calibration_state) if calibration_state else None,
         }
 
     session_row.last_processed_transcript_hash = transcript_hash
@@ -1929,6 +1976,7 @@ def complete_voice_handoff(
             "completed": True,
             "session": _session_payload(session_row),
             "finalization": finalization,
+            "calibration": finalization.get("calibration") if isinstance(finalization, dict) else None,
         }
 
     next_question_key, next_question_text, question_confidence = _generate_adaptive_question(

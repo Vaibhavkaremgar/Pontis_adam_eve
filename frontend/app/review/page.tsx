@@ -204,6 +204,17 @@ function getCalibrationCurrentArchetypes(calibration: RecruiterIntelligenceSessi
   return Array.isArray(archetypes) ? archetypes.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
 }
 
+function getCalibrationCurrentSetId(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
+  if (!calibration) return "";
+  const currentPair = (calibration.current_pair ?? {}) as Record<string, unknown>;
+  return calibrationText(
+    calibration.current_calibration_set_id ||
+      currentPair.calibration_set_id ||
+      currentPair.calibrationSetId ||
+      ""
+  );
+}
+
 function getCalibrationRoundLabel(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
   if (!calibration) return "1 / 3";
   const current = Number(calibration.current_round_index || 1);
@@ -798,6 +809,7 @@ export default function ReviewPage() {
   const calibration = intelligence?.calibration ?? null;
   const calibrationArchetypes = useMemo(() => getCalibrationCurrentArchetypes(calibration), [calibration]);
   const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
+  const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const calibrationComplete = calibration?.stage === "real_sourcing_ready";
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
@@ -880,6 +892,7 @@ export default function ReviewPage() {
     const result = await chooseRecruiterCalibrationArchetype(user.id, jobId, {
       jobId,
       candidateId: archetypeId,
+      calibrationSetId,
     });
 
     const calibrationResult = result.data ?? null;
@@ -1077,7 +1090,7 @@ export default function ReviewPage() {
 
               <div className="grid gap-6 md:grid-cols-2">
                 {calibrationArchetypes.map((archetype) => {
-                  const archetypeId = String(archetype.id || archetype.archetype_id || archetype.title || archetype.name || "").trim();
+                  const archetypeId = String(archetype.id || archetype.archetype_id || "").trim();
                   const profileData = (archetype.profileData && typeof archetype.profileData === "object" ? archetype.profileData : {}) as Record<string, unknown>;
                   const title = calibrationText(
                     profileData.candidateHeadline ||

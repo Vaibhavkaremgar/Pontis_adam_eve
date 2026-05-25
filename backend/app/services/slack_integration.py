@@ -246,6 +246,9 @@ def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[di
 def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], current_index: int, total_sets: int) -> list[dict[str, Any]]:
     set_title = str(calibration_set.get("set_title") or f"Calibration set {current_index}").strip()
     set_theme = str(calibration_set.get("set_theme") or "").strip()
+    calibration_set_id = str(calibration_set.get("calibration_set_id") or calibration_set.get("calibrationSetId") or "").strip()
+    if not calibration_set_id:
+        calibration_set_id = f"calibration-set-{max(1, int(current_index or 1))}"
     archetypes = list(calibration_set.get("archetypes") or [])
     blocks: list[dict[str, Any]] = [
         {
@@ -259,6 +262,8 @@ def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], cu
 
     for index, archetype in enumerate(archetypes):
         archetype_id = str(archetype.get("id") or "").strip()
+        if not archetype_id:
+            archetype_id = f"{calibration_set_id}-archetype-{index + 1}"
         profile = archetype.get("profileData") or {}
         archetype_title = _text_value(profile, "candidateHeadline", "candidate_headline", "title") or str(archetype.get("name") or archetype.get("role") or "Archetype").strip()
         experience_snapshot = _text_value(profile, "experienceSnapshot", "experience_snapshot") or str(archetype.get("headline") or "").strip()
@@ -307,14 +312,14 @@ def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], cu
         blocks.append(
             {
                 "type": "actions",
-                "block_id": f"calibration:{job_id}:{current_index}:{archetype_id}",
+                "block_id": f"calibration:{job_id}:{calibration_set_id}:{archetype_id}",
                 "elements": [
                     {
                         "type": "button",
                         "action_id": "calibration_select",
                         "text": {"type": "plain_text", "text": "Select"},
                         "style": "primary",
-                        "value": f"calibration_select:{archetype_id}:{job_id}",
+                        "value": f"calibration_select:{calibration_set_id}:{archetype_id}:{job_id}",
                     }
                 ],
             }
@@ -328,11 +333,12 @@ def update_calibration_message_blocks(
     *,
     blocks: list[dict[str, Any]],
     job_id: str,
+    calibration_set_id: str,
     archetype_id: str,
     decision: str,
 ) -> list[dict[str, Any]]:
     updated_blocks = copy.deepcopy(blocks)
-    target_block_id = f"calibration:{job_id}"
+    target_block_id = f"calibration:{job_id}:{calibration_set_id}"
     label = _decision_label(decision)
 
     for index, block in enumerate(updated_blocks):
@@ -573,7 +579,7 @@ def parse_interaction_payload(payload_text: str) -> dict[str, Any]:
     return payload
 
 
-def extract_button_action(payload: dict[str, Any]) -> tuple[str, str, str]:
+def extract_button_action(payload: dict[str, Any]) -> tuple[str, str, str, str]:
     actions = payload.get("actions") or []
     if not actions:
         raise ValueError("Missing Slack action")
@@ -585,10 +591,18 @@ def extract_button_action(payload: dict[str, Any]) -> tuple[str, str, str]:
         raise ValueError("Missing Slack action metadata")
 
     parts = value.split(":")
-    if len(parts) != 3:
+    if len(parts) not in {3, 4}:
         raise ValueError("Invalid Slack action value")
 
-    action_value, candidate_id, job_id = (part.strip() for part in parts)
+    action_value = parts[0].strip()
+    calibration_set_id = ""
+    if len(parts) == 3:
+        candidate_id = parts[1].strip()
+        job_id = parts[2].strip()
+    else:
+        calibration_set_id = parts[1].strip()
+        candidate_id = parts[2].strip()
+        job_id = parts[3].strip()
     if not action_value:
         action_value = action_id
-    return action_value.lower(), candidate_id, job_id
+    return action_value.lower(), candidate_id, job_id, calibration_set_id

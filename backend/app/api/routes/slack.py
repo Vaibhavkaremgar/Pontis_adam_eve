@@ -162,43 +162,13 @@ def _build_orchestration_blocks(
         },
         {
             "type": "button",
-            "action_id": "resume_intake",
-            "text": {"type": "plain_text", "text": "Resume Intake"},
-            "value": f"resume_intake:{session_id}:{question_key}",
-        },
-        {
-            "type": "button",
-            "action_id": "cancel_search",
-            "text": {"type": "plain_text", "text": "Cancel Search"},
-            "style": "danger",
-            "value": f"cancel_search:{session_id}:{question_key}",
-        },
-        {
-            "type": "button",
-            "action_id": "confirm_intake",
-            "text": {"type": "plain_text", "text": "Confirm Intake"},
-            "style": "primary",
-            "value": f"confirm_intake:{session_id}:{question_key}",
-        },
-        {
-            "type": "button",
-            "action_id": "start_sourcing",
-            "text": {"type": "plain_text", "text": "Start Sourcing"},
-            "style": "primary",
-            "value": f"start_sourcing:{session_id}:{question_key}",
+            "action_id": "continue_with_voice",
+            "text": {"type": "plain_text", "text": "Continue with Voice"},
+            "value": f"continue_with_voice:{session_id}:{question_key}",
         },
     ]
     if voice_url:
-        actions.insert(
-            1,
-            {
-                "type": "button",
-                "action_id": "continue_with_voice",
-                "text": {"type": "plain_text", "text": "Continue with Voice"},
-                "url": voice_url,
-                "value": f"continue_with_voice:{session_id}:{question_key}",
-            },
-        )
+        actions[1]["url"] = voice_url
     blocks.append({"type": "actions", "elements": actions})
     return blocks
 
@@ -481,45 +451,54 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
         _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to deliver shortlist. Please try again.")
 
 
-def _run_slack_hiring_pipeline(*, channel_id: str, text: str, user_id: str) -> None:
+def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user_id: str) -> None:
     logger.info("slack_request_received channel_id=%s text=%s", channel_id, text)
     try:
         _send_slack_message_sync(
             channel_id=channel_id,
-            text="\u23f3 Calibrating recruiter preferences before sourcing...",
+            text="⏳ Starting the intake and collecting the hiring brief...",
         )
         with SessionLocal() as db:
-            system_user_id = _ensure_system_user_id(db)
-            company_payload, job_payload = _build_slack_job_payload(text)
-            job_id = create_hiring_job(db=db, user_id=system_user_id, company=company_payload, job=job_payload)
-            logger.info("slack_job_created channel_id=%s job_id=%s", channel_id, job_id)
-            calibration_state = bootstrap_preference_calibration_session(
+            result = start_or_resume_slack_intake(
                 db=db,
-                recruiter_id=user_id or system_user_id,
-                job_id=job_id,
-                voice_summary=text,
-                gap_analysis={},
+                slack_team_id=team_id,
+                slack_channel_id=channel_id,
+                slack_user_id=user_id,
+                initial_brief=text,
             )
-            current_pair = calibration_state.get("current_pair") or {}
-            blocks = build_calibration_blocks(
-                job_id=job_id,
-                calibration_set=current_pair if isinstance(current_pair, dict) else {},
-                current_index=int(calibration_state.get("current_round_index") or 1),
-                total_sets=len(calibration_state.get("archetype_sets") or []),
-            )
+            session = result.get("session") or {}
+            session_id = str(session.get("id") or "").strip()
+            question = str(result.get("question") or "").strip()
+            question_key = str(result.get("questionKey") or "company_name").strip()
+            path_selection_needed = bool(result.get("pathSelectionNeeded"))
+            thread_ts = str(session.get("slackThreadTs") or "").strip() or None
+            voice_url = ""
+            if path_selection_needed and session_id:
+                try:
+                    voice_data = prepare_voice_handoff(db=db, session_id=session_id)
+                    voice_url = str(voice_data.get("voiceUrl") or "").strip()
+                    if voice_url.startswith("/"):
+                        voice_url = f"{PUBLIC_APP_URL}{voice_url}"
+                except Exception as exc:
+                    logger.warning("slack_voice_prep_failed session_id=%s error=%s", session_id, str(exc), exc_info=exc)
+                    voice_url = ""
             posted = _send_slack_message_sync(
                 channel_id=channel_id,
-                text="Calibration is ready. Pick the archetype that best matches your hiring style.",
-                blocks=blocks,
+                text=question or "Adam is gathering the hiring brief in Slack.",
+                blocks=_build_orchestration_blocks(
+                    session_id=session_id,
+                    question_key=question_key,
+                    question=question or "Adam is gathering the hiring brief in Slack.",
+                    voice_url=voice_url,
+                    include_actions=path_selection_needed,
+                ),
+                thread_ts=thread_ts,
             )
             if not posted:
-                _send_slack_message_sync(
-                    channel_id=channel_id,
-                    text="\u26a0\ufe0f Failed to start calibration. Please try again.",
-                )
+                _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to start the intake. Please try again.")
     except Exception as exc:
         logger.error("slack_hiring_pipeline_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
-        _send_slack_message_sync(channel_id=channel_id, text="\u26a0\ufe0f Failed to start calibration. Please try again.")
+        _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to start the intake. Please try again.")
 
 
 @router.get("/health")
@@ -579,6 +558,7 @@ async def slack_commands(
 
         background_tasks.add_task(
             _run_slack_hiring_pipeline,
+            team_id=team_id,
             channel_id=command.channel_id,
             text=command.text,
             user_id=command.user_id,
@@ -588,7 +568,7 @@ async def slack_commands(
             status_code=200,
             content={
                 "response_type": "in_channel",
-                "text": "\U0001f50d Starting recruiter calibration for your requirement...",
+                "text": "🔎 Starting the hiring intake in Slack...",
             },
         )
     except Exception as exc:
@@ -673,6 +653,25 @@ async def complete_orchestration_voice_route(token: str, request: Request):
         voice_notes = []
     with SessionLocal() as db:
         payload = complete_voice_handoff(db=db, token=token, transcript=transcript, voice_notes=[str(item) for item in voice_notes])
+        session = payload.get("session") or {}
+        calibration = payload.get("calibration") or (payload.get("finalization") or {}).get("calibration") or {}
+        if payload.get("completed") and isinstance(calibration, dict) and calibration.get("current_pair"):
+            channel_id = str(session.get("slackChannelId") or session.get("slack_channel_id") or "").strip()
+            thread_ts = str(session.get("slackThreadTs") or session.get("slack_thread_ts") or "").strip() or None
+            job_id = str((payload.get("finalization") or {}).get("jobId") or session.get("jobId") or session.get("job_id") or "").strip()
+            if channel_id and job_id:
+                blocks = build_calibration_blocks(
+                    job_id=job_id,
+                    calibration_set=calibration.get("current_pair") if isinstance(calibration.get("current_pair"), dict) else {},
+                    current_index=int(calibration.get("current_round_index") or 1),
+                    total_sets=len(calibration.get("archetype_sets") or []),
+                )
+                await post_slack_message(
+                    channel_id=channel_id,
+                    text="Calibration is ready. Pick the archetype that best matches your hiring style.",
+                    blocks=blocks,
+                    thread_ts=thread_ts,
+                )
         return JSONResponse(status_code=200, content={"success": True, "data": payload})
 
 
@@ -692,6 +691,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         action = ""
         candidate_id = ""
         job_id = ""
+        calibration_set_id = ""
         session_id = ""
         question_key = ""
         message = payload.get("message") or {}
@@ -699,7 +699,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         channel_id = str((payload.get("channel") or {}).get("id") or "").strip()
 
         try:
-            action, candidate_id, job_id = extract_button_action(payload)
+            action, candidate_id, job_id, calibration_set_id = extract_button_action(payload)
             if action in {"continue_in_slack", "resume_intake", "cancel_search", "confirm_intake", "start_sourcing", "continue_with_voice"}:
                 parts = str((payload.get("actions") or [{}])[0].get("value") or "").split(":")
                 session_id = parts[1].strip() if len(parts) > 1 else ""
@@ -710,8 +710,9 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         action = action.strip().lower()
         if action == "calibration_select":
             logger.info(
-                "slack_calibration_action action=%s archetype_id=%s job_id=%s channel_id=%s",
+                "slack_calibration_action action=%s calibration_set_id=%s archetype_id=%s job_id=%s channel_id=%s",
                 action,
+                calibration_set_id,
                 candidate_id,
                 job_id,
                 channel_id,
@@ -728,12 +729,14 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     recruiter_id=str((payload.get("user") or {}).get("id") or "").strip(),
                     job_id=job_id,
                     selected_candidate_id=candidate_id,
+                    calibration_set_id=calibration_set_id,
                 )
                 db.commit()
 
             updated_blocks = update_calibration_message_blocks(
                 blocks=list(message.get("blocks") or []),
                 job_id=job_id,
+                calibration_set_id=calibration_set_id,
                 archetype_id=candidate_id,
                 decision=action,
             )
@@ -745,10 +748,11 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             )
             if not update_ok:
                 logger.warning(
-                    "slack_calibration_message_update_failed channel_id=%s message_ts=%s job_id=%s archetype_id=%s",
+                    "slack_calibration_message_update_failed channel_id=%s message_ts=%s job_id=%s calibration_set_id=%s archetype_id=%s",
                     channel_id,
                     message_ts,
                     job_id,
+                    calibration_set_id,
                     candidate_id,
                 )
 
