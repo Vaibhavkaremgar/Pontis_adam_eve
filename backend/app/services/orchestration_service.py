@@ -110,7 +110,7 @@ INTAKE_QUESTION_REGISTRY: dict[str, IntakeQuestionSpec] = {
         question_type="text",
         prompt="What company is hiring for this role?",
         required=True,
-        min_confidence=0.8,
+        min_confidence=0.6,
     ),
     "role_title": IntakeQuestionSpec(
         key="role_title",
@@ -118,7 +118,7 @@ INTAKE_QUESTION_REGISTRY: dict[str, IntakeQuestionSpec] = {
         question_type="text",
         prompt="What role are you hiring for?",
         required=True,
-        min_confidence=0.8,
+        min_confidence=0.6,
     ),
     "must_have_requirements": IntakeQuestionSpec(
         key="must_have_requirements",
@@ -894,6 +894,7 @@ def _extract_answer_payload(
                         "completion_confidence": _confidence(payload.get("completion_confidence"), default=confidence),
                         "summary": _normalize_text(payload.get("summary")) or _normalize_text(answer),
                         "last_question_key": question_key,
+                        "accepted": True,
                     }
         except Exception as exc:
             logger.warning("orchestration_answer_llm_failed error=%s", str(exc))
@@ -1645,11 +1646,16 @@ def process_slack_answer(
         next_question_text = "Core intake looks good. Choose whether to continue in Slack or switch to Voice."
         question_confidence = 1.0
     else:
-        next_question_key, next_question_text, question_confidence = _generate_adaptive_question(
-            session_row.normalized_intake or _initial_intake_state(),
-            session_row.raw_conversation or [],
-            current_question_key=question_key,
-        )
+        next_core = _next_core_question(session_row.normalized_intake or _initial_intake_state())
+        if next_core:
+            next_question_key, next_question_text = next_core
+            question_confidence = 1.0
+        else:
+            next_question_key, next_question_text, question_confidence = _generate_adaptive_question(
+                session_row.normalized_intake or _initial_intake_state(),
+                session_row.raw_conversation or [],
+                current_question_key=question_key,
+            )
     question_schema = _question_schema(next_question_key)
     session_row.current_question_key = next_question_key
     session_row.current_question = next_question_text

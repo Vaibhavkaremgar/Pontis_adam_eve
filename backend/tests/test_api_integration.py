@@ -456,6 +456,138 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(result.get("duplicate", False))
         self.assertEqual(result.get("session", {}).get("id"), session.id)
 
+    def test_process_slack_answer_advances_valid_company_name_reply(self) -> None:
+        from app.services.orchestration_service import process_slack_answer
+        from app.db.repositories import OrchestrationSessionRepository
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="advance-company-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-ADVANCE",
+            slack_channel_id="C-ADVANCE",
+            slack_thread_ts="1716612345.100000",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What company is hiring for this role?",
+            current_question_key="company_name",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "",
+                "role_title": "",
+                "must_have_requirements": [],
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-ADVANCE", "channelId": "C-ADVANCE", "threadTs": "1716612345.100000", "userId": self.user.id},
+        )
+
+        result = process_slack_answer(
+            db=self.db,
+            slack_team_id="T-ADVANCE",
+            slack_channel_id="C-ADVANCE",
+            slack_user_id=self.user.id,
+            thread_ts="1716612345.100000",
+            answer="PONTIS",
+            timestamp="1716612345.200000",
+        )
+
+        refreshed = repo.get(session.id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(refreshed.normalized_intake.get("company_name"), "PONTIS")
+        self.assertEqual(refreshed.current_question_key, "role_title")
+        self.assertIn("What role are you hiring for?", refreshed.current_question)
+        self.assertFalse(result.get("duplicate", False))
+        self.assertEqual(result.get("nextQuestionKey"), "role_title")
+
+    def test_process_slack_answer_dedupes_replay_same_timestamp(self) -> None:
+        from app.services.orchestration_service import process_slack_answer
+        from app.db.repositories import OrchestrationSessionRepository
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="dedupe-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-DEDUPE",
+            slack_channel_id="C-DEDUPE",
+            slack_thread_ts="1716612345.300000",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What company is hiring for this role?",
+            current_question_key="company_name",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "",
+                "role_title": "",
+                "must_have_requirements": [],
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-DEDUPE", "channelId": "C-DEDUPE", "threadTs": "1716612345.300000", "userId": self.user.id},
+        )
+
+        first = process_slack_answer(
+            db=self.db,
+            slack_team_id="T-DEDUPE",
+            slack_channel_id="C-DEDUPE",
+            slack_user_id=self.user.id,
+            thread_ts="1716612345.300000",
+            answer="PONTIS",
+            timestamp="1716612345.400000",
+        )
+        second = process_slack_answer(
+            db=self.db,
+            slack_team_id="T-DEDUPE",
+            slack_channel_id="C-DEDUPE",
+            slack_user_id=self.user.id,
+            thread_ts="1716612345.300000",
+            answer="PONTIS",
+            timestamp="1716612345.400000",
+        )
+
+        refreshed = repo.get(session.id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(first.get("nextQuestionKey"), "role_title")
+        self.assertTrue(second.get("duplicate"))
+        self.assertEqual(refreshed.normalized_intake.get("company_name"), "PONTIS")
+        self.assertEqual(refreshed.current_question_key, "role_title")
+
     def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
         from sqlalchemy import inspect
 
