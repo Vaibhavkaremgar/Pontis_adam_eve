@@ -813,6 +813,7 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
                 candidate_id=candidate_id or "",
                 job_id=job_id or "",
                 outreach_event_id=getattr(outreach_event, "id", None),
+                resume_text=resume_parse_result.text,
             )
             transition_candidate_ats_state(
                 db=db,

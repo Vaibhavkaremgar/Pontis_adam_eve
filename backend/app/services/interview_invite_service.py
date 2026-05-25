@@ -90,6 +90,7 @@ def send_interview_invite(
     *,
     outreach_event_id: str | None = None,
     channel_id: str | None = None,
+    resume_text: str | None = None,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
         return _send_interview_invite(
@@ -98,6 +99,7 @@ def send_interview_invite(
             job_id=job_id,
             outreach_event_id=outreach_event_id,
             channel_id=channel_id,
+            resume_text=resume_text,
         )
 
 
@@ -108,6 +110,7 @@ def _send_interview_invite(
     job_id: str,
     outreach_event_id: str | None = None,
     channel_id: str | None = None,
+    resume_text: str | None = None,
 ) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
@@ -129,6 +132,7 @@ def _send_interview_invite(
         candidate_id=candidate_id,
         outreach_event_id=outreach_event_id,
         source_app="adam",
+        resume_text=resume_text,
     )
     booking_link = str(session.get("slot_link") or session.get("slotLink") or session.get("bookingLink") or session.get("bookingUrl") or "")
     subject, body = _build_invite_template(candidate_name=candidate_name, role=role, booking_link=booking_link)

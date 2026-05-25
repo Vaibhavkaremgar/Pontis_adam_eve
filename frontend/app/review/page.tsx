@@ -14,7 +14,7 @@
  * How it fits in the pipeline:
  * Voice intake -> selection session -> recruiter preference learning -> refined shortlist -> outreach
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   BriefcaseBusiness,
@@ -742,6 +742,283 @@ function TimelineList({ items }: { items: any[] }) {
   );
 }
 
+// ── Tinder-style swipe deck for final candidates ────────────────────────────
+
+function SwipeDeck({
+  candidates,
+  shortlistedIds,
+  isAdvancing,
+  selectedCandidateId,
+  onSelect,
+  onReject,
+  onOpenDetails,
+}: {
+  candidates: Candidate[];
+  shortlistedIds: string[];
+  isAdvancing: boolean;
+  selectedCandidateId: string;
+  onSelect: (id: string) => void;
+  onReject: (id: string) => void;
+  onOpenDetails: (c: Candidate) => void;
+}) {
+  // Track which candidates have been acted on in this session
+  const [actedIds, setActedIds] = useState<Set<string>>(new Set());
+  const [swipeDir, setSwipeDir] = useState<"left" | "right" | null>(null);
+  const [swipingId, setSwipingId] = useState("");
+
+  // Drag state
+  const dragStartX = useRef(0);
+  const dragCurrentX = useRef(0);
+  const isDragging = useRef(false);
+  const [dragOffset, setDragOffset] = useState(0);
+
+  // Pending candidates = not yet acted on in this session
+  const pending = candidates.filter((c) => !actedIds.has(c.id));
+  const current = pending[0] ?? null;
+  const next = pending[1] ?? null;
+
+  const done = pending.length === 0;
+
+  const triggerSwipe = (id: string, dir: "left" | "right") => {
+    if (isAdvancing || swipingId) return;
+    setSwipingId(id);
+    setSwipeDir(dir);
+    setTimeout(() => {
+      setActedIds((prev) => new Set([...prev, id]));
+      setSwipeDir(null);
+      setSwipingId("");
+      setDragOffset(0);
+      if (dir === "right") onSelect(id);
+      else onReject(id);
+    }, 320);
+  };
+
+  // Pointer / touch drag handlers
+  const onPointerDown = (e: React.PointerEvent) => {
+    if (!current || isAdvancing || swipingId) return;
+    isDragging.current = true;
+    dragStartX.current = e.clientX;
+    dragCurrentX.current = e.clientX;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!isDragging.current || !current) return;
+    dragCurrentX.current = e.clientX;
+    setDragOffset(dragCurrentX.current - dragStartX.current);
+  };
+
+  const onPointerUp = () => {
+    if (!isDragging.current || !current) return;
+    isDragging.current = false;
+    const delta = dragCurrentX.current - dragStartX.current;
+    if (delta > 80) triggerSwipe(current.id, "right");
+    else if (delta < -80) triggerSwipe(current.id, "left");
+    else setDragOffset(0);
+  };
+
+  if (done) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 rounded-[24px] border border-[#E7E0D4] bg-white py-16 text-center shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+        <p className="font-heading text-[22px] font-semibold text-[#111827]">All candidates reviewed</p>
+        <p className="font-body text-sm text-[#6B7280]">You've gone through all {candidates.length} candidates.</p>
+      </div>
+    );
+  }
+
+  // Rotation based on drag
+  const rotation = Math.min(Math.max(dragOffset / 20, -12), 12);
+  const overlayOpacity = Math.min(Math.abs(dragOffset) / 120, 1);
+  const isRight = dragOffset > 0;
+
+  // Animate-out transform when swipe is triggered by button
+  const swipeTransform =
+    swipingId === current?.id
+      ? swipeDir === "right"
+        ? "translateX(120%) rotate(20deg)"
+        : "translateX(-120%) rotate(-20deg)"
+      : dragOffset !== 0
+        ? `translateX(${dragOffset}px) rotate(${rotation}deg)`
+        : "translateX(0) rotate(0deg)";
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="space-y-0.5">
+          <p className="font-heading text-[22px] font-semibold text-[#111827]">Here are your top candidates</p>
+          <p className="font-body text-sm text-[#8A6F55]">
+            {pending.length} remaining · {shortlistedIds.length} selected
+          </p>
+        </div>
+        <Badge variant="high">{candidates.length} candidates</Badge>
+      </div>
+
+      {/* Swipe hint */}
+      <p className="text-center font-body text-xs text-[#9CA3AF]">
+        Swipe right to select · Swipe left to reject · Tap card to view full profile
+      </p>
+
+      {/* Card stack */}
+      <div className="relative mx-auto h-[520px] w-full max-w-[420px] select-none">
+        {/* Next card (behind) */}
+        {next && (
+          <div
+            className="absolute inset-0 scale-[0.96] rounded-[28px] border border-[#E7E0D4] bg-white shadow-[0_4px_16px_rgba(0,0,0,0.06)]"
+            style={{ zIndex: 0 }}
+          />
+        )}
+
+        {/* Current card */}
+        {current && (
+          <div
+            className="absolute inset-0 cursor-grab rounded-[28px] border border-[#E7E0D4] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.10)] active:cursor-grabbing"
+            style={{
+              zIndex: 1,
+              transform: swipeTransform,
+              transition: swipingId === current.id ? "transform 0.32s cubic-bezier(0.4,0,0.2,1)" : dragOffset !== 0 ? "none" : "transform 0.2s ease",
+            }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onClick={() => {
+              if (Math.abs(dragOffset) < 5) onOpenDetails(current);
+            }}
+          >
+            {/* Swipe direction overlay */}
+            {dragOffset !== 0 && (
+              <>
+                {/* Right = select (green) */}
+                <div
+                  className="pointer-events-none absolute inset-0 rounded-[28px] bg-[#DDF5E6]"
+                  style={{ opacity: isRight ? overlayOpacity * 0.55 : 0 }}
+                />
+                {/* Left = reject (red) */}
+                <div
+                  className="pointer-events-none absolute inset-0 rounded-[28px] bg-[#FEE2E2]"
+                  style={{ opacity: !isRight ? overlayOpacity * 0.55 : 0 }}
+                />
+                {/* Labels */}
+                <div
+                  className="pointer-events-none absolute left-5 top-6 rounded-xl border-4 border-[#0F6B3A] px-4 py-2 font-heading text-[22px] font-bold text-[#0F6B3A]"
+                  style={{ opacity: isRight ? overlayOpacity : 0, transform: "rotate(-15deg)" }}
+                >
+                  SELECT
+                </div>
+                <div
+                  className="pointer-events-none absolute right-5 top-6 rounded-xl border-4 border-[#DC2626] px-4 py-2 font-heading text-[22px] font-bold text-[#DC2626]"
+                  style={{ opacity: !isRight ? overlayOpacity : 0, transform: "rotate(15deg)" }}
+                >
+                  PASS
+                </div>
+              </>
+            )}
+
+            {/* Card content */}
+            <div className="flex h-full flex-col p-7">
+              {/* Score badge */}
+              <div className="mb-4 flex items-start justify-between">
+                <div className="space-y-1">
+                  <h3 className="font-heading text-[26px] font-bold leading-tight text-[#111827]">
+                    {current.name || current.id.slice(0, 8)}
+                  </h3>
+                  <p className="font-body text-[14px] text-[#4B5563]">
+                    {current.headline || current.role || ""}
+                    {current.company ? ` @ ${current.company}` : ""}
+                  </p>
+                  {current.location && (
+                    <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
+                      <MapPin className="h-3.5 w-3.5" />
+                      {current.location}
+                    </p>
+                  )}
+                </div>
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] font-body text-[13px] font-semibold text-[#0F6B3A]">
+                  {current.fitScore.toFixed(1)}/5
+                </div>
+              </div>
+
+              {/* Summary */}
+              {current.summary && (
+                <p className="mb-4 line-clamp-3 font-body text-[14px] leading-6 text-[#5F564D]">
+                  {current.summary}
+                </p>
+              )}
+
+              {/* Skills */}
+              {current.skills.length > 0 && (
+                <div className="mb-4 flex flex-wrap gap-2">
+                  {current.skills.slice(0, 5).map((skill) => (
+                    <span
+                      key={`${current.id}-${skill}`}
+                      className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]"
+                    >
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Experience */}
+              {current.yearsExperience != null && (
+                <p className="mb-4 font-body text-[13px] text-[#6B7280]">
+                  <span className="font-semibold text-[#111827]">{current.yearsExperience.toFixed(1)} yrs</span> experience
+                </p>
+              )}
+
+              {/* Already selected badge */}
+              {(shortlistedIds.includes(current.id) || current.status === "shortlisted") && (
+                <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
+                  ✓ Already selected
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="mt-auto flex gap-3">
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); triggerSwipe(current.id, "left"); }}
+                  disabled={isAdvancing || Boolean(swipingId)}
+                  className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
+                >
+                  <CircleX className="h-5 w-5" /> Pass
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); triggerSwipe(current.id, "right"); }}
+                  disabled={isAdvancing || Boolean(swipingId)}
+                  className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] bg-[#0F6B3A] font-body text-[15px] font-semibold text-white shadow-[0_6px_16px_rgba(15,107,58,0.22)] transition hover:bg-[#0C5A31] disabled:opacity-50"
+                >
+                  <CheckCircle2 className="h-5 w-5" /> Select
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Progress dots */}
+      <div className="flex justify-center gap-1.5">
+        {candidates.map((c) => (
+          <div
+            key={c.id}
+            className={`h-2 w-2 rounded-full transition-colors ${
+              shortlistedIds.includes(c.id) || c.status === "shortlisted"
+                ? "bg-[#0F6B3A]"
+                : actedIds.has(c.id)
+                  ? "bg-[#D1D5DB]"
+                  : c.id === current?.id
+                    ? "bg-[#111827]"
+                    : "bg-[#E5E7EB]"
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ReviewPage() {
   const router = useRouter();
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
@@ -1073,6 +1350,15 @@ export default function ReviewPage() {
     setSelectedCandidateId("");
   };
 
+  const handleReject = async (candidateId: string) => {
+    if (!jobId || isAdvancing) return;
+    setIsAdvancing(true);
+    setSelectedCandidateId(candidateId);
+    await swipeCandidate({ jobId, candidateId, action: "reject" });
+    setIsAdvancing(false);
+    setSelectedCandidateId("");
+  };
+
   const handleContinueToOutreach = async () => {
     if (!jobId || !session || !completed || shortlistedCount === 0 || isContinuingToOutreach) return;
     setIsContinuingToOutreach(true);
@@ -1360,34 +1646,15 @@ export default function ReviewPage() {
                 </Card>
               )}
 
-              <div className="rounded-[32px] border border-[#E7E0D4] bg-white p-4 shadow-[0_8px_24px_rgba(0,0,0,0.04)] md:p-6">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <div className="space-y-1">
-                    <p className="font-heading text-[22px] font-semibold text-[#111827]">Here are your top candidates</p>
-                    <p className="font-body text-sm text-[#8A6F55]">We found potential matches and evaluated them for you</p>
-                  </div>
-                  <Badge variant="high">{finalCandidates.length} candidates</Badge>
-                </div>
-
-                <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
-                  {finalCandidates.map((candidate, index) => {
-                    const rankLabel = `#${index + 1}`;
-                    const selected = finalShortlistedIds.includes(candidate.id) || candidate.status === "shortlisted";
-                    return (
-                      <CandidateListRow
-                        key={candidate.id}
-                        candidate={candidate}
-                        rankLabel={rankLabel}
-                        isSelected={selected}
-                        isSelecting={isAdvancing && selectedCandidateId === candidate.id}
-                        selectionLocked={isAdvancing && selectedCandidateId !== candidate.id}
-                        onOpenDetails={() => setActiveCandidate(candidate)}
-                        onSelect={() => void handleSelect(candidate.id)}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
+              <SwipeDeck
+                candidates={finalCandidates}
+                shortlistedIds={completedShortlistedIds}
+                isAdvancing={isAdvancing}
+                selectedCandidateId={selectedCandidateId}
+                onSelect={(id) => void handleSelect(id)}
+                onReject={(id) => void handleReject(id)}
+                onOpenDetails={(c) => setActiveCandidate(c)}
+              />
 
               <Separator />
 

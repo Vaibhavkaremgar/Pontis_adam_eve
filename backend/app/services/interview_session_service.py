@@ -39,10 +39,11 @@ def _ensure_utc_datetime(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-def _build_token_payload(*, profile: Any, job: Any, company_name: str = "") -> dict[str, Any]:
+def _build_token_payload(*, profile: Any, job: Any, company_name: str = "", resume_text: str | None = None) -> dict[str, Any]:
     return build_slot_booking_payload(
         candidate=profile,
         job={"title": getattr(job, "title", "") or "", "company_name": company_name or ""},
+        resume_text=resume_text,
     )
 
 
@@ -103,6 +104,7 @@ def create_interview_session(
     candidate_id: str,
     outreach_event_id: str | None = None,
     source_app: str = "adam",
+    resume_text: str | None = None,
 ) -> dict[str, str | None]:
     job = JobRepository(db).get(job_id)
     if not job:
@@ -115,7 +117,12 @@ def create_interview_session(
     if existing_session and (existing_expires_at is None or existing_expires_at > datetime.now(timezone.utc)):
         company = CompanyRepository(db).get_by_id(job.company_id)
         if profile:
-            token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
+            token_payload = _build_token_payload(
+                profile=profile,
+                job=job,
+                company_name=company.name if company else "",
+                resume_text=resume_text,
+            )
             if (existing_session.status or "").strip().lower() != "booked":
                 upsert_notification_workflow_token(
                     db=db,
@@ -150,7 +157,12 @@ def create_interview_session(
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=INTERVIEW_SESSION_TTL_MINUTES)
     token = secrets.token_urlsafe(32)
 
-    token_payload = _build_token_payload(profile=profile, job=job, company_name=company.name if company else "")
+    token_payload = _build_token_payload(
+        profile=profile,
+        job=job,
+        company_name=company.name if company else "",
+        resume_text=resume_text,
+    )
     token_data = upsert_notification_workflow_token(
         db=db,
         job_id=job_id,

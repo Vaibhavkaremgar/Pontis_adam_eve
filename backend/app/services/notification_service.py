@@ -180,7 +180,7 @@ def _serialize_workflow_token(row) -> dict[str, Any]:
     }
 
 
-def build_slot_booking_payload(*, candidate: Any, job: Any) -> dict[str, Any]:
+def build_slot_booking_payload(*, candidate: Any, job: Any, resume_text: str | None = None) -> dict[str, Any]:
     source = _candidate_source(candidate)
     parsed_resume_json = _candidate_value(candidate, "parsed_resume_json", "parsedResumeJson")
     if not isinstance(parsed_resume_json, dict):
@@ -188,8 +188,10 @@ def build_slot_booking_payload(*, candidate: Any, job: Any) -> dict[str, Any]:
         if not isinstance(parsed_resume_json, dict):
             parsed_resume_json = {}
 
-    resume_text = _normalize_text(
-        _candidate_value(candidate, "parsed_resume_text", "parsedResumeText", "resume_text", "resumeText", "raw_resume_text")
+    extracted_resume_text = _normalize_text(resume_text)
+    resume_text_value = _normalize_text(
+        extracted_resume_text
+        or _candidate_value(candidate, "parsed_resume_text", "parsedResumeText", "resume_text", "resumeText", "raw_resume_text")
         or parsed_resume_json.get("raw_resume_text")
         or parsed_resume_json.get("resume_text")
         or parsed_resume_json.get("rawResumeText")
@@ -252,12 +254,13 @@ def build_slot_booking_payload(*, candidate: Any, job: Any) -> dict[str, Any]:
         "current_title": _normalize_text(_candidate_value(candidate, "current_title", "currentTitle", "role", "title") or headline),
         "total_experience_years": total_experience_years_value,
         "skills": skill_list,
-        "resume_text": resume_text,
-        "parsed_resume_text": resume_text,
+        "resume_text": resume_text_value,
+        "shared_resume_text": extracted_resume_text,
+        "parsed_resume_text": resume_text_value,
         "parsed_resume_json": parsed_resume_json,
         "resume_metadata": resume_metadata,
         "resume": {
-            "text": resume_text,
+            "text": resume_text_value,
             "metadata": resume_metadata,
             "structured": parsed_resume_json,
         },
