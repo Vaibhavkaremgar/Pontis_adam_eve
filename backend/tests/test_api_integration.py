@@ -135,7 +135,7 @@ from sqlalchemy import text
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_SECRET
 from app.core.security import create_access_token, create_csrf_token
-from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, UserRepository
+from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, OrchestrationEventRepository, OrchestrationSessionRepository, UserRepository
 from app.db.session import SessionLocal, engine
 from app.models.entities import Base, ScoringProfileEntity
 from app.services.resend_inbound_service import process_resend_inbound_webhook
@@ -333,8 +333,6 @@ class IntegrationTests(unittest.TestCase):
     def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
         from sqlalchemy import inspect
 
-        from app.db.repositories import OrchestrationSessionRepository
-
         inspector = inspect(self.db.bind)
         columns = {column["name"]: column for column in inspector.get_columns("orchestration_sessions")}
 
@@ -365,6 +363,37 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNone(session.company_id)
         self.assertIsNone(session.job_id)
         self.assertEqual(session.slack_team_id, "T-NULL")
+
+    def test_orchestration_event_persists_with_session_id(self) -> None:
+        session = OrchestrationSessionRepository(self.db).create(
+            session_token="event-session",
+            source="slack",
+            current_stage="initiated",
+            slack_team_id="T-EVENT",
+            slack_channel_id="C-EVENT",
+            slack_thread_ts="",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            structured_context={},
+            raw_conversation=[],
+            normalized_intake={},
+            voice_context={},
+            slack_context={"teamId": "T-EVENT", "channelId": "C-EVENT", "threadTs": "", "userId": self.user.id},
+        )
+
+        event = OrchestrationEventRepository(self.db).create(
+            session_id=session.id,
+            event_type="SESSION_CREATED",
+            event_payload={"sessionId": session.id},
+            source="slack",
+        )
+
+        self.assertEqual(event.session_id, session.id)
+        events = OrchestrationEventRepository(self.db).list_for_session(session.id)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].session_id, session.id)
+        self.assertEqual(events[0].event_type, "SESSION_CREATED")
 
     def _post_resend_inbound_reply(
         self,

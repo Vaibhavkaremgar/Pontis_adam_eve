@@ -572,6 +572,21 @@ def _ensure_optional_schema_columns() -> None:
             )
         else:
             orchestration_event_columns = {column["name"] for column in inspector.get_columns("orchestration_events")}
+            if dialect == "postgresql" and "orchestration_session_id" in orchestration_event_columns:
+                if "session_id" not in orchestration_event_columns:
+                    conn.execute(text("ALTER TABLE orchestration_events RENAME COLUMN orchestration_session_id TO session_id"))
+                    orchestration_event_columns = {column["name"] for column in inspector.get_columns("orchestration_events")}
+                else:
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE orchestration_events
+                            SET session_id = COALESCE(NULLIF(session_id, ''), orchestration_session_id)
+                            WHERE session_id IS NULL OR session_id = ''
+                            """
+                        )
+                    )
+                    conn.execute(text("ALTER TABLE orchestration_events ALTER COLUMN orchestration_session_id DROP NOT NULL"))
             if "session_id" not in orchestration_event_columns:
                 conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN session_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "event_type" not in orchestration_event_columns:
