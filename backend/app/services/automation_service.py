@@ -136,7 +136,14 @@ def seed_automation_jobs(*, db: Session, job_id: str | None = None, limit: int =
                 )
                 created += 1
 
-        for session in [row for row in [interview_repo.get_by_job_and_candidate(job.id, candidate.id) for candidate in profile_repo.list_for_job(job.id)] if row]:
+        for session in [
+            row
+            for row in [
+                interview_repo.get_by_job_and_candidate(job_id=job.id, candidate_id=candidate.id)
+                for candidate in profile_repo.list_for_job(job.id)
+            ]
+            if row
+        ]:
             scheduled_at = getattr(session, "scheduled_at", None)
             if session.status == "booked" and scheduled_at:
                 reminder_at = scheduled_at - timedelta(hours=24)
