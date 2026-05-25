@@ -330,6 +330,28 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(followup["pathSelectionNeeded"])
         self.assertEqual(followup["nextQuestionKey"], "path_selection")
 
+    def test_slack_message_helper_forwards_thread_ts(self) -> None:
+        from app.api.routes import slack as slack_routes
+
+        captured: dict[str, object] = {}
+
+        async def fake_post_slack_message(**kwargs):
+            captured.update(kwargs)
+            return True
+
+        with patch.object(slack_routes, "post_slack_message", side_effect=fake_post_slack_message):
+            posted = slack_routes._send_slack_message_sync(
+                channel_id="C-THREAD",
+                text="Hello",
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "Hello"}}],
+                thread_ts="1234.5678",
+            )
+
+        self.assertTrue(posted)
+        self.assertEqual(captured.get("channel_id"), "C-THREAD")
+        self.assertEqual(captured.get("thread_ts"), "1234.5678")
+        self.assertEqual(captured.get("text"), "Hello")
+
     def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
         from sqlalchemy import inspect
 
@@ -394,6 +416,14 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].session_id, session.id)
         self.assertEqual(events[0].event_type, "SESSION_CREATED")
+
+    def test_orchestration_events_agency_id_is_nullable_if_present(self) -> None:
+        from sqlalchemy import inspect
+
+        inspector = inspect(self.db.bind)
+        columns = {column["name"]: column for column in inspector.get_columns("orchestration_events")}
+        if "agency_id" in columns:
+            self.assertTrue(bool(columns["agency_id"].get("nullable", False)))
 
     def _post_resend_inbound_reply(
         self,

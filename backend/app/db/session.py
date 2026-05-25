@@ -587,6 +587,10 @@ def _ensure_optional_schema_columns() -> None:
                         )
                     )
                     conn.execute(text("ALTER TABLE orchestration_events ALTER COLUMN orchestration_session_id DROP NOT NULL"))
+            if dialect == "postgresql" and "agency_id" in orchestration_event_columns:
+                agency_column = next((col for col in inspector.get_columns("orchestration_events") if col["name"] == "agency_id"), None)
+                if agency_column and not agency_column.get("nullable", True):
+                    conn.execute(text("ALTER TABLE orchestration_events ALTER COLUMN agency_id DROP NOT NULL"))
             if "session_id" not in orchestration_event_columns:
                 conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN session_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "event_type" not in orchestration_event_columns:

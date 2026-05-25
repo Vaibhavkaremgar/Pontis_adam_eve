@@ -121,9 +121,9 @@ def _is_channel_rate_limited(channel_id: str) -> bool:
     return False
 
 
-def _send_slack_message_sync(*, channel_id: str, text: str, blocks: list[dict] | None = None) -> bool:
+def _send_slack_message_sync(*, channel_id: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None) -> bool:
     try:
-        return asyncio.run(post_slack_message(channel_id=channel_id, text=text, blocks=blocks))
+        return asyncio.run(post_slack_message(channel_id=channel_id, text=text, blocks=blocks, thread_ts=thread_ts))
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.error("slack_message_post_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
         return False
