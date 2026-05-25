@@ -27,6 +27,7 @@ from app.core.config import (
     PUBLIC_APP_URL,
 )
 from app.db.repositories import (
+    CandidateFeedbackRepository,
     CandidateProfileRepository,
     CandidateSelectionSessionRepository,
     InterviewRepository,
@@ -259,6 +260,20 @@ def _spam_risk_score(*, subject: str, body: str, to_email: str) -> float:
 def _tracking_token(*, event_id: str, candidate_id: str, job_id: str) -> str:
     material = f"{event_id}:{candidate_id}:{job_id}:{OUTREACH_PROVIDER}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _candidate_ids_from_snapshot(snapshot: Any) -> set[str]:
+    candidate_ids: set[str] = set()
+    if not isinstance(snapshot, list):
+        return candidate_ids
+    for item in snapshot:
+        if isinstance(item, dict):
+            candidate_id = str(item.get("id") or item.get("candidateId") or item.get("candidate_id") or "").strip()
+        else:
+            candidate_id = str(getattr(item, "id", "") or getattr(item, "candidateId", "") or getattr(item, "candidate_id", "") or "").strip()
+        if candidate_id:
+            candidate_ids.add(candidate_id)
+    return candidate_ids
 
 
 def _append_open_tracking_pixel(*, html_body: str, event_id: str, candidate_id: str, job_id: str) -> str:
@@ -1382,6 +1397,7 @@ def process_outreach(
         raise APIError("Job not found", status_code=404)
     profiles = CandidateProfileRepository(db)
     selection_sessions = CandidateSelectionSessionRepository(db)
+    feedback_repo = CandidateFeedbackRepository(db)
     interviews = InterviewRepository(db)
     outreach_events = OutreachEventRepository(db)
     recruiter_id = JobRepository(db).get_recruiter_id(job_id)
@@ -1390,6 +1406,7 @@ def process_outreach(
     session = selection_sessions.get_by_job(job_id)
     session_status = ""
     session_selected_candidate_ids: list[str] = []
+    session_final_candidate_ids: set[str] = set()
     if session:
         session_status = (session.status or "").strip().lower()
         session_selected_candidate_ids = [
@@ -1397,12 +1414,14 @@ def process_outreach(
             for candidate_id in (session.selected_candidate_ids or [])
             if str(candidate_id).strip()
         ]
+        session_final_candidate_ids = _candidate_ids_from_snapshot(getattr(session, "final_candidate_snapshot", None))
         logger.info(
-            "outreach_selection_session_loaded job_id=%s session_id=%s status=%s selected_count=%s",
+            "outreach_selection_session_loaded job_id=%s session_id=%s status=%s selected_count=%s final_count=%s",
             job_id,
             session.id,
             session_status,
             len(session_selected_candidate_ids),
+            len(session_final_candidate_ids),
         )
         if session_status != "completed":
             logger.warning(
@@ -1413,6 +1432,12 @@ def process_outreach(
             )
     else:
         logger.info("outreach_selection_session_missing job_id=%s", job_id)
+
+    if not session or session_status != "completed":
+        raise APIError(
+            "Outreach is selection-driven. Complete the current candidate selection session before sending outreach.",
+            status_code=409,
+        )
 
     unique_selected_candidates = list(dict.fromkeys((candidate_id or "").strip() for candidate_id in selected_candidates if str(candidate_id or "").strip()))
     if not unique_selected_candidates and session_selected_candidate_ids:
@@ -1435,13 +1460,28 @@ def process_outreach(
             "Outreach is now selection-driven and must target exactly one candidate.",
             status_code=400,
         )
-    if session and session_status == "completed" and session_selected_candidate_ids:
-        selected_candidate_id = unique_selected_candidates[0]
-        if selected_candidate_id not in session_selected_candidate_ids:
-            raise APIError(
-                "Selected candidate is not part of the active selection session.",
-                status_code=409,
-            )
+    selected_candidate_id = unique_selected_candidates[0]
+    feedback = feedback_repo.get(job_id=job_id, candidate_id=selected_candidate_id)
+    feedback_session_id = str(getattr(feedback, "session_id", "") or "").strip()
+    feedback_value = str(getattr(feedback, "feedback", "") or "").strip().lower()
+    has_current_session_feedback = feedback_session_id == str(session.id) and feedback_value == "accept"
+    is_current_session_selected = (
+        selected_candidate_id in session_selected_candidate_ids
+        or (selected_candidate_id in session_final_candidate_ids and has_current_session_feedback)
+    )
+    if not is_current_session_selected:
+        logger.warning(
+            "outreach_candidate_not_current_session_selection job_id=%s session_id=%s candidate_id=%s feedback_session_id=%s feedback=%s",
+            job_id,
+            session.id,
+            selected_candidate_id,
+            feedback_session_id,
+            feedback_value,
+        )
+        raise APIError(
+            "Selected candidate is not part of the current completed selection session.",
+            status_code=409,
+        )
 
     candidate_profiles = profiles.latest_by_candidate_ids(job_id=job_id, candidate_ids=unique_selected_candidates)
     valid_candidates = [candidate_id for candidate_id in unique_selected_candidates if candidate_id in candidate_profiles]
@@ -2540,6 +2580,32 @@ def list_outreach_status(*, db: Session, job_id: str) -> list[dict]:
     if not JobRepository(db).get(job_id):
         raise APIError("Job not found", status_code=404)
     rows = OutreachEventRepository(db).list_for_job(job_id)
+    session = CandidateSelectionSessionRepository(db).get_by_job(job_id)
+    if session and (getattr(session, "status", "") or "").strip().lower() == "completed":
+        current_session_id = str(getattr(session, "id", "") or "").strip()
+        session_selected_ids = {
+            str(candidate_id).strip()
+            for candidate_id in (getattr(session, "selected_candidate_ids", None) or [])
+            if str(candidate_id).strip()
+        }
+        session_final_ids = _candidate_ids_from_snapshot(getattr(session, "final_candidate_snapshot", None))
+        feedback_repo = CandidateFeedbackRepository(db)
+
+        def belongs_to_current_session(row: OutreachEventEntity) -> bool:
+            candidate_id = str(getattr(row, "candidate_id", "") or "").strip()
+            if not candidate_id:
+                return False
+            if candidate_id in session_selected_ids:
+                return True
+            if candidate_id not in session_final_ids:
+                return False
+            feedback = feedback_repo.get(job_id=job_id, candidate_id=candidate_id)
+            return (
+                str(getattr(feedback, "session_id", "") or "").strip() == current_session_id
+                and str(getattr(feedback, "feedback", "") or "").strip().lower() == "accept"
+            )
+
+        rows = [row for row in rows if belongs_to_current_session(row)]
     return [
         {
             "candidateId": row.candidate_id,

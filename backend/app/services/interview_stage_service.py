@@ -12,6 +12,7 @@ from app.db.repositories import (
     JobRepository,
     NotificationWorkflowTokenRepository,
     RecruiterNoteRepository,
+    InterviewRepository,
 )
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.audit_service import record_audit_event
@@ -193,6 +194,11 @@ def advance_interview_stage(
             current_session.stage = normalized_action
             current_session.evaluation_status = "pending"
             _append_stage_history(current_session, action=normalized_action, from_stage=current_stage, to_stage=normalized_action, notes=notes)
+        InterviewRepository(db).upsert_status(
+            job_id=job_id,
+            candidate_id=candidate_id,
+            status=_STAGE_TO_ATS.get(normalized_action, "archived"),
+        )
         transition_candidate_ats_state(
             db=db,
             job_id=job_id,
@@ -296,6 +302,7 @@ def advance_interview_stage(
             "recommendation": recommendation,
         },
     )
+    InterviewRepository(db).upsert_status(job_id=job_id, candidate_id=candidate_id, status=ats_target)
 
     route_recruiter_notification(
         db=db,

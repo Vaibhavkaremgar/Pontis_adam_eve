@@ -125,6 +125,7 @@ export type Candidate = {
     | "interview_scheduled"
     | "interview_invited"
     | "interview_no_show"
+    | "no_show"
     | "advanced"
     | "final_round"
     | "booked"
@@ -159,6 +160,13 @@ export type InterviewStatus = {
     | "interview_invited"
     | "rejected"
     | "exported"
+    | "advanced"
+    | "final_round"
+    | "offer_sent"
+    | "hired"
+    | "archived"
+    | "interview_completed"
+    | "interview_no_show"
     | "new"
     | "booked";
 };

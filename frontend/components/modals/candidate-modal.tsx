@@ -11,7 +11,7 @@ import { Card } from "@/components/ui/card";
 import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { exportCandidates, getCandidatesWithMode, swipeCandidate } from "@/lib/api/candidates";
-import { getOutreachStatuses, sendOutreach } from "@/lib/api/outreach";
+import { getOutreachStatuses } from "@/lib/api/outreach";
 import { cn } from "@/lib/utils";
 import type { Candidate } from "@/types";
 
@@ -215,26 +215,6 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     void syncCandidates();
   };
 
-  const handleSingleOutreach = async (candidateId: string) => {
-    if (!jobId) return;
-    setActionLoadingId(candidateId);
-    setError("");
-    const result = await sendOutreach({ jobId, selectedCandidates: [candidateId] });
-    if (!result.success || !result.data) {
-      setError(result.error || "Failed to queue candidate handoff.");
-      setActionLoadingId("");
-      return;
-    }
-    updateCandidateStatus(candidateId, "contacted", { outreachStatus: "pending" });
-    setFeedbackMessage(
-      result.data.sent > 0
-        ? `Adam queued handoff for ${result.data.sent} candidate${result.data.sent !== 1 ? "s" : ""}.`
-        : "Candidate handoff processed."
-    );
-    setActionLoadingId("");
-    void syncCandidates();
-  };
-
   const handleSingleExport = async (candidateId: string) => {
     if (!jobId) return;
     setActionLoadingId(candidateId);
@@ -350,15 +330,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
         <span>Automation: {candidate.outreachStatus || "queued"}</span>
         <span>ATS: {candidate.ats_export_status || "not_sent"}</span>
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <Button
-          variant="outline"
-          className="justify-center"
-          onClick={() => handleSingleOutreach(candidate.id)}
-          disabled={actionLoadingId === candidate.id}
-        >
-          {actionLoadingId === candidate.id ? "Processing..." : "Select candidate"}
-        </Button>
+      <div className="grid gap-2">
         <Button
           className="justify-center"
           onClick={() => handleSingleExport(candidate.id)}

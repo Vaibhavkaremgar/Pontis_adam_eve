@@ -74,7 +74,7 @@ function InterviewBookingContent() {
   };
 
   return (
-    <AppShell activeStep={6}>
+    <AppShell activeStep={5}>
       <Card className="mx-auto w-full max-w-xl">
         <CardHeader>
           <CardTitle>Book your interview</CardTitle>

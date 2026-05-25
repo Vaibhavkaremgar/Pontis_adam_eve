@@ -12,7 +12,7 @@
  * GET /candidates/selection/final
  *
  * How it fits in the pipeline:
- * Voice intake -> selection session -> recruiter preference learning -> refined shortlist -> automation handoff
+ * Voice intake -> archetype calibration -> recruiter review -> ready tracking
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -911,7 +911,7 @@ export default function ReviewPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isCalibrationLoading, setIsCalibrationLoading] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
-  const [isContinuingToOutreach, setIsContinuingToOutreach] = useState(false);
+  const [isContinuingToReady, setIsContinuingToReady] = useState(false);
   const [error, setError] = useState("");
   const [calibrationError, setCalibrationError] = useState("");
   const [calibrationSelectionId, setCalibrationSelectionId] = useState("");
@@ -1121,7 +1121,7 @@ export default function ReviewPage() {
     );
     const failed = results.find((result) => !result.success || !result.data);
     if (failed) {
-      setError(failed.error || "Could not prepare shortlisted candidates for handoff.");
+      setError(failed.error || "Could not prepare shortlisted candidates for Ready.");
       setSelectionDebug(
         [
           `jobId=${jobId}`,
@@ -1193,7 +1193,7 @@ export default function ReviewPage() {
       const result = await swipeCandidate({ jobId, candidateId, action: "accept" });
       if (!result.success || !result.data) {
         revertFinalSelectionLocally(candidateId);
-        setError(result.error || "Could not shortlist candidate for handoff.");
+        setError(result.error || "Could not shortlist candidate for automatic contact.");
         setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\nerror=${result.error || "Unknown error"}`);
         setIsAdvancing(false);
         setSelectedCandidateId("");
@@ -1202,12 +1202,12 @@ export default function ReviewPage() {
 
       const outreachResult = await sendOutreach({ jobId, selectedCandidates: [candidateId] });
       if (!outreachResult.success || !outreachResult.data) {
-        setError(outreachResult.error || "Selection saved, but automation handoff could not be completed.");
+        setError(outreachResult.error || "Selection saved, but outreach could not be completed.");
       } else {
         setFeedbackMessage(
           outreachResult.data.sent > 0
-            ? `Adam is handling the handoff and ATS updates for ${outreachResult.data.sent} candidate${outreachResult.data.sent === 1 ? "" : "s"}.`
-            : "Selection saved. Adam is handling the handoff."
+            ? `Outreach started for ${outreachResult.data.sent} candidate${outreachResult.data.sent === 1 ? "" : "s"}. Adam will keep ATS status updated.`
+            : "Selection saved. Track contact status in Ready."
         );
       }
       setActiveCandidate(null);
@@ -1258,9 +1258,9 @@ export default function ReviewPage() {
     setSelectedCandidateId("");
   };
 
-  const handleContinueToOutreach = async () => {
-    if (!jobId || !session || !completed || shortlistedCount === 0 || isContinuingToOutreach) return;
-    setIsContinuingToOutreach(true);
+  const handleContinueToReady = async () => {
+    if (!jobId || !session || !completed || shortlistedCount === 0 || isContinuingToReady) return;
+    setIsContinuingToReady(true);
     setError("");
 
     const ok = await syncFinalShortlist();
@@ -1273,7 +1273,7 @@ export default function ReviewPage() {
       router.push("/ready");
     }
 
-    setIsContinuingToOutreach(false);
+    setIsContinuingToReady(false);
   };
 
   const handleInterviewDecision = async (action: string, targetStage?: string) => {
@@ -1433,18 +1433,24 @@ export default function ReviewPage() {
                         )}
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        {strengths.length > 0 && (
+                        <div className="grid gap-3 rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 md:grid-cols-[0.9fr_1.1fr]">
                           <div>
-                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Technical strengths</p>
-                            <div className="flex flex-wrap gap-2">
-                              {strengths.slice(0, 4).map((strength) => (
-                                <span key={`${archetypeId}-${strength}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Experience match</p>
+                            <p className="mt-2 text-sm font-semibold leading-6 text-[#111827]">
+                              {experienceSnapshot || "Experience band based on the intake requirements."}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Skill variation</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {(strengths.length > 0 ? strengths : ["Skills from intake"]).slice(0, 5).map((strength) => (
+                                <span key={`${archetypeId}-highlight-${strength}`} className="rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm">
                                   {strength}
                                 </span>
                               ))}
                             </div>
                           </div>
-                        )}
+                        </div>
                         <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
                           {ownership && <p><span className="font-semibold text-[#111827]">Ownership style:</span> {ownership}</p>}
                           {environment && <p><span className="font-semibold text-[#111827]">Ideal environment:</span> {environment}</p>}
@@ -1488,7 +1494,7 @@ export default function ReviewPage() {
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    Batch {session?.currentBatchIndex ? session.currentBatchIndex + 1 : 1} of {session?.totalBatches ?? 3}
+                    Candidate set
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
                     Review the candidates in this set. Expand their profile to see full details and choose the one you want to keep.
@@ -1520,7 +1526,7 @@ export default function ReviewPage() {
 
           {!isLoading && !completed && currentBatch.length === 0 && (
             <div className="rounded-[20px] border border-[#E7E0D4] bg-[#EFE6D8] p-4 text-sm text-[#6B7280]">
-              Preparing the next batch. If this screen just refreshed, the session will resume from the last saved step.
+              Preparing the candidate set. If this screen just refreshed, the session will resume from the last saved step.
             </div>
           )}
 
@@ -1528,7 +1534,7 @@ export default function ReviewPage() {
             <div className="space-y-5">
               <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#0F6B3A]">
                 <p className="font-semibold">Selection complete</p>
-                <p className="mt-1">The backend has analyzed your choices and reranked the full candidate pool using the signals you showed. Adam will handle enrichment, handoff, and ATS updates in the background.</p>
+                <p className="mt-1">The backend has analyzed your choices and reranked the candidate pool using the signals you showed. Select who should be contacted automatically, then track them in Ready.</p>
               </div>
 
               {summaryLines.length > 0 && (
@@ -1560,13 +1566,13 @@ export default function ReviewPage() {
                 <Button
                   data-testid="continue-to-ready"
                   className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
-                  onClick={() => void handleContinueToOutreach()}
-                  disabled={shortlistedCount === 0 || isAdvancing || isContinuingToOutreach}
+                  onClick={() => void handleContinueToReady()}
+                  disabled={shortlistedCount === 0 || isAdvancing || isContinuingToReady}
                 >
-                  {isContinuingToOutreach
-                    ? "Preparing handoff..."
+                  {isContinuingToReady
+                    ? "Opening Ready..."
                     : shortlistedCount > 0
-                      ? "Continue to Ready"
+                      ? "View Ready Candidates"
                       : "Select candidates to continue"}
                 </Button>
                 <Button variant="outline" className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white text-[15px] font-semibold text-[#111827]" onClick={() => void refreshFinalResults()}>

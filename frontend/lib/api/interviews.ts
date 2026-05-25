@@ -56,6 +56,18 @@ export type InterviewDecisionPayload = {
   sourceType?: string;
 };
 
+export type InterviewEvaluationPayload = {
+  jobId: string;
+  candidateId: string;
+  stageName?: string;
+  interviewerId?: string;
+  summary?: string;
+  recommendation?: string;
+  competencyScores?: Record<string, number>;
+  notes?: string;
+  metadata?: Record<string, unknown>;
+};
+
 export type InterviewInsights = {
   jobId: string;
   candidateId: string;
@@ -112,6 +124,14 @@ export async function getInterviewInsights(jobId: string, candidateId: string): 
 export async function submitInterviewDecision(payload: InterviewDecisionPayload): Promise<ApiResponse<Record<string, unknown>>> {
   return requestApi<Record<string, unknown>>({
     url: `${API_BASE_URL}/interview/decision`,
+    method: "POST",
+    payload
+  });
+}
+
+export async function recordInterviewEvaluation(payload: InterviewEvaluationPayload): Promise<ApiResponse<Record<string, unknown>>> {
+  return requestApi<Record<string, unknown>>({
+    url: `${API_BASE_URL}/interview/evaluations`,
     method: "POST",
     payload
   });
