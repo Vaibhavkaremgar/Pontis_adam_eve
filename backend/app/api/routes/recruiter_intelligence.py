@@ -40,6 +40,12 @@ class RecruiterCalibrationChoiceRequest(BaseModel):
     calibrationSetId: str = ""
 
 
+def _user_id(user: Any) -> str:
+    if isinstance(user, dict):
+        return str(user.get("id") or "").strip()
+    return str(getattr(user, "id", "") or "").strip()
+
+
 @router.get("/{recruiter_id}/intelligence/jobs/{job_id}")
 def get_recruiter_intelligence_job(
     recruiter_id: str,
@@ -47,7 +53,7 @@ def get_recruiter_intelligence_job(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if _.get("id", "") != recruiter_id:
+    if _user_id(_) != recruiter_id:
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = start_recruiter_interview_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
@@ -77,7 +83,7 @@ def update_recruiter_intelligence_job(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if request.state.user["id"] != recruiter_id:
+    if _user_id(request.state.user) != recruiter_id:
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = update_recruiter_interview_session(
@@ -113,7 +119,7 @@ def choose_recruiter_calibration_archetype(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if request.state.user["id"] != recruiter_id:
+    if _user_id(request.state.user) != recruiter_id:
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     calibration_state = record_preference_calibration_choice(
@@ -140,7 +146,7 @@ def advance_recruiter_intelligence_job(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if request.state.user["id"] != recruiter_id:
+    if _user_id(request.state.user) != recruiter_id:
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)
@@ -169,7 +175,7 @@ def finalize_recruiter_intelligence_job(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if request.state.user["id"] != recruiter_id:
+    if _user_id(request.state.user) != recruiter_id:
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)

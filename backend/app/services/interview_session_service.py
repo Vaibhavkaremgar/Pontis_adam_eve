@@ -103,6 +103,7 @@ def _build_token_payload(*, profile: Any, job: Any, company_name: str = "", resu
 def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
     scheduling_metadata = dict(getattr(row, "scheduling_metadata", {}) or {})
     stage_name = _session_stage_name(row)
+    booked_at = getattr(row, "booked_at", None)
     return {
         "id": row.id,
         "jobId": row.job_id,
@@ -117,7 +118,7 @@ def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
         "token": row.token,
         "status": row.status,
         "expiresAt": _utc_isoformat(row.expires_at) or row.expires_at.isoformat(),
-        "bookedAt": _utc_isoformat(row.booked_at),
+        "bookedAt": _utc_isoformat(booked_at),
         "scheduledAt": _utc_isoformat(getattr(row, "scheduled_at", None)),
         "stageHistory": _stage_history(row),
         "bookingLink": booking_link,

@@ -433,6 +433,9 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "outreach_event_id" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN outreach_event_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "booked_at" not in interview_session_columns:
+                booked_column_type = "TIMESTAMPTZ" if dialect == "postgresql" else "DATETIME"
+                conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN booked_at {booked_column_type} NULL DEFAULT NULL"))
             if "stage" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN stage VARCHAR(64) NOT NULL DEFAULT 'requested'"))
             if "scheduled_at" not in interview_session_columns:
@@ -463,6 +466,35 @@ def _ensure_optional_schema_columns() -> None:
                             "        WHEN scheduled_at IS NULL THEN NULL "
                             "        WHEN TRIM(scheduled_at) = '' THEN NULL "
                             "        ELSE scheduled_at::timestamptz "
+                            "    END"
+                            ")"
+                        )
+                    )
+            if "booked_at" in interview_session_columns and dialect == "postgresql":
+                result = conn.execute(text("""
+                    SELECT data_type
+                    FROM information_schema.columns
+                    WHERE table_name = 'interview_sessions'
+                    AND column_name = 'booked_at'
+                """)).scalar()
+                if result == "timestamp without time zone":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE interview_sessions "
+                            "ALTER COLUMN booked_at TYPE TIMESTAMPTZ "
+                            "USING booked_at AT TIME ZONE 'UTC'"
+                        )
+                    )
+                elif result and result != "timestamp with time zone":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE interview_sessions "
+                            "ALTER COLUMN booked_at TYPE TIMESTAMPTZ "
+                            "USING ("
+                            "    CASE "
+                            "        WHEN booked_at IS NULL THEN NULL "
+                            "        WHEN TRIM(booked_at) = '' THEN NULL "
+                            "        ELSE booked_at::timestamptz "
                             "    END"
                             ")"
                         )

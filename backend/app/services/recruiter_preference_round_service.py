@@ -38,6 +38,12 @@ def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+def _compat_get(data: Any, key: str, default: Any = None) -> Any:
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return getattr(data, key, default)
+
+
 def _normalize_text_value(value: Any) -> str:
     if value is None:
         return ""
@@ -95,7 +101,7 @@ def _normalize_text_list(value: Any) -> list[str]:
 
 def _text_field(data: dict[str, Any], *keys: str) -> str:
     for key in keys:
-        value = data.get(key)
+        value = _compat_get(data, key)
         normalized = _normalize_text_value(value)
         if normalized:
             return normalized
@@ -105,7 +111,7 @@ def _text_field(data: dict[str, Any], *keys: str) -> str:
 def _list_field(data: dict[str, Any], *keys: str) -> list[str]:
     collected: list[str] = []
     for key in keys:
-        value = data.get(key)
+        value = _compat_get(data, key)
         if value is None:
             continue
         collected.extend(_normalize_text_list(value))
@@ -207,10 +213,10 @@ def _extract_job_skills(job: Any, intent_profile: dict[str, Any]) -> list[str]:
     else:
         preferred = []
         required = []
-    job_skills = getattr(job, "skills_required", None) if not isinstance(job, dict) else job.get("skills_required")
+    job_skills = _compat_get(job, "skills_required")
     if isinstance(job_skills, list):
         required.extend(str(item) for item in job_skills)
-    description = _normalize_text(getattr(job, "description", "") or (job.get("description") if isinstance(job, dict) else ""))
+    description = _normalize_text(_compat_get(job, "description", ""))
     for token in ("python", "typescript", "javascript", "react", "fastapi", "postgres", "aws", "gcp", "kubernetes", "terraform", "design systems", "system design", "leadership"):
         if token in description.lower():
             required.append(token)
@@ -287,9 +293,9 @@ def _build_synthetic_candidate(
     mode: str,
     index: int,
 ) -> CandidateResult:
-    job_title = _normalize_text(getattr(job, "title", "") or (job.get("title") if isinstance(job, dict) else "") or "Candidate")
-    job_location = _normalize_text(getattr(job, "location", "") or (job.get("location") if isinstance(job, dict) else "") or "Remote")
-    job_description = _normalize_text(getattr(job, "description", "") or (job.get("description") if isinstance(job, dict) else ""))
+    job_title = _normalize_text(_compat_get(job, "title", "") or "Candidate")
+    job_location = _normalize_text(_compat_get(job, "location", "") or "Remote")
+    job_description = _normalize_text(_compat_get(job, "description", ""))
     skills = _extract_job_skills(job, intent_profile)
     blueprint = _synthetic_candidate_blueprint(index, mode=mode)
     fit_base = 4.65 if mode == "elite" else 4.35
@@ -342,7 +348,7 @@ def _build_synthetic_candidate(
     decision = "strong_match" if fit_score >= 3.8 else "potential" if fit_score >= 2.5 else "weak"
 
     return CandidateResult(
-        id=f"synthetic-{mode}-{_normalize_text(getattr(job, 'id', '') or (job.get('id') if isinstance(job, dict) else 'job'))}-{index + 1}",
+        id=f"synthetic-{mode}-{_normalize_text(_compat_get(job, 'id', 'job'))}-{index + 1}",
         name=blueprint["name"],
         role=blueprint["role"],
         company=blueprint["company"],
@@ -959,10 +965,7 @@ def _load_calibration_state_from_job(*, db: Session, recruiter_id: str, job_id: 
 
 def _job_text_field(job: Any, *keys: str) -> str:
     for key in keys:
-        if isinstance(job, dict):
-            value = job.get(key)
-        else:
-            value = getattr(job, key, "")
+        value = _compat_get(job, key, "")
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
@@ -971,10 +974,7 @@ def _job_text_field(job: Any, *keys: str) -> str:
 def _job_list_values(job: Any, *keys: str) -> list[str]:
     values: Any = None
     for key in keys:
-        if isinstance(job, dict):
-            value = job.get(key)
-        else:
-            value = getattr(job, key, None)
+        value = _compat_get(job, key, None)
         if isinstance(value, list):
             values = value
             break
