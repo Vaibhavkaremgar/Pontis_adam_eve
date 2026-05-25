@@ -131,40 +131,6 @@ function analysisSummary(analysis: CandidateSelectionAnalysis | null | undefined
   ].filter(Boolean);
 }
 
-function humanizeContrastAxis(axis: string): string {
-  const value = axis.replace(/_/g, " ").trim();
-  switch (axis) {
-    case "startup":
-      return "Startup vs enterprise";
-    case "backend_infra":
-      return "Backend vs infra";
-    case "domain_systems":
-      return "Domain vs systems";
-    case "leadership_ic":
-      return "Leadership vs hands-on";
-    case "exact_adjacent":
-      return "Near-match adjacency";
-    default:
-      return value.charAt(0).toUpperCase() + value.slice(1);
-  }
-}
-
-function getPairAxes(session: CandidateSelectionSession | null | undefined): string[] {
-  if (!session) return [];
-  const rawAxes = session.currentPair?.contrast_axes ?? (session.pairExplanation as { contrast_axes?: unknown } | undefined)?.contrast_axes;
-  return Array.isArray(rawAxes) ? rawAxes.filter((axis): axis is string => typeof axis === "string" && axis.trim().length > 0) : [];
-}
-
-function getPairRationale(session: CandidateSelectionSession | null | undefined): string {
-  if (!session) return "";
-  const explanation = (session.pairExplanation ?? session.currentPair?.pair_explanation ?? {}) as Record<string, unknown>;
-  return (
-    session.currentPair?.rationale ||
-    String(explanation.why_selected ?? explanation.summary ?? "").trim() ||
-    "This pair is chosen to expose different recruiter preferences."
-  );
-}
-
 function calibrationValueList(value: unknown): string[] {
   const collected: string[] = [];
 
@@ -250,91 +216,6 @@ function getCalibrationRoundLabel(calibration: RecruiterIntelligenceSession["cal
   const current = Number(calibration.current_round_index || 1);
   const total = Array.isArray(calibration.archetype_sets) ? calibration.archetype_sets.length || 3 : 3;
   return `${current} / ${total}`;
-}
-
-const STARTUP_TERMS = ["startup", "seed", "series a", "series b", "early-stage", "fast-paced", "scrappy"];
-const ENTERPRISE_TERMS = ["enterprise", "scale", "regulated", "large-scale", "global", "mature"];
-const BACKEND_TERMS = ["backend", "api", "service", "distributed", "microservice", "python", "java", "go", "node"];
-const INFRA_TERMS = ["infra", "platform", "aws", "gcp", "azure", "kubernetes", "terraform", "devops", "sre"];
-const DOMAIN_TERMS = ["fintech", "healthcare", "security", "payments", "search", "ads", "commerce", "ml", "data"];
-const SYSTEMS_TERMS = ["systems", "architecture", "scalable", "distributed", "performance", "reliability", "latency"];
-const LEADERSHIP_TERMS = ["lead", "leadership", "mentor", "architect", "own", "ownership", "drive"];
-const IC_TERMS = ["individual contributor", "ic", "hands-on", "build", "ship", "implement"];
-
-function normalizeContrastText(value?: string): string {
-  return (value || "").toLowerCase().replace(/\s+/g, " ").trim();
-}
-
-function candidateContrastText(candidate: Candidate): string {
-  return normalizeContrastText(
-    [
-      candidate.name,
-      candidate.headline,
-      candidate.role,
-      candidate.company,
-      candidate.location,
-      candidate.summary,
-      ...(candidate.skills || []),
-    ]
-      .filter(Boolean)
-      .join(" ")
-  );
-}
-
-function featureScore(text: string, terms: string[]): number {
-  if (!text || terms.length === 0) return 0;
-  let hits = 0;
-  for (const term of terms) {
-    if (text.includes(term)) hits += 1;
-  }
-  return hits / terms.length;
-}
-
-function axisPairScore(candidate: Candidate, axis: string): [number, number] {
-  const text = candidateContrastText(candidate);
-  switch (axis) {
-    case "startup":
-      return [featureScore(text, STARTUP_TERMS), featureScore(text, ENTERPRISE_TERMS)];
-    case "backend_infra":
-      return [featureScore(text, BACKEND_TERMS), featureScore(text, INFRA_TERMS)];
-    case "domain_systems":
-      return [featureScore(text, DOMAIN_TERMS), featureScore(text, SYSTEMS_TERMS)];
-    case "leadership_ic":
-      return [featureScore(text, LEADERSHIP_TERMS), featureScore(text, IC_TERMS)];
-    default:
-      return [0, 0];
-  }
-}
-
-function axisSideLabel(axis: string, isPositiveSide: boolean): string {
-  switch (axis) {
-    case "startup":
-      return isPositiveSide ? "Startup-leaning" : "Enterprise-leaning";
-    case "backend_infra":
-      return isPositiveSide ? "Backend-leaning" : "Infra-leaning";
-    case "domain_systems":
-      return isPositiveSide ? "Domain-leaning" : "Systems-leaning";
-    case "leadership_ic":
-      return isPositiveSide ? "Leadership-leaning" : "Hands-on";
-    default:
-      return isPositiveSide ? "Higher on this axis" : "Lower on this axis";
-  }
-}
-
-function getPairContrastLabels(candidate: Candidate, peer: Candidate | undefined, pairAxes: string[]): string[] {
-  if (!peer) return [];
-  return pairAxes
-    .map((axis) => {
-      const [candidatePositive, candidateNegative] = axisPairScore(candidate, axis);
-      const [peerPositive, peerNegative] = axisPairScore(peer, axis);
-      const candidateScore = candidatePositive - candidateNegative;
-      const peerScore = peerPositive - peerNegative;
-      const delta = candidateScore - peerScore;
-      if (Math.abs(delta) < 0.03) return "";
-      return axisSideLabel(axis, delta > 0);
-    })
-    .filter((label): label is string => Boolean(label))
-    .slice(0, 2);
 }
 
 function formatList(values?: string[], fallback = "Not provided"): string[] {
@@ -489,38 +370,17 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[13px] text-[#4B5563]">
           <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Signals</p>
           <div className="mt-3 space-y-0.5">
-            <DetailRow label="Resume included" value={candidate.resumeText ? "Yes" : "No"} />
             <DetailRow label="Mock email" value={candidate.isMockEmail ? "Yes" : "No"} />
             <DetailRow label="Matched skills" value={candidate.skills.length ? `${candidate.skills.slice(0, 4).join(", ")}` : "Not provided"} />
           </div>
         </div>
       </div>
-
-      {candidate.resumeText && (
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#111111] p-5 font-body text-[13px] text-white">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">Resume text</p>
-          <pre className="mt-3 whitespace-pre-wrap font-body leading-relaxed text-white/90">{candidate.resumeText}</pre>
-        </div>
-      )}
-
-      {candidate.explanation?.sourceBreakdown && (
-        <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[12px] text-[#6B7280] sm:grid-cols-2">
-          <span>Vector: {(candidate.explanation.sourceBreakdown.vector ?? 0).toFixed(2)}</span>
-          <span>Lexical: {(candidate.explanation.sourceBreakdown.lexical ?? 0).toFixed(2)}</span>
-          <span>Recruiter: {(candidate.explanation.sourceBreakdown.recruiterPreference ?? 0).toFixed(2)}</span>
-          <span>Selection: {(candidate.explanation.sourceBreakdown.selectionRound ?? 0).toFixed(2)}</span>
-          <span>Voice: {(candidate.explanation.sourceBreakdown.voiceInterview ?? 0).toFixed(2)}</span>
-          <span>Freshness: {(candidate.explanation.sourceBreakdown.freshness ?? 0).toFixed(2)}</span>
-        </div>
-      )}
     </div>
   );
 }
 
 function CandidateCard({
   candidate,
-  badgeLabel,
-  contrastLabels = [],
   isSelected,
   isSelecting,
   selectionLocked,
@@ -529,8 +389,6 @@ function CandidateCard({
   showSelectButton,
 }: {
   candidate: Candidate;
-  badgeLabel?: string;
-  contrastLabels?: string[];
   isSelected: boolean;
   isSelecting: boolean;
   selectionLocked: boolean;
@@ -586,22 +444,6 @@ function CandidateCard({
         <div className="mb-4 inline-flex rounded-full bg-[#F3F4F6] px-3 py-1 font-body text-[11px] font-semibold text-[#6B7280]">
           {statusLabel(candidate)}
         </div>
-
-        {badgeLabel && (
-          <div className="mb-4 rounded-[14px] border border-dashed border-[#D7D0C2] bg-[#FBFAF7] px-4 py-3 text-xs font-medium text-[#6B7280]">
-            {badgeLabel}
-          </div>
-        )}
-
-        {contrastLabels.length > 0 && (
-          <div className="mb-4 flex flex-wrap gap-2">
-            {contrastLabels.map((label) => (
-              <span key={`${candidate.id}-${label}`} className="rounded-full bg-[#EAF4FF] px-3 py-1 text-[11px] font-semibold text-[#1D4ED8]">
-                {label}
-              </span>
-            ))}
-          </div>
-        )}
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
           <div className="flex items-center gap-3 border-b border-[#ECE7DE] py-2">
@@ -1212,9 +1054,6 @@ export default function ReviewPage() {
   const progress = session ? Math.min(session.currentBatchIndex + (completed ? 0 : 1), session.totalBatches) : 0;
   const finalCandidates = session?.finalCandidates ?? session?.topCandidates ?? [];
   const analysis = session?.analysis ?? null;
-  const pairAxes = useMemo(() => getPairAxes(session), [session]);
-  const pairContrast = useMemo(() => pairAxes.map(humanizeContrastAxis), [pairAxes]);
-  const pairRationale = useMemo(() => getPairRationale(session), [session]);
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
   const calibration = intelligence?.calibration ?? null;
   const calibrationArchetypes = useMemo(() => getCalibrationCurrentArchetypes(calibration), [calibration]);
@@ -1535,7 +1374,7 @@ export default function ReviewPage() {
                     Preference calibration {calibrationRoundLabel}
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Adam generated two hiring archetypes for this set. Choose the one that best matches your preferred hiring style.
+                    Adam generated archetypes from the job details and requirements. Choose the one that best matches your preferred hiring style.
                   </p>
                 </div>
                 <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
@@ -1656,47 +1495,16 @@ export default function ReviewPage() {
                   </p>
                 </div>
                 <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F5E7B8] px-5 py-2 text-[13px] font-semibold text-[#8A5A00] shadow-none">
-                  2-candidate set
+                  Archetype-guided set
                 </Badge>
               </div>
 
-              {(pairRationale || pairContrast.length > 0) && (
-                <div className="grid gap-4 rounded-[24px] border border-[#E7E0D4] bg-white p-5 shadow-[0_8px_24px_rgba(0,0,0,0.04)] lg:grid-cols-[1.2fr_0.8fr]">
-                  <div className="space-y-2">
-                    <p className="font-body text-[11px] font-semibold uppercase tracking-[0.22em] text-[#0F6B3A]">Why this pair</p>
-                    <p className="font-body text-sm leading-6 text-[#4B5563]">{pairRationale}</p>
-                  </div>
-                  <div className="space-y-3">
-                    <p className="font-body text-[11px] font-semibold uppercase tracking-[0.22em] text-[#0F6B3A]">Contrast axes</p>
-                    <div className="flex flex-wrap gap-2">
-                      {pairContrast.length > 0 ? (
-                        pairContrast.map((axis) => (
-                          <Badge key={axis} className="rounded-full border border-[#E7E0D4] bg-[#FBFAF7] px-3 py-1 text-[12px] font-semibold text-[#111827]">
-                            {axis}
-                          </Badge>
-                        ))
-                      ) : (
-                        <span className="font-body text-sm text-[#6B7280]">This round is contrasting two different profile shapes.</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="grid gap-8 md:grid-cols-2">
-                {currentBatch.map((candidate, index) => {
-                  const peer = currentBatch[index === 0 ? 1 : 0];
-                  const peerLabel =
-                    peer && currentBatch.length === 2
-                      ? `Compared with ${peer.name || peer.headline || peer.role || "the other profile"}`
-                      : undefined;
-                  const contrastLabels = getPairContrastLabels(candidate, peer, pairAxes);
+              <div className="grid gap-8">
+                {currentBatch.map((candidate) => {
                   return (
                     <CandidateCard
                       key={candidate.id}
                       candidate={candidate}
-                      badgeLabel={peerLabel}
-                      contrastLabels={contrastLabels}
                       isSelected={selectedCandidateId === candidate.id}
                       isSelecting={isAdvancing && selectedCandidateId === candidate.id}
                       selectionLocked={isAdvancing && selectedCandidateId !== candidate.id}
