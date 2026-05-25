@@ -17,6 +17,11 @@ branch_labels = None
 depends_on = None
 
 
+def _column_type_name(column_type: object) -> str:
+    text = str(column_type or "").strip().lower()
+    return text
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
@@ -32,22 +37,42 @@ def upgrade() -> None:
 
     if dialect == "postgresql":
         column_type = columns["booked_at"].get("type")
-        data_type = str(columns["booked_at"].get("type", "")).lower()
-        if column_type and column_type.__class__.__name__.lower() not in {"datetime", "timestamptz"}:
-            if data_type == "timestamp without time zone":
-                op.alter_column(
-                    "interview_sessions",
-                    "booked_at",
-                    type_=sa.DateTime(timezone=True),
-                    postgresql_using="booked_at AT TIME ZONE 'UTC'",
-                )
-                return
+        type_name = _column_type_name(column_type)
+        is_datetime = isinstance(column_type, sa.DateTime)
+        has_timezone = bool(getattr(column_type, "timezone", False))
+
+        if is_datetime and has_timezone:
+            return
+
+        if is_datetime and not has_timezone:
             op.alter_column(
                 "interview_sessions",
                 "booked_at",
                 type_=sa.DateTime(timezone=True),
-                postgresql_using="NULLIF(booked_at, '')::timestamptz",
+                postgresql_using="booked_at AT TIME ZONE 'UTC'",
             )
+            return
+
+        if any(token in type_name for token in ("character varying", "varchar", "text", "string")):
+            op.execute(
+                sa.text(
+                    """
+                    UPDATE interview_sessions
+                    SET booked_at = NULL
+                    WHERE booked_at IS NOT NULL AND TRIM(booked_at) = ''
+                    """
+                )
+            )
+            op.alter_column(
+                "interview_sessions",
+                "booked_at",
+                type_=sa.DateTime(timezone=True),
+                postgresql_using="NULLIF(TRIM(booked_at), '')::timestamptz",
+            )
+            return
+
+        # If the live type is already a temporal type that SQLAlchemy does not
+        # classify as timezone-aware, leave it alone rather than risk a bad cast.
 
 
 def downgrade() -> None:
