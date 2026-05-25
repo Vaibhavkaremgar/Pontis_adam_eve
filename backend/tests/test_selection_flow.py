@@ -62,6 +62,7 @@ from app.db.repositories import _candidate_email_value
 from app.services.candidate_service import _candidate_identity_key, build_selection_candidate_snapshot
 import app.services.candidate_service as candidate_service
 from app.services import candidate_selection_service
+from app.services.slack_integration import build_calibration_blocks
 from app.services.preference_pair_service import generate_three_round_plan
 from app.services import outreach_service
 
@@ -263,6 +264,47 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertGreater(low_existing, high_existing)
         self.assertNotEqual(low_score, high_score)
         self.assertGreater(high_score, low_score)
+
+    def test_calibration_blocks_render_full_fields(self) -> None:
+        blocks = build_calibration_blocks(
+            job_id="job-1",
+            current_index=1,
+            total_sets=3,
+            calibration_set={
+                "set_title": "Startup Depth vs Scaled Reliability",
+                "set_theme": "Contrast a startup joiner and a scaled systems owner.",
+                "archetypes": [
+                    {
+                        "id": "archetype-a",
+                        "name": "Senior Backend Engineer",
+                        "summary": "6 years building API-heavy products at a Series B startup.",
+                        "profileData": {
+                            "candidateHeadline": "Senior Backend Engineer",
+                            "experienceSnapshot": "6 years building API-heavy products at a Series B startup.",
+                            "careerPattern": "Early startup joiner",
+                            "technicalStrengths": ["Python", "FastAPI", "Postgres"],
+                            "ownershipStyle": "Highly autonomous",
+                            "idealEnvironment": "High-growth startup",
+                            "executionStyle": "Fast iterative shipping",
+                            "leadershipProfile": ["Mentors juniors", "Handles ambiguity well"],
+                            "hiringTradeoffs": ["Startup depth over pedigree"],
+                        },
+                    }
+                ],
+            },
+        )
+
+        rendered = "\n".join(
+            str(block.get("text", {}).get("text", ""))
+            for block in blocks
+            if isinstance(block, dict) and block.get("type") == "section"
+        )
+
+        self.assertIn("Senior Backend Engineer", rendered)
+        self.assertIn("6 years building API-heavy products at a Series B startup.", rendered)
+        self.assertIn("*Technical strengths:* Python, FastAPI, Postgres", rendered)
+        self.assertIn("*Leadership profile:* Mentors juniors, Handles ambiguity well", rendered)
+        self.assertNotIn("P, y, t, h, o, n", rendered)
 
     def test_regular_outreach_email_does_not_bcc_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []

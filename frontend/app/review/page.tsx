@@ -135,14 +135,66 @@ function getPairRationale(session: CandidateSelectionSession | null | undefined)
   );
 }
 
-function calibrationText(value: unknown, fallback = ""): string {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => (typeof item === "string" ? item.trim() : ""))
-      .filter(Boolean)
-      .join(", ");
+function calibrationValueList(value: unknown): string[] {
+  const collected: string[] = [];
+
+  const visit = (item: unknown) => {
+    if (item == null) return;
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    if (typeof item === "string") {
+      const cleaned = item.trim();
+      if (!cleaned) return;
+      if (/[;,|]/.test(cleaned)) {
+        cleaned
+          .replace(/;/g, ",")
+          .replace(/\|/g, ",")
+          .split(",")
+          .map((part) => part.trim())
+          .filter(Boolean)
+          .forEach((part) => collected.push(part));
+        return;
+      }
+      collected.push(cleaned);
+      return;
+    }
+    if (typeof item === "number" || typeof item === "boolean") {
+      collected.push(String(item));
+      return;
+    }
+    if (typeof item === "object") {
+      const record = item as Record<string, unknown>;
+      for (const key of ["text", "label", "title", "name", "role", "value", "skill", "strength", "signal", "tradeoff"]) {
+        if (record[key] != null) {
+          visit(record[key]);
+          return;
+        }
+      }
+      Object.values(record).forEach(visit);
+    }
+  };
+
+  visit(value);
+
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const item of collected) {
+    const normalized = item.trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(normalized);
   }
+  return unique;
+}
+
+function calibrationText(value: unknown, fallback = ""): string {
+  const values = calibrationValueList(value);
+  if (values.length > 0) return values.join(", ");
+  if (typeof value === "string" && value.trim()) return value.trim();
   return fallback;
 }
 
@@ -1026,21 +1078,31 @@ export default function ReviewPage() {
               <div className="grid gap-6 md:grid-cols-2">
                 {calibrationArchetypes.map((archetype) => {
                   const archetypeId = String(archetype.id || archetype.archetype_id || archetype.title || archetype.name || "").trim();
-                  const title = String(archetype.title || archetype.name || archetype.role || "Archetype").trim();
                   const profileData = (archetype.profileData && typeof archetype.profileData === "object" ? archetype.profileData : {}) as Record<string, unknown>;
-                  const strengths = Array.isArray(profileData.strengths)
-                    ? profileData.strengths.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-                    : Array.isArray(archetype.strengths)
-                      ? archetype.strengths.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-                      : [];
+                  const title = calibrationText(
+                    profileData.candidateHeadline ||
+                      profileData.candidate_headline ||
+                      archetype.title ||
+                      archetype.name ||
+                      archetype.role ||
+                      "Archetype"
+                  );
+                  const experienceSnapshot = calibrationText(profileData.experienceSnapshot || profileData.experience_snapshot || archetype.headline);
+                  const careerPattern = calibrationText(profileData.careerPattern || profileData.career_pattern);
+                  const strengths = calibrationValueList(
+                    profileData.technicalStrengths ||
+                      profileData.technical_strengths ||
+                      profileData.strengths ||
+                      archetype.strengths ||
+                      archetype.skills
+                  );
                   const isChoosing = calibrationSelectionId === archetypeId;
-                  const workStyle = calibrationText(profileData.workStyle || profileData.work_style || archetype.work_style || archetype.workStyle);
-                  const ownership = calibrationText(profileData.ownershipLevel || profileData.ownership_level || archetype.ownership_level || archetype.ownershipLevel);
+                  const ownership = calibrationText(profileData.ownershipStyle || profileData.ownership_style || profileData.ownershipLevel || profileData.ownership_level);
                   const environment = calibrationText(profileData.idealEnvironment || profileData.ideal_environment || archetype.ideal_environment || archetype.idealEnvironment);
-                  const communication = calibrationText(profileData.communicationStyle || profileData.communication_style || archetype.communication_style || archetype.communicationStyle);
                   const execution = calibrationText(profileData.executionStyle || profileData.execution_style || archetype.execution_style || archetype.executionStyle);
                   const risk = calibrationText(profileData.riskTolerance || profileData.risk_tolerance || archetype.risk_tolerance || archetype.riskTolerance);
-                  const leadership = calibrationText(profileData.leadershipSignals || profileData.leadership_signals || archetype.leadership_signals || archetype.leadershipSignals);
+                  const leadership = calibrationText(profileData.leadershipProfile || profileData.leadership_profile || profileData.leadershipSignals || profileData.leadership_signals || archetype.leadership_signals || archetype.leadershipSignals);
+                  const tradeoffs = calibrationText(profileData.hiringTradeoffs || profileData.hiring_tradeoffs || archetype.hiring_tradeoffs || archetype.hiringTradeoffs);
                   const fitNote = calibrationText(profileData.fitNote || profileData.fit_note || archetype.fit_note || archetype.fitNote);
 
                   return (
@@ -1049,17 +1111,24 @@ export default function ReviewPage() {
                         <div className="flex items-start justify-between gap-4">
                           <div className="space-y-2">
                             <CardTitle className="font-heading text-[24px] font-semibold text-[#111827]">{title}</CardTitle>
-                            {fitNote && <CardDescription className="font-body text-sm leading-6 text-[#6B7280]">{fitNote}</CardDescription>}
+                            <CardDescription className="font-body text-sm leading-6 text-[#6B7280]">
+                              {experienceSnapshot || fitNote || "Believable ideal candidate profile for calibration."}
+                            </CardDescription>
                           </div>
                           <Badge className="rounded-full bg-[#F5E7B8] px-3 py-1 text-[12px] font-semibold text-[#8A5A00] shadow-none">
                             Archetype
                           </Badge>
                         </div>
+                        {careerPattern && (
+                          <p className="font-body text-[12px] leading-6 text-[#0F6B3A]">
+                            <span className="font-semibold text-[#111827]">Career pattern:</span> {careerPattern}
+                          </p>
+                        )}
                       </CardHeader>
                       <CardContent className="space-y-4">
                         {strengths.length > 0 && (
                           <div>
-                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Strengths</p>
+                            <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Technical strengths</p>
                             <div className="flex flex-wrap gap-2">
                               {strengths.slice(0, 4).map((strength) => (
                                 <span key={`${archetypeId}-${strength}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
@@ -1070,13 +1139,12 @@ export default function ReviewPage() {
                           </div>
                         )}
                         <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
-                          {workStyle && <p><span className="font-semibold text-[#111827]">Work style:</span> {workStyle}</p>}
-                          {ownership && <p><span className="font-semibold text-[#111827]">Ownership:</span> {ownership}</p>}
-                          {environment && <p><span className="font-semibold text-[#111827]">Environment:</span> {environment}</p>}
-                          {communication && <p><span className="font-semibold text-[#111827]">Communication:</span> {communication}</p>}
-                          {execution && <p><span className="font-semibold text-[#111827]">Execution:</span> {execution}</p>}
+                          {ownership && <p><span className="font-semibold text-[#111827]">Ownership style:</span> {ownership}</p>}
+                          {environment && <p><span className="font-semibold text-[#111827]">Ideal environment:</span> {environment}</p>}
+                          {execution && <p><span className="font-semibold text-[#111827]">Execution style:</span> {execution}</p>}
                           {risk && <p><span className="font-semibold text-[#111827]">Risk tolerance:</span> {risk}</p>}
-                          {leadership && <p><span className="font-semibold text-[#111827]">Leadership:</span> {leadership}</p>}
+                          {leadership && <p><span className="font-semibold text-[#111827]">Leadership profile:</span> {leadership}</p>}
+                          {tradeoffs && <p><span className="font-semibold text-[#111827]">Hiring tradeoffs:</span> {tradeoffs}</p>}
                         </div>
                         <Button
                           data-testid={`calibration-select-${archetypeId}`}

@@ -100,6 +100,36 @@ def _build_preference_text(*, job: Any, voice_summary: str, selection_rounds: li
         parts.append("Historical skills: " + ", ".join(item.get("skill", "") for item in recruiter_history.get("top_skills", []) if item.get("skill")))
     if recruiter_history.get("top_roles"):
         parts.append("Historical roles: " + ", ".join(item.get("role", "") for item in recruiter_history.get("top_roles", []) if item.get("role")))
+    if recruiter_history.get("preferred_technical_strengths"):
+        parts.append(
+            "Preferred technical strengths: "
+            + ", ".join(item for item in recruiter_history.get("preferred_technical_strengths", []) if item)
+        )
+    if recruiter_history.get("preferred_ownership_styles"):
+        parts.append(
+            "Preferred ownership styles: "
+            + ", ".join(item for item in recruiter_history.get("preferred_ownership_styles", []) if item)
+        )
+    if recruiter_history.get("preferred_leadership_profiles"):
+        parts.append(
+            "Preferred leadership profiles: "
+            + ", ".join(item for item in recruiter_history.get("preferred_leadership_profiles", []) if item)
+        )
+    if recruiter_history.get("preferred_ideal_environments"):
+        parts.append(
+            "Preferred environments: "
+            + ", ".join(item for item in recruiter_history.get("preferred_ideal_environments", []) if item)
+        )
+    if recruiter_history.get("preferred_execution_styles"):
+        parts.append(
+            "Preferred execution styles: "
+            + ", ".join(item for item in recruiter_history.get("preferred_execution_styles", []) if item)
+        )
+    if recruiter_history.get("preferred_hiring_tradeoffs"):
+        parts.append(
+            "Preferred tradeoffs: "
+            + ", ".join(item for item in recruiter_history.get("preferred_hiring_tradeoffs", []) if item)
+        )
     if selection_rounds:
         selection_bits = []
         for round_item in selection_rounds[-3:]:
@@ -141,6 +171,12 @@ def build_recruiter_intent_profile(
         "top_skills": [],
         "top_roles": [],
         "top_experience": [],
+        "preferred_technical_strengths": [],
+        "preferred_ownership_styles": [],
+        "preferred_leadership_profiles": [],
+        "preferred_ideal_environments": [],
+        "preferred_execution_styles": [],
+        "preferred_hiring_tradeoffs": [],
         "average_experience_years": None,
         "vector": [],
         "preference_text": "",
@@ -160,7 +196,20 @@ def build_recruiter_intent_profile(
     infra_weight = 0.8 if any(token in " ".join([_get_field(job, "description"), voice_summary, " ".join(required_skills)]).lower() for token in ("aws", "gcp", "azure", "kubernetes", "terraform", "cloud", "infra", "platform")) else 0.4
 
     culture_preferences = []
-    for token in ("ownership", "collaboration", "speed", "craft", "mentorship", "systems thinking", "product sense"):
+    for token in (
+        "ownership",
+        "collaboration",
+        "speed",
+        "craft",
+        "mentorship",
+        "systems thinking",
+        "product sense",
+        "startup depth",
+        "execution over polish",
+        "founder-compatible",
+        "enterprise rigor",
+        "product judgment",
+    ):
         if token in " ".join([_get_field(job, "description"), voice_summary]).lower():
             culture_preferences.append(token)
     if not culture_preferences:
@@ -184,6 +233,15 @@ def build_recruiter_intent_profile(
     if not intent_text.strip():
         intent_text = _normalize_text(getattr(job, "description", "") or "")
 
+    calibration_biases = {
+        "preferred_technical_strengths": list(recruiter_history.get("preferred_technical_strengths") or []),
+        "preferred_ownership_styles": list(recruiter_history.get("preferred_ownership_styles") or []),
+        "preferred_leadership_profiles": list(recruiter_history.get("preferred_leadership_profiles") or []),
+        "preferred_ideal_environments": list(recruiter_history.get("preferred_ideal_environments") or []),
+        "preferred_execution_styles": list(recruiter_history.get("preferred_execution_styles") or []),
+        "preferred_hiring_tradeoffs": list(recruiter_history.get("preferred_hiring_tradeoffs") or []),
+    }
+
     vector = embed(intent_text or " ")
     history_vector = [float(value) for value in recruiter_history.get("vector", []) or []]
     if history_vector and len(history_vector) == len(vector):
@@ -200,7 +258,13 @@ def build_recruiter_intent_profile(
         "leadership_weight": round(leadership_weight, 4),
         "infra_weight": round(infra_weight, 4),
         "culture_preferences": culture_preferences,
-        "hiring_biases": hiring_biases,
+        "preferred_technical_strengths": list(recruiter_history.get("preferred_technical_strengths") or []),
+        "preferred_ownership_styles": list(recruiter_history.get("preferred_ownership_styles") or []),
+        "preferred_leadership_profiles": list(recruiter_history.get("preferred_leadership_profiles") or []),
+        "preferred_ideal_environments": list(recruiter_history.get("preferred_ideal_environments") or []),
+        "preferred_execution_styles": list(recruiter_history.get("preferred_execution_styles") or []),
+        "preferred_hiring_tradeoffs": list(recruiter_history.get("preferred_hiring_tradeoffs") or []),
+        "hiring_biases": {**hiring_biases, **calibration_biases},
         "recruiter_preference_embedding": vector,
         "preference_text": intent_text,
         "voice_summary": _normalize_text(voice_summary or transcript),
@@ -268,6 +332,12 @@ def summarize_intent_profile(profile: dict[str, Any]) -> dict[str, Any]:
         "leadership_weight": float(profile.get("leadership_weight") or 0.0),
         "infra_weight": float(profile.get("infra_weight") or 0.0),
         "culture_preferences": list(profile.get("culture_preferences") or []),
+        "preferred_technical_strengths": list(profile.get("preferred_technical_strengths") or []),
+        "preferred_ownership_styles": list(profile.get("preferred_ownership_styles") or []),
+        "preferred_leadership_profiles": list(profile.get("preferred_leadership_profiles") or []),
+        "preferred_ideal_environments": list(profile.get("preferred_ideal_environments") or []),
+        "preferred_execution_styles": list(profile.get("preferred_execution_styles") or []),
+        "preferred_hiring_tradeoffs": list(profile.get("preferred_hiring_tradeoffs") or []),
         "hiring_biases": dict(profile.get("hiring_biases") or {}),
         "recruiter_preference_embedding": list(profile.get("recruiter_preference_embedding") or []),
         "preference_text": profile.get("preference_text", ""),

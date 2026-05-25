@@ -240,6 +240,13 @@ class IntegrationTests(unittest.TestCase):
         self.db.close()
         self.client.close()
 
+    def test_slack_routes_are_available_with_and_without_api_prefix(self) -> None:
+        paths = {getattr(route, "path", "") for route in main_module.app.routes}
+        self.assertIn("/slack/commands", paths)
+        self.assertIn("/slack/interactions", paths)
+        self.assertIn("/api/slack/commands", paths)
+        self.assertIn("/api/slack/interactions", paths)
+
     def _post_resend_inbound_reply(
         self,
         *,

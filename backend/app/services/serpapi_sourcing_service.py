@@ -233,6 +233,66 @@ def build_linkedin_xray_queries(
             )
         ]
     )
+    preferred_technical_strengths = _dedupe_preserve_order(
+        [
+            _normalize_text(item)
+            for item in (
+                recruiter_preferences.get("preferred_technical_strengths")
+                or recruiter_preferences.get("preferredTechnicalStrengths")
+                or []
+            )
+        ]
+    )
+    preferred_ownership_styles = _dedupe_preserve_order(
+        [
+            _normalize_text(item)
+            for item in (
+                recruiter_preferences.get("preferred_ownership_styles")
+                or recruiter_preferences.get("preferredOwnershipStyles")
+                or []
+            )
+        ]
+    )
+    preferred_leadership_profiles = _dedupe_preserve_order(
+        [
+            _normalize_text(item)
+            for item in (
+                recruiter_preferences.get("preferred_leadership_profiles")
+                or recruiter_preferences.get("preferredLeadershipProfiles")
+                or []
+            )
+        ]
+    )
+    preferred_ideal_environments = _dedupe_preserve_order(
+        [
+            _normalize_text(item)
+            for item in (
+                recruiter_preferences.get("preferred_ideal_environments")
+                or recruiter_preferences.get("preferredIdealEnvironments")
+                or []
+            )
+        ]
+    )
+    preferred_execution_styles = _dedupe_preserve_order(
+        [
+            _normalize_text(item)
+            for item in (
+                recruiter_preferences.get("preferred_execution_styles")
+                or recruiter_preferences.get("preferredExecutionStyles")
+                or []
+            )
+        ]
+    )
+    preferred_hiring_tradeoffs = _dedupe_preserve_order(
+        [
+            _normalize_text(item)
+            for item in (
+                recruiter_preferences.get("preferred_hiring_tradeoffs")
+                or recruiter_preferences.get("preferredHiringTradeoffs")
+                or []
+            )
+        ]
+    )
     preference_text = _normalize_text(recruiter_preferences.get("preference_text") or "")
     archetype = _normalize_text(recruiter_preferences.get("archetype") or "")
 
@@ -247,8 +307,15 @@ def build_linkedin_xray_queries(
     skill_terms = normalized_skills[:6]
     if preferred_skills:
         skill_terms = _dedupe_preserve_order([*skill_terms, *preferred_skills[:4]])[:6]
+    if preferred_technical_strengths:
+        skill_terms = _dedupe_preserve_order([*skill_terms, *preferred_technical_strengths[:4]])[:6]
     stage_terms = [company_stage] if company_stage else []
     preference_terms = [term for term in [hiring_preferences, industry, leadership_expectations, preference_text, archetype] if term]
+    preference_terms.extend(preferred_ownership_styles[:3])
+    preference_terms.extend(preferred_leadership_profiles[:3])
+    preference_terms.extend(preferred_ideal_environments[:3])
+    preference_terms.extend(preferred_execution_styles[:3])
+    preference_terms.extend(preferred_hiring_tradeoffs[:3])
     location_terms = [location] if location else []
     if preferred_experience:
         stage_terms.extend(preferred_experience[:2])

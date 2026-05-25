@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +36,93 @@ _STATE_TTL_SECONDS = 24 * 60 * 60
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _normalize_text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _normalize_text(value)
+    if isinstance(value, (int, float, bool)):
+        return _normalize_text(value)
+    if isinstance(value, dict):
+        for key in ("text", "label", "title", "name", "role", "value", "summary", "description"):
+            normalized = _normalize_text_value(value.get(key))
+            if normalized:
+                return normalized
+        flattened = [_normalize_text_value(item) for item in value.values()]
+        return ", ".join(item for item in flattened if item)
+    if isinstance(value, list):
+        flattened = [_normalize_text_value(item) for item in value]
+        return ", ".join(item for item in flattened if item)
+    return _normalize_text(str(value))
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    collected: list[str] = []
+
+    def visit(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, list):
+            for nested in item:
+                visit(nested)
+            return
+        if isinstance(item, dict):
+            for key in ("text", "label", "title", "name", "role", "value", "skill", "strength", "signal", "tradeoff"):
+                normalized = _normalize_text_value(item.get(key))
+                if normalized:
+                    collected.append(normalized)
+                    return
+            for nested in item.values():
+                visit(nested)
+            return
+
+        normalized = _normalize_text_value(item)
+        if not normalized:
+            return
+        if isinstance(item, str):
+            parts = [part.strip() for part in re.split(r"[;,|/]\s*", normalized) if part.strip()]
+            if len(parts) > 1:
+                for part in parts:
+                    visit(part)
+                return
+        collected.append(normalized)
+
+    visit(value)
+    return _ordered_unique(collected)
+
+
+def _text_field(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        normalized = _normalize_text_value(value)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _list_field(data: dict[str, Any], *keys: str) -> list[str]:
+    collected: list[str] = []
+    for key in keys:
+        value = data.get(key)
+        if value is None:
+            continue
+        collected.extend(_normalize_text_list(value))
+    return _ordered_unique(collected)
+
+
+def _candidate_headline_from_option(option: dict[str, Any], *, fallback: str) -> str:
+    return _text_field(
+        option,
+        "candidate_headline",
+        "candidateHeadline",
+        "headline",
+        "title",
+        "name",
+        "role",
+        "label",
+    ) or fallback
 
 
 def _ordered_unique(values: list[str]) -> list[str]:
@@ -810,23 +898,35 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
     preferred_skills = ", ".join(intent_profile.get("preferred_skills") or []) or "none"
     required_skills = ", ".join(intent_profile.get("required_skills") or []) or "none"
     culture_preferences = ", ".join(intent_profile.get("culture_preferences") or []) or "none"
+    company_stage = _text_field(job, "company_stage", "companyStage", "stage", "company_type") or "unknown"
+    role_seniority = _text_field(job, "experience_level", "experienceRequired", "seniority") or "unknown"
 
     return (
-        "You are calibrating recruiter taste, not evaluating real candidates.\n"
+        "You are generating recruiter calibration archetypes as realistic IDEAL CANDIDATE SNAPSHOTS.\n"
+        "Do not create personality cards or abstract labels.\n"
+        "Every archetype should feel like a believable mini-resume the recruiter would genuinely consider hiring.\n"
         "Generate 3 distinct archetype sets with 2 archetypes in each set.\n"
-        "Each archetype is a hiring preference lens, not a person.\n"
+        "Each set should contrast two hireable candidate profiles for the same role and stage.\n"
         "Rules:\n"
         "- Return ONLY valid JSON.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
         "- Each set must contain exactly 2 archetypes.\n"
-        "- Each archetype must include: title, strengths, work_style, ownership_level, ideal_environment, communication_style, execution_style, risk_tolerance, leadership_signals, fit_note.\n"
-        "- Keep each field concise and recruiter-readable.\n"
-        "- Use the job context and voice summary to shape the archetypes.\n"
+        "- Each archetype must include: candidate_headline, experience_snapshot, career_pattern, technical_strengths, ownership_style, leadership_profile, ideal_environment, execution_style, hiring_tradeoffs, fit_note.\n"
+        "- Keep the candidate headline role-like and specific, e.g. 'Senior Backend Engineer' or 'Founding AI Engineer'.\n"
+        "- Make the experience snapshot sound like a real resume line, e.g. years of experience, notable companies, stage context, or team scope.\n"
+        "- Make the career pattern sound like a real hiring pattern, e.g. early startup joiner, internal promo, founder-office, long-tenure scaler.\n"
+        "- Technical_strengths should be a short list of concrete skills or domains, not adjectives.\n"
+        "- Ownership_style, leadership_profile, ideal_environment, execution_style, and hiring_tradeoffs should read like recruiter notes, not personality labels.\n"
+        "- Use the job context, company stage, seniority, and voice summary to shape the archetypes.\n"
         "- Prefer contrast within each set so the recruiter reveals taste.\n"
+        "- Anchor the profiles to believable hiring tradeoffs, such as startup depth over pedigree, execution over polish, or specialization over breadth.\n"
+        "- Keep the set theme grounded in the real hiring decision being made.\n"
         "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
         f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
         f"{sanitize_prompt_block('Location', _job_text_field(job, 'location'), max_length=160)}\n"
+        f"{sanitize_prompt_block('Company stage', company_stage, max_length=160)}\n"
+        f"{sanitize_prompt_block('Seniority', role_seniority, max_length=160)}\n"
         f"{sanitize_prompt_block('Compensation', _job_text_field(job, 'compensation', 'salary_range'), max_length=160)}\n"
         f"{sanitize_prompt_block('Work authorization', _job_text_field(job, 'work_authorization', 'workAuthorization'), max_length=160)}\n"
         f"{sanitize_prompt_block('Experience', _job_text_field(job, 'experience_level', 'experienceRequired', 'seniority'), max_length=160)}\n"
@@ -842,28 +942,60 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
 
 
 def _normalize_archetype_field(value: Any) -> str:
-    return _normalize_text(value)
+    return _normalize_text_value(value)
 
 
 def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: int, option_index: int) -> dict[str, Any]:
     set_suffix = f"r{set_index + 1}-{chr(ord('a') + option_index)}"
-    title = _normalize_archetype_field(option.get("title") or option.get("name") or option.get("label") or f"Archetype {set_suffix}")
-    strengths = _ordered_unique([_normalize_archetype_field(item) for item in (option.get("strengths") or []) if _normalize_archetype_field(item)])
-    work_style = _normalize_archetype_field(option.get("work_style") or option.get("workStyle"))
-    ownership_level = _normalize_archetype_field(option.get("ownership_level") or option.get("ownershipLevel"))
-    ideal_environment = _normalize_archetype_field(option.get("ideal_environment") or option.get("idealEnvironment"))
-    communication_style = _normalize_archetype_field(option.get("communication_style") or option.get("communicationStyle"))
-    execution_style = _normalize_archetype_field(option.get("execution_style") or option.get("executionStyle"))
-    risk_tolerance = _normalize_archetype_field(option.get("risk_tolerance") or option.get("riskTolerance"))
-    leadership_signals = _ordered_unique([_normalize_archetype_field(item) for item in (option.get("leadership_signals") or option.get("leadershipSignals") or []) if _normalize_archetype_field(item)])
+    fallback_headline = f"{_job_text_field(job, 'title') or 'Candidate'} {set_suffix}".strip()
+    candidate_headline = _candidate_headline_from_option(option, fallback=fallback_headline)
+    experience_snapshot = _text_field(
+        option,
+        "experience_snapshot",
+        "experienceSnapshot",
+        "experience",
+        "background",
+        "experience_summary",
+        "experienceSummary",
+    )
+    career_pattern = _text_field(
+        option,
+        "career_pattern",
+        "careerPattern",
+        "career_arc",
+        "careerArc",
+        "pattern",
+        "trajectory",
+    )
+    technical_strengths = _list_field(
+        option,
+        "technical_strengths",
+        "technicalStrengths",
+        "strengths",
+        "skills",
+    )
+    ownership_style = _text_field(option, "ownership_style", "ownershipStyle", "ownership_level", "ownershipLevel")
+    leadership_profile = _list_field(option, "leadership_profile", "leadershipProfile", "leadership_signals", "leadershipSignals")
+    ideal_environment = _text_field(option, "ideal_environment", "idealEnvironment")
+    execution_style = _text_field(option, "execution_style", "executionStyle")
+    hiring_tradeoffs = _list_field(option, "hiring_tradeoffs", "hiringTradeoffs", "tradeoffs", "trade_offs")
     fit_note = _normalize_archetype_field(option.get("fit_note") or option.get("fitNote") or "")
+    title = candidate_headline
+    strengths = _ordered_unique([*technical_strengths, *leadership_profile])
+    work_style = _normalize_archetype_field(option.get("work_style") or option.get("workStyle"))
+    if not work_style:
+        work_style = ownership_style
+    ownership_level = ownership_style or _normalize_archetype_field(option.get("ownership_level") or option.get("ownershipLevel"))
+    communication_style = _normalize_archetype_field(option.get("communication_style") or option.get("communicationStyle"))
+    risk_tolerance = _normalize_archetype_field(option.get("risk_tolerance") or option.get("riskTolerance"))
 
     job_title = _job_text_field(job, "title") or "the role"
     role = title
-    skills = _ordered_unique([*strengths, *leadership_signals])
+    skills = _ordered_unique([*technical_strengths, *strengths, *leadership_profile, *hiring_tradeoffs])
     summary = (
-        f"{title} is an ideal hiring archetype for {job_title}. "
-        f"It emphasizes {', '.join(strengths[:4]) or 'execution and ownership'}."
+        f"{candidate_headline} is a believable ideal candidate for {job_title}. "
+        f"Experience snapshot: {experience_snapshot or 'not specified'}. "
+        f"Career pattern: {career_pattern or 'not specified'}."
     )
     if fit_note:
         summary = f"{summary} {fit_note}"
@@ -881,11 +1013,11 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
             "missingSkillsPenalty": 0.0,
             "selectionPreferenceBonus": 0.0,
         },
-        skillsMatched=strengths[:4],
+        skillsMatched=technical_strengths[:4] or strengths[:4],
         experienceMatch="Preference calibration archetype",
         candidateExperience="Preference calibration archetype",
         jobExperience=_job_text_field(job, "experience_level", "experienceRequired", "seniority"),
-        aiReasoning="Groq-generated archetype used to calibrate recruiter taste before real sourcing begins.",
+        aiReasoning="Groq-generated ideal candidate snapshot used to calibrate recruiter taste before real sourcing begins.",
         sourceBreakdown={
             "vector": 0.0,
             "lexical": 0.0,
@@ -898,12 +1030,12 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
     )
     return {
         "id": f"archetype-{set_suffix}",
-        "name": title,
-        "role": title,
+        "name": candidate_headline,
+        "role": candidate_headline,
         "company": "Preference Calibration",
         "email": "",
         "isMockEmail": True,
-        "headline": option.get("set_title") or f"Calibration archetype for {job_title}",
+        "headline": experience_snapshot or option.get("set_title") or f"Calibration archetype for {job_title}",
         "location": _job_text_field(job, "location") or "Remote",
         "yearsExperience": 0.0,
         "skills": skills,
@@ -923,7 +1055,7 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
                 f"Communication style: {communication_style}",
                 f"Execution style: {execution_style}",
                 f"Risk tolerance: {risk_tolerance}",
-                f"Leadership signals: {', '.join(leadership_signals)}",
+                f"Leadership signals: {', '.join(leadership_profile)}",
                 f"Fit note: {fit_note}",
             ]
         ).strip(),
@@ -934,15 +1066,35 @@ def _normalize_archetype_option(option: dict[str, Any], *, job: Any, set_index: 
             "optionIndex": option_index + 1,
             "setTitle": _normalize_archetype_field(option.get("set_title") or option.get("setTitle") or ""),
             "setTheme": _normalize_archetype_field(option.get("set_theme") or option.get("setTheme") or ""),
-            "title": title,
+            "candidateHeadline": candidate_headline,
+            "candidate_headline": candidate_headline,
+            "title": candidate_headline,
+            "experienceSnapshot": experience_snapshot,
+            "experience_snapshot": experience_snapshot,
+            "careerPattern": career_pattern,
+            "career_pattern": career_pattern,
+            "technicalStrengths": technical_strengths,
+            "technical_strengths": technical_strengths,
             "strengths": strengths,
             "workStyle": work_style,
+            "work_style": work_style,
+            "ownershipStyle": ownership_level,
+            "ownership_style": ownership_level,
             "ownershipLevel": ownership_level,
             "idealEnvironment": ideal_environment,
-            "communicationStyle": communication_style,
+            "ideal_environment": ideal_environment,
             "executionStyle": execution_style,
+            "execution_style": execution_style,
+            "leadershipProfile": leadership_profile,
+            "leadership_profile": leadership_profile,
+            "leadershipSignals": leadership_profile,
+            "leadership_signals": leadership_profile,
+            "hiringTradeoffs": hiring_tradeoffs,
+            "hiring_tradeoffs": hiring_tradeoffs,
+            "communicationStyle": communication_style,
+            "communication_style": communication_style,
             "riskTolerance": risk_tolerance,
-            "leadershipSignals": leadership_signals,
+            "risk_tolerance": risk_tolerance,
             "fitNote": fit_note,
         },
         "fitScore": round(fit_score, 2),
@@ -960,92 +1112,92 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
     job_title = _job_text_field(job, "title") or "the role"
     templates = [
         (
-            "Startup vs Systems",
-            "Contrast a high-velocity builder with a disciplined systems owner.",
+            "Startup Depth vs Scaled Reliability",
+            "Contrast an early startup joiner with a scaled systems owner.",
             [
                 {
-                    "title": "Startup Builder",
-                    "strengths": ["scrappy execution", "ambiguity tolerance", "fast iteration", "cross-functional ownership"],
-                    "work_style": "Moves quickly and thrives with sparse process.",
-                    "ownership_level": "Very high",
-                    "ideal_environment": "Early-stage team with urgency and incomplete structure.",
-                    "communication_style": "Direct, concise, and outcome-oriented.",
-                    "execution_style": "Biases toward shipping, learning, and course-correcting fast.",
-                    "risk_tolerance": "High",
-                    "leadership_signals": ["drives momentum", "self-starting", "unblocks others"],
-                    "fit_note": f"Best when {job_title} needs speed and adaptability.",
+                    "candidate_headline": "Senior Backend Engineer",
+                    "experience_snapshot": "6 years building API-heavy products at a Series B startup and a fintech scale-up.",
+                    "career_pattern": "Early startup joiner with fast promotions and broad ownership.",
+                    "technical_strengths": ["python", "fastapi", "postgres", "distributed systems"],
+                    "ownership_style": "Highly autonomous and comfortable taking vague problems from zero to shipped.",
+                    "leadership_profile": ["mentors juniors", "handles ambiguity well", "keeps stakeholders aligned"],
+                    "ideal_environment": "High-growth startup with tight feedback loops and little process overhead.",
+                    "execution_style": "Fast iterative shipping with strong bias toward practical solutions.",
+                    "hiring_tradeoffs": ["startup depth over pedigree", "execution over polish", "breadth over specialization"],
+                    "fit_note": f"Best when {job_title} needs speed, ownership, and rapid product iteration.",
                 },
                 {
-                    "title": "Enterprise Systems Specialist",
-                    "strengths": ["reliability", "architecture rigor", "operational discipline", "process clarity"],
-                    "work_style": "Prefers clarity, scale, and repeatable execution.",
-                    "ownership_level": "High",
-                    "ideal_environment": "Mature org with complex systems and stability requirements.",
-                    "communication_style": "Structured, precise, and documentation-friendly.",
-                    "execution_style": "Plans carefully and optimizes for maintainability.",
-                    "risk_tolerance": "Moderate",
-                    "leadership_signals": ["platform thinking", "risk management", "cross-team alignment"],
-                    "fit_note": f"Best when {job_title} needs depth and reliability.",
+                    "candidate_headline": "Staff Platform Engineer",
+                    "experience_snapshot": "10 years modernizing critical infrastructure across a public SaaS company and a mature enterprise team.",
+                    "career_pattern": "Long-tenure scaler with deep operational credibility and steady promotions.",
+                    "technical_strengths": ["cloud infrastructure", "kubernetes", "terraform", "systems reliability"],
+                    "ownership_style": "Process-oriented and very dependable when the work needs safety and repeatability.",
+                    "leadership_profile": ["sets technical standards", "mentors engineers", "drives incident discipline"],
+                    "ideal_environment": "Fast-growing but operationally serious team that values stability and scale.",
+                    "execution_style": "Measured shipping with clear plans, documentation, and low-regret decisions.",
+                    "hiring_tradeoffs": ["reliability over flash", "scale depth over startup scrappiness", "discipline over improvisation"],
+                    "fit_note": f"Best when {job_title} needs robustness, architecture rigor, and careful systems ownership.",
                 },
             ],
         ),
         (
-            "Product vs Delivery",
-            "Contrast a product-minded collaborator with an execution-heavy operator.",
+            "Product Focus vs Delivery Muscle",
+            "Contrast a product-minded engineer with an execution-heavy operator.",
             [
                 {
-                    "title": "Product-Focused Engineer",
-                    "strengths": ["user empathy", "scope judgment", "tradeoff awareness", "collaborative planning"],
-                    "work_style": "Balances product thinking with implementation detail.",
-                    "ownership_level": "High",
-                    "ideal_environment": "Team with lots of ambiguity and strong product collaboration.",
-                    "communication_style": "Collaborative and clear on tradeoffs.",
-                    "execution_style": "Ships with intent and keeps stakeholders informed.",
-                    "risk_tolerance": "Moderate",
-                    "leadership_signals": ["bridges functions", "keeps priorities aligned", "thinks in outcomes"],
-                    "fit_note": f"Best when {job_title} needs customer awareness.",
+                    "candidate_headline": "Product-Minded Fullstack Engineer",
+                    "experience_snapshot": "5 years building customer-facing workflows at a B2B SaaS company with heavy PM collaboration.",
+                    "career_pattern": "Promoted internally after becoming the go-to builder for ambiguous product work.",
+                    "technical_strengths": ["react", "typescript", "api design", "user workflows"],
+                    "ownership_style": "Outcome-oriented and comfortable shaping scope with product and design.",
+                    "leadership_profile": ["bridges functions", "communicates tradeoffs clearly", "keeps priorities aligned"],
+                    "ideal_environment": "Product-heavy culture with strong collaboration between engineering and product.",
+                    "execution_style": "Fast iterative shipping with a healthy respect for user feedback.",
+                    "hiring_tradeoffs": ["product judgment over raw specialization", "adaptability over narrow depth", "outcome over optics"],
+                    "fit_note": f"Best when {job_title} needs customer empathy and tight product iteration.",
                 },
                 {
-                    "title": "Execution-Heavy Operator",
-                    "strengths": ["delivery cadence", "ownership", "deadline focus", "operational follow-through"],
-                    "work_style": "Highly pragmatic and deadline-driven.",
-                    "ownership_level": "Very high",
-                    "ideal_environment": "High-tempo team that values reliable execution.",
-                    "communication_style": "Brief, decisive, and status-oriented.",
-                    "execution_style": "Turns plans into shipped work with minimal friction.",
-                    "risk_tolerance": "Moderate to high",
-                    "leadership_signals": ["keeps work moving", "removes blockers", "drives closure"],
-                    "fit_note": f"Best when {job_title} must move fast and stay accountable.",
+                    "candidate_headline": "Startup GTM Operator",
+                    "experience_snapshot": "7 years running pipeline and account execution across APAC for an early-stage SaaS team.",
+                    "career_pattern": "First 10 employee profile with founder-office exposure and broad commercial scope.",
+                    "technical_strengths": ["outbound execution", "pipeline generation", "crm hygiene", "account follow-through"],
+                    "ownership_style": "Aggressively accountable and comfortable owning outcomes end to end.",
+                    "leadership_profile": ["strong client ownership", "keeps teams moving", "handles ambiguity well"],
+                    "ideal_environment": "Fast-moving startup where speed, urgency, and commercial clarity matter.",
+                    "execution_style": "Operationally disciplined with a strong bias toward closing loops quickly.",
+                    "hiring_tradeoffs": ["execution over polish", "ownership over process", "speed over ceremony"],
+                    "fit_note": f"Best when {job_title} needs a person who can create momentum and close work.",
                 },
             ],
         ),
         (
-            "Infra vs Leadership",
+            "Infra Craft vs Leadership Leverage",
             "Contrast deep infrastructure craft with leadership-heavy architecture.",
             [
                 {
-                    "title": "AI-Native Infra Engineer",
-                    "strengths": ["cloud systems", "kubernetes", "automation", "deployment reliability"],
-                    "work_style": "Deep technical focus with infrastructure-first instincts.",
-                    "ownership_level": "High",
-                    "ideal_environment": "AI or platform team where infra quality is critical.",
-                    "communication_style": "Technical, measured, and specific.",
-                    "execution_style": "Builds stable tooling and systems that others can trust.",
-                    "risk_tolerance": "Low to moderate",
-                    "leadership_signals": ["operational excellence", "technical standards", "incident discipline"],
-                    "fit_note": f"Best when {job_title} needs strong platform foundations.",
+                    "candidate_headline": "Founding AI Engineer",
+                    "experience_snapshot": "4 years building model-serving and retrieval systems at an AI startup after an ML infra rotation.",
+                    "career_pattern": "Early startup joiner with founder-office exposure and hands-on product iteration.",
+                    "technical_strengths": ["llm infra", "python", "vector search", "model deployment"],
+                    "ownership_style": "Founder-compatible and comfortable owning uncertain work without much scaffolding.",
+                    "leadership_profile": ["handles ambiguity well", "collaborates tightly with product", "ships prototypes quickly"],
+                    "ideal_environment": "Experimentation-driven AI team where prototypes need to become production quickly.",
+                    "execution_style": "Fast iterative shipping with careful attention to reliability once the path is proven.",
+                    "hiring_tradeoffs": ["speed over perfection", "adaptability over deep specialization", "product impact over process"],
+                    "fit_note": f"Best when {job_title} needs someone who can move from prototype to production without hand-holding.",
                 },
                 {
-                    "title": "Leadership-Heavy Architect",
-                    "strengths": ["system design", "mentorship", "technical direction", "cross-team alignment"],
-                    "work_style": "Sets direction, aligns stakeholders, and reduces ambiguity.",
-                    "ownership_level": "Very high",
-                    "ideal_environment": "Growing org where the role must influence beyond code.",
-                    "communication_style": "Clear, strategic, and stakeholder-aware.",
-                    "execution_style": "Balances design quality with team throughput.",
-                    "risk_tolerance": "Moderate",
-                    "leadership_signals": ["raises the bar", "guides tradeoffs", "creates clarity"],
-                    "fit_note": f"Best when {job_title} needs technical leadership.",
+                    "candidate_headline": "Enterprise Sales Executive",
+                    "experience_snapshot": "11 years managing enterprise SaaS accounts across APAC, including multi-stakeholder expansion deals.",
+                    "career_pattern": "Long-tenure growth profile with repeated quota attainment and internal promotions.",
+                    "technical_strengths": ["enterprise selling", "pipeline generation", "deal strategy", "account expansion"],
+                    "ownership_style": "Highly autonomous and commercially disciplined from prospecting through close.",
+                    "leadership_profile": ["stakeholder communicator", "owns client outcomes", "mentors newer reps"],
+                    "ideal_environment": "Enterprise SaaS team with clear targets, sophisticated buyers, and strong execution norms.",
+                    "execution_style": "Aggressive outbound execution with structured pipeline management.",
+                    "hiring_tradeoffs": ["commercial rigor over polish", "ownership over narrow specialization", "execution over theory"],
+                    "fit_note": f"Best when {job_title} needs someone who can manage complex accounts and drive revenue momentum.",
                 },
             ],
         ),

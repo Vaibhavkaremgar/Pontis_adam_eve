@@ -103,6 +103,12 @@ def _intent_keywords(intent_profile: dict[str, Any]) -> set[str]:
     keywords.update(str(item).lower() for item in (intent_profile.get("required_skills") or []) if str(item).strip())
     keywords.update(str(item).lower() for item in (intent_profile.get("preferred_skills") or []) if str(item).strip())
     keywords.update(str(item).lower() for item in (intent_profile.get("culture_preferences") or []) if str(item).strip())
+    keywords.update(str(item).lower() for item in (intent_profile.get("preferred_technical_strengths") or []) if str(item).strip())
+    keywords.update(str(item).lower() for item in (intent_profile.get("preferred_ownership_styles") or []) if str(item).strip())
+    keywords.update(str(item).lower() for item in (intent_profile.get("preferred_leadership_profiles") or []) if str(item).strip())
+    keywords.update(str(item).lower() for item in (intent_profile.get("preferred_ideal_environments") or []) if str(item).strip())
+    keywords.update(str(item).lower() for item in (intent_profile.get("preferred_execution_styles") or []) if str(item).strip())
+    keywords.update(str(item).lower() for item in (intent_profile.get("preferred_hiring_tradeoffs") or []) if str(item).strip())
     for value in (intent_profile.get("preference_text") or "", intent_profile.get("voice_summary") or ""):
         keywords.update(_tokens(str(value)))
     return keywords

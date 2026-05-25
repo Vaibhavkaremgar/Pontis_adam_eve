@@ -282,3 +282,6 @@ def unhandled_error_handler(request: Request, __: Exception):
 
 app.include_router(api_router)
 app.include_router(slack_router)
+# Slack can be reached either directly at /slack/* or behind an API prefix at /api/slack/*.
+# Keep both mounts so Slack app settings and existing docs/deployments remain compatible.
+app.include_router(slack_router, prefix="/api", include_in_schema=False)

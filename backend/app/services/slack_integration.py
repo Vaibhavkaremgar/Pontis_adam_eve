@@ -108,6 +108,79 @@ def _decision_label(decision: str) -> str:
     return normalized.title() or "Processed"
 
 
+def _text_value(source: Any, *keys: str) -> str:
+    if isinstance(source, dict):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split()).strip()
+            if isinstance(value, (int, float, bool)) and str(value).strip():
+                return str(value).strip()
+    else:
+        for key in keys:
+            value = getattr(source, key, None)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split()).strip()
+            if isinstance(value, (int, float, bool)) and str(value).strip():
+                return str(value).strip()
+    return ""
+
+
+def _list_value(source: Any, *keys: str) -> list[str]:
+    def visit(item: Any, bucket: list[str]) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            cleaned = " ".join(item.split()).strip()
+            if not cleaned:
+                return
+            if any(sep in cleaned for sep in [",", ";", "|"]):
+                for piece in cleaned.replace(";", ",").replace("|", ",").split(","):
+                    piece = " ".join(piece.split()).strip()
+                    if piece:
+                        bucket.append(piece)
+                return
+            bucket.append(cleaned)
+            return
+        if isinstance(item, dict):
+            for key in ("text", "label", "title", "name", "role", "value", "skill", "strength", "signal", "tradeoff"):
+                nested = item.get(key)
+                if isinstance(nested, str) and nested.strip():
+                    visit(nested, bucket)
+                    return
+            for nested in item.values():
+                visit(nested, bucket)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                visit(nested, bucket)
+            return
+        cleaned = " ".join(str(item).split()).strip()
+        if cleaned:
+            bucket.append(cleaned)
+
+    collected: list[str] = []
+    if isinstance(source, dict):
+        for key in keys:
+            visit(source.get(key), collected)
+    else:
+        for key in keys:
+            visit(getattr(source, key, None), collected)
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in collected:
+        normalized = " ".join(item.split()).strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(normalized)
+    return ordered
+
+
 def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[dict[str, Any]]:
     candidate_rows = list(candidates)
     blocks: list[dict[str, Any]] = []
@@ -186,37 +259,44 @@ def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], cu
 
     for index, archetype in enumerate(archetypes):
         archetype_id = str(archetype.get("id") or "").strip()
-        archetype_title = str(archetype.get("name") or archetype.get("role") or "Archetype").strip()
+        profile = archetype.get("profileData") or {}
+        archetype_title = _text_value(profile, "candidateHeadline", "candidate_headline", "title") or str(archetype.get("name") or archetype.get("role") or "Archetype").strip()
+        experience_snapshot = _text_value(profile, "experienceSnapshot", "experience_snapshot") or str(archetype.get("headline") or "").strip()
+        career_pattern = _text_value(profile, "careerPattern", "career_pattern")
         summary = str(archetype.get("summary") or "").strip()
         profile = archetype.get("profileData") or {}
-        strengths = profile.get("strengths") or []
-        communication_style = str(profile.get("communicationStyle") or "").strip()
-        work_style = str(profile.get("workStyle") or "").strip()
-        ownership_level = str(profile.get("ownershipLevel") or "").strip()
-        ideal_environment = str(profile.get("idealEnvironment") or "").strip()
-        execution_style = str(profile.get("executionStyle") or "").strip()
-        risk_tolerance = str(profile.get("riskTolerance") or "").strip()
-        leadership_signals = profile.get("leadershipSignals") or []
+        strengths = _list_value(profile, "technicalStrengths", "technical_strengths", "strengths", "skills")
+        work_style = _text_value(profile, "workStyle", "work_style")
+        ownership_level = _text_value(profile, "ownershipStyle", "ownership_style", "ownershipLevel", "ownership_level")
+        ideal_environment = _text_value(profile, "idealEnvironment", "ideal_environment")
+        execution_style = _text_value(profile, "executionStyle", "execution_style")
+        risk_tolerance = _text_value(profile, "riskTolerance", "risk_tolerance")
+        leadership_signals = _list_value(profile, "leadershipProfile", "leadership_profile", "leadershipSignals", "leadership_signals")
+        hiring_tradeoffs = _list_value(profile, "hiringTradeoffs", "hiring_tradeoffs")
 
         description_lines = [f"*{archetype_title}*"]
-        if summary:
+        if experience_snapshot:
+            description_lines.append(experience_snapshot)
+        if career_pattern:
+            description_lines.append(f"*Career pattern:* {career_pattern}")
+        if summary and summary != experience_snapshot:
             description_lines.append(summary)
         if strengths:
-            description_lines.append(f"*Strengths:* {', '.join(str(item) for item in strengths[:4] if str(item).strip())}")
+            description_lines.append(f"*Technical strengths:* {', '.join(str(item) for item in strengths[:5] if str(item).strip())}")
         if work_style:
             description_lines.append(f"*Work style:* {work_style}")
         if ownership_level:
             description_lines.append(f"*Ownership:* {ownership_level}")
         if ideal_environment:
             description_lines.append(f"*Ideal environment:* {ideal_environment}")
-        if communication_style:
-            description_lines.append(f"*Communication:* {communication_style}")
         if execution_style:
             description_lines.append(f"*Execution:* {execution_style}")
         if risk_tolerance:
             description_lines.append(f"*Risk tolerance:* {risk_tolerance}")
         if leadership_signals:
-            description_lines.append(f"*Leadership signals:* {', '.join(str(item) for item in leadership_signals[:4] if str(item).strip())}")
+            description_lines.append(f"*Leadership profile:* {', '.join(str(item) for item in leadership_signals[:5] if str(item).strip())}")
+        if hiring_tradeoffs:
+            description_lines.append(f"*Hiring tradeoffs:* {', '.join(str(item) for item in hiring_tradeoffs[:4] if str(item).strip())}")
 
         blocks.append(
             {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -54,6 +55,85 @@ def _text_value(candidate: Any, *keys: str) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _text_list_value(candidate: Any, *keys: str) -> list[str]:
+    collected: list[str] = []
+
+    def visit(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            cleaned = " ".join(item.split()).strip()
+            if not cleaned:
+                return
+            if any(sep in cleaned for sep in [",", ";", "|"]):
+                for piece in cleaned.replace(";", ",").replace("|", ",").split(","):
+                    piece = " ".join(piece.split()).strip()
+                    if piece:
+                        collected.append(piece)
+                return
+            collected.append(cleaned)
+            return
+        if isinstance(item, list):
+            for nested in item:
+                visit(nested)
+            return
+        if isinstance(item, dict):
+            for key in ("text", "label", "title", "name", "role", "value", "skill", "strength", "signal", "tradeoff"):
+                nested = item.get(key)
+                if nested is not None:
+                    visit(nested)
+                    return
+            for nested in item.values():
+                visit(nested)
+            return
+        cleaned = " ".join(str(item).split()).strip()
+        if cleaned:
+            collected.append(cleaned)
+
+    if isinstance(candidate, dict):
+        for key in keys:
+            visit(candidate.get(key))
+    else:
+        for key in keys:
+            visit(getattr(candidate, key, None))
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in collected:
+        normalized = " ".join(item.split()).strip()
+        if not normalized:
+            continue
+        lowered = normalized.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        ordered.append(normalized)
+    return ordered
+
+
+def _candidate_profile_data(candidate: Any) -> dict[str, Any]:
+    if isinstance(candidate, dict):
+        profile = candidate.get("profileData")
+        return profile if isinstance(profile, dict) else {}
+    profile = getattr(candidate, "profileData", None)
+    return profile if isinstance(profile, dict) else {}
+
+
+def _candidate_calibration_tokens(candidate: Any) -> dict[str, list[str] | str]:
+    profile = _candidate_profile_data(candidate)
+    return {
+        "headline": _text_value(profile, "candidateHeadline", "candidate_headline", "title"),
+        "experience_snapshot": _text_value(profile, "experienceSnapshot", "experience_snapshot"),
+        "career_pattern": _text_value(profile, "careerPattern", "career_pattern"),
+        "technical_strengths": _text_list_value(profile, "technicalStrengths", "technical_strengths", "strengths", "skills"),
+        "ownership_style": _text_value(profile, "ownershipStyle", "ownership_style", "ownershipLevel", "ownership_level"),
+        "leadership_profile": _text_list_value(profile, "leadershipProfile", "leadership_profile", "leadershipSignals", "leadership_signals"),
+        "ideal_environment": _text_value(profile, "idealEnvironment", "ideal_environment"),
+        "execution_style": _text_value(profile, "executionStyle", "execution_style"),
+        "hiring_tradeoffs": _text_list_value(profile, "hiringTradeoffs", "hiring_tradeoffs"),
+    }
 
 
 def _candidate_skills(candidate: Any) -> list[str]:
@@ -153,6 +233,7 @@ def _preference_text(
     roles: list[dict[str, Any]],
     experiences: list[dict[str, Any]] | None = None,
     average_experience: float | None = None,
+    calibration_signals: dict[str, list[str]] | None = None,
 ) -> str:
     parts: list[str] = []
     top_skills = [str(item["skill"]).strip() for item in skills[:_MAX_TOP_ITEMS] if item.get("skill")]
@@ -166,6 +247,11 @@ def _preference_text(
         parts.append(f"Preferred experience: {', '.join(top_experiences)}")
     if average_experience is not None:
         parts.append(f"Typical experience: {average_experience:.1f} years")
+    if calibration_signals:
+        for label, values in calibration_signals.items():
+            cleaned = [str(item).strip() for item in (values or []) if str(item).strip()]
+            if cleaned:
+                parts.append(f"{label.replace('_', ' ').title()}: {', '.join(cleaned[:6])}")
     return " | ".join(parts)
 
 
@@ -180,6 +266,12 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
             "skill_tokens": [],
             "role_tokens": [],
             "experience_tokens": [],
+            "preferred_technical_strengths": [],
+            "preferred_ownership_styles": [],
+            "preferred_leadership_profiles": [],
+            "preferred_ideal_environments": [],
+            "preferred_execution_styles": [],
+            "preferred_hiring_tradeoffs": [],
             "average_experience_years": None,
             "preference_text": "",
             "vector": [],
@@ -239,11 +331,27 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
     except (TypeError, ValueError):
         average_experience = None
 
+    payload = (qdrant_snapshot or {}).get("payload", {}) if qdrant_snapshot else {}
+    preferred_technical_strengths = _text_list_value(payload, "preferredTechnicalStrengths", "technicalStrengths", "technical_strengths")
+    preferred_ownership_styles = _text_list_value(payload, "preferredOwnershipStyles", "ownershipStyles", "ownership_styles")
+    preferred_leadership_profiles = _text_list_value(payload, "preferredLeadershipProfiles", "leadershipProfiles", "leadership_profiles")
+    preferred_ideal_environments = _text_list_value(payload, "preferredIdealEnvironments", "idealEnvironments", "ideal_environments")
+    preferred_execution_styles = _text_list_value(payload, "preferredExecutionStyles", "executionStyles", "execution_styles")
+    preferred_hiring_tradeoffs = _text_list_value(payload, "preferredHiringTradeoffs", "hiringTradeoffs", "hiring_tradeoffs")
+
     preference_text = _preference_text(
         skills=top_skills,
         roles=top_roles,
         experiences=top_experience,
         average_experience=average_experience,
+        calibration_signals={
+            "technical_strengths": preferred_technical_strengths,
+            "ownership_styles": preferred_ownership_styles,
+            "leadership_profiles": preferred_leadership_profiles,
+            "ideal_environments": preferred_ideal_environments,
+            "execution_styles": preferred_execution_styles,
+            "hiring_tradeoffs": preferred_hiring_tradeoffs,
+        },
     )
     vector = [float(value) for value in ((qdrant_snapshot or {}).get("vector") or [])] if qdrant_snapshot else []
     if not vector and preference_text:
@@ -262,6 +370,12 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
         "skill_tokens": [item["skill"] for item in top_skills if item.get("skill")],
         "role_tokens": [item["role"] for item in top_roles if item.get("role")],
         "experience_tokens": [item["experience_bucket"] for item in top_experience if item.get("experience_bucket")],
+        "preferred_technical_strengths": preferred_technical_strengths,
+        "preferred_ownership_styles": preferred_ownership_styles,
+        "preferred_leadership_profiles": preferred_leadership_profiles,
+        "preferred_ideal_environments": preferred_ideal_environments,
+        "preferred_execution_styles": preferred_execution_styles,
+        "preferred_hiring_tradeoffs": preferred_hiring_tradeoffs,
         "average_experience_years": average_experience,
         "preference_text": preference_text,
         "vector": vector,
@@ -430,6 +544,12 @@ def update_recruiter_preferences(
             "skill_tokens": [],
             "role_tokens": [],
             "experience_tokens": [],
+            "preferred_technical_strengths": [],
+            "preferred_ownership_styles": [],
+            "preferred_leadership_profiles": [],
+            "preferred_ideal_environments": [],
+            "preferred_execution_styles": [],
+            "preferred_hiring_tradeoffs": [],
             "average_experience_years": None,
             "preference_text": "",
             "vector": [],
@@ -459,6 +579,17 @@ def update_recruiter_preferences(
         for candidate in (rejected_candidates or [])
     ]
 
+    selected_calibration = _candidate_calibration_tokens(selected_candidate) if selected_candidate is not None else {
+        "headline": "",
+        "experience_snapshot": "",
+        "career_pattern": "",
+        "technical_strengths": [],
+        "ownership_style": "",
+        "leadership_profile": [],
+        "ideal_environment": "",
+        "execution_style": "",
+        "hiring_tradeoffs": [],
+    }
     profile = load_recruiter_preference_profile(db, recruiter_id)
     try:
         preference_vector = profile.get("vector") or embed(profile.get("preference_text", "") or " ")
@@ -470,6 +601,12 @@ def update_recruiter_preferences(
                 "topSkills": profile.get("skill_tokens", []),
                 "topRoles": profile.get("role_tokens", []),
                 "topExperience": profile.get("experience_tokens", []),
+                "preferredTechnicalStrengths": list(selected_calibration.get("technical_strengths") or []),
+                "preferredOwnershipStyles": [str(selected_calibration.get("ownership_style") or "").strip()] if str(selected_calibration.get("ownership_style") or "").strip() else [],
+                "preferredLeadershipProfiles": list(selected_calibration.get("leadership_profile") or []),
+                "preferredIdealEnvironments": [str(selected_calibration.get("ideal_environment") or "").strip()] if str(selected_calibration.get("ideal_environment") or "").strip() else [],
+                "preferredExecutionStyles": [str(selected_calibration.get("execution_style") or "").strip()] if str(selected_calibration.get("execution_style") or "").strip() else [],
+                "preferredHiringTradeoffs": list(selected_calibration.get("hiring_tradeoffs") or []),
                 "averageExperienceYears": profile.get("average_experience_years"),
                 "selectedCount": 1 if selected_candidate is not None else 0,
                 "rejectedCount": len([item for item in rejected_snapshots if item.get("skills") or item.get("role")]),
@@ -485,7 +622,7 @@ def update_recruiter_preferences(
         len(selected_snapshot.get("skills", [])),
         len(rejected_snapshots),
     )
-    return profile
+    return load_recruiter_preference_profile(db, recruiter_id)
 
 
 def _vector_similarity(left: list[float], right: list[float]) -> float:
@@ -527,6 +664,15 @@ def _token_match(candidate_tokens: list[str], preferred_tokens: list[dict[str, A
     return max(0.0, min(1.0, score / weighted_total))
 
 
+def _text_match_score(candidate_text: str, preferred_tokens: list[str]) -> float:
+    cleaned_tokens = [str(token).strip().lower() for token in preferred_tokens if str(token).strip()]
+    if not candidate_text or not cleaned_tokens:
+        return 0.0
+    lowered = candidate_text.lower()
+    hits = sum(1 for token in cleaned_tokens if token and token in lowered)
+    return max(0.0, min(1.0, hits / max(1, len(cleaned_tokens))))
+
+
 def compute_recruiter_score_details(
     candidate: Any,
     recruiter_profile: dict[str, Any],
@@ -550,6 +696,25 @@ def compute_recruiter_score_details(
     candidate_years = _candidate_experience_years(candidate)
     experience_bucket = map_experience_to_bucket(candidate_years) if candidate_years is not None else ""
     recruiter_experience = list(recruiter_profile.get("top_experience") or [])
+    calibration_profile = _candidate_profile_data(candidate)
+    candidate_text = " ".join(
+        [
+            _text_value(candidate, "name", "full_name"),
+            _candidate_role(candidate),
+            _text_value(candidate, "company", "job_company_name"),
+            _text_value(candidate, "summary", "bio", "experience_summary"),
+            " ".join(candidate_skills),
+            _text_value(calibration_profile, "candidateHeadline", "candidate_headline", "title"),
+            _text_value(calibration_profile, "experienceSnapshot", "experience_snapshot"),
+            _text_value(calibration_profile, "careerPattern", "career_pattern"),
+            " ".join(_text_list_value(calibration_profile, "technicalStrengths", "technical_strengths", "strengths", "skills")),
+            _text_value(calibration_profile, "ownershipStyle", "ownership_style", "ownershipLevel", "ownership_level"),
+            _text_value(calibration_profile, "idealEnvironment", "ideal_environment"),
+            _text_value(calibration_profile, "executionStyle", "execution_style"),
+            " ".join(_text_list_value(calibration_profile, "leadershipProfile", "leadership_profile", "leadershipSignals", "leadership_signals")),
+            " ".join(_text_list_value(calibration_profile, "hiringTradeoffs", "hiring_tradeoffs")),
+        ]
+    ).strip()
 
     skill_score = _token_match(candidate_skills, recruiter_skills, key="skill") if candidate_skills and recruiter_skills else 0.0
     role_score = _token_match(candidate_roles, recruiter_roles, key="role") if candidate_roles and recruiter_roles else 0.0
@@ -560,7 +725,19 @@ def compute_recruiter_score_details(
     experience_score = _experience_bucket_weight(recruiter_experience, experience_bucket) if experience_bucket and recruiter_experience else 0.0
     experience_component = experience_score * _EXPERIENCE_WEIGHT
 
-    base_score = (skill_score * 0.75) + (role_score * 0.20) + (vector_score * 0.05)
+    calibration_signal_score = _text_match_score(
+        candidate_text,
+        [
+            *list(recruiter_profile.get("preferred_technical_strengths") or []),
+            *list(recruiter_profile.get("preferred_ownership_styles") or []),
+            *list(recruiter_profile.get("preferred_leadership_profiles") or []),
+            *list(recruiter_profile.get("preferred_ideal_environments") or []),
+            *list(recruiter_profile.get("preferred_execution_styles") or []),
+            *list(recruiter_profile.get("preferred_hiring_tradeoffs") or []),
+        ],
+    )
+
+    base_score = (skill_score * 0.62) + (role_score * 0.16) + (vector_score * 0.07) + (calibration_signal_score * 0.15)
     recruiter_score = (base_score * (1.0 - _EXPERIENCE_WEIGHT)) + experience_component
     recruiter_score = max(0.0, min(1.0, recruiter_score))
     return {
@@ -568,6 +745,7 @@ def compute_recruiter_score_details(
         "skill_score": skill_score,
         "role_score": role_score,
         "vector_score": vector_score,
+        "calibration_signal_score": calibration_signal_score,
         "experience_bucket": experience_bucket,
         "experience_score": experience_score,
         "experience_component": experience_component,
