@@ -352,6 +352,110 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(captured.get("thread_ts"), "1234.5678")
         self.assertEqual(captured.get("text"), "Hello")
 
+    def test_slack_bootstrap_persists_thread_ts_from_first_message(self) -> None:
+        from app.api.routes import slack as slack_routes
+        from app.db.repositories import OrchestrationSessionRepository
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="bootstrap-thread-session",
+            source="slack",
+            current_stage="initiated",
+            slack_team_id="T-BOOT",
+            slack_channel_id="C-BOOT",
+            slack_thread_ts="",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={},
+            voice_context={},
+            slack_context={"teamId": "T-BOOT", "channelId": "C-BOOT", "threadTs": "", "userId": self.user.id},
+        )
+        self.db.commit()
+
+        fake_result = {
+            "session": {
+                "id": session.id,
+                "slackThreadTs": "",
+            },
+            "question": "What role are you hiring for?",
+            "questionKey": "role_title",
+            "pathSelectionNeeded": False,
+        }
+
+        with patch.object(slack_routes, "start_or_resume_slack_intake", return_value=fake_result), patch.object(
+            slack_routes, "_send_orchestration_message_sync", return_value={"ok": True, "ts": "1716612345.678900"}
+        ):
+            slack_routes._run_orchestration_intake_start(team_id="T-BOOT", channel_id="C-BOOT", user_id=self.user.id)
+
+        with SessionLocal() as check_db:
+            refreshed = OrchestrationSessionRepository(check_db).get(session.id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(refreshed.slack_thread_ts, "1716612345.678900")
+
+    def test_process_slack_answer_recovers_session_when_thread_anchor_missing(self) -> None:
+        from app.services.orchestration_service import process_slack_answer
+        from app.db.repositories import OrchestrationSessionRepository
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="thread-fallback-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-FALLBACK",
+            slack_channel_id="C-FALLBACK",
+            slack_thread_ts="",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What role are you hiring for?",
+            current_question_key="role_title",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "Acme Inc",
+                "role_title": "",
+                "must_have_requirements": [],
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-FALLBACK", "channelId": "C-FALLBACK", "threadTs": "", "userId": self.user.id},
+        )
+
+        result = process_slack_answer(
+            db=self.db,
+            slack_team_id="T-FALLBACK",
+            slack_channel_id="C-FALLBACK",
+            slack_user_id=self.user.id,
+            thread_ts="1716612345.678900",
+            answer="Frontend Engineer",
+            timestamp="1716612345.678901",
+        )
+
+        refreshed = repo.get(session.id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(refreshed.slack_thread_ts, "1716612345.678900")
+        self.assertFalse(result.get("duplicate", False))
+        self.assertEqual(result.get("session", {}).get("id"), session.id)
+
     def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
         from sqlalchemy import inspect
 

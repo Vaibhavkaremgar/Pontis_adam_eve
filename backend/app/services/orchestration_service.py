@@ -1519,7 +1519,8 @@ def process_slack_answer(
     answer: str,
     timestamp: str,
 ) -> dict[str, Any]:
-    session_row = OrchestrationSessionRepository(db).get_active_by_slack_context(
+    session_repo = OrchestrationSessionRepository(db)
+    session_row = session_repo.get_active_by_slack_context(
         slack_team_id=slack_team_id,
         slack_channel_id=slack_channel_id,
         slack_thread_ts=thread_ts,
@@ -1527,7 +1528,19 @@ def process_slack_answer(
         source=ORCHESTRATION_SOURCE,
     )
     if not session_row:
+        session_row = session_repo.get_active_by_slack_context(
+            slack_team_id=slack_team_id,
+            slack_channel_id=slack_channel_id,
+            slack_user_id=slack_user_id,
+            source=ORCHESTRATION_SOURCE,
+        )
+    if not session_row:
         raise APIError("No active orchestration session found", status_code=404)
+
+    if thread_ts and not _normalize_text(getattr(session_row, "slack_thread_ts", "")):
+        session_row.slack_thread_ts = thread_ts
+        session_row.updated_at = _now()
+        db.flush()
 
     question = _normalize_text(session_row.current_question)
     question_key = _normalize_text(session_row.current_question_key) or "adaptive_followup"
