@@ -19,11 +19,13 @@ from app.db.repositories import (
     RecruiterTaskRepository,
 )
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
-from app.services.interview_session_service import book_interview_session
+from app.services.interview_session_service import mark_interview_no_show
 from app.services.outreach_service import run_followup_cycle
 from app.services.audit_service import record_audit_event
+from app.services.apollo_enrichment_service import enrich_candidate_with_apollo
 from app.services.metrics_service import log_metric
 from app.services.notification_intelligence_service import route_recruiter_notification
+from app.services.outreach_service import process_outreach
 
 logger = logging.getLogger(__name__)
 
@@ -146,16 +148,31 @@ def seed_automation_jobs(*, db: Session, job_id: str | None = None, limit: int =
         ]:
             scheduled_at = getattr(session, "scheduled_at", None)
             if session.status == "booked" and scheduled_at:
-                reminder_at = scheduled_at - timedelta(hours=24)
-                if reminder_at <= now:
-                    key = _key("interview-reminder", job.id, session.candidate_id, session.token)
+                reminder_windows = [timedelta(hours=24), timedelta(hours=1)]
+                for window in reminder_windows:
+                    reminder_at = scheduled_at - window
+                    if reminder_at <= now:
+                        key = _key("interview-reminder", job.id, session.candidate_id, session.token, str(int(window.total_seconds())))
+                        automation_repo.upsert(
+                            automation_key=key,
+                            automation_type="interview_reminder",
+                            job_id=job.id,
+                            candidate_id=session.candidate_id,
+                            scheduled_at=reminder_at,
+                            payload={"token": session.token, "scheduledAt": scheduled_at.isoformat(), "windowHours": int(window.total_seconds() // 3600)},
+                        )
+                        created += 1
+
+                no_show_grace = scheduled_at + timedelta(minutes=90)
+                if no_show_grace <= now:
+                    key = _key("interview-no-show", job.id, session.candidate_id, session.token)
                     automation_repo.upsert(
                         automation_key=key,
-                        automation_type="interview_reminder",
+                        automation_type="interview_no_show",
                         job_id=job.id,
                         candidate_id=session.candidate_id,
-                        scheduled_at=reminder_at,
-                        payload={"token": session.token, "scheduledAt": scheduled_at.isoformat()},
+                        scheduled_at=no_show_grace,
+                        payload={"token": session.token, "scheduledAt": scheduled_at.isoformat(), "reason": "scheduled_window_elapsed"},
                     )
                     created += 1
 
@@ -253,6 +270,38 @@ def _handle_candidate_reactivation(db: Session, row) -> dict[str, Any]:
     return {"status": "reactivated"}
 
 
+def _handle_candidate_enrichment(db: Session, row) -> dict[str, Any]:
+    profile = CandidateProfileRepository(db).get(job_id=row.job_id or "", candidate_id=row.candidate_id or "")
+    if not profile:
+        return {"status": "skipped", "reason": "candidate_missing"}
+    job = JobRepository(db).get(row.job_id or "")
+    if not job:
+        return {"status": "skipped", "reason": "job_missing"}
+
+    enrichment = enrich_candidate_with_apollo(
+        db=db,
+        job_id=row.job_id or "",
+        candidate_id=row.candidate_id or "",
+        source_type=str((row.automation_payload or {}).get("sourceType") or "adam"),
+        workflow_token=str((row.automation_payload or {}).get("workflowToken") or ""),
+        selection_session_id=str((row.automation_payload or {}).get("selectionSessionId") or ""),
+        automation_job_id=str(row.id),
+    )
+
+    status = str(enrichment.get("status") or "").strip().lower()
+    should_outreach = bool(enrichment.get("shouldOutreach"))
+    outreach_result: dict[str, Any] = {}
+    if should_outreach:
+        outreach_result = process_outreach(
+            db=db,
+            job_id=row.job_id or "",
+            selected_candidates=[row.candidate_id or ""],
+            custom_body="",
+            recipient_email=str(enrichment.get("contactEmail") or ""),
+        )
+    return {"status": status or "completed", "enrichment": enrichment, "outreach": outreach_result}
+
+
 def _handle_interview_reminder(db: Session, row) -> dict[str, Any]:
     profile = CandidateProfileRepository(db).get(job_id=row.job_id or "", candidate_id=row.candidate_id or "")
     reminder_body = "Upcoming interview reminder"
@@ -269,6 +318,36 @@ def _handle_interview_reminder(db: Session, row) -> dict[str, Any]:
         metadata=row.automation_payload,
     )
     return {"status": "notified"}
+
+
+def _handle_interview_no_show(db: Session, row) -> dict[str, Any]:
+    token = str((row.automation_payload or {}).get("token") or "").strip()
+    if not token:
+        return {"status": "skipped", "reason": "missing_token"}
+    result = mark_interview_no_show(db=db, token=token, reason=str((row.automation_payload or {}).get("reason") or "scheduled_window_elapsed"))
+    profile = CandidateProfileRepository(db).get(job_id=row.job_id or "", candidate_id=row.candidate_id or "")
+    if profile:
+        RecruiterTaskRepository(db).create(
+            job_id=row.job_id or "",
+            candidate_id=row.candidate_id,
+            recruiter_id=JobRepository(db).get_recruiter_id(row.job_id or ""),
+            title="Interview no-show recovery",
+            body=f"{profile.name or profile.candidate_id} missed the interview. Review reschedule options.",
+            priority="high",
+            due_at=_utcnow(),
+            metadata={"automationJobId": row.id, **dict(row.automation_payload or {})},
+        )
+    route_recruiter_notification(
+        db=db,
+        job_id=row.job_id or "",
+        candidate_id=row.candidate_id,
+        notification_key=_key("automation", "interview_no_show", row.job_id or "", row.candidate_id or "", row.automation_key),
+        notification_type="interview_no_show",
+        title="Interview no-show recovered",
+        body=f"No-show workflow executed for {row.candidate_id}",
+        metadata={"automationJobId": row.id, **dict(row.automation_payload or {})},
+    )
+    return {"status": "handled", "result": result}
 
 
 def _handle_inactivity_nudge(db: Session, row) -> dict[str, Any]:
@@ -304,8 +383,12 @@ def run_automation_cycle(*, db: Session, scan_limit: int = 25) -> dict[str, Any]
                 outcome = _handle_recruiter_reminder(db, row)
             elif row.automation_type == "candidate_reactivation":
                 outcome = _handle_candidate_reactivation(db, row)
+            elif row.automation_type == "candidate_enrichment":
+                outcome = _handle_candidate_enrichment(db, row)
             elif row.automation_type == "interview_reminder":
                 outcome = _handle_interview_reminder(db, row)
+            elif row.automation_type == "interview_no_show":
+                outcome = _handle_interview_no_show(db, row)
             else:
                 outcome = _handle_inactivity_nudge(db, row)
             automation_repo.mark_completed(row)

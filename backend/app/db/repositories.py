@@ -839,23 +839,29 @@ class InterviewSessionRepository:
         booking_url: str = "",
         outreach_event_id: str | None = None,
         status: str = "pending",
+        stage_name: str = "",
     ) -> InterviewSessionEntity:
         job = JobRepository(self.db).get(job_id)
         if not job:
             raise APIError("Job not found", status_code=404)
         existing_session = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+        normalized_stage_name = (stage_name or "").strip().lower().replace("-", "_").replace(" ", "_")
+        existing_stage_name = str((dict(getattr(existing_session, "scheduling_metadata", {}) or {}).get("stageName") or "").strip().lower().replace("-", "_").replace(" ", "_")) if existing_session else ""
         if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
-            existing_session.email = email
-            existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
-            existing_session.token = existing_session.token or token
-            existing_session.expires_at = expires_at if not existing_session.expires_at or existing_session.expires_at < expires_at else existing_session.expires_at
-            existing_session.company_id = job.company_id
-            if outreach_event_id is not None:
-                existing_session.outreach_event_id = outreach_event_id
-            if booking_url:
-                existing_session.booking_url = booking_url
-            self.db.flush()
-            return existing_session
+            if normalized_stage_name and existing_stage_name != normalized_stage_name:
+                existing_session = None
+            else:
+                existing_session.email = email
+                existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
+                existing_session.token = existing_session.token or token
+                existing_session.expires_at = expires_at if not existing_session.expires_at or existing_session.expires_at < expires_at else existing_session.expires_at
+                existing_session.company_id = job.company_id
+                if outreach_event_id is not None:
+                    existing_session.outreach_event_id = outreach_event_id
+                if booking_url:
+                    existing_session.booking_url = booking_url
+                self.db.flush()
+                return existing_session
 
         existing = self.get_by_token(token)
         if existing:

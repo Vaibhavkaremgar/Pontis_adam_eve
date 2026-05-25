@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.repositories import NotificationWorkflowTokenRepository
 
-BOOKING_BASE_URL = "https://interviewtesting-production.up.railway.app/interview"
+BOOKING_BASE_URL = "https://interviewtesting-production.up.railway.app/booking.html"
 
 
 def _normalize_text(value: Any) -> str:
@@ -153,13 +153,16 @@ def _string_field(item: Any, *names: str) -> str:
     return ""
 
 
-def _build_booking_link(token: str) -> str:
-    query = urlencode({"token": token}) if token else ""
+def _build_booking_link(token: str, *, source_type: str = "dashboard") -> str:
+    params = {"token": token, "source_type": source_type or "dashboard"} if token else {}
+    query = urlencode(params) if params else ""
     return f"{BOOKING_BASE_URL}?{query}" if query else BOOKING_BASE_URL
 
 
 def _serialize_workflow_token(row) -> dict[str, Any]:
-    booking_link = _build_booking_link(row.token)
+    payload = dict(row.payload or {})
+    source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "dashboard").strip() or "dashboard"
+    booking_link = _build_booking_link(row.token, source_type=source_type)
     return {
         "id": row.id,
         "jobId": row.job_id,
@@ -167,10 +170,12 @@ def _serialize_workflow_token(row) -> dict[str, Any]:
         "tokenType": row.token_type,
         "workflowName": row.workflow_name,
         "token": row.token,
+        "workflowToken": row.token,
         "status": row.status,
         "isActive": row.is_active,
         "sourceApp": row.source_app,
-        "payload": row.payload,
+        "sourceType": source_type,
+        "payload": payload,
         "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
         "consumedAt": row.consumed_at.isoformat() if row.consumed_at else None,
         "bookingLink": booking_link,
@@ -294,7 +299,10 @@ def upsert_notification_workflow_token(
     def _apply(row) -> dict[str, Any]:
         row.workflow_name = normalized_workflow_name
         row.token_type = normalized_token_type
-        row.payload = dict(payload or {})
+        normalized_payload = dict(payload or {})
+        normalized_payload.setdefault("source_type", normalized_source_app)
+        normalized_payload.setdefault("sourceType", normalized_source_app)
+        row.payload = normalized_payload
         row.expires_at = expires_at
         row.is_active = bool(is_active)
         row.status = "active" if is_active else "consumed"
@@ -325,7 +333,11 @@ def upsert_notification_workflow_token(
                     candidate_id=candidate_id,
                     workflow_name=normalized_workflow_name,
                     token=token_value,
-                    payload=payload,
+                    payload={
+                        **dict(payload or {}),
+                        "source_type": normalized_source_app,
+                        "sourceType": normalized_source_app,
+                    },
                     expires_at=expires_at,
                     token_type=normalized_token_type,
                     is_active=is_active,
@@ -390,7 +402,9 @@ def consume_notification_workflow_token(*, db: Session, token: str, source_app: 
     row = NotificationWorkflowTokenRepository(db).mark_consumed(token, source_app=source_app)
     if not row:
         return None
-    booking_link = _build_booking_link(row.token)
+    payload = dict(row.payload or {})
+    source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "dashboard").strip() or "dashboard"
+    booking_link = _build_booking_link(row.token, source_type=source_type)
     return {
         "id": row.id,
         "jobId": row.job_id,
@@ -398,10 +412,12 @@ def consume_notification_workflow_token(*, db: Session, token: str, source_app: 
         "tokenType": row.token_type,
         "workflowName": row.workflow_name,
         "token": row.token,
+        "workflowToken": row.token,
         "status": row.status,
         "isActive": row.is_active,
         "sourceApp": row.source_app,
-        "payload": row.payload,
+        "sourceType": source_type,
+        "payload": payload,
         "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
         "consumedAt": row.consumed_at.isoformat() if row.consumed_at else None,
         "bookingLink": booking_link,

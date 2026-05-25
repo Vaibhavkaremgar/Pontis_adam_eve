@@ -67,6 +67,8 @@ PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
 PDL_ENABLED = os.getenv("PDL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "").strip()
+APOLLO_URL = os.getenv("APOLLO_URL", "https://api.apollo.io/api/v1/people/match").strip()
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
 SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip()
 SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
@@ -232,6 +234,8 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
     if PDL_ENABLED and not PDL_API_KEY:
         warnings.append("PDL_API_KEY is missing; candidate enrichment will skip PDL.")
+    if not APOLLO_API_KEY:
+        warnings.append("APOLLO_API_KEY is missing; selective candidate enrichment will skip Apollo.")
     if SERPAPI_ENABLED and not SERPAPI_API_KEY:
         warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will skip SerpApi.")
     if not REDIS_URL:

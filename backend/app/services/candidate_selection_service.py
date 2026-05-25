@@ -18,8 +18,8 @@ from app.db.repositories import (
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_service import fetch_ranked_candidates
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
+from app.services.automation_service import schedule_automation_job
 from app.services.lifecycle_service import record_job_lifecycle_event
-from app.services.outreach_service import process_outreach
 from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.recruiter_preference_round_service import (
     bootstrap_preference_session,
@@ -413,16 +413,6 @@ def _store_selection_feedback(
         reason="selection_choice",
         metadata={"selectionSessionId": session_id, "status": "shortlisted"},
     )
-    transition_candidate_ats_state(
-        db=db,
-        job_id=job_id,
-        candidate_id=selected_candidate_id,
-        to_status="outreach_queued",
-        source="selection",
-        actor_id=recruiter_id,
-        reason="auto_outreach_queued",
-        metadata={"selectionSessionId": session_id, "status": "outreach_queued"},
-    )
     record_job_lifecycle_event(
         db=db,
         job_id=job_id,
@@ -615,22 +605,6 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 candidate_id,
                 feedback_error,
             )
-        try:
-            process_outreach(
-                db=db,
-                job_id=job_id,
-                selected_candidates=[candidate_id],
-                custom_body="",
-                recipient_email="",
-            )
-        except Exception as exc:
-            logger.warning(
-                "selection_auto_outreach_failed job_id=%s candidate_id=%s error=%s",
-                job_id,
-                candidate_id,
-                str(exc),
-                exc_info=exc,
-            )
 
         history_entry = {
             "batchIndex": int(session.current_batch_index or 0),
@@ -652,6 +626,28 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 job_id,
                 candidate_id,
                 str(exc),
+            )
+
+        try:
+            schedule_automation_job(
+                db=db,
+                automation_type="candidate_enrichment",
+                job_id=job_id,
+                candidate_id=candidate_id,
+                run_at=datetime.now(timezone.utc),
+                payload={
+                    "selectionSessionId": session.id,
+                    "sourceType": "adam",
+                },
+                automation_key=f"candidate-enrichment:{job_id}:{candidate_id}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "selection_candidate_enrichment_schedule_failed job_id=%s candidate_id=%s error=%s",
+                job_id,
+                candidate_id,
+                str(exc),
+                exc_info=exc,
             )
 
         updated_session = repository.get_by_job(job_id)

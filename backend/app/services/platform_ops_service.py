@@ -15,12 +15,13 @@ from app.db.repositories import (
     InterviewSessionRepository,
     JobRepository,
     NotificationEventRepository,
+    NotificationWorkflowTokenRepository,
     OutreachEventRepository,
     RankingRunRepository,
     RecruiterNoteRepository,
     RecruiterTaskRepository,
 )
-from app.models.entities import AuditEventEntity
+from app.models.entities import AuditEventEntity, CandidateProfileEntity
 from app.services.candidate_refresh_service import refresh_candidate
 from app.services.embedding_registry_service import promote_embedding_version
 from app.services.job_queue_service import (
@@ -53,6 +54,13 @@ def get_platform_diagnostics(db: Session) -> dict[str, Any]:
         "metrics": get_metrics_snapshot(),
         "events": list_recent_platform_events(limit=25),
         "outreach": get_outreach_analytics(db),
+        "enrichment": get_enrichment_health(db),
+        "workflowTokens": get_workflow_token_health(db),
+        "interviews": get_interview_health(db),
+        "replay": {
+            "deadLetters": len(list_dead_letter_jobs(limit=100)),
+            "queueHealth": queue_health_snapshot(),
+        },
     }
 
 
@@ -139,6 +147,124 @@ def get_outreach_analytics(db: Session, job_id: str | None = None) -> dict[str, 
         "replyTotal": replied_events,
         "noResponseArchived": no_response_archived,
         "total": len(rows),
+    }
+
+
+def get_workflow_token_health(db: Session) -> dict[str, Any]:
+    from app.models.entities import NotificationWorkflowTokenEntity
+
+    token_rows = db.scalars(select(NotificationWorkflowTokenEntity).order_by(NotificationWorkflowTokenEntity.created_at.desc()).limit(200)).all()
+    active = [row for row in token_rows if row.is_active]
+    missing_source_type = sum(1 for row in token_rows if not str((row.payload or {}).get("source_type") or (row.payload or {}).get("sourceType") or "").strip())
+    expired = sum(1 for row in token_rows if row.expires_at and row.expires_at < datetime.now(timezone.utc))
+    enrichment_status_counts: dict[str, int] = {}
+    enrichment_confidences: list[float] = []
+    apollo_person_tokens = 0
+    for row in token_rows:
+        payload = dict(row.payload or {})
+        enrichment_status = str(payload.get("enrichmentStatus") or payload.get("enrichment_status") or "").strip().lower()
+        if enrichment_status:
+            enrichment_status_counts[enrichment_status] = enrichment_status_counts.get(enrichment_status, 0) + 1
+        confidence = payload.get("enrichmentConfidence")
+        if isinstance(confidence, (int, float)):
+            enrichment_confidences.append(float(confidence))
+        if str(payload.get("apolloPersonId") or "").strip():
+            apollo_person_tokens += 1
+    return {
+        "active": len(active),
+        "total": len(token_rows),
+        "expired": expired,
+        "missingSourceType": missing_source_type,
+        "consumed": sum(1 for row in token_rows if row.consumed_at is not None),
+        "enrichmentStatusCounts": enrichment_status_counts,
+        "averageEnrichmentConfidence": round(sum(enrichment_confidences) / len(enrichment_confidences), 4) if enrichment_confidences else 0.0,
+        "apolloPersonTokens": apollo_person_tokens,
+    }
+
+
+def get_enrichment_health(db: Session) -> dict[str, Any]:
+    profiles = db.scalars(select(CandidateProfileEntity).order_by(CandidateProfileEntity.last_refreshed_at.desc()).limit(200)).all()
+    status_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = {}
+    confidence_values: list[float] = []
+    apollo_person_ids: set[str] = set()
+    contact_found = 0
+    cache_hits = 0
+    queued_enrichment_jobs = 0
+    running_enrichment_jobs = 0
+    for automation in AutomationJobRepository(db).list_recent(limit=200):
+        if (automation.automation_type or "").strip().lower() != "candidate_enrichment":
+            continue
+        state = (automation.status or "").strip().lower()
+        if state in {"queued", "retryable"}:
+            queued_enrichment_jobs += 1
+        elif state == "running":
+            running_enrichment_jobs += 1
+    for row in profiles:
+        enrichment = dict(getattr(row, "raw_data", {}) or {}).get("enrichment") or {}
+        status = str(enrichment.get("status") or enrichment.get("enrichmentStatus") or "pending").strip().lower() or "pending"
+        source = str(enrichment.get("source") or "").strip().lower() or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        source_counts[source] = source_counts.get(source, 0) + 1
+        if enrichment.get("cachedAt"):
+            cache_hits += 1
+        confidence = enrichment.get("confidence", enrichment.get("identityMatchConfidence"))
+        if isinstance(confidence, (int, float)):
+            confidence_values.append(float(confidence))
+        apollo_person_id = str(enrichment.get("apolloPersonId") or "").strip()
+        if apollo_person_id:
+            apollo_person_ids.add(apollo_person_id)
+        raw_data = dict(getattr(row, "raw_data", {}) or {})
+        if str(getattr(row, "phone", "") or "").strip() or str(
+            raw_data.get("email")
+            or raw_data.get("work_email")
+            or raw_data.get("contact_email")
+            or raw_data.get("contactEmail")
+            or raw_data.get("contact_phone")
+            or raw_data.get("contactPhone")
+            or ""
+        ).strip():
+            contact_found += 1
+    return {
+        "total": len(profiles),
+        "statusCounts": status_counts,
+        "sourceCounts": source_counts,
+        "contactFound": contact_found,
+        "pendingOrResolving": status_counts.get("pending", 0) + status_counts.get("resolving", 0),
+        "enrichedOrPartial": status_counts.get("enriched", 0) + status_counts.get("partial", 0),
+        "ambiguous": status_counts.get("ambiguous_match", 0),
+        "noMatchFound": status_counts.get("no_match_found", 0),
+        "failed": status_counts.get("failed", 0),
+        "averageConfidence": round(sum(confidence_values) / len(confidence_values), 4) if confidence_values else 0.0,
+        "apolloPersonCount": len(apollo_person_ids),
+        "cacheHits": cache_hits,
+        "queuedCandidateEnrichmentJobs": queued_enrichment_jobs,
+        "runningCandidateEnrichmentJobs": running_enrichment_jobs,
+        "replaySafe": bool(status_counts.get("enriched", 0) or status_counts.get("partial", 0) or status_counts.get("ambiguous_match", 0) or status_counts.get("no_match_found", 0)),
+    }
+
+
+def get_interview_health(db: Session) -> dict[str, Any]:
+    from app.models.entities import InterviewEvaluationEntity, InterviewSessionEntity
+
+    rows = db.scalars(select(InterviewSessionEntity).order_by(InterviewSessionEntity.created_at.desc()).limit(200)).all()
+    stage_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    missing_workflow_links = 0
+    for row in rows:
+        status = (row.status or "").strip().lower() or "unknown"
+        status_counts[status] = status_counts.get(status, 0) + 1
+        stage = str((dict(row.scheduling_metadata or {}).get("stageName") or row.stage or "unknown")).strip().lower()
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        scheduling_metadata = dict(row.scheduling_metadata or {})
+        if not (scheduling_metadata.get("workflowToken") or scheduling_metadata.get("workflow_token")):
+            missing_workflow_links += 1
+    return {
+        "total": len(rows),
+        "statusCounts": status_counts,
+        "stageCounts": stage_counts,
+        "missingWorkflowLinkage": missing_workflow_links,
+        "evaluationsSubmitted": len(db.scalars(select(InterviewEvaluationEntity).order_by(InterviewEvaluationEntity.created_at.desc()).limit(200)).all()),
     }
 
 

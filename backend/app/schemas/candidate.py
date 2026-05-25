@@ -66,6 +66,11 @@ class CandidateResult(BaseModel):
     status: str = "new"
     debug: CandidateRankingDebug | None = None
     outreachStatus: str = "pending"
+    enrichmentStatus: str = "pending"
+    enrichmentSource: str = ""
+    enrichmentConfidence: float = 0.0
+    contactEmail: str = ""
+    contactPhone: str = ""
     exportStatus: str = "pending"
     ats_export_status: str = "not_sent"
 
@@ -186,12 +191,17 @@ class InterviewSessionData(BaseModel):
     candidateId: str
     companyId: str | None = None
     outreachEventId: str | None = None
+    sourceType: str = "adam"
+    workflowToken: str = ""
+    stageName: str = "recruiter_screen"
+    stageIndex: int = 0
     email: str = ""
     token: str
     status: str
     expiresAt: str
     bookedAt: str | None = None
     scheduledAt: str | None = None
+    stageHistory: list[dict] = Field(default_factory=list)
     bookingLink: str = ""
     bookingUrl: str = ""
 
@@ -201,10 +211,73 @@ class InterviewBookingRequest(BaseModel):
     scheduledAt: str | None = None
 
 
+class InterviewRescheduleRequest(BaseModel):
+    token: str
+    scheduledAt: str
+    reason: str = ""
+
+
 class InterviewBookingData(BaseModel):
     token: str
     status: str
     jobId: str
     candidateId: str
+    sourceType: str = "adam"
+    workflowToken: str = ""
+    stageName: str = "recruiter_screen"
     scheduledAt: str | None = None
     meetingLink: str = ""
+
+
+class InterviewRescheduleData(BaseModel):
+    token: str
+    status: str
+    jobId: str
+    candidateId: str
+    sourceType: str = "adam"
+    workflowToken: str = ""
+    stageName: str = "recruiter_screen"
+    scheduledAt: str | None = None
+    meetingLink: str = ""
+
+
+class InterviewDecisionRequest(BaseModel):
+    jobId: str
+    candidateId: str
+    action: str
+    targetStage: str = ""
+    interviewerId: str = ""
+    notes: str = ""
+    recommendation: str = ""
+    sourceType: str = "adam"
+
+
+class InterviewDecisionData(BaseModel):
+    jobId: str
+    candidateId: str
+    action: str
+    currentStage: str = ""
+    nextStage: str = ""
+    atsStatus: str = ""
+    workflowToken: str = ""
+    currentSession: dict = Field(default_factory=dict)
+    nextSession: dict = Field(default_factory=dict)
+    progression: list[dict] = Field(default_factory=list)
+    intelligence: dict = Field(default_factory=dict)
+    evaluations: list[dict] = Field(default_factory=list)
+    decision: dict = Field(default_factory=dict)
+    duplicate: bool = False
+
+
+class InterviewInsightsData(BaseModel):
+    jobId: str
+    candidateId: str
+    currentStage: str = ""
+    workflowToken: str = ""
+    workflowPayload: dict = Field(default_factory=dict)
+    progression: list[dict] = Field(default_factory=list)
+    evaluationCount: int = 0
+    evaluations: list[dict] = Field(default_factory=list)
+    intelligence: dict = Field(default_factory=dict)
+    currentSession: dict | None = None
+    stageHistory: list[dict] = Field(default_factory=list)

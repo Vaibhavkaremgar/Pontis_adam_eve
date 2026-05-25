@@ -13,6 +13,7 @@ export type OrchestrationSession = {
   id: string;
   sessionToken: string;
   source: string;
+  sourceType?: string;
   currentStage: string;
   slackTeamId: string;
   slackChannelId: string;

@@ -513,6 +513,7 @@ def _session_payload(row) -> dict[str, Any]:
         "id": row.id,
         "sessionToken": row.session_token,
         "source": row.source,
+        "sourceType": row.source or "dashboard",
         "currentStage": row.current_stage,
         "stateVersion": getattr(row, "state_version", 0) or 0,
         "slackTeamId": row.slack_team_id,
@@ -1164,6 +1165,7 @@ def _generate_voice_token(db: Session, session_row) -> dict[str, Any]:
 
 def _build_voice_payload(session_row, *, token: str, token_expires_at: datetime) -> dict[str, Any]:
     intake = session_row.normalized_intake or _initial_intake_state()
+    source_type = _normalize_text(session_row.source or "dashboard") or "dashboard"
     recent_conversation = list(session_row.raw_conversation or [])
     question_key, question, confidence = _generate_adaptive_question(
         intake,
@@ -1194,6 +1196,7 @@ def _build_voice_payload(session_row, *, token: str, token_expires_at: datetime)
         "currentQuestionType": question_schema.get("questionType", ""),
         "conversationSummary": (session_row.structured_context or {}).get("summary", ""),
         "normalizedIntake": json.dumps(intake, ensure_ascii=False),
+        "sourceType": source_type,
     }
     first_message = (
         f"Let's continue the hiring intake from Slack. {question}"
@@ -1208,6 +1211,7 @@ def _build_voice_payload(session_row, *, token: str, token_expires_at: datetime)
         "lastVoiceQuestionSchema": question_schema,
         "voiceToken": token,
         "voiceTokenExpiresAt": token_expires_at.isoformat(),
+        "sourceType": source_type,
         "lastPreparedAt": _now().isoformat(),
     }
     session_row.current_stage = ORCHESTRATION_STAGE_VOICE
@@ -1855,7 +1859,7 @@ def handle_slack_action(
             "voiceToken": token_data["token"],
             "voiceTokenExpiresAt": token_data["expiresAt"].isoformat(),
             "session": _session_payload(session_row),
-            "voiceUrl": f"/voice?token={token_data['token']}",
+            "voiceUrl": f"/voice?token={token_data['token']}&source_type={_normalize_text(session_row.source or 'dashboard') or 'dashboard'}",
         }
 
     if normalized_action == "confirm_intake" or normalized_action == "start_sourcing":
@@ -1914,7 +1918,7 @@ def prepare_voice_handoff(*, db: Session, session_id: str) -> dict[str, Any]:
         "voiceToken": token_data["token"],
         "voiceTokenExpiresAt": token_data["expiresAt"].isoformat(),
         "session": _session_payload(session_row),
-        "voiceUrl": f"/voice?token={token_data['token']}",
+        "voiceUrl": f"/voice?token={token_data['token']}&source_type={_normalize_text(session_row.source or 'dashboard') or 'dashboard'}",
     }
 
 

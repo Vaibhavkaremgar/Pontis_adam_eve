@@ -12,7 +12,7 @@
  * GET /candidates/selection/final
  *
  * How it fits in the pipeline:
- * Voice intake -> selection session -> recruiter preference learning -> refined shortlist -> outreach
+ * Voice intake -> selection session -> recruiter preference learning -> refined shortlist -> automation handoff
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -42,12 +42,15 @@ import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
 import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
 import { sendOutreach } from "@/lib/api/outreach";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
+import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
 import { storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
 import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession } from "@/types";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
 function statusLabel(candidate: Candidate): string {
   if (candidate.status === "shortlisted") return "Selected";
+  if (candidate.status === "enriched") return "Enriched";
+  if (candidate.status === "outreach_sent") return "Outreach sent";
   if (candidate.status === "rejected") return "Rejected";
   return "Awaiting choice";
 }
@@ -62,17 +65,39 @@ function candidateSubtitle(candidate: Candidate): string {
     .join(" - ");
 }
 
+function getSourcingConfidence(candidate: Candidate): number {
+  const explanation = candidate.explanation;
+  const semantic = explanation?.semanticScore ?? explanation?.semantic ?? 0;
+  const finalScore = explanation?.finalScore ?? candidate.fitScore;
+  const recruiterPreference = explanation?.sourceBreakdown?.recruiterPreference ?? 0;
+  const selectionRound = explanation?.sourceBreakdown?.selectionRound ?? explanation?.selectionRoundInfluence ?? 0;
+  const freshness = explanation?.sourceBreakdown?.freshness ?? explanation?.freshnessInfluence ?? 0;
+
+  const blended =
+    semantic * 0.4 +
+    (finalScore / 5) * 0.35 +
+    recruiterPreference * 0.15 +
+    selectionRound * 0.05 +
+    freshness * 0.05;
+
+  return Math.max(0, Math.min(1, blended));
+}
+
 function renderSignals(candidate: Candidate) {
   const explanation = candidate.explanation;
   const penalties = explanation?.penalties ?? {};
   const semantic = explanation?.semanticScore ?? explanation?.semantic ?? 0;
   const matchedSkills = explanation?.skillsMatched ?? explanation?.skills_match ?? [];
   const experienceMatch = explanation?.experienceMatch || explanation?.candidateExperience || explanation?.jobExperience || "";
+  const sourcingConfidence = getSourcingConfidence(candidate);
 
   return (
     <div className="space-y-1 rounded-xl bg-white/70 p-3 text-xs text-gray-600">
       <p>
         Semantic: <span className="font-medium text-gray-800">{(semantic * 100).toFixed(0)}%</span>
+      </p>
+      <p>
+        Sourcing confidence: <span className="font-medium text-gray-800">{(sourcingConfidence * 100).toFixed(0)}%</span>
       </p>
       {experienceMatch && (
         <p>
@@ -365,6 +390,9 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
 }
 
 function CandidateDetails({ candidate }: { candidate: Candidate }) {
+  const sourcingConfidence = getSourcingConfidence(candidate);
+  const recruiterMatchSummary = candidate.explanation?.aiReasoning || candidate.explanation?.summary?.[0] || "Strong recruiter match for this role.";
+
   return (
     <div className="space-y-5">
       <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
@@ -374,6 +402,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
           <DetailRow label="Location" value={candidate.location || "Not provided"} />
           <DetailRow label="Company" value={candidate.company || "Not provided"} />
           <DetailRow label="Experience" value={candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"} />
+          <DetailRow label="Recruiter match" value={recruiterMatchSummary} />
+          <DetailRow label="Sourcing confidence" value={`${(sourcingConfidence * 100).toFixed(0)}%`} />
         </div>
       </div>
 
@@ -449,6 +479,7 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[13px] text-[#4B5563]">
           <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Scoring</p>
           <div className="mt-3 space-y-0.5">
+            <DetailRow label="Sourcing confidence" value={`${(sourcingConfidence * 100).toFixed(0)}%`} />
             <DetailRow label="Fit score" value={`${candidate.fitScore.toFixed(1)} / 5`} />
             <DetailRow label="Status" value={statusLabel(candidate)} />
             <DetailRow label="Strategy" value={candidate.strategy} />
@@ -585,6 +616,13 @@ function CandidateCard({
             <span className="font-body text-[14px] text-[#4B5563]">Company</span>
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">{candidate.company || "Not provided"}</span>
           </div>
+          <div className="flex items-center gap-3 border-t border-[#ECE7DE] py-2">
+            <ShieldCheck className="h-4 w-4 shrink-0 text-[#6B7280]" />
+            <span className="font-body text-[14px] text-[#4B5563]">Sourcing confidence</span>
+            <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
+              {(getSourcingConfidence(candidate) * 100).toFixed(0)}%
+            </span>
+          </div>
         </div>
 
         <div className="mt-6">
@@ -604,7 +642,7 @@ function CandidateCard({
                 }}
                 disabled={selectionLocked || isSelecting || isSelected}
               >
-                {isSelected ? "Selected" : isSelecting ? "Selecting candidate..." : "Select this candidate"}
+                {isSelected ? "Selected" : isSelecting ? "Selecting candidate..." : "Select candidate"}
               </Button>
             )}
           </div>
@@ -686,6 +724,9 @@ function CandidateListRow({
             {skill}
           </span>
         ))}
+        <span className="rounded-full bg-[#EAF4FF] px-3 py-1 text-[12px] font-medium text-[#1D4ED8]">
+          {(getSourcingConfidence(candidate) * 100).toFixed(0)}% match confidence
+        </span>
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-3">
@@ -709,7 +750,7 @@ function CandidateListRow({
           }}
           disabled={selectionLocked || isSelecting || isSelected}
         >
-          {isSelected ? "Selected" : isSelecting ? "Selecting candidate..." : "Select"}
+          {isSelected ? "Selected" : isSelecting ? "Selecting candidate..." : "Select candidate"}
         </Button>
       </div>
     </Card>
@@ -1036,6 +1077,9 @@ export default function ReviewPage() {
   const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
+  const [activeInterviewInsights, setActiveInterviewInsights] = useState<any>(null);
+  const [decisionNote, setDecisionNote] = useState("");
+  const [decisionLoading, setDecisionLoading] = useState("");
   const [finalShortlistedIds, setFinalShortlistedIds] = useState<string[]>([]);
   const [candidateTimeline, setCandidateTimeline] = useState<any[]>([]);
   const [candidateNotifications, setCandidateNotifications] = useState<any[]>([]);
@@ -1113,6 +1157,9 @@ export default function ReviewPage() {
     if (!isSessionReady || !user || !jobId || !activeCandidate) {
       setCandidateTimeline([]);
       setCandidateNotifications([]);
+      setActiveInterviewInsights(null);
+      setDecisionNote("");
+      setDecisionLoading("");
       setTimelineError("");
       return;
     }
@@ -1122,9 +1169,10 @@ export default function ReviewPage() {
       setIsTimelineLoading(true);
       setTimelineError("");
 
-      const [timelineResult, notificationsResult] = await Promise.all([
+      const [timelineResult, notificationsResult, insightsResult] = await Promise.all([
         getCandidateAtsTimeline(jobId, activeCandidate.id),
         getJobAtsNotifications(jobId),
+        getInterviewInsights(jobId, activeCandidate.id),
       ]);
 
       if (cancelled) return;
@@ -1142,6 +1190,12 @@ export default function ReviewPage() {
         );
       } else {
         setCandidateNotifications([]);
+      }
+
+      if (insightsResult.success && insightsResult.data) {
+        setActiveInterviewInsights(insightsResult.data);
+      } else {
+        setActiveInterviewInsights(null);
       }
 
       setIsTimelineLoading(false);
@@ -1167,6 +1221,9 @@ export default function ReviewPage() {
   const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
   const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const calibrationComplete = calibration?.stage === "real_sourcing_ready";
+  const interviewProgression = activeInterviewInsights?.progression || [];
+  const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
+  const completedInterviewStages = interviewProgression.filter((item: any) => item?.completed).length;
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of finalCandidates) {
@@ -1225,7 +1282,7 @@ export default function ReviewPage() {
     );
     const failed = results.find((result) => !result.success || !result.data);
     if (failed) {
-      setError(failed.error || "Could not prepare shortlisted candidates for outreach.");
+      setError(failed.error || "Could not prepare shortlisted candidates for handoff.");
       setSelectionDebug(
         [
           `jobId=${jobId}`,
@@ -1297,7 +1354,7 @@ export default function ReviewPage() {
       const result = await swipeCandidate({ jobId, candidateId, action: "accept" });
       if (!result.success || !result.data) {
         revertFinalSelectionLocally(candidateId);
-        setError(result.error || "Could not shortlist candidate for outreach.");
+        setError(result.error || "Could not shortlist candidate for handoff.");
         setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\nerror=${result.error || "Unknown error"}`);
         setIsAdvancing(false);
         setSelectedCandidateId("");
@@ -1306,10 +1363,13 @@ export default function ReviewPage() {
 
       const outreachResult = await sendOutreach({ jobId, selectedCandidates: [candidateId] });
       if (!outreachResult.success || !outreachResult.data) {
-        setError(outreachResult.error || "Selection saved, but outreach could not be sent.");
-        setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\noutreachError=${outreachResult.error || "Unknown error"}`);
+        setError(outreachResult.error || "Selection saved, but automation handoff could not be completed.");
       } else {
-        setFeedbackMessage(`Outreach sent to ${outreachResult.data.sent} candidate${outreachResult.data.sent === 1 ? "" : "s"}.`);
+        setFeedbackMessage(
+          outreachResult.data.sent > 0
+            ? `Adam is handling the handoff and ATS updates for ${outreachResult.data.sent} candidate${outreachResult.data.sent === 1 ? "" : "s"}.`
+            : "Selection saved. Adam is handling the handoff."
+        );
       }
       setActiveCandidate(null);
       setIsAdvancing(false);
@@ -1377,6 +1437,42 @@ export default function ReviewPage() {
     setIsContinuingToOutreach(false);
   };
 
+  const handleInterviewDecision = async (action: string, targetStage?: string) => {
+    if (!jobId || !activeCandidate || decisionLoading) return;
+    setDecisionLoading(action);
+    setError("");
+    const result = await submitInterviewDecision({
+      jobId,
+      candidateId: activeCandidate.id,
+      action,
+      targetStage,
+      notes: decisionNote.trim(),
+      sourceType: "adam",
+    });
+
+    if (!result.success || !result.data) {
+      setError(result.error || "Could not update interview decision.");
+      setDecisionLoading("");
+      return;
+    }
+
+    setCandidateTimeline([]);
+    setCandidateNotifications([]);
+    setActiveInterviewInsights(result.data as any);
+    setDecisionNote("");
+    const refreshedTimeline = await getCandidateAtsTimeline(jobId, activeCandidate.id);
+    if (refreshedTimeline.success && refreshedTimeline.data) {
+      setCandidateTimeline(refreshedTimeline.data);
+    }
+    const refreshedNotifications = await getJobAtsNotifications(jobId);
+    if (refreshedNotifications.success && refreshedNotifications.data) {
+      setCandidateNotifications(
+        refreshedNotifications.data.filter((item) => !item.candidateId || item.candidateId === activeCandidate.id)
+      );
+    }
+    setDecisionLoading("");
+  };
+
   const refreshFinalResults = async () => {
     if (!jobId) return;
     setIsLoading(true);
@@ -1430,12 +1526,6 @@ export default function ReviewPage() {
 
           {isLoading && <p className="text-sm text-gray-500">Loading selection session...</p>}
           {error && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
-          {selectionDebug && (
-            <details className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-              <summary className="cursor-pointer font-medium">Debug details</summary>
-              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap text-xs leading-relaxed text-amber-950">{selectionDebug}</pre>
-            </details>
-          )}
 
           {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
@@ -1630,7 +1720,7 @@ export default function ReviewPage() {
             <div className="space-y-5">
               <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#0F6B3A]">
                 <p className="font-semibold">Selection complete</p>
-                <p className="mt-1">The backend has analyzed your choices and reranked the full candidate pool using the signals you showed.</p>
+                <p className="mt-1">The backend has analyzed your choices and reranked the full candidate pool using the signals you showed. Adam will handle enrichment, handoff, and ATS updates in the background.</p>
               </div>
 
               {summaryLines.length > 0 && (
@@ -1660,7 +1750,7 @@ export default function ReviewPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <Button
-                  data-testid="continue-to-outreach"
+                  data-testid="continue-to-ready"
                   className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
                   onClick={() => void handleContinueToOutreach()}
                   disabled={shortlistedCount === 0 || isAdvancing || isContinuingToOutreach}
@@ -1707,6 +1797,108 @@ export default function ReviewPage() {
                     <div className="text-right text-xs text-[#6B7280]">
                       <p>Source: {activeCandidate.ats_status_source || "system"}</p>
                       <p>Updated: {activeCandidate.ats_status_updated_at || "n/a"}</p>
+                      <p>
+                        Enrichment: {activeCandidate.enrichmentStatus || "pending"}
+                        {activeCandidate.enrichmentSource ? ` via ${activeCandidate.enrichmentSource}` : ""}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Interview stage</p>
+                          <h4 className="mt-1 font-semibold text-[#111827]">
+                            {String(activeInterviewStage?.label || activeInterviewInsights?.currentStage || "Recruiter screen")}
+                          </h4>
+                        </div>
+                        <Badge variant="neutral">{completedInterviewStages} completed</Badge>
+                      </div>
+                      <div className="mt-3 space-y-2 text-sm text-[#4B5563]">
+                        <p>Recommendation: {String(activeInterviewInsights?.intelligence?.recommendationSignal || "n/a")}</p>
+                        <p>Confidence: {String(activeInterviewInsights?.intelligence?.interviewQualityScore ?? 0)}</p>
+                        <p>Workflow token: {String(activeInterviewInsights?.workflowToken || activeCandidate.id).slice(0, 12)}…</p>
+                        <p>Evaluations: {String(activeInterviewInsights?.evaluationCount ?? 0)}</p>
+                        <p>
+                          Contact: {activeCandidate.contactEmail || "pending"}
+                          {activeCandidate.contactPhone ? ` · ${activeCandidate.contactPhone}` : ""}
+                        </p>
+                      </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {(activeInterviewInsights?.progression || []).slice(0, 6).map((item: any) => (
+                          <Badge
+                            key={String(item.stage || item.label || "")}
+                            variant={item.active ? "high" : item.completed ? "neutral" : "low"}
+                          >
+                            {String(item.label || item.stage || "").replace(/_/g, " ")}
+                          </Badge>
+                        ))}
+                      </div>
+                      <div className="mt-3 rounded-xl bg-[#F8F7F3] p-3 text-xs text-[#6B7280]">
+                        <p className="font-medium text-[#111827]">Next-stage recommendation</p>
+                        <p>{String(activeInterviewStage?.stage || activeInterviewInsights?.currentStage || "recruiter_screen").replace(/_/g, " ")}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
+                      <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Recruiter decision</p>
+                      <textarea
+                        value={decisionNote}
+                        onChange={(event) => setDecisionNote(event.target.value)}
+                        placeholder="Add decision notes for the next stage, offer, or rejection."
+                        className="mt-3 min-h-[92px] w-full rounded-xl border border-[#E7E0D4] bg-white px-3 py-2 text-sm text-[#111827] outline-none transition focus:border-[#0F6B3A]"
+                      />
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <Button
+                          variant="outline"
+                          className="justify-center"
+                          disabled={Boolean(decisionLoading)}
+                          onClick={() => void handleInterviewDecision("advance")}
+                        >
+                          {decisionLoading === "advance" ? "Advancing..." : "Advance next round"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="justify-center"
+                          disabled={Boolean(decisionLoading)}
+                          onClick={() => void handleInterviewDecision("mark_offer")}
+                        >
+                          {decisionLoading === "mark_offer" ? "Updating..." : "Mark offer"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="justify-center"
+                          disabled={Boolean(decisionLoading)}
+                          onClick={() => void handleInterviewDecision("mark_placed")}
+                        >
+                          {decisionLoading === "mark_placed" ? "Updating..." : "Mark placed"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="justify-center"
+                          disabled={Boolean(decisionLoading)}
+                          onClick={() => void handleInterviewDecision("archive")}
+                        >
+                          {decisionLoading === "archive" ? "Updating..." : "Archive"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="justify-center text-red-700 hover:bg-red-50"
+                          disabled={Boolean(decisionLoading)}
+                          onClick={() => void handleInterviewDecision("reject")}
+                        >
+                          {decisionLoading === "reject" ? "Updating..." : "Reject"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="justify-center"
+                          disabled={Boolean(decisionLoading)}
+                          onClick={() => void handleInterviewDecision("no_show")}
+                        >
+                          {decisionLoading === "no_show" ? "Updating..." : "Mark no-show"}
+                        </Button>
+                      </div>
                     </div>
                   </div>
 

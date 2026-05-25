@@ -21,6 +21,11 @@ export type InterviewSession = {
   email: string;
   token: string;
   status: string;
+  sourceType?: string;
+  workflowToken?: string;
+  stageName?: string;
+  stageIndex?: number;
+  stageHistory?: Array<Record<string, unknown>>;
   expiresAt: string;
   bookedAt: string | null;
   scheduledAt?: string | null;
@@ -32,6 +37,37 @@ export type InterviewSession = {
 export type InterviewBookingPayload = {
   token: string;
   scheduledAt?: string | null;
+};
+
+export type InterviewReschedulePayload = {
+  token: string;
+  scheduledAt: string;
+  reason?: string;
+};
+
+export type InterviewDecisionPayload = {
+  jobId: string;
+  candidateId: string;
+  action: string;
+  targetStage?: string;
+  interviewerId?: string;
+  notes?: string;
+  recommendation?: string;
+  sourceType?: string;
+};
+
+export type InterviewInsights = {
+  jobId: string;
+  candidateId: string;
+  currentStage: string;
+  workflowToken?: string;
+  workflowPayload?: Record<string, unknown>;
+  progression?: Array<Record<string, unknown>>;
+  evaluationCount?: number;
+  evaluations?: Array<Record<string, unknown>>;
+  intelligence?: Record<string, unknown>;
+  currentSession?: Record<string, unknown> | null;
+  stageHistory?: Array<Record<string, unknown>>;
 };
 
 /** This function calls backend API and returns structured response. */
@@ -52,6 +88,30 @@ export async function getSession(token: string): Promise<ApiResponse<InterviewSe
 export async function bookSession(payload: InterviewBookingPayload): Promise<ApiResponse<InterviewSession>> {
   return requestApi<InterviewSession>({
     url: `${API_BASE_URL}/interview/book`,
+    method: "POST",
+    payload
+  });
+}
+
+export async function rescheduleSession(payload: InterviewReschedulePayload): Promise<ApiResponse<InterviewSession>> {
+  return requestApi<InterviewSession>({
+    url: `${API_BASE_URL}/interview/reschedule`,
+    method: "POST",
+    payload
+  });
+}
+
+export async function getInterviewInsights(jobId: string, candidateId: string): Promise<ApiResponse<InterviewInsights>> {
+  const params = `?jobId=${encodeURIComponent(jobId)}&candidateId=${encodeURIComponent(candidateId)}`;
+  return requestApi<InterviewInsights>({
+    url: `${API_BASE_URL}/interview/insights${params}`,
+    method: "GET"
+  });
+}
+
+export async function submitInterviewDecision(payload: InterviewDecisionPayload): Promise<ApiResponse<Record<string, unknown>>> {
+  return requestApi<Record<string, unknown>>({
+    url: `${API_BASE_URL}/interview/decision`,
     method: "POST",
     payload
   });

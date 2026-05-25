@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.db.repositories import (
     InterviewEvaluationRepository,
+    InterviewSessionRepository,
     JobRepository,
     RecruiterNoteRepository,
 )
@@ -38,6 +40,17 @@ def record_interview_evaluation(
         metadata=metadata or {},
         status="submitted",
     )
+
+    session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+    if session:
+        session.evaluation_status = "completed"
+        session.evaluation_ready_at = session.evaluation_ready_at or datetime.now(timezone.utc)
+        session.stage = "completed"
+        session.scheduling_metadata = {
+            **dict(session.scheduling_metadata or {}),
+            "evaluationSubmittedAt": session.evaluation_ready_at.isoformat(),
+            "evaluationStageName": stage_name,
+        }
 
     recruiter_id = JobRepository(db).get_recruiter_id(job_id)
     if notes.strip():

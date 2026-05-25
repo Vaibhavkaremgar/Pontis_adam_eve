@@ -146,7 +146,7 @@ export default function ReadyPage() {
 
           {!isLoading && !error && items.length === 0 && (
             <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-600">
-              No replies yet. Outreach is still warming up or no candidate has booked an interview.
+              No replies yet. Adam is still processing selections or no candidate has booked an interview.
             </div>
           )}
 
@@ -182,14 +182,14 @@ export default function ReadyPage() {
           <div className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <p className="font-semibold text-gray-900">Outreach delivery</p>
-                <p className="text-xs text-gray-500">Shows whether candidate mail was sent, simulated, or failed</p>
+                <p className="font-semibold text-gray-900">Passive automation updates</p>
+                <p className="text-xs text-gray-500">Shows whether outreach, replies, and follow-up automation are progressing</p>
               </div>
               <Badge variant="neutral">{outreachStatuses.length} records</Badge>
             </div>
 
           {outreachStatuses.length === 0 ? (
-            <p className="text-sm text-gray-600">No outreach delivery records yet.</p>
+            <p className="text-sm text-gray-600">No automation updates yet.</p>
           ) : (
             outreachStatuses.slice(0, 6).map((item) => (
               <div key={item.candidateId} className="flex items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2">

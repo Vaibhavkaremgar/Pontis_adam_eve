@@ -2535,15 +2535,29 @@ def _build_candidate_state_maps(
     db: Session,
     *,
     job_id: str,
-) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, dict[str, Any]]]:
     interview_status_map: dict[str, str] = {}
     outreach_status_map: dict[str, str] = {}
     export_status_map: dict[str, str] = {}
     ats_export_status_map: dict[str, str] = {}
     ats_state_map: dict[str, str] = {}
+    enrichment_state_map: dict[str, dict[str, Any]] = {}
 
     for row in CandidateProfileRepository(db).list_for_job(job_id):
         ats_state_map[row.candidate_id] = (getattr(row, "ats_status", "") or "").strip().lower() or "review_pending"
+        enrichment_state = dict((getattr(row, "raw_data", {}) or {}).get("enrichment") or {})
+        enrichment_state_map[row.candidate_id] = {
+            "status": str(enrichment_state.get("status") or "").strip().lower() or "pending",
+            "source": str(enrichment_state.get("source") or "").strip().lower(),
+            "confidence": float(enrichment_state.get("confidence") or 0.0),
+            "contactEmail": str(
+                (getattr(row, "raw_data", {}) or {}).get("email")
+                or (getattr(row, "raw_data", {}) or {}).get("work_email")
+                or (getattr(row, "raw_data", {}) or {}).get("personal_email")
+                or ""
+            ).strip(),
+            "contactPhone": str((getattr(row, "raw_data", {}) or {}).get("phone") or getattr(row, "phone", "") or "").strip(),
+        }
 
     for row in InterviewRepository(db).list_for_job(job_id):
         interview_status_map[row.candidate_id] = (row.status or "").strip().lower() or "new"
@@ -2562,19 +2576,27 @@ def _build_candidate_state_maps(
             export_status_map[candidate_id] = export_status
             ats_export_status_map[candidate_id] = ats_state
 
-    return interview_status_map, outreach_status_map, export_status_map, ats_export_status_map, ats_state_map
+    return interview_status_map, outreach_status_map, export_status_map, ats_export_status_map, ats_state_map, enrichment_state_map
 
 
 def _attach_candidate_workflow_state(db: Session, *, job_id: str, candidates: list[CandidateResult]) -> list[CandidateResult]:
     if not candidates:
         return candidates
 
-    interview_status_map, outreach_status_map, export_status_map, ats_export_status_map, ats_state_map = _build_candidate_state_maps(db, job_id=job_id)
+    (
+        interview_status_map,
+        outreach_status_map,
+        export_status_map,
+        ats_export_status_map,
+        ats_state_map,
+        enrichment_state_map,
+    ) = _build_candidate_state_maps(db, job_id=job_id)
     for candidate in candidates:
         export_status = export_status_map.get(candidate.id, "pending")
         ats_export_status = ats_export_status_map.get(candidate.id, "not_sent")
         outreach_status = outreach_status_map.get(candidate.id, "pending")
         status = ats_state_map.get(candidate.id) or interview_status_map.get(candidate.id, candidate.status or "new")
+        enrichment_state = enrichment_state_map.get(candidate.id, {})
 
         if export_status == "exported":
             status = "exported"
@@ -2583,6 +2605,11 @@ def _attach_candidate_workflow_state(db: Session, *, job_id: str, candidates: li
 
         candidate.status = status
         candidate.outreachStatus = outreach_status
+        candidate.enrichmentStatus = str(enrichment_state.get("status") or "pending")
+        candidate.enrichmentSource = str(enrichment_state.get("source") or "")
+        candidate.enrichmentConfidence = float(enrichment_state.get("confidence") or 0.0)
+        candidate.contactEmail = str(enrichment_state.get("contactEmail") or "")
+        candidate.contactPhone = str(enrichment_state.get("contactPhone") or "")
         candidate.exportStatus = export_status
         candidate.ats_export_status = ats_export_status
     return candidates
@@ -3425,17 +3452,6 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             reason="recruiter_feedback",
             metadata={"action": action, "feedbackSource": "candidate_feedback"},
         )
-        if action == "accept":
-            transition_candidate_ats_state(
-                db=db,
-                job_id=job_id,
-                candidate_id=candidate_id,
-                to_status="outreach_queued",
-                source="candidate_feedback",
-                actor_id=recruiter_id,
-                reason="auto_outreach_queued",
-                metadata={"action": action, "feedbackSource": "candidate_feedback"},
-            )
 
     # Only run RLHF weight update for genuinely new feedback signals.
     # Re-submitting the same action is already handled by idempotency above.
@@ -3482,21 +3498,26 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
 
     _safe_commit(db, context="candidate_feedback_commit", job_id=job_id)
 
-    outreach_result: dict[str, Any] | None = None
+    enrichment_result: dict[str, Any] | None = None
     if action == "accept":
         try:
-            from app.services.outreach_service import process_outreach
+            from app.services.automation_service import schedule_automation_job
 
-            outreach_result = process_outreach(
+            enrichment_result = schedule_automation_job(
                 db=db,
+                automation_type="candidate_enrichment",
                 job_id=job_id,
-                selected_candidates=[candidate_id],
-                custom_body="",
-                recipient_email="",
+                candidate_id=candidate_id,
+                run_at=datetime.now(timezone.utc),
+                payload={
+                    "feedbackAction": action,
+                    "sourceType": "dashboard",
+                },
+                automation_key=f"candidate-enrichment:{job_id}:{candidate_id}",
             )
         except Exception as exc:
             logger.warning(
-                "auto_outreach_failed job_id=%s candidate_id=%s error=%s",
+                "auto_enrichment_failed job_id=%s candidate_id=%s error=%s",
                 job_id,
                 candidate_id,
                 str(exc),
@@ -3557,7 +3578,7 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
         "newState": target_status,
         "exportStatus": export_status,
         "ats_export_status": ats_export_status,
-        "outreach": outreach_result or {},
+        "enrichment": enrichment_result or {},
         "message": "Feedback recorded and ranking weights updated",
     }
 
@@ -3595,7 +3616,14 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
     selection_session = CandidateSelectionSessionRepository(db).get_by_job(job_id)
 
     shortlisted_rows: list[dict[str, Any]] = []
-    interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
+    (
+        interview_status_map,
+        outreach_status_map,
+        export_status_map,
+        ats_export_status_map,
+        _ats_state_map,
+        enrichment_state_map,
+    ) = _build_candidate_state_maps(db, job_id=job_id)
     updated_workflow_tokens = False
     for candidate_id in shortlisted_ids:
         profile = profiles.get(candidate_id)
@@ -3607,6 +3635,8 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             )
             continue
         profile_details = _candidate_profile_details(profile=profile)
+        enrichment_state = dict(getattr(profile, "raw_data", {}) or {}).get("enrichment") or {}
+        enrichment_status = str(enrichment_state.get("status") or "pending").strip().lower() or "pending"
         email = profile_details["email"] or ensure_candidate_email(profile)
         if not email or email.endswith("@test.local"):
             logger.info("outreach_review_candidate_skipped_missing_email job_id=%s candidate_id=%s", job_id, candidate_id)
@@ -3638,6 +3668,11 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                 "fit_score": round(profile.fit_score, 2),
                 "decision": profile.decision,
                 "strategy": profile.strategy,
+                "enrichment_status": enrichment_status,
+                "enrichment_source": str(enrichment_state_map.get(candidate_id, {}).get("source") or ""),
+                "enrichment_confidence": float(enrichment_state_map.get(candidate_id, {}).get("confidence") or 0.0),
+                "contact_email": email,
+                "contact_phone": str(getattr(profile, "phone", "") or ""),
                 "selection_signal": _selection_session_signal(selection_session, candidate_id),
                 "voice_score": 1.0 if getattr(job, "structured_data", None) else 0.0,
                 "slot_payload": slot_payload,
@@ -3712,6 +3747,11 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                 ),
                 strategy=row["strategy"],
                 status=(profile.ats_status or "shortlisted"),
+                enrichmentStatus=row["enrichment_status"],
+                enrichmentSource=row["enrichment_source"],
+                enrichmentConfidence=row["enrichment_confidence"],
+                contactEmail=row["email"],
+                contactPhone=str(getattr(profile, "phone", "") or ""),
                 outreachStatus=outreach_status_map.get(row["candidate_id"], "pending"),
                 exportStatus=export_status_map.get(row["candidate_id"], "pending"),
                 ats_export_status=ats_export_status_map.get(row["candidate_id"], "not_sent"),
@@ -3745,6 +3785,8 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
     for row in profiles:
         final_score = max(0.0, min(1.0, row.fit_score / 5.0))
         profile_details = _candidate_profile_details(profile=row)
+        enrichment_state = dict(getattr(row, "raw_data", {}) or {}).get("enrichment") or {}
+        enrichment_status = str(enrichment_state.get("status") or "pending").strip().lower() or "pending"
         results.append(
             CandidateResult(
                 id=row.candidate_id,
@@ -3767,6 +3809,11 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
                 profileData=dict(profile_details["profileData"] or {}),
                 fitScore=round(row.fit_score, 2),
                 decision=row.decision,
+                enrichmentStatus=enrichment_status,
+                enrichmentSource=str(enrichment_state.get("source") or ""),
+                enrichmentConfidence=float(enrichment_state.get("confidence") or 0.0),
+                contactEmail=profile_details["email"] or ensure_candidate_email(row),
+                contactPhone=str(getattr(row, "phone", "") or ""),
                 explanation=CandidateExplanation(
                     semanticScore=0.0,
                     skillOverlap=0.0,

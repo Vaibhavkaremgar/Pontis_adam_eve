@@ -113,18 +113,37 @@ export type Candidate = {
   strategy: "HIGH" | "MEDIUM" | "LOW";
   status:
     | "new"
+    | "review_pending"
     | "contacted"
     | "shortlisted"
+    | "enriched"
+    | "outreach_queued"
+    | "outreach_sent"
+    | "followup_sent"
+    | "replied_interested"
+    | "replied_not_interested"
     | "interview_scheduled"
     | "interview_invited"
+    | "interview_no_show"
+    | "advanced"
+    | "final_round"
     | "booked"
+    | "archived"
     | "rejected"
+    | "offer_sent"
+    | "placed"
+    | "hired"
     | "exported";
   ats_status?: string;
   ats_status_source?: string;
   ats_status_reason?: string;
   ats_status_updated_at?: string;
   outreachStatus?: "pending" | "dry_run" | "sent" | "failed" | string;
+  enrichmentStatus?: "pending" | "resolving" | "enriched" | "partial" | "failed" | "no_contact_found" | string;
+  enrichmentSource?: string;
+  enrichmentConfidence?: number;
+  contactEmail?: string;
+  contactPhone?: string;
   exportStatus?: "pending" | "queued" | "exported" | "failed" | string;
   ats_export_status?: "sent" | "failed" | "not_sent" | string;
 };

@@ -101,7 +101,7 @@ export default function AdminPage() {
           </Card>
         )}
 
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-4">
           <Card>
             <CardHeader>
               <CardTitle>Environment</CardTitle>
@@ -130,6 +130,19 @@ export default function AdminPage() {
 
           <Card>
             <CardHeader>
+              <CardTitle>Enrichment</CardTitle>
+              <CardDescription>Apollo resolution and contact discovery</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-gray-700">
+              <p>Total profiles: {diagnostics?.enrichment?.total ?? 0}</p>
+              <p>Enriched or partial: {diagnostics?.enrichment?.enrichedOrPartial ?? 0}</p>
+              <p>Pending or resolving: {diagnostics?.enrichment?.pendingOrResolving ?? 0}</p>
+              <p>Failed or missing: {diagnostics?.enrichment?.failed ?? 0}</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>Queue</CardTitle>
               <CardDescription>Recovery and backpressure</CardDescription>
             </CardHeader>
@@ -138,6 +151,8 @@ export default function AdminPage() {
               <p>Workers: {diagnostics?.queue?.workers ?? 0}</p>
               <p>Events: {diagnostics?.metrics?.events ?? 0}</p>
               <p>AI drifts: {diagnostics?.metrics?.ai_observability?.ranking_drifts ?? 0}</p>
+              <p>Workflow tokens: {diagnostics?.workflowTokens?.active ?? 0} active</p>
+              <p>Interview stages: {diagnostics?.interviews?.total ?? 0} tracked</p>
             </CardContent>
           </Card>
         </div>
@@ -243,13 +258,14 @@ export default function AdminPage() {
           <Card>
             <CardHeader>
               <CardTitle>Operational Alerts</CardTitle>
-              <CardDescription>Stuck work and automation failures.</CardDescription>
+              <CardDescription>Stuck work, replay risk, and automation failures.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-gray-700">
               <p>Anomalies: {intelligence?.anomalies?.length ?? 0}</p>
               <p>Coordination: {intelligence?.coordination?.coordinationMode ?? "dashboard"}</p>
               <p>Reactivation suggestions: {intelligence?.reactivation?.length ?? 0}</p>
               <p>Calendar suggestions: {intelligence?.calendar?.slotSuggestions?.length ?? 0}</p>
+              <p>Missing workflow links: {diagnostics?.interviews?.missingWorkflowLinkage ?? 0}</p>
               <div className="mt-3 space-y-2">
                 {(intelligence?.anomalies || []).slice(0, 3).map((item: any, index: number) => (
                   <div key={`${String(item.type || "anomaly")}-${index}`} className="rounded-lg bg-gray-50 p-2 text-xs">

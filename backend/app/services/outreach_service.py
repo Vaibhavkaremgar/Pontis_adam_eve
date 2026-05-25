@@ -1521,6 +1521,13 @@ def process_outreach(
         current_status = "shortlisted"
 
         raw_data = profile.raw_data or {}
+        enrichment_state = dict(raw_data.get("enrichment") or {})
+        enrichment_status = str(enrichment_state.get("status") or "").strip().lower()
+        if enrichment_status not in {"enriched", "partial"}:
+            raise APIError(
+                "Candidate must be enriched before outreach can be sent.",
+                status_code=409,
+            )
         delivery_target = _resolve_outreach_recipient(
             raw_data=raw_data,
             recipient_email=recipient_email if recipient_email and len(valid_candidates) == 1 else "",

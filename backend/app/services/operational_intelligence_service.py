@@ -156,6 +156,7 @@ def detect_operational_anomalies(*, db: Session, job_id: str | None = None) -> l
     profiles = CandidateProfileRepository(db).list_for_job(job_id) if job_id else []
     automation_rows = AutomationJobRepository(db).list_recent(limit=100)
     tasks = RecruiterTaskRepository(db).list_for_job(job_id, status="open", limit=100) if job_id else []
+    interviews = InterviewSessionRepository(db)
     anomalies: list[dict[str, Any]] = []
     now = _utcnow()
 
@@ -181,6 +182,51 @@ def detect_operational_anomalies(*, db: Session, job_id: str | None = None) -> l
                     "ageDays": int((now - profile.ats_status_updated_at).days),
                 }
             )
+
+        session = interviews.get_by_job_and_candidate(job_id=profile.job_id, candidate_id=profile.candidate_id)
+        if session:
+            scheduling_metadata = dict(session.scheduling_metadata or {})
+            if (session.status or "").strip().lower() == "booked" and not session.scheduled_at:
+                anomalies.append(
+                    {
+                        "type": "stale_booking_state",
+                        "jobId": profile.job_id,
+                        "candidateId": profile.candidate_id,
+                        "token": session.token,
+                        "stage": scheduling_metadata.get("stageName") or session.stage,
+                    }
+                )
+            if not (scheduling_metadata.get("workflowToken") or scheduling_metadata.get("workflow_token")):
+                anomalies.append(
+                    {
+                        "type": "missing_workflow_token_linkage",
+                        "jobId": profile.job_id,
+                        "candidateId": profile.candidate_id,
+                        "token": session.token,
+                        "stage": scheduling_metadata.get("stageName") or session.stage,
+                    }
+                )
+            stage_name = str(scheduling_metadata.get("stageName") or "").strip().lower()
+            if stage_name and stage_name not in {"recruiter_screen", "technical_round", "hiring_manager_round", "final_round", "offer_stage", "placed"}:
+                anomalies.append(
+                    {
+                        "type": "unknown_interview_stage",
+                        "jobId": profile.job_id,
+                        "candidateId": profile.candidate_id,
+                        "stage": stage_name,
+                        "token": session.token,
+                    }
+                )
+            if session.status == "pending" and session.created_at and (now - session.created_at) > timedelta(hours=24):
+                anomalies.append(
+                    {
+                        "type": "stale_interview_invite",
+                        "jobId": profile.job_id,
+                        "candidateId": profile.candidate_id,
+                        "token": session.token,
+                        "ageHours": int((now - session.created_at).total_seconds() // 3600),
+                    }
+                )
 
     failed_jobs = [row for row in automation_rows if _normalize_status(row.status) in {"failed", "retryable"}]
     for row in failed_jobs[:20]:
@@ -221,8 +267,12 @@ def get_interview_stage_progression(*, db: Session, job_id: str, candidate_id: s
         {"stage": "technical_round", "label": "Technical round"},
         {"stage": "hiring_manager_round", "label": "Hiring manager round"},
         {"stage": "final_round", "label": "Final round"},
+        {"stage": "offer_sent", "label": "Offer stage"},
+        {"stage": "hired", "label": "Placement"},
+        {"stage": "no_show", "label": "No-show"},
+        {"stage": "withdrawn", "label": "Withdrawn"},
     ]
-    current_stage = (session.stage or session.status or "").strip().lower()
+    current_stage = str((dict(session.scheduling_metadata or {}).get("stageName") or session.stage or session.status or "")).strip().lower()
     current_index = next((index for index, item in enumerate(progression) if item["stage"] == current_stage), 0)
     return {
         "jobId": job_id,

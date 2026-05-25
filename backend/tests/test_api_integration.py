@@ -135,9 +135,10 @@ from sqlalchemy import text
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, WEBHOOK_SHARED_SECRET
 from app.core.security import create_access_token, create_csrf_token
-from app.db.repositories import CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, OrchestrationEventRepository, OrchestrationSessionRepository, UserRepository
+from app.db.repositories import AutomationJobRepository, CandidateProfileRepository, CandidateSelectionSessionRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository, OutreachEventRepository, OrchestrationEventRepository, OrchestrationSessionRepository, UserRepository
 from app.db.session import SessionLocal, engine
 from app.models.entities import Base, ScoringProfileEntity
+import app.services.automation_service as automation_service
 from app.services.resend_inbound_service import process_resend_inbound_webhook
 from app.services.webhook_security import verify_resend_webhook
 from app.services.webhook_security import WEBHOOK_SIGNATURE_HEADER, WEBHOOK_TIMESTAMP_HEADER, verify_shared_secret_webhook
@@ -1804,6 +1805,194 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(payload["fit_score"], 4.25)
         self.assertEqual(payload["job_title"], self.job.title)
         self.assertEqual(payload["company_name"], self.company.name)
+
+    def test_selection_drives_apollo_enrichment_and_reuses_existing_result(self) -> None:
+        from app.services import apollo_enrichment_service as apollo_module
+
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            name="Jane Doe",
+            role="Backend Engineer",
+            company="Acme Systems",
+            summary="Backend engineer with platform and search experience.",
+            skills=["Python", "FastAPI"],
+            raw_data={
+                "name": "Jane Doe",
+                "full_name": "Jane Doe",
+                "email": "jane.doe@example.com",
+                "phone": "+1 415 555 0100",
+                "linkedin_url": "https://www.linkedin.com/in/janedoe",
+                "current_company": "Acme Systems",
+                "current_title": "Backend Engineer",
+                "location": "Remote",
+                "skills": ["Python", "FastAPI"],
+            },
+            fit_score=4.75,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        session = CandidateSelectionSessionRepository(self.db).create(
+            job_id=self.job.id,
+            candidate_pool_snapshot=[{"id": "candidate-1"}],
+            batch_plan=[["candidate-1"]],
+        )
+        session.selected_candidate_ids = ["candidate-1"]
+        self.db.commit()
+
+        apollo_response = {
+            "people": [
+                {
+                    "id": "apollo-person-1",
+                    "name": "Jane Doe",
+                    "linkedin_url": "https://www.linkedin.com/in/janedoe",
+                    "organization_name": "Acme Systems",
+                    "title": "Backend Engineer",
+                    "email": "jane.doe@example.com",
+                    "phone": "+1 415 555 0100",
+                    "location": "Remote",
+                }
+            ]
+        }
+
+        def _post(*args, **kwargs):
+            return types.SimpleNamespace(status_code=200, json=lambda: apollo_response, raise_for_status=lambda: None)
+
+        with patch.object(apollo_module, "APOLLO_API_KEY", "apollo-test-key"), patch.object(apollo_module.requests, "post", side_effect=_post) as mock_post:
+            first = apollo_module.enrich_candidate_with_apollo(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id="candidate-1",
+                workflow_token="workflow-1",
+                selection_session_id=session.id,
+                automation_job_id="automation-1",
+            )
+            second = apollo_module.enrich_candidate_with_apollo(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id="candidate-1",
+                workflow_token="workflow-1",
+                selection_session_id=session.id,
+                automation_job_id="automation-2",
+            )
+
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertEqual(first["status"], "enriched")
+        self.assertTrue(first["shouldOutreach"])
+        self.assertEqual(first["person"]["id"], "apollo-person-1")
+        self.assertEqual(second["status"], "enriched")
+        self.assertTrue(second["duplicate"])
+
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertIsNotNone(profile)
+        enrichment = dict(profile.raw_data or {}).get("enrichment") or {}
+        self.assertEqual(enrichment.get("status"), "enriched")
+        self.assertEqual(enrichment.get("apolloPersonId"), "apollo-person-1")
+        self.assertEqual(enrichment.get("identityMatchConfidence"), 1.0)
+        self.assertEqual(profile.ats_metadata.get("enrichmentStatus"), "enriched")
+        self.assertEqual(profile.ats_metadata.get("apolloPersonId"), "apollo-person-1")
+
+    def test_apollo_enrichment_marks_ambiguous_matches(self) -> None:
+        from app.services import apollo_enrichment_service as apollo_module
+
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            name="Sam Patel",
+            role="Data Engineer",
+            company="Northwind",
+            summary="Data engineer with analytics platforms experience.",
+            skills=["Python", "SQL"],
+            raw_data={
+                "name": "Sam Patel",
+                "full_name": "Sam Patel",
+                "email": "sam.patel@example.com",
+                "phone": "+1 212 555 0199",
+                "current_company": "Northwind",
+                "current_title": "Data Engineer",
+                "location": "New York",
+                "skills": ["Python", "SQL"],
+            },
+            fit_score=4.1,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        session = CandidateSelectionSessionRepository(self.db).create(
+            job_id=self.job.id,
+            candidate_pool_snapshot=[{"id": "candidate-1"}],
+            batch_plan=[["candidate-1"]],
+        )
+        session.selected_candidate_ids = ["candidate-1"]
+        self.db.commit()
+
+        apollo_response = {
+            "people": [
+                {
+                    "id": "apollo-person-1",
+                    "name": "Sam Patel",
+                    "organization_name": "Northwind",
+                    "title": "Data Engineer",
+                    "email": "sam.patel@example.com",
+                    "phone": "+1 212 555 0199",
+                    "location": "New York",
+                },
+                {
+                    "id": "apollo-person-2",
+                    "name": "Sam Patel",
+                    "organization_name": "Northwind",
+                    "title": "Data Engineer",
+                    "email": "sam.alt@example.com",
+                    "phone": "+1 212 555 0198",
+                    "location": "New York",
+                },
+            ]
+        }
+
+        def _post(*args, **kwargs):
+            return types.SimpleNamespace(status_code=200, json=lambda: apollo_response, raise_for_status=lambda: None)
+
+        with patch.object(apollo_module, "APOLLO_API_KEY", "apollo-test-key"), patch.object(apollo_module.requests, "post", side_effect=_post):
+            result = apollo_module.enrich_candidate_with_apollo(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id="candidate-1",
+                workflow_token="workflow-ambiguous",
+                selection_session_id=session.id,
+                automation_job_id="automation-ambiguous",
+            )
+
+        self.assertEqual(result["status"], "ambiguous_match")
+        self.assertFalse(result["shouldOutreach"])
+        self.assertIsNone(OutreachEventRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1"))
+
+        profile = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        enrichment = dict(profile.raw_data or {}).get("enrichment") or {}
+        self.assertEqual(enrichment.get("status"), "ambiguous_match")
+        self.assertEqual(enrichment.get("apolloPersonId"), "apollo-person-1")
+
+    def test_automation_seed_does_not_create_apollo_enrichment_jobs(self) -> None:
+        interview_repo = InterviewRepository(self.db)
+        interview_repo.upsert_status(
+            job_id=self.job.id,
+            candidate_id="candidate-1",
+            status="shortlisted",
+            create_default="shortlisted",
+        )
+
+        candidate = CandidateProfileRepository(self.db).get(job_id=self.job.id, candidate_id="candidate-1")
+        candidate.ats_status = "shortlisted"
+        self.db.commit()
+
+        seed_result = automation_service.seed_automation_jobs(db=self.db, job_id=self.job.id, limit=10)
+        self.assertIsInstance(seed_result, dict)
+
+        apollo_jobs = self.db.execute(
+            text(
+                "SELECT COUNT(*) FROM automation_jobs WHERE automation_type = 'candidate_enrichment' AND job_id = :job_id"
+            ),
+            {"job_id": self.job.id},
+        ).scalar_one()
+        self.assertEqual(int(apollo_jobs or 0), 0)
 
     def test_notification_workflow_token_booking_links_use_token_query_param(self) -> None:
         from app.services import interview_session_service as interview_session_module

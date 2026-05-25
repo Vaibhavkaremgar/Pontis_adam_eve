@@ -221,15 +221,15 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     setError("");
     const result = await sendOutreach({ jobId, selectedCandidates: [candidateId] });
     if (!result.success || !result.data) {
-      setError(result.error || "Failed to send outreach.");
+      setError(result.error || "Failed to queue candidate handoff.");
       setActionLoadingId("");
       return;
     }
     updateCandidateStatus(candidateId, "contacted", { outreachStatus: "pending" });
     setFeedbackMessage(
       result.data.sent > 0
-        ? `Outreach sent to ${result.data.sent} candidate${result.data.sent !== 1 ? "s" : ""}.`
-        : "Outreach processed."
+        ? `Adam queued handoff for ${result.data.sent} candidate${result.data.sent !== 1 ? "s" : ""}.`
+        : "Candidate handoff processed."
     );
     setActionLoadingId("");
     void syncCandidates();
@@ -347,7 +347,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       {renderExplanation(candidate)}
       <div className="flex flex-wrap gap-2 text-xs text-gray-500">
         <span>Status: {statusLabel(candidate.status)}</span>
-        <span>Outreach: {candidate.outreachStatus || "pending"}</span>
+        <span>Automation: {candidate.outreachStatus || "queued"}</span>
         <span>ATS: {candidate.ats_export_status || "not_sent"}</span>
       </div>
       <div className="grid grid-cols-2 gap-2">
@@ -357,7 +357,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
           onClick={() => handleSingleOutreach(candidate.id)}
           disabled={actionLoadingId === candidate.id}
         >
-          {actionLoadingId === candidate.id ? "Sending..." : "Select & Outreach"}
+          {actionLoadingId === candidate.id ? "Processing..." : "Select candidate"}
         </Button>
         <Button
           className="justify-center"
@@ -375,7 +375,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       open={open}
       onOpenChange={onOpenChange}
       title="Top Candidate Matches"
-      description="Review, shortlist, outreach, and export candidates"
+      description="Review, shortlist, enrich, and export candidates"
     >
       <div className="space-y-5">
         {isRefined && (
@@ -499,11 +499,11 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
             Voice Intake
           </Link>
           <Link
-            href="/outreach"
+            href="/review"
             onClick={() => onOpenChange(false)}
             className={cn(buttonVariants({ variant: "outline" }), "justify-center")}
           >
-            Skip to Outreach
+            Back to Review
           </Link>
         </div>
       </div>
