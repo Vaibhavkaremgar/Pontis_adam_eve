@@ -27,6 +27,7 @@ function VoicePageContent() {
   const isPendingJobCreation = !jobId && Boolean(job.title.trim() || company.name.trim());
 
   useEffect(() => {
+    if (slackToken) return;
     if (!isSessionReady) return;
 
     if (!user) {
@@ -38,7 +39,7 @@ function VoicePageContent() {
       router.replace("/job");
       return;
     }
-  }, [isPendingJobCreation, isSessionReady, jobId, router, user]);
+  }, [isPendingJobCreation, isSessionReady, jobId, router, slackToken, user]);
 
   if (slackToken) {
     return <SlackVoiceUi token={slackToken} />;

@@ -1881,7 +1881,7 @@ def prepare_voice_handoff(*, db: Session, session_id: str) -> dict[str, Any]:
 
 def start_voice_handoff(*, db: Session, token: str) -> dict[str, Any]:
     session_repo = OrchestrationSessionRepository(db)
-    session_row = session_repo.get_by_token(token)
+    session_row = session_repo.get_by_voice_handoff_token(token)
     if not session_row:
         raise APIError("Orchestration session not found", status_code=404)
     if _normalize_text(session_row.voice_handoff_token) != _normalize_text(token):
@@ -1937,7 +1937,7 @@ def complete_voice_handoff(
     voice_notes: list[str] | None = None,
 ) -> dict[str, Any]:
     session_repo = OrchestrationSessionRepository(db)
-    session_row = session_repo.get_by_token(token)
+    session_row = session_repo.get_by_voice_handoff_token(token)
     if not session_row:
         raise APIError("Invalid voice handoff token", status_code=404)
     if _normalize_text(session_row.voice_handoff_token) != _normalize_text(token):

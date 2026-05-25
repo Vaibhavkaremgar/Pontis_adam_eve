@@ -548,6 +548,14 @@ class OrchestrationSessionRepository:
             return None
         return self.db.scalar(select(OrchestrationSessionEntity).where(OrchestrationSessionEntity.session_token == normalized))
 
+    def get_by_voice_handoff_token(self, voice_handoff_token: str) -> OrchestrationSessionEntity | None:
+        normalized = (voice_handoff_token or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(OrchestrationSessionEntity).where(OrchestrationSessionEntity.voice_handoff_token == normalized)
+        )
+
     def get_by_job(self, job_id: str) -> OrchestrationSessionEntity | None:
         normalized = (job_id or "").strip()
         if not normalized:

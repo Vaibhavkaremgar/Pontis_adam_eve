@@ -694,6 +694,68 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(refreshed.normalized_intake.get("company_name"), "PONTIS")
         self.assertEqual(refreshed.current_question_key, "role_title")
 
+    def test_voice_handoff_token_continues_saved_slack_intake(self) -> None:
+        from datetime import datetime, timezone, timedelta
+
+        from app.db.repositories import OrchestrationSessionRepository
+        from app.services.orchestration_service import start_voice_handoff
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="voice-continuation-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-VOICE",
+            slack_channel_id="C-VOICE",
+            slack_thread_ts="1716612345.900000",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What kind of person succeeds in this role?",
+            current_question_key="success_profile",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "PONTIS",
+                "role_title": "Frontend Developer",
+                "must_have_requirements": ["React", "TypeScript"],
+                "success_profile": "A strong communicator who collaborates well with product and engineering",
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-VOICE", "channelId": "C-VOICE", "threadTs": "1716612345.900000", "userId": self.user.id},
+        )
+        token = "voice-handoff-token-123"
+        session.voice_handoff_token = token
+        session.voice_handoff_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        self.db.commit()
+
+        payload = start_voice_handoff(db=self.db, token=token)
+
+        refreshed = repo.get(session.id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(refreshed.voice_handoff_token, token)
+        self.assertEqual(refreshed.selected_path, "voice")
+        self.assertEqual(payload.get("session", {}).get("normalizedIntake", {}).get("company_name"), "PONTIS")
+        self.assertEqual(payload.get("session", {}).get("normalizedIntake", {}).get("success_profile"), "A strong communicator who collaborates well with product and engineering")
+        self.assertIn("What compensation range are you targeting?", payload.get("currentQuestion", ""))
+        self.assertEqual(payload.get("session", {}).get("currentQuestionKey"), payload.get("currentQuestionKey"))
+
     def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
         from sqlalchemy import inspect
 

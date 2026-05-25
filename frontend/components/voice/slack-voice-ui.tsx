@@ -76,6 +76,16 @@ function buildTranscript(turns: TranscriptTurn[]) {
     .join("\n");
 }
 
+function formatIntakeValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean).join(", ");
+  }
+  if (value && typeof value === "object") {
+    return JSON.stringify(value);
+  }
+  return String(value || "").trim();
+}
+
 async function loadVapiConfig(): Promise<{ assistantId: string; publicKey: string }> {
   const response = await fetch("/api/vapi/config", { method: "GET" });
   const json = (await response.json()) as { success?: boolean; data?: { assistantId?: string; publicKey?: string } };
@@ -125,6 +135,20 @@ export function SlackVoiceUi({ token }: { token: string }) {
   }, [token]);
 
   const question = useMemo(() => session?.currentQuestion || session?.firstMessage || "Let's continue the intake.", [session]);
+  const intakeSummary = useMemo(() => {
+    const intake = session?.session?.normalizedIntake;
+    if (!intake || typeof intake !== "object") return [];
+    const record = intake as Record<string, unknown>;
+    return [
+      ["Company", formatIntakeValue(record.company_name)],
+      ["Role", formatIntakeValue(record.role_title)],
+      ["Must-haves", formatIntakeValue(record.must_have_requirements)],
+      ["Success profile", formatIntakeValue(record.success_profile)],
+      ["Compensation", formatIntakeValue(record.compensation)],
+      ["Urgency", formatIntakeValue(record.urgency)],
+      ["Team", formatIntakeValue(record.team_structure)],
+    ].filter(([, value]) => Boolean(String(value).trim()));
+  }, [session]);
 
   useEffect(() => {
     if (!session || !assistantId || !publicKey || startedRef.current) return;
@@ -260,6 +284,20 @@ export function SlackVoiceUi({ token }: { token: string }) {
             <p className="font-semibold text-[#111827]">Current prompt</p>
             <p className="mt-1 leading-6">{session?.currentQuestion || question}</p>
           </div>
+
+          {intakeSummary.length > 0 ? (
+            <div className="rounded-2xl border border-[#E7E0D4] bg-[#FCFAF6] p-4 text-sm text-[#4B5563]">
+              <p className="font-semibold text-[#111827]">Captured so far</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {intakeSummary.map(([label, value]) => (
+                  <div key={label} className="rounded-xl border border-[#E7E0D4] bg-white px-3 py-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8A6E4F]">{label}</p>
+                    <p className="mt-1 text-sm leading-5 text-[#374151]">{value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="max-h-[56vh] space-y-3 overflow-y-auto rounded-[24px] border border-[#E7E0D4] bg-[linear-gradient(180deg,#FFFDF9_0%,#F7F2E8_100%)] p-3 shadow-[0_8px_22px_rgba(0,0,0,0.04)]">
             {turns.length > 0 ? (
