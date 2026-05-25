@@ -547,6 +547,11 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN company_id VARCHAR(36) NULL DEFAULT NULL"))
             if "job_id" not in orchestration_columns:
                 conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN job_id VARCHAR(36) NULL DEFAULT NULL"))
+            if dialect == "postgresql":
+                for column_name in ("agency_id", "company_id", "job_id"):
+                    column = next((col for col in inspector.get_columns("orchestration_sessions") if col["name"] == column_name), None)
+                    if column and not column.get("nullable", True):
+                        conn.execute(text(f"ALTER TABLE orchestration_sessions ALTER COLUMN {column_name} DROP NOT NULL"))
             if "updated_at" not in orchestration_columns:
                 conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
 

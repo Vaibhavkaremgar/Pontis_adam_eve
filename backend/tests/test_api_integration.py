@@ -330,6 +330,42 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(followup["pathSelectionNeeded"])
         self.assertEqual(followup["nextQuestionKey"], "path_selection")
 
+    def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
+        from sqlalchemy import inspect
+
+        from app.db.repositories import OrchestrationSessionRepository
+
+        inspector = inspect(self.db.bind)
+        columns = {column["name"]: column for column in inspector.get_columns("orchestration_sessions")}
+
+        self.assertIn("company_id", columns)
+        self.assertIn("job_id", columns)
+        self.assertTrue(bool(columns["company_id"].get("nullable", False)))
+        self.assertTrue(bool(columns["job_id"].get("nullable", False)))
+        if "agency_id" in columns:
+            self.assertTrue(bool(columns["agency_id"].get("nullable", False)))
+
+        session = OrchestrationSessionRepository(self.db).create(
+            session_token="orchestration-null-linkage",
+            source="slack",
+            current_stage="initiated",
+            slack_team_id="T-NULL",
+            slack_channel_id="C-NULL",
+            slack_thread_ts="",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={},
+            voice_context={},
+            slack_context={"teamId": "T-NULL", "channelId": "C-NULL", "threadTs": "", "userId": self.user.id},
+        )
+
+        self.assertIsNone(session.company_id)
+        self.assertIsNone(session.job_id)
+        self.assertEqual(session.slack_team_id, "T-NULL")
+
     def _post_resend_inbound_reply(
         self,
         *,

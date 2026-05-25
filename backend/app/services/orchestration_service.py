@@ -1068,6 +1068,8 @@ def _ensure_session_row(
             "threadTs": slack_thread_ts,
             "userId": slack_user_id,
         },
+        company_id=None,
+        job_id=None,
     )
     _append_event(db, session_id=row.id, event_type="SESSION_CREATED", payload=_session_payload(row))
     db.commit()
