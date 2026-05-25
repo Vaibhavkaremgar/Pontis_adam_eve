@@ -18,6 +18,10 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _metadata_map(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _candidate_source(candidate: Any) -> dict[str, Any]:
     if isinstance(candidate, dict):
         return dict(candidate)
@@ -160,7 +164,7 @@ def _build_booking_link(token: str, *, source_type: str = "dashboard") -> str:
 
 
 def _serialize_workflow_token(row) -> dict[str, Any]:
-    payload = dict(row.payload or {})
+    payload = _metadata_map(row.payload)
     source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "dashboard").strip() or "dashboard"
     booking_link = _build_booking_link(row.token, source_type=source_type)
     return {
@@ -299,7 +303,7 @@ def upsert_notification_workflow_token(
     def _apply(row) -> dict[str, Any]:
         row.workflow_name = normalized_workflow_name
         row.token_type = normalized_token_type
-        normalized_payload = dict(payload or {})
+        normalized_payload = _metadata_map(payload)
         normalized_payload.setdefault("source_type", normalized_source_app)
         normalized_payload.setdefault("sourceType", normalized_source_app)
         row.payload = normalized_payload
@@ -334,7 +338,7 @@ def upsert_notification_workflow_token(
                     workflow_name=normalized_workflow_name,
                     token=token_value,
                     payload={
-                        **dict(payload or {}),
+                        **_metadata_map(payload),
                         "source_type": normalized_source_app,
                         "sourceType": normalized_source_app,
                     },
@@ -402,7 +406,7 @@ def consume_notification_workflow_token(*, db: Session, token: str, source_app: 
     row = NotificationWorkflowTokenRepository(db).mark_consumed(token, source_app=source_app)
     if not row:
         return None
-    payload = dict(row.payload or {})
+    payload = _metadata_map(row.payload)
     source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "dashboard").strip() or "dashboard"
     booking_link = _build_booking_link(row.token, source_type=source_type)
     return {

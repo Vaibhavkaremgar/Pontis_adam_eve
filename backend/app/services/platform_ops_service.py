@@ -41,6 +41,10 @@ from app.services.pdl_service import pdl_health_snapshot
 logger = logging.getLogger(__name__)
 
 
+def _metadata_map(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def get_platform_diagnostics(db: Session) -> dict[str, Any]:
     return {
         "config": config_diagnostics(),
@@ -155,13 +159,13 @@ def get_workflow_token_health(db: Session) -> dict[str, Any]:
 
     token_rows = db.scalars(select(NotificationWorkflowTokenEntity).order_by(NotificationWorkflowTokenEntity.created_at.desc()).limit(200)).all()
     active = [row for row in token_rows if row.is_active]
-    missing_source_type = sum(1 for row in token_rows if not str((row.payload or {}).get("source_type") or (row.payload or {}).get("sourceType") or "").strip())
+    missing_source_type = sum(1 for row in token_rows if not str((_metadata_map(row.payload).get("source_type") or _metadata_map(row.payload).get("sourceType") or "").strip()))
     expired = sum(1 for row in token_rows if row.expires_at and row.expires_at < datetime.now(timezone.utc))
     enrichment_status_counts: dict[str, int] = {}
     enrichment_confidences: list[float] = []
     apollo_person_tokens = 0
     for row in token_rows:
-        payload = dict(row.payload or {})
+        payload = _metadata_map(row.payload)
         enrichment_status = str(payload.get("enrichmentStatus") or payload.get("enrichment_status") or "").strip().lower()
         if enrichment_status:
             enrichment_status_counts[enrichment_status] = enrichment_status_counts.get(enrichment_status, 0) + 1
@@ -201,7 +205,7 @@ def get_enrichment_health(db: Session) -> dict[str, Any]:
         elif state == "running":
             running_enrichment_jobs += 1
     for row in profiles:
-        enrichment = dict(getattr(row, "raw_data", {}) or {}).get("enrichment") or {}
+        enrichment = _metadata_map(getattr(row, "raw_data", {})).get("enrichment") or {}
         status = str(enrichment.get("status") or enrichment.get("enrichmentStatus") or "pending").strip().lower() or "pending"
         source = str(enrichment.get("source") or "").strip().lower() or "unknown"
         status_counts[status] = status_counts.get(status, 0) + 1
@@ -214,7 +218,7 @@ def get_enrichment_health(db: Session) -> dict[str, Any]:
         apollo_person_id = str(enrichment.get("apolloPersonId") or "").strip()
         if apollo_person_id:
             apollo_person_ids.add(apollo_person_id)
-        raw_data = dict(getattr(row, "raw_data", {}) or {})
+        raw_data = _metadata_map(getattr(row, "raw_data", {}))
         if str(getattr(row, "phone", "") or "").strip() or str(
             raw_data.get("email")
             or raw_data.get("work_email")
@@ -254,9 +258,9 @@ def get_interview_health(db: Session) -> dict[str, Any]:
     for row in rows:
         status = (row.status or "").strip().lower() or "unknown"
         status_counts[status] = status_counts.get(status, 0) + 1
-        stage = str((dict(row.scheduling_metadata or {}).get("stageName") or row.stage or "unknown")).strip().lower()
+        stage = str((_metadata_map(row.scheduling_metadata).get("stageName") or row.stage or "unknown")).strip().lower()
         stage_counts[stage] = stage_counts.get(stage, 0) + 1
-        scheduling_metadata = dict(row.scheduling_metadata or {})
+        scheduling_metadata = _metadata_map(row.scheduling_metadata)
         if not (scheduling_metadata.get("workflowToken") or scheduling_metadata.get("workflow_token")):
             missing_workflow_links += 1
     return {
@@ -351,7 +355,7 @@ def get_pipeline_board(db: Session, job_id: str | None = None) -> dict[str, Any]
                 "id": row.id,
                 "type": row.automation_type,
                 "status": row.status,
-                "scheduledAt": row.scheduled_at.isoformat(),
+                "scheduledAt": row.scheduled_at.isoformat() if row.scheduled_at else None,
             }
             for row in automation[:10]
         ],
@@ -379,8 +383,8 @@ def get_notification_center(db: Session, *, job_id: str | None = None, unread_on
             "isRead": bool(getattr(row, "is_read", False)),
             "readAt": row.read_at.isoformat() if getattr(row, "read_at", None) else None,
             "metadata": row.notification_metadata,
-            "createdAt": row.created_at.isoformat(),
-            "updatedAt": row.updated_at.isoformat(),
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
+            "updatedAt": row.updated_at.isoformat() if row.updated_at else None,
         }
         for row in rows
     ]

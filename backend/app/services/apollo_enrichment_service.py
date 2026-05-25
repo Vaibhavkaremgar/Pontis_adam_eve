@@ -54,6 +54,18 @@ def _normalize_url(value: Any) -> str:
     return text
 
 
+def _metadata_map(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    try:
+        mapped = dict(value)
+    except Exception:
+        return {}
+    return mapped if isinstance(mapped, dict) else {}
+
+
 def _tokens(value: Any) -> set[str]:
     text = _normalize_lower(value)
     if not text:
@@ -99,10 +111,8 @@ def _candidate_source(candidate: Any) -> dict[str, Any]:
 
 def _candidate_identity_payload(candidate: Any) -> dict[str, str]:
     source = _candidate_source(candidate)
-    raw_data = source.get("raw_data") if isinstance(source.get("raw_data"), dict) else {}
-    profile_json = source.get("parsed_resume_json") if isinstance(source.get("parsed_resume_json"), dict) else {}
-    raw_data = dict(raw_data or {})
-    profile_json = dict(profile_json or {})
+    raw_data = _metadata_map(source.get("raw_data"))
+    profile_json = _metadata_map(source.get("parsed_resume_json"))
 
     name = _normalize_text(source.get("name") or raw_data.get("full_name") or raw_data.get("name") or profile_json.get("full_name") or profile_json.get("name"))
     linkedin_url = _normalize_text(
@@ -381,7 +391,7 @@ def _sync_workflow_token_enrichment(
     if not token_row:
         return
 
-    payload = dict(token_row.payload or {})
+    payload = _metadata_map(getattr(token_row, "payload", None))
     payload.update(
         {
             "source_type": normalized_source_type,
@@ -525,8 +535,8 @@ def _merge_enrichment_payload(
     match_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    raw_data = dict(getattr(profile, "raw_data", {}) or {})
-    enrichment = dict(raw_data.get("enrichment") or {})
+    raw_data = _metadata_map(getattr(profile, "raw_data", None))
+    enrichment = _metadata_map(raw_data.get("enrichment"))
     company_name = ""
     company_record = getattr(job, "company", None)
     if company_record is not None:
@@ -543,7 +553,7 @@ def _merge_enrichment_payload(
             "cachedAt": now.isoformat() if cache_hit else enrichment.get("cachedAt") or "",
             "jobTitle": _normalize_text(getattr(job, "title", "") or ""),
             "companyName": company_name,
-            "matchDetails": dict(match_details or enrichment.get("matchDetails") or {}),
+            "matchDetails": _metadata_map(match_details or enrichment.get("matchDetails")),
         }
     )
     if person:
@@ -630,7 +640,7 @@ def _merge_enrichment_payload(
         except (TypeError, ValueError):
             pass
     profile.ats_metadata = {
-        **dict(profile.ats_metadata or {}),
+        **_metadata_map(getattr(profile, "ats_metadata", None)),
         "enrichmentStatus": status,
         "enrichmentConfidence": round(float(confidence or 0.0), 4),
         "enrichmentSource": "apollo",
@@ -664,8 +674,8 @@ def enrich_candidate_with_apollo(
     if not profile:
         raise APIError("Candidate not found", status_code=404)
 
-    raw_data = dict(profile.raw_data or {})
-    enrichment_state = dict(raw_data.get("enrichment") or {})
+    raw_data = _metadata_map(getattr(profile, "raw_data", None))
+    enrichment_state = _metadata_map(raw_data.get("enrichment"))
     existing_status = _normalize_lower(enrichment_state.get("status"))
 
     candidate = _candidate_identity_payload(profile)
@@ -721,7 +731,7 @@ def enrich_candidate_with_apollo(
                 "resolvedAt": datetime.now(timezone.utc).isoformat(),
             },
         }
-        profile.ats_metadata = {**dict(profile.ats_metadata or {}), "enrichmentStatus": "failed", "enrichmentReason": "selection_required"}
+        profile.ats_metadata = {**_metadata_map(getattr(profile, "ats_metadata", None)), "enrichmentStatus": "failed", "enrichmentReason": "selection_required"}
         db.flush()
         _sync_workflow_token_enrichment(
             db=db,
@@ -770,7 +780,7 @@ def enrich_candidate_with_apollo(
                 "resolvedAt": datetime.now(timezone.utc).isoformat(),
             },
         }
-        profile.ats_metadata = {**dict(profile.ats_metadata or {}), "enrichmentStatus": "failed", "enrichmentReason": "candidate_not_selected"}
+        profile.ats_metadata = {**_metadata_map(getattr(profile, "ats_metadata", None)), "enrichmentStatus": "failed", "enrichmentReason": "candidate_not_selected"}
         db.flush()
         _sync_workflow_token_enrichment(
             db=db,
@@ -842,7 +852,7 @@ def enrich_candidate_with_apollo(
     cached = _load_cached_enrichment(job_id=job_id, candidate_id=candidate_id, identity_fingerprint=identity_fingerprint)
     if cached:
         status = str(cached.get("status") or "").strip().lower() or "failed"
-        payload = dict(cached.get("result") or {})
+        payload = _metadata_map(cached.get("result"))
         payload.setdefault("jobId", job_id)
         payload.setdefault("candidateId", candidate_id)
         payload.setdefault("status", status)
@@ -850,7 +860,7 @@ def enrich_candidate_with_apollo(
         payload["duplicate"] = True
         payload["cacheHit"] = True
         if payload.get("enrichment") is None:
-            payload["enrichment"] = dict(profile.raw_data or {}).get("enrichment") or {}
+            payload["enrichment"] = _metadata_map(getattr(profile, "raw_data", None)).get("enrichment") or {}
         _sync_workflow_token_enrichment(
             db=db,
             job_id=job_id,
@@ -863,8 +873,8 @@ def enrich_candidate_with_apollo(
             automation_job_id=automation_job_id,
             email=_normalize_text(payload.get("contactEmail") or ""),
             phone=_normalize_text(payload.get("contactPhone") or ""),
-            apollo_person_id=_normalize_text(dict(payload.get("enrichment") or {}).get("apolloPersonId") or ""),
-            reason=str(dict(payload.get("enrichment") or {}).get("reason") or ""),
+            apollo_person_id=_normalize_text(_metadata_map(payload.get("enrichment")).get("apolloPersonId") or ""),
+            reason=str(_metadata_map(payload.get("enrichment")).get("reason") or ""),
         )
         return payload
 
@@ -937,7 +947,7 @@ def enrich_candidate_with_apollo(
     raw_data["enrichment"] = enrichment_state
     profile.raw_data = raw_data
     profile.ats_metadata = {
-        **dict(profile.ats_metadata or {}),
+        **_metadata_map(getattr(profile, "ats_metadata", None)),
         "enrichmentStatus": "resolving",
         "enrichmentSource": "apollo",
         "enrichmentStartedAt": now.isoformat(),
@@ -1247,7 +1257,7 @@ def enrich_candidate_with_apollo(
             token_type="slot_booking",
         )
     if token_row:
-        payload = dict(token_row.payload or {})
+        payload = _metadata_map(getattr(token_row, "payload", None))
         payload.update(
             {
                 "source_type": source_type or payload.get("source_type") or "adam",
@@ -1260,7 +1270,7 @@ def enrich_candidate_with_apollo(
                 "contactPhone": phone,
                 "candidateId": candidate_id,
                 "jobId": job_id,
-                "apolloPersonId": raw_data.get("enrichment", {}).get("apolloPersonId", ""),
+                "apolloPersonId": _metadata_map(raw_data.get("enrichment")).get("apolloPersonId", ""),
             }
         )
         token_row.payload = payload
@@ -1301,7 +1311,7 @@ def enrich_candidate_with_apollo(
         "matchType": match_reason,
         "shouldOutreach": should_outreach,
         "workflowToken": workflow_token,
-        "enrichment": dict(profile.raw_data or {}).get("enrichment") or {},
+        "enrichment": _metadata_map(getattr(profile, "raw_data", None)).get("enrichment") or {},
         "contactEmail": email,
         "contactPhone": phone,
         "person": top_match,

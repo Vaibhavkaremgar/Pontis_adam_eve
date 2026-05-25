@@ -50,6 +50,10 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _metadata_map(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _normalize_stage(value: str | None) -> str:
     return (value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -83,7 +87,7 @@ def _stage_to_ats(stage: str) -> str:
 
 
 def _append_stage_history(row, *, action: str, from_stage: str, to_stage: str, notes: str = "") -> None:
-    metadata = dict(getattr(row, "scheduling_metadata", {}) or {})
+    metadata = _metadata_map(getattr(row, "scheduling_metadata", {}))
     history = list(metadata.get("stageHistory") or metadata.get("stage_history") or [])
     history.append(
         {
@@ -110,7 +114,7 @@ def get_interview_insights(*, db: Session, job_id: str, candidate_id: str) -> di
         if workflow_token
         else NotificationWorkflowTokenRepository(db).get_active_by_candidate(job_id=job_id, candidate_id=candidate_id, source_app="adam", token_type="slot_booking")
     )
-    workflow_payload = dict(token_row.payload or {}) if token_row else {}
+    workflow_payload = _metadata_map(token_row.payload if token_row else {})
     return {
         "jobId": job_id,
         "candidateId": candidate_id,
@@ -122,7 +126,7 @@ def get_interview_insights(*, db: Session, job_id: str, candidate_id: str) -> di
         "evaluations": evaluations,
         "intelligence": intelligence,
         "currentSession": _session_payload(row=session, booking_link=session.booking_url if session else "") if session else None,
-        "stageHistory": list((dict(getattr(session, "scheduling_metadata", {}) or {})).get("stageHistory") or []),
+        "stageHistory": list(_metadata_map(getattr(session, "scheduling_metadata", {})).get("stageHistory") or []),
     }
 
 
@@ -180,7 +184,7 @@ def advance_interview_stage(
             "status": normalized_action,
             "jobId": job_id,
             "candidateId": candidate_id,
-            "sourceType": str((dict(getattr(current_session, "scheduling_metadata", {}) or {}).get("sourceType") or source_app or "adam")),
+            "sourceType": str((_metadata_map(getattr(current_session, "scheduling_metadata", {})).get("sourceType") or source_app or "adam")),
             "workflowToken": workflow_token,
             "stageName": current_stage,
         }

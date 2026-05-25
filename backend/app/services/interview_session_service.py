@@ -54,6 +54,10 @@ def _ensure_utc_datetime(value: datetime | None) -> datetime | None:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def _metadata_map(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _normalize_stage_name(value: str | None) -> str:
     return (value or "").strip().lower().replace("-", "_").replace(" ", "_")
 
@@ -67,7 +71,7 @@ def _stage_index(stage_name: str | None) -> int:
 
 
 def _session_stage_name(row) -> str:
-    scheduling_metadata = dict(getattr(row, "scheduling_metadata", {}) or {})
+    scheduling_metadata = _metadata_map(getattr(row, "scheduling_metadata", {}))
     return _normalize_stage_name(
         scheduling_metadata.get("stageName")
         or scheduling_metadata.get("stage_name")
@@ -77,7 +81,7 @@ def _session_stage_name(row) -> str:
 
 
 def _workflow_token(row) -> str:
-    scheduling_metadata = dict(getattr(row, "scheduling_metadata", {}) or {})
+    scheduling_metadata = _metadata_map(getattr(row, "scheduling_metadata", {}))
     return str(
         scheduling_metadata.get("workflowToken")
         or scheduling_metadata.get("workflow_token")
@@ -87,7 +91,7 @@ def _workflow_token(row) -> str:
 
 
 def _stage_history(row) -> list[dict[str, Any]]:
-    scheduling_metadata = dict(getattr(row, "scheduling_metadata", {}) or {})
+    scheduling_metadata = _metadata_map(getattr(row, "scheduling_metadata", {}))
     history = scheduling_metadata.get("stageHistory") or scheduling_metadata.get("stage_history") or []
     return [entry for entry in history if isinstance(entry, dict)]
 
@@ -101,7 +105,7 @@ def _build_token_payload(*, profile: Any, job: Any, company_name: str = "", resu
 
 
 def _session_payload(*, row, booking_link: str) -> dict[str, str | None]:
-    scheduling_metadata = dict(getattr(row, "scheduling_metadata", {}) or {})
+    scheduling_metadata = _metadata_map(getattr(row, "scheduling_metadata", {}))
     stage_name = _session_stage_name(row)
     booked_at = getattr(row, "booked_at", None)
     return {
@@ -150,7 +154,7 @@ def _validate_booking_token(*, db: Session, token: str) -> Any:
     if not session_row:
         token_row = NotificationWorkflowTokenRepository(db).get_by_token(token, source_app="adam")
         if token_row:
-            session_row = InterviewSessionRepository(db).get_by_token(str((dict(token_row.payload or {}) or {}).get("currentInterviewToken") or ""))
+            session_row = InterviewSessionRepository(db).get_by_token(str((_metadata_map(token_row.payload).get("currentInterviewToken") or "")))
     if not session_row:
         raise APIError("Interview session not found", status_code=404)
     now = datetime.now(timezone.utc)
@@ -192,7 +196,7 @@ def create_interview_session(
     existing_stage_name = _session_stage_name(existing_session) if existing_session else ""
     if existing_session and existing_stage_name == normalized_stage_name and (existing_expires_at is None or existing_expires_at > datetime.now(timezone.utc)):
         company = CompanyRepository(db).get_by_id(job.company_id)
-        source_type = str((dict(getattr(existing_session, "scheduling_metadata", {}) or {}).get("sourceType") or source_app or "adam"))
+        source_type = str((_metadata_map(getattr(existing_session, "scheduling_metadata", {})).get("sourceType") or source_app or "adam"))
         workflow_token_value = _workflow_token(existing_session) or existing_session.token
         if profile:
             token_payload = _build_token_payload(
@@ -230,7 +234,7 @@ def create_interview_session(
         if outreach_event_id is not None:
             existing_session.outreach_event_id = outreach_event_id
         existing_session.scheduling_metadata = {
-            **dict(existing_session.scheduling_metadata or {}),
+            **_metadata_map(existing_session.scheduling_metadata),
             "sourceType": source_type,
             "bookingLink": booking_link,
             "stageName": normalized_stage_name,
@@ -312,7 +316,7 @@ def create_interview_session(
     row.stage = "requested"
     row.interviewer_metadata = dict(interviewer_metadata or {})
     row.scheduling_metadata = {
-        **dict(scheduling_metadata or {}),
+        **_metadata_map(scheduling_metadata),
         "sourceApp": source_app,
         "sourceType": source_app or "adam",
         "bookingLink": booking_link,
@@ -379,7 +383,7 @@ def get_interview_session(*, db: Session, token: str) -> dict[str, str | None]:
 
     job = JobRepository(db).get(row.job_id)
     profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
-    source_type = str((dict(row.scheduling_metadata or {}).get("sourceType") or "adam"))
+    source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
     booking_link = row.booking_url or _legacy_booking_url(row.token, source_type=source_type)
     return _session_payload(row=row, booking_link=booking_link)
 
@@ -399,7 +403,7 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         existing_scheduled_at = _utc_isoformat(row.scheduled_at)
         requested_scheduled_at = _utc_isoformat(scheduled_at_value)
         if existing_scheduled_at == requested_scheduled_at:
-            source_type = str((dict(row.scheduling_metadata or {}).get("sourceType") or "adam"))
+            source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
             return {
                 "token": row.token,
                 "status": row.status,
@@ -408,7 +412,7 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
                 "scheduledAt": existing_scheduled_at,
                 "meetingLink": _interview_url(row.token, source_type=source_type),
                 "sourceType": source_type,
-                "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+                "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
                 "stageName": _session_stage_name(row),
             }
     elif (row.status or "").strip().lower() == "booked":
@@ -417,21 +421,21 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
     row = repo.mark_booked(token)
     if not row:
         raise APIError("Interview session not found", status_code=404)
-    source_type = str((dict(row.scheduling_metadata or {}).get("sourceType") or "adam"))
+    source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
     row.scheduled_at = scheduled_at_value
     row.stage = "scheduled"
     row.evaluation_status = "pending"
     row.scheduling_metadata = {
-        **dict(row.scheduling_metadata or {}),
+        **_metadata_map(row.scheduling_metadata),
         "scheduledAt": _utc_isoformat(row.scheduled_at),
         "bookingConfirmedAt": _utc_isoformat(row.booked_at),
         "sourceType": source_type,
-        "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+        "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
         "stageName": _session_stage_name(row),
     }
-    workflow_token_value = str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token))
+    workflow_token_value = str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token))
     workflow_token_row = NotificationWorkflowTokenRepository(db).get_by_token(workflow_token_value, source_app="adam")
-    workflow_payload = dict(workflow_token_row.payload or {}) if workflow_token_row else {}
+    workflow_payload = _metadata_map(workflow_token_row.payload if workflow_token_row else {})
     workflow_payload.update(
         {
             "workflowToken": workflow_token_value,
@@ -513,7 +517,7 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         source="interview",
     )
     row.scheduling_metadata = {
-        **dict(row.scheduling_metadata or {}),
+        **_metadata_map(row.scheduling_metadata),
         "sourceType": source_type,
         "meetingLink": meeting_link,
     }
@@ -533,7 +537,7 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         "scheduledAt": _utc_isoformat(row.scheduled_at),
         "meetingLink": meeting_link,
         "sourceType": source_type,
-        "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+        "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
         "stageName": _session_stage_name(row),
     }
 
@@ -548,7 +552,7 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
     if not row:
         raise APIError("Interview session not found", status_code=404)
 
-    source_type = str((dict(row.scheduling_metadata or {}).get("sourceType") or "adam"))
+    source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
     requested_scheduled_at = _utc_isoformat(rescheduled_at)
     existing_scheduled_at = _utc_isoformat(row.scheduled_at)
     if existing_scheduled_at == requested_scheduled_at:
@@ -567,17 +571,17 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
     row.status = "booked"
     row.evaluation_status = "pending"
     row.scheduling_metadata = {
-        **dict(row.scheduling_metadata or {}),
+        **_metadata_map(row.scheduling_metadata),
         "rescheduledAt": requested_scheduled_at,
         "rescheduleReason": reason.strip(),
         "sourceType": source_type,
         "bookingConfirmedAt": _utc_isoformat(datetime.now(timezone.utc)),
-        "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+        "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
         "stageName": _session_stage_name(row),
     }
-    workflow_token_value = str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token))
+    workflow_token_value = str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token))
     workflow_token_row = NotificationWorkflowTokenRepository(db).get_by_token(workflow_token_value, source_app="adam")
-    workflow_payload = dict(workflow_token_row.payload or {}) if workflow_token_row else {}
+    workflow_payload = _metadata_map(workflow_token_row.payload if workflow_token_row else {})
     workflow_payload.update(
         {
             "workflowToken": workflow_token_value,
@@ -655,7 +659,7 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
         "scheduledAt": requested_scheduled_at,
         "meetingLink": meeting_link,
         "sourceType": source_type,
-        "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+        "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
         "stageName": _session_stage_name(row),
     }
 
@@ -665,7 +669,7 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
     if not row:
         raise APIError("Interview session not found", status_code=404)
 
-    source_type = str((dict(row.scheduling_metadata or {}).get("sourceType") or "adam"))
+    source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
     if (row.status or "").strip().lower() == "no_show":
         return {
             "token": row.token,
@@ -680,16 +684,16 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
     row.stage = "no_show"
     row.evaluation_status = "pending"
     row.scheduling_metadata = {
-        **dict(row.scheduling_metadata or {}),
+        **_metadata_map(row.scheduling_metadata),
         "noShowDetectedAt": datetime.now(timezone.utc).isoformat(),
         "noShowReason": reason,
         "sourceType": source_type,
-        "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+        "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
         "stageName": _session_stage_name(row),
     }
-    workflow_token_value = str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token))
+    workflow_token_value = str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token))
     workflow_token_row = NotificationWorkflowTokenRepository(db).get_by_token(workflow_token_value, source_app="adam")
-    workflow_payload = dict(workflow_token_row.payload or {}) if workflow_token_row else {}
+    workflow_payload = _metadata_map(workflow_token_row.payload if workflow_token_row else {})
     workflow_payload.update(
         {
             "workflowToken": workflow_token_value,
@@ -764,6 +768,6 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
         "candidateId": row.candidate_id,
         "scheduledAt": _utc_isoformat(row.scheduled_at),
         "sourceType": source_type,
-        "workflowToken": str((dict(row.scheduling_metadata or {}).get("workflowToken") or row.token)),
+        "workflowToken": str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
         "stageName": _session_stage_name(row),
     }

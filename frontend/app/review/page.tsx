@@ -1234,9 +1234,9 @@ export default function ReviewPage() {
     return [...ids];
   }, [finalCandidates, finalShortlistedIds]);
   const shortlistedCount = useMemo(() => {
-    if (!completed) return session?.selectedCandidateIds.length ?? 0;
+    if (!completed) return session?.selectedCandidateIds?.length ?? 0;
     return completedShortlistedIds.length;
-  }, [completed, completedShortlistedIds, session?.selectedCandidateIds.length]);
+  }, [completed, completedShortlistedIds, session?.selectedCandidateIds?.length]);
 
   const markFinalSelectionLocally = (candidateId: string) => {
     setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
@@ -1519,7 +1519,7 @@ export default function ReviewPage() {
             <div className="flex items-center justify-center gap-3 px-4">
               <CircleX className="h-5 w-5 text-[#0F6B3A]" />
               <span className="font-body text-[15px] font-semibold text-[#111827]">
-                Rejected: <span className="text-[#0F6B3A]">{session?.rejectedCandidateIds.length ?? 0}</span>
+                Rejected: <span className="text-[#0F6B3A]">{session?.rejectedCandidateIds?.length ?? 0}</span>
               </span>
             </div>
           </div>

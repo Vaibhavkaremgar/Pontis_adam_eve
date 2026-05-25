@@ -34,6 +34,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _isoformat(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _metadata_map(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _key(*parts: str) -> str:
     material = "::".join(part.strip() for part in parts if part is not None)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
@@ -89,7 +97,7 @@ def schedule_automation_job(
         payload=payload or {},
     )
     db.commit()
-    return {"id": row.id, "automationKey": row.automation_key, "status": row.status, "scheduledAt": row.scheduled_at.isoformat()}
+    return {"id": row.id, "automationKey": row.automation_key, "status": row.status, "scheduledAt": _isoformat(row.scheduled_at)}
 
 
 def seed_automation_jobs(*, db: Session, job_id: str | None = None, limit: int = 25) -> dict[str, int]:
@@ -247,7 +255,7 @@ def _handle_candidate_reactivation(db: Session, row) -> dict[str, Any]:
         to_status="review_pending",
         source="automation",
         reason="candidate_reactivation",
-        metadata={"automationJobId": row.id, **dict(row.automation_payload or {})},
+        metadata={"automationJobId": row.id, **_metadata_map(row.automation_payload)},
     )
     RecruiterNoteRepository(db).create(
         job_id=row.job_id or "",
@@ -335,7 +343,7 @@ def _handle_interview_no_show(db: Session, row) -> dict[str, Any]:
             body=f"{profile.name or profile.candidate_id} missed the interview. Review reschedule options.",
             priority="high",
             due_at=_utcnow(),
-            metadata={"automationJobId": row.id, **dict(row.automation_payload or {})},
+            metadata={"automationJobId": row.id, **_metadata_map(row.automation_payload)},
         )
     route_recruiter_notification(
         db=db,
@@ -345,7 +353,7 @@ def _handle_interview_no_show(db: Session, row) -> dict[str, Any]:
         notification_type="interview_no_show",
         title="Interview no-show recovered",
         body=f"No-show workflow executed for {row.candidate_id}",
-        metadata={"automationJobId": row.id, **dict(row.automation_payload or {})},
+        metadata={"automationJobId": row.id, **_metadata_map(row.automation_payload)},
     )
     return {"status": "handled", "result": result}
 
@@ -423,22 +431,22 @@ def run_automation_cycle(*, db: Session, scan_limit: int = 25) -> dict[str, Any]
 def list_automation_jobs(*, db: Session, limit: int = 100) -> list[dict[str, Any]]:
     rows = AutomationJobRepository(db).list_recent(limit=limit)
     return [
-        {
-            "id": row.id,
-            "jobId": row.job_id,
-            "candidateId": row.candidate_id,
-            "automationType": row.automation_type,
-            "automationKey": row.automation_key,
-            "status": row.status,
-            "scheduledAt": row.scheduled_at.isoformat() if row.scheduled_at else None,
-            "startedAt": row.started_at.isoformat() if row.started_at else None,
-            "completedAt": row.completed_at.isoformat() if row.completed_at else None,
-            "attemptCount": row.attempt_count,
-            "maxAttempts": row.max_attempts,
-            "lastError": row.last_error,
-            "payload": dict(row.automation_payload or {}),
-            "createdAt": row.created_at.isoformat(),
-            "updatedAt": row.updated_at.isoformat(),
-        }
-        for row in rows
+            {
+                "id": row.id,
+                "jobId": row.job_id,
+                "candidateId": row.candidate_id,
+                "automationType": row.automation_type,
+                "automationKey": row.automation_key,
+                "status": row.status,
+                "scheduledAt": _isoformat(row.scheduled_at),
+                "startedAt": _isoformat(row.started_at),
+                "completedAt": _isoformat(row.completed_at),
+                "attemptCount": row.attempt_count,
+                "maxAttempts": row.max_attempts,
+                "lastError": row.last_error,
+                "payload": _metadata_map(row.automation_payload),
+                "createdAt": _isoformat(row.created_at),
+                "updatedAt": _isoformat(row.updated_at),
+            }
+            for row in rows
     ]
