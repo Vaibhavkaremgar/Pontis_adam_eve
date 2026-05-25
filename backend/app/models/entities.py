@@ -182,10 +182,140 @@ class CandidateProfileEntity(Base):
     strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="LOW")
     last_scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    ats_status: Mapped[str] = mapped_column(String(64), nullable=False, default="review_pending")
+    ats_status_source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
+    ats_status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ats_status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    ats_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     job: Mapped["JobEntity"] = relationship(back_populates="candidate_profiles")
     company_record: Mapped["CompanyEntity"] = relationship(back_populates="candidate_profiles")
     company_record: Mapped["CompanyEntity"] = relationship(back_populates="candidate_profiles")
+
+
+class CandidateLifecycleEventEntity(Base):
+    __tablename__ = "candidate_lifecycle_events"
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", "transition_key", name="uq_candidate_lifecycle_events_transition"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    from_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    to_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
+    actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    transition_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    event_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class NotificationEventEntity(Base):
+    __tablename__ = "notification_events"
+    __table_args__ = (
+        UniqueConstraint("notification_key", name="uq_notification_events_notification_key"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
+    actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    recipient_type: Mapped[str] = mapped_column(String(32), nullable=False, default="recruiter")
+    recipient: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="slack")
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    notification_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    notification_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    delivery_reference: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    notification_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class AutomationJobEntity(Base):
+    __tablename__ = "automation_jobs"
+    __table_args__ = (
+        UniqueConstraint("automation_key", name="uq_automation_jobs_automation_key"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
+    automation_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    automation_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utc_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    automation_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class RecruiterNoteEntity(Base):
+    __tablename__ = "recruiter_notes"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
+    recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    note_type: Mapped[str] = mapped_column(String(32), nullable=False, default="note")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class RecruiterTaskEntity(Base):
+    __tablename__ = "recruiter_tasks"
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
+    recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    priority: Mapped[str] = mapped_column(String(16), nullable=False, default="normal")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+
+class InterviewEvaluationEntity(Base):
+    __tablename__ = "interview_evaluations"
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", "stage_name", name="uq_interview_evaluations_job_candidate_stage"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    interviewer_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    stage_name: Mapped[str] = mapped_column(String(64), nullable=False, default="screen")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recommendation: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    competency_scores: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    metadata_json: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class InternalCandidateResumeEntity(Base):
@@ -445,18 +575,27 @@ class OutreachEventEntity(Base):
     subject: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
+    reply_state: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    archive_reason: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
     follow_up_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    open_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    reply_count: Mapped[int] = mapped_column(nullable=False, default=0)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     last_contacted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_replied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     next_follow_up_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     message_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     resume_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     reply_intent: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    engagement_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    reply_likelihood_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    responsiveness_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     learning_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
@@ -536,9 +675,14 @@ class InterviewSessionEntity(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     token: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    stage: Mapped[str] = mapped_column(String(64), nullable=False, default="requested")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    interviewer_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    scheduling_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    evaluation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    evaluation_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     booking_url: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 

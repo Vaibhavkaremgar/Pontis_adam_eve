@@ -17,7 +17,6 @@ from app.core.config import (
     ENABLE_FOLLOWUPS,
     ENABLE_REAL_EMAIL_SENDING,
     ENABLE_REPLY_DETECTION,
-    FOLLOW_UP_DELAY_MINUTES,
     GROQ_API_KEY,
     OUTREACH_DRY_RUN,
     OUTREACH_FROM_EMAIL,
@@ -32,6 +31,7 @@ from app.db.repositories import (
     CandidateSelectionSessionRepository,
     InterviewRepository,
     JobRepository,
+    NotificationEventRepository,
     OutreachEventRepository,
     _candidate_email_value,
 )
@@ -41,6 +41,15 @@ from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.job_queue_service import enqueue_job
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
+from app.services.outreach_intelligence_service import (
+    classify_reply_state,
+    compute_outreach_engagement_snapshot,
+    follow_up_delay_days,
+    outreach_reply_state_to_ats_state,
+    outreach_reply_state_to_notification_title,
+    scheduled_reengagement_delay,
+)
+from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt_text
 from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.slack_integration import post_slack_message
@@ -67,6 +76,55 @@ _SPAM_RISK_THRESHOLD = 0.8
 _DEFAULT_DAILY_OUTREACH_QUOTA = 50
 _DEFAULT_DOMAIN_DAILY_QUOTA = 20
 _INVALID_EMAIL_BLOCK_REASONS = {"invalid_email", "invalid_email_domain", "missing_email"}
+
+
+def _notification_key(*, job_id: str, candidate_id: str, notification_type: str, suffix: str = "") -> str:
+    material = {
+        "jobId": job_id,
+        "candidateId": candidate_id,
+        "notificationType": notification_type,
+        "suffix": suffix,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _record_notification(
+    *,
+    db: Session,
+    job_id: str,
+    candidate_id: str,
+    notification_type: str,
+    recipient_type: str,
+    recipient: str,
+    channel: str,
+    title: str,
+    body: str,
+    status: str = "queued",
+    delivery_reference: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    job = JobRepository(db).get(job_id)
+    company_id = str(getattr(job, "company_id", "") or "") if job else ""
+    NotificationEventRepository(db).upsert(
+        notification_key=_notification_key(
+            job_id=job_id,
+            candidate_id=candidate_id,
+            notification_type=notification_type,
+            suffix=delivery_reference or status,
+        ),
+        job_id=job_id,
+        company_id=company_id or None,
+        candidate_id=candidate_id,
+        recipient_type=recipient_type,
+        recipient=recipient,
+        channel=channel,
+        title=title,
+        body=body,
+        status=status,
+        notification_type=notification_type,
+        notification_metadata=metadata or {},
+        delivery_reference=delivery_reference,
+    )
 
 
 def _normalize_text(value: Any) -> str:
@@ -845,7 +903,18 @@ def _send_outreach_email(*, to_email: str, subject: str, body: str, html_body: s
 
 
 def _follow_up_time() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(minutes=max(1, FOLLOW_UP_DELAY_MINUTES))
+    # Day 0 -> Day 5 follow-up cadence.
+    return datetime.now(timezone.utc) + timedelta(days=5)
+
+
+def _next_follow_up_time(*, follow_up_count_after_send: int, base_time: datetime | None = None) -> datetime | None:
+    delay_days = follow_up_delay_days(follow_up_count_after_send=follow_up_count_after_send)
+    if delay_days is None:
+        return None
+    reference_time = base_time or datetime.now(timezone.utc)
+    if reference_time.tzinfo is None:
+        reference_time = reference_time.replace(tzinfo=timezone.utc)
+    return reference_time + timedelta(days=delay_days)
 
 
 def _detect_reply_intent(raw_event: dict[str, Any]) -> str:
@@ -1020,11 +1089,19 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
             logger.info("result_returned reply_already_replied job_id=%s candidate_id=%s", row.job_id, row.candidate_id)
             return {"status": "ignored"}
 
-        intent = _detect_reply_intent({**raw_event, **nested_event, **provider_event, "from": email_from, "subject": subject, "body": body, "text": body})
+        reply_state = classify_reply_state(text=body, subject=subject, raw_event={**raw_event, **nested_event, **provider_event})
         lifecycle_event = _detect_bounce_or_unsubscribe({**raw_event, **nested_event, **provider_event, "from": email_from, "subject": subject, "body": body, "text": body})
+
+        now = datetime.now(timezone.utc)
         row.status = "replied"
-        row.last_contacted_at = datetime.now(timezone.utc)
+        row.reply_state = reply_state.lower()
+        row.reply_intent = row.reply_state
+        row.reply_count = int(row.reply_count or 0) + 1
+        row.last_contacted_at = now
+        row.last_replied_at = now
+        row.responded_at = row.responded_at or now
         row.last_error = ""
+        row.archive_reason = ""
         row.next_follow_up_at = None
 
         interview_repo = InterviewRepository(db)
@@ -1036,41 +1113,119 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
         candidate_profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
         if lifecycle_event == "bounced":
             row.status = "bounced"
+            row.reply_state = "invalid_contact"
+            row.reply_intent = row.reply_state
+            row.archive_reason = "delivery_bounce_detected"
             row.last_error = "delivery_bounce_detected"
             if row.to_email:
                 _suppress_email(row.to_email, reason="bounce")
                 _suppress_domain(_email_domain(row.to_email), reason="bounce")
         elif lifecycle_event == "unsubscribed":
             row.status = "unsubscribed"
+            row.reply_state = "invalid_contact"
+            row.reply_intent = row.reply_state
+            row.archive_reason = "unsubscribe_detected"
             row.last_error = "unsubscribe_detected"
             if row.to_email:
                 _suppress_email(row.to_email, reason="unsubscribe")
                 _suppress_domain(_email_domain(row.to_email), reason="unsubscribe")
+        elif row.reply_state == "invalid_contact":
+            row.status = "archived"
+            row.archive_reason = "invalid_contact"
+            row.last_error = "invalid_contact"
+            if row.to_email:
+                _suppress_email(row.to_email, reason="invalid_contact")
+
         if recruiter_id and candidate_profile:
-            if intent == "interested":
-                update_recruiter_preferences(
-                    db,
-                    recruiter_id,
-                    candidate_profile,
-                    [],
-                    signal_multiplier=2.5,
-                )
-            elif intent == "not_interested":
-                update_recruiter_preferences(
-                    db,
-                    recruiter_id,
-                    None,
-                    [candidate_profile],
-                    signal_multiplier=0.5,
-                )
+            normalized_reply_state = row.reply_state
+            if normalized_reply_state == "interested":
+                update_recruiter_preferences(db, recruiter_id, candidate_profile, [], signal_multiplier=2.5)
+            elif normalized_reply_state in {"need_more_info", "asked_to_follow_up_later", "out_of_office"}:
+                update_recruiter_preferences(db, recruiter_id, candidate_profile, [], signal_multiplier=1.2)
+            elif normalized_reply_state in {"not_interested", "negative_response"}:
+                update_recruiter_preferences(db, recruiter_id, None, [candidate_profile], signal_multiplier=0.5)
             else:
-                update_recruiter_preferences(
-                    db,
-                    recruiter_id,
-                    candidate_profile,
-                    [],
-                    signal_multiplier=1.5,
-                )
+                update_recruiter_preferences(db, recruiter_id, candidate_profile, [], signal_multiplier=1.0)
+
+        ats_target = outreach_reply_state_to_ats_state(row.reply_state)
+        if lifecycle_event in {"bounced", "unsubscribed"}:
+            ats_target = "archived"
+        transition_candidate_ats_state(
+            db=db,
+            job_id=row.job_id,
+            candidate_id=row.candidate_id,
+            to_status=ats_target,
+            source="outreach_reply",
+            actor_id=recruiter_id,
+            reason=row.reply_state or lifecycle_event or "reply_received",
+            metadata={
+                "replyState": row.reply_state,
+                "intent": row.reply_state,
+                "lifecycleEvent": lifecycle_event,
+                "providerMessageId": provider_message_id or (row.provider_message_id or ""),
+            },
+        )
+
+        snapshot = compute_outreach_engagement_snapshot(
+            status=row.status,
+            reply_state=row.reply_state,
+            open_count=row.open_count,
+            reply_count=row.reply_count,
+            follow_up_count=row.follow_up_count,
+            sent_at=row.sent_at,
+            responded_at=row.responded_at,
+            last_opened_at=row.last_opened_at,
+            last_replied_at=row.last_replied_at,
+        )
+        row.engagement_score = snapshot.engagement_score
+        row.reply_likelihood_score = snapshot.reply_likelihood_score
+        row.responsiveness_score = snapshot.responsiveness_score
+        if snapshot.archive_reason and not row.archive_reason:
+            row.archive_reason = snapshot.archive_reason
+
+        if row.reply_state == "asked_to_follow_up_later":
+            delay_days = scheduled_reengagement_delay(reply_state=row.reply_state)
+            if delay_days:
+                row.next_follow_up_at = now + timedelta(days=delay_days)
+        elif row.reply_state == "out_of_office":
+            delay_days = scheduled_reengagement_delay(reply_state=row.reply_state)
+            if delay_days:
+                row.next_follow_up_at = now + timedelta(days=delay_days)
+
+        candidate_name = _candidate_profile_display_name(candidate_profile, email_from)
+        reply_title = outreach_reply_state_to_notification_title(row.reply_state, candidate_name=candidate_name)
+        reply_body = f"State: {row.reply_state or 'unknown'}"
+        if row.reply_state == "asked_to_follow_up_later" and row.next_follow_up_at:
+            reply_body += f" | Reconnect after {row.next_follow_up_at.date().isoformat()}"
+        elif row.reply_state == "out_of_office" and row.next_follow_up_at:
+            reply_body += f" | Reconnect after {row.next_follow_up_at.date().isoformat()}"
+        elif row.reply_state == "interested":
+            reply_body += " | Interview-ready candidate waiting"
+        elif row.reply_state in {"not_interested", "negative_response"}:
+            reply_body += " | Candidate declined"
+        elif row.reply_state == "invalid_contact":
+            reply_body += " | Contact details need correction"
+
+        _record_notification(
+            db=db,
+            job_id=row.job_id,
+            candidate_id=row.candidate_id,
+            notification_type="candidate_reply",
+            recipient_type="recruiter",
+            recipient=str(recruiter_id or ""),
+            channel="slack",
+            title=reply_title,
+            body=reply_body,
+            status="delivered",
+            metadata={
+                "replyState": row.reply_state,
+                "providerMessageId": provider_message_id or (row.provider_message_id or ""),
+                "replyStatus": row.status,
+                "engagementScore": row.engagement_score,
+                "replyLikelihoodScore": row.reply_likelihood_score,
+                "responsivenessScore": row.responsiveness_score,
+            },
+        )
 
         try:
             db.commit()
@@ -1091,7 +1246,7 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
             row.job_id,
             row.candidate_id,
             provider_message_id or (row.provider_message_id or ""),
-            intent,
+            row.reply_state,
         )
         record_job_lifecycle_event(
             db=db,
@@ -1101,12 +1256,12 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
                 "jobId": row.job_id,
                 "candidateId": row.candidate_id,
                 "providerMessageId": provider_message_id or (row.provider_message_id or ""),
-                "intent": intent,
+                "intent": row.reply_state,
                 "status": row.status,
             },
             source="outreach",
         )
-        if intent == "interested":
+        if row.reply_state == "interested":
             try:
                 from app.services.interview_session_service import create_interview_session
 
@@ -1118,6 +1273,16 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
                     source_app="adam",
                 )
                 booking_link = session.get("slot_link", session.get("slotLink", session.get("bookingLink", session.get("bookingUrl", ""))))
+                transition_candidate_ats_state(
+                    db=db,
+                    job_id=row.job_id,
+                    candidate_id=row.candidate_id,
+                    to_status="interview_requested",
+                    source="outreach_reply",
+                    actor_id=recruiter_id,
+                    reason="interview_session_requested",
+                    metadata={"interviewToken": session.get("token", ""), "bookingLink": booking_link},
+                )
                 logger.info(
                     "decision_taken interview_session_created job_id=%s candidate_id=%s token=%s booking_url=%s",
                     row.job_id,
@@ -1133,13 +1298,39 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
                     str(exc),
                     exc_info=exc,
                 )
-        log_metric("reply_received", job_id=row.job_id, candidate_id=row.candidate_id, intent=intent)
+        if row.reply_state in {"asked_to_follow_up_later", "out_of_office"}:
+            try:
+                from app.services.automation_service import schedule_automation_job
+
+                reminder_days = scheduled_reengagement_delay(reply_state=row.reply_state) or 30
+                schedule_automation_job(
+                    db=db,
+                    automation_type="recruiter_reminder",
+                    job_id=row.job_id,
+                    candidate_id=row.candidate_id,
+                    run_at=now + timedelta(days=reminder_days),
+                    payload={
+                        "outreachEventId": row.id,
+                        "replyState": row.reply_state,
+                        "reason": "candidate_reconnect_requested",
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reengagement_schedule_failed job_id=%s candidate_id=%s error=%s",
+                    row.job_id,
+                    row.candidate_id,
+                    str(exc),
+                    exc_info=exc,
+                )
+        log_metric("reply_received", job_id=row.job_id, candidate_id=row.candidate_id, intent=row.reply_state)
         return {
             "status": "replied",
             "job_id": row.job_id,
             "candidate_id": row.candidate_id,
             "provider_message_id": provider_message_id or (row.provider_message_id or ""),
-            "intent": intent,
+            "intent": row.reply_state,
+            "replyState": row.reply_state,
         }
     except Exception as exc:
         logger.error("error_occurred reply_handler_exception error=%s", str(exc), exc_info=exc)
@@ -1158,8 +1349,24 @@ def record_outreach_open(*, db: Session, event_id: str, token: str) -> dict[str,
 
     if (row.status or "").strip().lower() not in {"bounced", "unsubscribed"}:
         row.status = "opened"
+    row.open_count = int(row.open_count or 0) + 1
     row.last_contacted_at = datetime.now(timezone.utc)
+    row.last_opened_at = row.last_contacted_at
     row.last_error = ""
+    snapshot = compute_outreach_engagement_snapshot(
+        status=row.status,
+        reply_state=row.reply_state,
+        open_count=row.open_count,
+        reply_count=row.reply_count,
+        follow_up_count=row.follow_up_count,
+        sent_at=row.sent_at,
+        responded_at=row.responded_at,
+        last_opened_at=row.last_opened_at,
+        last_replied_at=row.last_replied_at,
+    )
+    row.engagement_score = snapshot.engagement_score
+    row.reply_likelihood_score = snapshot.reply_likelihood_score
+    row.responsiveness_score = snapshot.responsiveness_score
     db.commit()
     log_metric("open_tracked", job_id=row.job_id, candidate_id=row.candidate_id, event_id=row.id)
     logger.info("outreach_open_tracked job_id=%s candidate_id=%s event_id=%s", row.job_id, row.candidate_id, row.id)
@@ -1259,6 +1466,41 @@ def process_outreach(
             "No selected candidate available for outreach. Select exactly one candidate before sending outreach.",
             status_code=400,
         )
+
+    existing_outreach = outreach_events.get(job_id=job_id, candidate_id=valid_candidates[0])
+    if existing_outreach and (existing_outreach.status or "").strip().lower() in {
+        "queued",
+        "sending",
+        "sent",
+        "simulated",
+        "delivered",
+        "follow_up_sent",
+        "replied",
+        "archived",
+    }:
+        logger.info(
+            "outreach_duplicate_suppressed job_id=%s candidate_id=%s status=%s",
+            job_id,
+            valid_candidates[0],
+            existing_outreach.status,
+        )
+        return {
+            "processed": 0,
+            "sent": 0,
+            "skipped": 0,
+            "followUpScheduled": 0,
+            "details": [
+                {
+                    "candidateId": valid_candidates[0],
+                    "status": existing_outreach.status,
+                    "reason": "duplicate_suppressed",
+                    "toEmail": existing_outreach.to_email,
+                }
+            ],
+            "skipReasons": {"duplicate_suppressed": 1},
+            "warnings": [],
+            "duplicate": True,
+        }
 
     recipient_email = recipient_email.strip()
     if recipient_email and len(valid_candidates) != 1:
@@ -1387,7 +1629,6 @@ def process_outreach(
         else:
             subject, body = generate_personalized_email(candidate_profile=profile, job=job)
 
-        next_follow_up = _follow_up_time()
         if recruiter_id and not _daily_quota_allowed(_RECRUITER_DAILY_QUOTA_PREFIX, recruiter_id, limit=_DEFAULT_DAILY_OUTREACH_QUOTA):
             skipped += 1
             blocked_reason = "recruiter_quota_exceeded"
@@ -1449,8 +1690,46 @@ def process_outreach(
                 body=body,
                 status="simulated",
                 sent_at=datetime.now(timezone.utc),
-                next_follow_up_at=next_follow_up if ENABLE_FOLLOWUPS else None,
+                next_follow_up_at=(datetime.now(timezone.utc) + timedelta(days=5)) if ENABLE_FOLLOWUPS else None,
                 last_error="",
+            )
+            current_event = outreach_events.get(job_id=job_id, candidate_id=candidate_id)
+            if current_event:
+                snapshot = compute_outreach_engagement_snapshot(
+                    status=current_event.status,
+                    reply_state=current_event.reply_state,
+                    open_count=current_event.open_count,
+                    reply_count=current_event.reply_count,
+                    follow_up_count=current_event.follow_up_count,
+                    sent_at=current_event.sent_at,
+                    responded_at=current_event.responded_at,
+                    last_opened_at=getattr(current_event, "last_opened_at", None),
+                    last_replied_at=getattr(current_event, "last_replied_at", None),
+                )
+                current_event.engagement_score = snapshot.engagement_score
+                current_event.reply_likelihood_score = snapshot.reply_likelihood_score
+                current_event.responsiveness_score = snapshot.responsiveness_score
+            transition_candidate_ats_state(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                to_status="outreach_sent",
+                source="outreach",
+                reason="simulated_send",
+                metadata={"status": "simulated", "toEmail": to_email},
+            )
+            _record_notification(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                notification_type="outreach_sent",
+                recipient_type="candidate",
+                recipient=to_email,
+                channel="email",
+                title=subject,
+                body=body,
+                status="delivered",
+                metadata={"simulated": True, "provider": OUTREACH_PROVIDER},
             )
             db.commit()
             sent += 1
@@ -1554,9 +1833,23 @@ def process_outreach(
                 event.status = "sent"
                 event.last_sent_at = now
                 event.last_contacted_at = now
-                event.next_follow_up_at = next_follow_up if ENABLE_FOLLOWUPS else None
+                event.next_follow_up_at = now + timedelta(days=5) if ENABLE_FOLLOWUPS else None
                 event.follow_up_count = 0
                 event.last_error = ""
+                snapshot = compute_outreach_engagement_snapshot(
+                    status=event.status,
+                    reply_state=event.reply_state,
+                    open_count=event.open_count,
+                    reply_count=event.reply_count,
+                    follow_up_count=event.follow_up_count,
+                    sent_at=event.sent_at,
+                    responded_at=event.responded_at,
+                    last_opened_at=getattr(event, "last_opened_at", None),
+                    last_replied_at=getattr(event, "last_replied_at", None),
+                )
+                event.engagement_score = snapshot.engagement_score
+                event.reply_likelihood_score = snapshot.reply_likelihood_score
+                event.responsiveness_score = snapshot.responsiveness_score
                 try:
                     db.commit()
                 except Exception as db_exc:
@@ -1582,6 +1875,30 @@ def process_outreach(
                     continue
                 sent += 1
                 follow_up_scheduled += 1
+                transition_candidate_ats_state(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    to_status="outreach_sent",
+                    source="outreach",
+                    actor_id=recruiter_id,
+                    reason="initial_outreach_sent",
+                    metadata={"status": "sent", "providerMessageId": msg_id, "toEmail": to_email},
+                )
+                _record_notification(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    notification_type="outreach_sent",
+                    recipient_type="candidate",
+                    recipient=to_email,
+                    channel="email",
+                    title=subject,
+                    body=body,
+                    status="delivered",
+                    delivery_reference=msg_id or "",
+                    metadata={"provider": OUTREACH_PROVIDER, "source": "initial_outreach"},
+                )
                 logger.info(
                     "outreach_sent job_id=%s candidate_id=%s to_email=%s provider_id=%s",
                     job_id,
@@ -1624,6 +1941,15 @@ def process_outreach(
                 event.last_error = blocked_reason
                 event.provider_message_id = None
                 event.next_follow_up_at = None
+                transition_candidate_ats_state(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    to_status="archived" if blocked_reason in {"suppressed", "invalid_or_missing_email"} else "rejected",
+                    source="outreach",
+                    reason=blocked_reason,
+                    metadata={"status": "failed", "reason": blocked_reason},
+                )
                 db.commit()
                 details.append(
                     {
@@ -1645,6 +1971,15 @@ def process_outreach(
             event.last_error = blocked_reason
             event.provider_message_id = None
             event.next_follow_up_at = None
+            transition_candidate_ats_state(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                to_status="rejected",
+                source="outreach",
+                reason=blocked_reason,
+                metadata={"status": "failed", "reason": blocked_reason},
+            )
             db.commit()
             details.append(
                 {
@@ -1977,7 +2312,7 @@ def run_followup_cycle(db: Session) -> dict:
     provider_configured, _ = _is_email_provider_configured()
 
     with db.begin():
-        due = outreach_repo.list_due_follow_ups_locked(now=now, max_follow_up_count=1)
+        due = outreach_repo.list_due_follow_ups_locked(now=now, max_follow_up_count=3)
         logger.info("followup_cycle_start due_count=%s", len(due))
         log_metric("followup_cycle_start", due_count=len(due))
 
@@ -2002,6 +2337,58 @@ def run_followup_cycle(db: Session) -> dict:
                 continue
 
             follow_up_number = int(event.follow_up_count or 0) + 1
+            if follow_up_number >= 3:
+                event.status = "archived"
+                event.next_follow_up_at = None
+                event.last_error = "no_response_archive"
+                event.archive_reason = "no_response_archive"
+                event.updated_at = now
+                snapshot = compute_outreach_engagement_snapshot(
+                    status=event.status,
+                    reply_state=event.reply_state,
+                    open_count=event.open_count,
+                    reply_count=event.reply_count,
+                    follow_up_count=event.follow_up_count,
+                    sent_at=event.sent_at,
+                    responded_at=event.responded_at,
+                    last_opened_at=getattr(event, "last_opened_at", None),
+                    last_replied_at=getattr(event, "last_replied_at", None),
+                )
+                event.engagement_score = snapshot.engagement_score
+                event.reply_likelihood_score = snapshot.reply_likelihood_score
+                event.responsiveness_score = snapshot.responsiveness_score
+                transition_candidate_ats_state(
+                    db=db,
+                    job_id=event.job_id,
+                    candidate_id=event.candidate_id,
+                    to_status="archived",
+                    source="outreach",
+                    reason="no_response_14_days",
+                    metadata={"followUpCount": int(event.follow_up_count or 0), "status": "archived"},
+                )
+                _record_notification(
+                    db=db,
+                    job_id=event.job_id,
+                    candidate_id=event.candidate_id,
+                    notification_type="outreach_no_response",
+                    recipient_type="recruiter",
+                    recipient=str(job_repo.get_recruiter_id(event.job_id) or ""),
+                    channel="slack",
+                    title="No response after final follow-up",
+                    body=f"Candidate {event.candidate_id} was archived after no response.",
+                    status="delivered",
+                    metadata={"followUpCount": int(event.follow_up_count or 0), "replyState": event.reply_state},
+                )
+                db.commit()
+                skipped += 1
+                logger.info(
+                    "followup_archived job_id=%s candidate_id=%s follow_up_count=%s",
+                    event.job_id,
+                    event.candidate_id,
+                    int(event.follow_up_count or 0),
+                )
+                log_metric("followup_archived", job_id=event.job_id, candidate_id=event.candidate_id, follow_up_count=int(event.follow_up_count or 0))
+                continue
             subject, body = _build_followup_email(
                 candidate_profile=profile, job=job, follow_up_number=follow_up_number
             )
@@ -2011,7 +2398,32 @@ def run_followup_cycle(db: Session) -> dict:
                 outreach_repo.upsert(
                     job_id=event.job_id, candidate_id=event.candidate_id, provider=event.provider,
                     to_email=to_email, subject=subject, body=body, status="follow_up_sent",
-                    sent_at=now, next_follow_up_at=None, increment_follow_up=True,
+                    sent_at=now, next_follow_up_at=now + timedelta(days=7 if follow_up_number == 1 else 2), increment_follow_up=True,
+                )
+                current_event = outreach_repo.get(job_id=event.job_id, candidate_id=event.candidate_id)
+                if current_event:
+                    snapshot = compute_outreach_engagement_snapshot(
+                        status=current_event.status,
+                        reply_state=current_event.reply_state,
+                        open_count=current_event.open_count,
+                        reply_count=current_event.reply_count,
+                        follow_up_count=current_event.follow_up_count,
+                        sent_at=current_event.sent_at,
+                        responded_at=current_event.responded_at,
+                        last_opened_at=getattr(current_event, "last_opened_at", None),
+                        last_replied_at=getattr(current_event, "last_replied_at", None),
+                    )
+                    current_event.engagement_score = snapshot.engagement_score
+                    current_event.reply_likelihood_score = snapshot.reply_likelihood_score
+                    current_event.responsiveness_score = snapshot.responsiveness_score
+                transition_candidate_ats_state(
+                    db=db,
+                    job_id=event.job_id,
+                    candidate_id=event.candidate_id,
+                    to_status="followup_sent",
+                    source="outreach",
+                    reason=f"dry_run_followup_{follow_up_number}",
+                    metadata={"followUpCount": follow_up_number, "dryRun": True},
                 )
                 sent += 1
                 logger.info(
@@ -2047,8 +2459,33 @@ def run_followup_cycle(db: Session) -> dict:
                         outreach_repo.upsert(
                             job_id=event.job_id, candidate_id=event.candidate_id, provider=event.provider,
                             to_email=to_email, subject=subject, body=body, status="follow_up_sent",
-                            sent_at=now, next_follow_up_at=None,
+                            sent_at=now, next_follow_up_at=now + timedelta(days=7 if follow_up_number == 1 else 2),
                             provider_message_id=msg_id, increment_follow_up=True,
+                        )
+                        current_event = outreach_repo.get(job_id=event.job_id, candidate_id=event.candidate_id)
+                        if current_event:
+                            snapshot = compute_outreach_engagement_snapshot(
+                                status=current_event.status,
+                                reply_state=current_event.reply_state,
+                                open_count=current_event.open_count,
+                                reply_count=current_event.reply_count,
+                                follow_up_count=current_event.follow_up_count,
+                                sent_at=current_event.sent_at,
+                                responded_at=current_event.responded_at,
+                                last_opened_at=getattr(current_event, "last_opened_at", None),
+                                last_replied_at=getattr(current_event, "last_replied_at", None),
+                            )
+                            current_event.engagement_score = snapshot.engagement_score
+                            current_event.reply_likelihood_score = snapshot.reply_likelihood_score
+                            current_event.responsiveness_score = snapshot.responsiveness_score
+                        transition_candidate_ats_state(
+                            db=db,
+                            job_id=event.job_id,
+                            candidate_id=event.candidate_id,
+                            to_status="followup_sent",
+                            source="outreach",
+                            reason=f"followup_{follow_up_number}_sent",
+                            metadata={"followUpCount": follow_up_number, "providerMessageId": msg_id},
                         )
                         db.commit()
                     except Exception as db_exc:
@@ -2108,8 +2545,17 @@ def list_outreach_status(*, db: Session, job_id: str) -> list[dict]:
             "sentAt": row.sent_at.isoformat() if row.sent_at else None,
             "lastSentAt": row.last_sent_at.isoformat() if row.last_sent_at else None,
             "lastContactedAt": row.last_contacted_at.isoformat() if row.last_contacted_at else None,
+            "lastOpenedAt": row.last_opened_at.isoformat() if getattr(row, "last_opened_at", None) else None,
+            "lastRepliedAt": row.last_replied_at.isoformat() if getattr(row, "last_replied_at", None) else None,
             "nextFollowUpAt": row.next_follow_up_at.isoformat() if row.next_follow_up_at else None,
             "lastError": row.last_error,
+            "replyState": row.reply_state,
+            "archiveReason": row.archive_reason,
+            "openCount": int(row.open_count or 0),
+            "replyCount": int(row.reply_count or 0),
+            "engagementScore": float(row.engagement_score or 0.0),
+            "replyLikelihoodScore": float(row.reply_likelihood_score or 0.0),
+            "responsivenessScore": float(row.responsiveness_score or 0.0),
         }
         for row in rows
     ]

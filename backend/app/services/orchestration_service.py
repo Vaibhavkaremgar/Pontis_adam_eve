@@ -566,6 +566,32 @@ def _ensure_system_user_id(db: Session) -> str:
     return str(user.id)
 
 
+def _archive_superseded_slack_sessions(
+    db: Session,
+    *,
+    slack_team_id: str,
+    slack_channel_id: str,
+    slack_thread_ts: str = "",
+    slack_user_id: str = "",
+    exclude_session_id: str = "",
+) -> None:
+    archived = OrchestrationSessionRepository(db).archive_active_by_slack_context(
+        slack_team_id=slack_team_id,
+        slack_channel_id=slack_channel_id,
+        slack_thread_ts=slack_thread_ts,
+        slack_user_id=slack_user_id,
+        source=ORCHESTRATION_SOURCE,
+        exclude_session_id=exclude_session_id,
+    )
+    if archived:
+        logger.info(
+            "orchestration_sessions_archived channel_id=%s user_id=%s count=%s",
+            slack_channel_id,
+            slack_user_id,
+            len(archived),
+        )
+
+
 def _initial_intake_state() -> dict[str, Any]:
     return {
         "company_name": "",
@@ -1049,17 +1075,19 @@ def _ensure_session_row(
     slack_thread_ts: str = "",
     slack_user_id: str = "",
     source: str = ORCHESTRATION_SOURCE,
+    reuse_existing_session: bool = False,
 ) -> Any:
     repo = OrchestrationSessionRepository(db)
-    existing = repo.get_active_by_slack_context(
-        slack_team_id=slack_team_id,
-        slack_channel_id=slack_channel_id,
-        slack_thread_ts=slack_thread_ts,
-        slack_user_id=slack_user_id,
-        source=source,
-    )
-    if existing:
-        return existing
+    if reuse_existing_session:
+        existing = repo.get_active_by_slack_context(
+            slack_team_id=slack_team_id,
+            slack_channel_id=slack_channel_id,
+            slack_thread_ts=slack_thread_ts,
+            slack_user_id=slack_user_id,
+            source=source,
+        )
+        if existing:
+            return existing
     session_token = secrets.token_urlsafe(24)
     row = repo.create(
         session_token=session_token,
@@ -1084,6 +1112,15 @@ def _ensure_session_row(
         company_id=None,
         job_id=None,
     )
+    if not reuse_existing_session:
+        _archive_superseded_slack_sessions(
+            db,
+            slack_team_id=slack_team_id,
+            slack_channel_id=slack_channel_id,
+            slack_thread_ts=slack_thread_ts,
+            slack_user_id=slack_user_id,
+            exclude_session_id=row.id,
+        )
     _append_event(db, session_id=row.id, event_type="SESSION_CREATED", payload=_session_payload(row))
     db.commit()
     return row
@@ -1438,6 +1475,7 @@ def start_or_resume_slack_intake(
     slack_thread_ts: str = "",
     slack_user_id: str = "",
     initial_brief: str = "",
+    reuse_existing_session: bool = False,
 ) -> dict[str, Any]:
     session_row = _ensure_session_row(
         db,
@@ -1445,6 +1483,7 @@ def start_or_resume_slack_intake(
         slack_channel_id=slack_channel_id,
         slack_thread_ts=slack_thread_ts,
         slack_user_id=slack_user_id,
+        reuse_existing_session=reuse_existing_session,
     )
     brief = _normalize_text(initial_brief)
     if brief:

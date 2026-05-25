@@ -126,9 +126,9 @@ export default function VoiceProcessingPage() {
                 <Button
                   className="mt-2 w-full justify-center"
                   disabled={!done}
-                  onClick={() => router.push("/outreach")}
+                  onClick={() => router.push("/review")}
                 >
-                  {done ? "Continue to Outreach" : "Processing..."}
+                  {done ? "Continue to Review" : "Processing..."}
                 </Button>
               </>
             )}

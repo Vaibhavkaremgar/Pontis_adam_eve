@@ -16,6 +16,7 @@ from app.core.config import PUBLIC_APP_URL
 from app.db.repositories import OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal
 from app.services.candidate_service import apply_feedback, fetch_ranked_candidates
+from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.hiring_service import create_hiring_job
 from app.services.interview_invite_service import send_interview_invite
 from app.services.orchestration_service import (
@@ -31,7 +32,6 @@ from app.services.recruiter_preference_round_service import (
     bootstrap_preference_calibration_session,
     record_preference_calibration_choice,
 )
-from app.services.outreach_service import trigger_candidate_outreach
 from app.services.slack_integration import (
     build_calibration_blocks,
     build_candidate_blocks,
@@ -181,6 +181,7 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
                 slack_team_id=team_id,
                 slack_channel_id=channel_id,
                 slack_user_id=user_id,
+                reuse_existing_session=False,
             )
             session = result.get("session") or {}
             session_id = str(session.get("id") or "").strip()
@@ -260,7 +261,7 @@ def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: 
                 if session.get("jobId"):
                     _send_orchestration_message_sync(
                         channel_id=channel_id,
-                        text="✅ Intake complete. Calibration is now starting.",
+                        text=" Intake complete. Calibration is now starting.",
                         thread_ts=thread_ts,
                     )
                 else:
@@ -434,7 +435,7 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
             if not reachable_candidates:
                 _send_slack_message_sync(
                     channel_id=channel_id,
-                    text="⚠️ Calibration is complete, but no reachable candidates were found yet. Adam will keep sourcing.",
+                    text="?? Calibration is complete, but no reachable candidates were found yet. Adam will keep sourcing.",
                 )
                 return
 
@@ -445,19 +446,15 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
                 blocks=blocks,
             )
             if not posted:
-                _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to deliver shortlist. Please try again.")
+                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.")
     except Exception as exc:
         logger.error("slack_calibration_delivery_failed channel_id=%s job_id=%s error=%s", channel_id, job_id, str(exc), exc_info=exc)
-        _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to deliver shortlist. Please try again.")
+        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.")
 
 
 def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user_id: str) -> None:
     logger.info("slack_request_received channel_id=%s text=%s", channel_id, text)
     try:
-        _send_slack_message_sync(
-            channel_id=channel_id,
-            text="⏳ Starting the intake and collecting the hiring brief...",
-        )
         with SessionLocal() as db:
             result = start_or_resume_slack_intake(
                 db=db,
@@ -465,6 +462,7 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                 slack_channel_id=channel_id,
                 slack_user_id=user_id,
                 initial_brief=text,
+                reuse_existing_session=False,
             )
             session = result.get("session") or {}
             session_id = str(session.get("id") or "").strip()
@@ -495,10 +493,10 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                 thread_ts=thread_ts,
             )
             if not posted:
-                _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to start the intake. Please try again.")
+                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.")
     except Exception as exc:
         logger.error("slack_hiring_pipeline_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
-        _send_slack_message_sync(channel_id=channel_id, text="⚠️ Failed to start the intake. Please try again.")
+        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.")
 
 
 @router.get("/health")
@@ -552,7 +550,7 @@ async def slack_commands(
                 status_code=200,
                 content={
                     "response_type": "ephemeral",
-                    "text": "Adam is starting the hiring intake in this thread.",
+                    "text": "",
                 },
             )
 
@@ -567,8 +565,8 @@ async def slack_commands(
         return JSONResponse(
             status_code=200,
             content={
-                "response_type": "in_channel",
-                "text": "🔎 Starting the hiring intake in Slack...",
+                "response_type": "ephemeral",
+                "text": "",
             },
         )
     except Exception as exc:
@@ -791,7 +789,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             )
             return {"ok": True}
 
-        if action in {"select", "save", "reject"}:
+        if action in {"select", "save", "reject", "advance", "archive"}:
             logger.info(
                 "slack_button_action action=%s candidate_id=%s job_id=%s channel_id=%s",
                 action,
@@ -813,21 +811,41 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     )
                     return {"ok": True, "duplicate": True}
 
-                result = apply_feedback(
-                    db=db,
-                    job_id=job_id,
-                    candidate_id=candidate_id,
-                    action="accept" if action in {"select", "save"} else "reject",
-                )
+                if action in {"select", "save"}:
+                    result = apply_feedback(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        action="accept",
+                    )
+                elif action == "advance":
+                    result = transition_candidate_ats_state(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        to_status="advanced",
+                        source="slack",
+                        reason="slack_advance",
+                        metadata={"action": action, "channelId": channel_id, "messageTs": message_ts},
+                    )
+                elif action == "archive":
+                    result = transition_candidate_ats_state(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        to_status="archived",
+                        source="slack",
+                        reason="slack_archive",
+                        metadata={"action": action, "channelId": channel_id, "messageTs": message_ts},
+                    )
+                else:
+                    result = apply_feedback(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        action="reject",
+                    )
                 db.commit()
-
-            if action == "select":
-                background_tasks.add_task(
-                    trigger_candidate_outreach,
-                    candidate_id,
-                    job_id,
-                    channel_id=channel_id,
-                )
 
             updated_blocks = update_candidate_message_blocks(
                 blocks=list(message.get("blocks") or []),
@@ -854,6 +872,10 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                 response_text = "\u2705 Candidate selected"
             elif action == "save":
                 response_text = "\U0001f4be Candidate saved"
+            elif action == "advance":
+                response_text = "\u27a1\ufe0f Candidate advanced"
+            elif action == "archive":
+                response_text = "\U0001f5d1\ufe0f Candidate archived"
             else:
                 response_text = "\u274c Candidate rejected"
             await post_slack_message(channel_id=channel_id, text=response_text)
@@ -947,3 +969,6 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception("slack_interaction_fallback_failed")
         return JSONResponse(status_code=500, content=error_response("Failed to process Slack interaction"))
+
+
+

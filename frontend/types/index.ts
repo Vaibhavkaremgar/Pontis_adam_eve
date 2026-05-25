@@ -120,6 +120,10 @@ export type Candidate = {
     | "booked"
     | "rejected"
     | "exported";
+  ats_status?: string;
+  ats_status_source?: string;
+  ats_status_reason?: string;
+  ats_status_updated_at?: string;
   outreachStatus?: "pending" | "dry_run" | "sent" | "failed" | string;
   exportStatus?: "pending" | "queued" | "exported" | "failed" | string;
   ats_export_status?: "sent" | "failed" | "not_sent" | string;

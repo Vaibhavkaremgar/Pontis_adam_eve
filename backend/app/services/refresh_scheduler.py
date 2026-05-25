@@ -254,6 +254,29 @@ def _run_db_cleanup_cycle() -> None:
             db.rollback()
 
 
+def _run_automation_cycle() -> None:
+    """Run persistent automation jobs and emit recruiter notifications."""
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:automation", ttl=120) as acquired:
+        if not acquired:
+            logger.info("scheduler_lock_skipped job=automation reason=already_running")
+            return
+
+    try:
+        with SessionLocal() as db:
+            from app.services.automation_service import run_automation_cycle
+
+            result = run_automation_cycle(db=db)
+            logger.info(
+                "automation_cycle_complete seeded=%s executed=%s failed=%s",
+                result.get("seeded", 0),
+                result.get("executed", 0),
+                result.get("failed", 0),
+            )
+    except Exception as exc:
+        logger.error("automation_cycle_failed error=%s", str(exc))
+
+
 def _run_loop() -> None:
     """
     Unified scheduler loop.
@@ -305,6 +328,11 @@ def _run_loop() -> None:
             _run_db_cleanup_cycle()
         except Exception as exc:
             logger.warning("db_cleanup_cycle_exception error=%s", str(exc))
+
+        try:
+            _run_automation_cycle()
+        except Exception as exc:
+            logger.warning("automation_cycle_exception error=%s", str(exc))
 
         logger.info("scheduler_cycle_completed at=%s", _utcnow().isoformat())
         _scheduler_stop.wait(30)

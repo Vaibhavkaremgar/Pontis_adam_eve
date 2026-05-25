@@ -7,28 +7,63 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppContext } from "@/context/AppContext";
-import { getAdminDiagnostics, getAuditLogs, getDeadLetters, getOutreachAnalytics, replayDeadLetter } from "@/lib/api/admin";
+import {
+  getAdminDiagnostics,
+  getAuditLogs,
+  getAutomationJobs,
+  getDeadLetters,
+  getNotificationCenter,
+  getOutreachAnalytics,
+  getOperationalIntelligence,
+  getPipelineAnalytics,
+  getPipelineBoard,
+  getRecruiterTasks,
+  markNotificationRead,
+  replayDeadLetter,
+} from "@/lib/api/admin";
 
 export default function AdminPage() {
-  const { user, isSessionReady } = useAppContext();
+  const { user, isSessionReady, jobId } = useAppContext();
   const [diagnostics, setDiagnostics] = useState<any>(null);
   const [deadLetters, setDeadLetters] = useState<any[]>([]);
   const [outreach, setOutreach] = useState<any>(null);
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [pipelineBoard, setPipelineBoard] = useState<any>(null);
+  const [pipelineAnalytics, setPipelineAnalytics] = useState<any>(null);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [automationJobs, setAutomationJobs] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [intelligence, setIntelligence] = useState<any>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!isSessionReady || !user) return;
-    void Promise.all([getAdminDiagnostics(), getDeadLetters(), getOutreachAnalytics(), getAuditLogs(25)]).then(
-      ([diag, dead, out, audit]) => {
+    void Promise.all([
+      getAdminDiagnostics(),
+      getDeadLetters(),
+      getOutreachAnalytics(jobId || undefined),
+      getAuditLogs(25),
+      getPipelineBoard(jobId || undefined),
+      getPipelineAnalytics(jobId || undefined),
+      getNotificationCenter(jobId || undefined),
+      getAutomationJobs(),
+      getRecruiterTasks(jobId || undefined),
+      getOperationalIntelligence(jobId || undefined),
+    ]).then(([diag, dead, out, audit, board, analytics, inbox, automation, taskList, intel]) => {
         if (diag.success && diag.data) setDiagnostics(diag.data);
         if (dead.success && dead.data) setDeadLetters(dead.data);
         if (out.success && out.data) setOutreach(out.data);
         if (audit.success && audit.data) setAuditLogs(audit.data);
+        if (board.success && board.data) setPipelineBoard(board.data);
+        if (analytics.success && analytics.data) setPipelineAnalytics(analytics.data);
+        if (inbox.success && inbox.data) setNotifications(inbox.data);
+        if (automation.success && automation.data) setAutomationJobs(automation.data);
+        if (taskList.success && taskList.data) setTasks(taskList.data);
+        if (intel.success && intel.data) setIntelligence(intel.data);
       }
     );
-  }, [isSessionReady, user]);
+  }, [isSessionReady, user, jobId]);
 
   const onReplay = async (item: any) => {
     const result = await replayDeadLetter(String(item.queueType || ""), String(item.jobId || ""));
@@ -38,6 +73,15 @@ export default function AdminPage() {
       if (refreshed.success && refreshed.data) setDeadLetters(refreshed.data);
     } else {
       setError(result.error || "Could not replay job.");
+    }
+  };
+
+  const onReadNotification = async (item: any) => {
+    if (!item.notificationKey || item.isRead) return;
+    const result = await markNotificationRead(String(item.notificationKey));
+    if (result.success) {
+      const refreshed = await getNotificationCenter(jobId || undefined);
+      if (refreshed.success && refreshed.data) setNotifications(refreshed.data);
     }
   };
 
@@ -94,6 +138,180 @@ export default function AdminPage() {
               <p>Workers: {diagnostics?.queue?.workers ?? 0}</p>
               <p>Events: {diagnostics?.metrics?.events ?? 0}</p>
               <p>AI drifts: {diagnostics?.metrics?.ai_observability?.ranking_drifts ?? 0}</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle>Pipeline Board</CardTitle>
+              <CardDescription>Current ATS stages and pending recruiter actions.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                {Object.entries(pipelineBoard?.counts || {}).slice(0, 8).map(([key, value]) => (
+                  <div key={key} className="rounded-xl border p-3">
+                    <p className="text-xs uppercase tracking-wide text-gray-500">{String(key).replace(/_/g, " ")}</p>
+                    <p className="mt-1 text-2xl font-semibold text-gray-900">{String(value)}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-xl border p-3">
+                  <p className="font-medium text-gray-900">Pending actions</p>
+                  <div className="mt-3 space-y-2">
+                    {(pipelineBoard?.pendingActions || []).slice(0, 5).map((item: any) => (
+                      <div key={`${String(item.id || "")}`} className="rounded-lg bg-gray-50 p-2 text-sm">
+                        <p className="font-medium text-gray-900">{String(item.title || item.type || "")}</p>
+                        <p className="text-gray-600">{String(item.candidateId || "")}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-xl border p-3">
+                  <p className="font-medium text-gray-900">Upcoming interviews</p>
+                  <div className="mt-3 space-y-2">
+                    {(pipelineBoard?.upcomingInterviews || []).slice(0, 5).map((item: any) => (
+                      <div key={`${String(item.candidateId || "")}-${String(item.stage || "")}`} className="rounded-lg bg-gray-50 p-2 text-sm">
+                        <p className="font-medium text-gray-900">{String(item.name || item.candidateId || "")}</p>
+                        <p className="text-gray-600">{String(item.stage || item.status || "")}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Notifications</CardTitle>
+              <CardDescription>Unread recruiter and candidate activity.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {notifications.length === 0 ? (
+                <p className="text-sm text-gray-600">No notifications.</p>
+              ) : (
+                notifications.slice(0, 8).map((item) => (
+                  <div key={String(item.id)} className="rounded-xl border p-3 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <Badge variant={item.isRead ? "neutral" : "high"}>{item.isRead ? "Read" : "Unread"}</Badge>
+                      <span className="text-xs text-gray-500">{String(item.channel || "")}</span>
+                    </div>
+                    <p className="mt-2 font-medium text-gray-900">{String(item.title || "")}</p>
+                    <p className="text-gray-600">{String(item.body || "")}</p>
+                    {!item.isRead ? (
+                      <Button className="mt-2" variant="outline" onClick={() => void onReadNotification(item)}>
+                        Mark read
+                      </Button>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader>
+              <CardTitle>Engagement</CardTitle>
+              <CardDescription>Candidate responsiveness and momentum.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-gray-700">
+              <p>Score: {intelligence?.engagement?.engagementScore ?? 0}</p>
+              <p>Momentum: {intelligence?.engagement?.momentum ?? "n/a"}</p>
+              <p>Replies: {intelligence?.engagement?.replyCount ?? 0}</p>
+              <p>Unread notifications: {intelligence?.engagement?.unreadNotifications ?? 0}</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Interview Intelligence</CardTitle>
+              <CardDescription>Quality and consistency signals.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-gray-700">
+              <p>Quality: {intelligence?.interview?.interviewQualityScore ?? 0}</p>
+              <p>Consistency: {intelligence?.interview?.consistencyScore ?? 0}</p>
+              <p>Recommendation: {intelligence?.interview?.recommendationSignal ?? "n/a"}</p>
+              <p>Evaluations: {intelligence?.interview?.evaluationCount ?? 0}</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Operational Alerts</CardTitle>
+              <CardDescription>Stuck work and automation failures.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-gray-700">
+              <p>Anomalies: {intelligence?.anomalies?.length ?? 0}</p>
+              <p>Coordination: {intelligence?.coordination?.coordinationMode ?? "dashboard"}</p>
+              <p>Reactivation suggestions: {intelligence?.reactivation?.length ?? 0}</p>
+              <p>Calendar suggestions: {intelligence?.calendar?.slotSuggestions?.length ?? 0}</p>
+              <div className="mt-3 space-y-2">
+                {(intelligence?.anomalies || []).slice(0, 3).map((item: any, index: number) => (
+                  <div key={`${String(item.type || "anomaly")}-${index}`} className="rounded-lg bg-gray-50 p-2 text-xs">
+                    <p className="font-medium text-gray-900">{String(item.type || "")}</p>
+                    <p className="text-gray-600">{String(item.candidateId || item.jobId || "")}</p>
+                  </div>
+                ))}
+                {(intelligence?.calendar?.slotSuggestions || []).slice(0, 2).map((item: any, index: number) => (
+                  <div key={`${String(item.scheduledAt || "slot")}-${index}`} className="rounded-lg bg-blue-50 p-2 text-xs">
+                    <p className="font-medium text-blue-900">{String(item.label || "")}</p>
+                    <p className="text-blue-700">{String(item.timezone || "")}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <Card>
+            <CardHeader>
+              <CardTitle>Analytics</CardTitle>
+              <CardDescription>Pipeline conversion snapshot.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-gray-700">
+              <p>Candidates: {pipelineAnalytics?.candidateCount ?? 0}</p>
+              <p>Interviews scheduled: {pipelineAnalytics?.interviewsScheduled ?? 0}</p>
+              <p>Interviews completed: {pipelineAnalytics?.interviewsCompleted ?? 0}</p>
+              <p>Evaluations submitted: {pipelineAnalytics?.evaluationsSubmitted ?? 0}</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Automation</CardTitle>
+              <CardDescription>Persistent background jobs.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-gray-700">
+              <p>Jobs tracked: {automationJobs.length}</p>
+              <p>Open tasks: {tasks.length}</p>
+              <p>Notes: {pipelineBoard?.notesCount ?? 0}</p>
+              <p>Automation queue: {pipelineBoard?.automation?.length ?? 0}</p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Tasks</CardTitle>
+              <CardDescription>Recruiter follow-ups and reminders.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {tasks.length === 0 ? (
+                <p className="text-sm text-gray-600">No open tasks.</p>
+              ) : (
+                tasks.slice(0, 5).map((task) => (
+                  <div key={String(task.id)} className="rounded-lg border p-3 text-sm">
+                    <p className="font-medium text-gray-900">{String(task.title || "")}</p>
+                    <p className="text-gray-600">{String(task.body || "")}</p>
+                    <p className="text-xs text-gray-500">{String(task.priority || "")}</p>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </div>

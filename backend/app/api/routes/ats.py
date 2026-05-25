@@ -5,11 +5,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import DEFAULT_ATS_PROVIDER
 from app.core.security import get_current_user
-from app.db.repositories import CandidateProfileRepository, CompanyRepository, JobRepository
+from app.db.repositories import CandidateProfileRepository, CompanyRepository, JobRepository, NotificationEventRepository
 from app.db.session import get_db
 from app.schemas.ats import ATSConnectRequest, ATSExportRequest
 from app.services.audit_service import record_audit_event
 from app.services.ats.service import export_candidate_to_ats
+from app.services.ats_lifecycle_service import candidate_timeline
 from app.services.ownership import assert_job_ownership
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
@@ -119,3 +120,47 @@ def export_to_ats(
     )
     db.commit()
     return success_response(result)
+
+
+@router.get("/ats/timeline")
+def get_candidate_timeline(
+    request: Request,
+    jobId: str = Query(...),
+    candidateId: str = Query(...),
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_job_ownership(db=db, job_id=jobId, user_id=request.state.user["id"])
+    return success_response(candidate_timeline(db=db, job_id=jobId, candidate_id=candidateId))
+
+
+@router.get("/ats/notifications")
+def get_notifications(
+    request: Request,
+    jobId: str = Query(...),
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_job_ownership(db=db, job_id=jobId, user_id=request.state.user["id"])
+    rows = NotificationEventRepository(db).list_for_job(jobId)
+    return success_response(
+        [
+            {
+                "id": row.id,
+                "candidateId": row.candidate_id,
+                "recipientType": row.recipient_type,
+                "recipient": row.recipient,
+                "channel": row.channel,
+                "title": row.title,
+                "body": row.body,
+                "status": row.status,
+                "notificationType": row.notification_type,
+                "notificationKey": row.notification_key,
+                "deliveryReference": row.delivery_reference,
+                "metadata": row.notification_metadata,
+                "createdAt": row.created_at.isoformat(),
+                "updatedAt": row.updated_at.isoformat(),
+            }
+            for row in rows
+        ]
+    )

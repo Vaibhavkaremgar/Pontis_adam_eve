@@ -50,9 +50,20 @@ export type OutreachStatusItem = {
   provider: string;
   toEmail: string;
   attemptCount: number;
+  followUpCount?: number;
   lastSentAt: string | null;
+  lastContactedAt?: string | null;
+  lastOpenedAt?: string | null;
+  lastRepliedAt?: string | null;
   nextFollowUpAt: string | null;
   lastError: string;
+  replyState?: string;
+  archiveReason?: string;
+  openCount?: number;
+  replyCount?: number;
+  engagementScore?: number;
+  replyLikelihoodScore?: number;
+  responsivenessScore?: number;
 };
 
 export type EmailPreview = {

@@ -43,6 +43,7 @@ from app.db.repositories import (
 )
 from app.schemas.candidate import CandidateExplanation, CandidateRankingDebug, CandidateResult
 from app.services.candidate_text import build_candidate_text
+from app.services.ats_lifecycle_service import get_candidate_ats_state, transition_candidate_ats_state
 from app.services.ats.service import export_candidate_to_ats
 from app.services.embedding_service import embed, preload_sample_candidate_embeddings
 from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt_text
@@ -2534,11 +2535,15 @@ def _build_candidate_state_maps(
     db: Session,
     *,
     job_id: str,
-) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
     interview_status_map: dict[str, str] = {}
     outreach_status_map: dict[str, str] = {}
     export_status_map: dict[str, str] = {}
     ats_export_status_map: dict[str, str] = {}
+    ats_state_map: dict[str, str] = {}
+
+    for row in CandidateProfileRepository(db).list_for_job(job_id):
+        ats_state_map[row.candidate_id] = (getattr(row, "ats_status", "") or "").strip().lower() or "review_pending"
 
     for row in InterviewRepository(db).list_for_job(job_id):
         interview_status_map[row.candidate_id] = (row.status or "").strip().lower() or "new"
@@ -2557,24 +2562,24 @@ def _build_candidate_state_maps(
             export_status_map[candidate_id] = export_status
             ats_export_status_map[candidate_id] = ats_state
 
-    return interview_status_map, outreach_status_map, export_status_map, ats_export_status_map
+    return interview_status_map, outreach_status_map, export_status_map, ats_export_status_map, ats_state_map
 
 
 def _attach_candidate_workflow_state(db: Session, *, job_id: str, candidates: list[CandidateResult]) -> list[CandidateResult]:
     if not candidates:
         return candidates
 
-    interview_status_map, outreach_status_map, export_status_map, ats_export_status_map = _build_candidate_state_maps(db, job_id=job_id)
+    interview_status_map, outreach_status_map, export_status_map, ats_export_status_map, ats_state_map = _build_candidate_state_maps(db, job_id=job_id)
     for candidate in candidates:
         export_status = export_status_map.get(candidate.id, "pending")
         ats_export_status = ats_export_status_map.get(candidate.id, "not_sent")
         outreach_status = outreach_status_map.get(candidate.id, "pending")
-        status = interview_status_map.get(candidate.id, candidate.status or "new")
+        status = ats_state_map.get(candidate.id) or interview_status_map.get(candidate.id, candidate.status or "new")
 
         if export_status == "exported":
             status = "exported"
         elif outreach_status in {"sent", "dry_run", "simulated"}:
-            status = "contacted"
+            status = ats_state_map.get(candidate.id) or "outreach_sent"
 
         candidate.status = status
         candidate.outreachStatus = outreach_status
@@ -3410,6 +3415,27 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             },
             source="candidate_feedback",
         )
+        transition_candidate_ats_state(
+            db=db,
+            job_id=job_id,
+            candidate_id=candidate_id,
+            to_status="shortlisted" if action == "accept" else "rejected",
+            source="candidate_feedback",
+            actor_id=recruiter_id,
+            reason="recruiter_feedback",
+            metadata={"action": action, "feedbackSource": "candidate_feedback"},
+        )
+        if action == "accept":
+            transition_candidate_ats_state(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                to_status="outreach_queued",
+                source="candidate_feedback",
+                actor_id=recruiter_id,
+                reason="auto_outreach_queued",
+                metadata={"action": action, "feedbackSource": "candidate_feedback"},
+            )
 
     # Only run RLHF weight update for genuinely new feedback signals.
     # Re-submitting the same action is already handled by idempotency above.
@@ -3455,6 +3481,27 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             )
 
     _safe_commit(db, context="candidate_feedback_commit", job_id=job_id)
+
+    outreach_result: dict[str, Any] | None = None
+    if action == "accept":
+        try:
+            from app.services.outreach_service import process_outreach
+
+            outreach_result = process_outreach(
+                db=db,
+                job_id=job_id,
+                selected_candidates=[candidate_id],
+                custom_body="",
+                recipient_email="",
+            )
+        except Exception as exc:
+            logger.warning(
+                "auto_outreach_failed job_id=%s candidate_id=%s error=%s",
+                job_id,
+                candidate_id,
+                str(exc),
+                exc_info=exc,
+            )
 
     # ── Observability ──────────────────────────────────────────────────────────
     feedback_count = CandidateFeedbackRepository(db).count_for_job(job_id)
@@ -3510,6 +3557,7 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
         "newState": target_status,
         "exportStatus": export_status,
         "ats_export_status": ats_export_status,
+        "outreach": outreach_result or {},
         "message": "Feedback recorded and ranking weights updated",
     }
 
@@ -3663,7 +3711,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                     aiReasoning="Final shortlist inherits recruiter preference and selection-round feedback.",
                 ),
                 strategy=row["strategy"],
-                status="shortlisted",
+                status=(profile.ats_status or "shortlisted"),
                 outreachStatus=outreach_status_map.get(row["candidate_id"], "pending"),
                 exportStatus=export_status_map.get(row["candidate_id"], "pending"),
                 ats_export_status=ats_export_status_map.get(row["candidate_id"], "not_sent"),

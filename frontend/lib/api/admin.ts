@@ -14,6 +14,13 @@ export type AdminDiagnostics = Record<string, unknown>;
 export type DeadLetterItem = Record<string, unknown>;
 export type OutreachAnalytics = Record<string, unknown>;
 export type AuditLogItem = Record<string, unknown>;
+export type PipelineBoard = Record<string, unknown>;
+export type PipelineAnalytics = Record<string, unknown>;
+export type NotificationItem = Record<string, unknown>;
+export type AutomationJobItem = Record<string, unknown>;
+export type TaskItem = Record<string, unknown>;
+export type NoteItem = Record<string, unknown>;
+export type OperationalIntelligence = Record<string, unknown>;
 
 export async function getAdminDiagnostics(): Promise<ApiResponse<AdminDiagnostics>> {
   return requestApi<AdminDiagnostics>({
@@ -48,6 +55,68 @@ export async function getOutreachAnalytics(jobId?: string): Promise<ApiResponse<
 export async function getAuditLogs(limit = 50): Promise<ApiResponse<AuditLogItem[]>> {
   return requestApi<AuditLogItem[]>({
     url: `${API_BASE_URL}/admin/audit?limit=${encodeURIComponent(String(limit))}`,
+    method: "GET"
+  });
+}
+
+export async function getPipelineBoard(jobId?: string): Promise<ApiResponse<PipelineBoard>> {
+  const params = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
+  return requestApi<PipelineBoard>({
+    url: `${API_BASE_URL}/admin/pipeline/board${params}`,
+    method: "GET"
+  });
+}
+
+export async function getPipelineAnalytics(jobId?: string): Promise<ApiResponse<PipelineAnalytics>> {
+  const params = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
+  return requestApi<PipelineAnalytics>({
+    url: `${API_BASE_URL}/admin/pipeline/analytics${params}`,
+    method: "GET"
+  });
+}
+
+export async function getNotificationCenter(jobId?: string): Promise<ApiResponse<NotificationItem[]>> {
+  const params = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
+  return requestApi<NotificationItem[]>({
+    url: `${API_BASE_URL}/admin/notifications${params}`,
+    method: "GET"
+  });
+}
+
+export async function markNotificationRead(notificationKey: string): Promise<ApiResponse<Record<string, unknown>>> {
+  return requestApi<Record<string, unknown>>({
+    url: `${API_BASE_URL}/admin/notifications/read?notificationKey=${encodeURIComponent(notificationKey)}`,
+    method: "POST"
+  });
+}
+
+export async function getAutomationJobs(): Promise<ApiResponse<AutomationJobItem[]>> {
+  return requestApi<AutomationJobItem[]>({
+    url: `${API_BASE_URL}/admin/automation/jobs`,
+    method: "GET"
+  });
+}
+
+export async function getRecruiterTasks(jobId?: string): Promise<ApiResponse<TaskItem[]>> {
+  const params = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
+  return requestApi<TaskItem[]>({
+    url: `${API_BASE_URL}/admin/tasks${params}`,
+    method: "GET"
+  });
+}
+
+export async function getRecruiterNotes(jobId: string, candidateId?: string): Promise<ApiResponse<NoteItem[]>> {
+  const params = `?jobId=${encodeURIComponent(jobId)}${candidateId ? `&candidateId=${encodeURIComponent(candidateId)}` : ""}`;
+  return requestApi<NoteItem[]>({
+    url: `${API_BASE_URL}/admin/notes${params}`,
+    method: "GET"
+  });
+}
+
+export async function getOperationalIntelligence(jobId?: string, candidateId?: string): Promise<ApiResponse<OperationalIntelligence>> {
+  const params = `${jobId ? `?jobId=${encodeURIComponent(jobId)}` : ""}${candidateId ? `${jobId ? "&" : "?"}candidateId=${encodeURIComponent(candidateId)}` : ""}`;
+  return requestApi<OperationalIntelligence>({
+    url: `${API_BASE_URL}/admin/intelligence${params}`,
     method: "GET"
   });
 }

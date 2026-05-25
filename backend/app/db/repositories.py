@@ -17,6 +17,8 @@ from app.models.entities import (
     ATSExportEntity,
     ATSExportRetryEntity,
     CandidateFeedbackEntity,
+    AutomationJobEntity,
+    CandidateLifecycleEventEntity,
     CandidateProfileEntity,
     CompanyEntity,
     JobIntakeEntity,
@@ -32,6 +34,10 @@ from app.models.entities import (
     OrchestrationSessionEntity,
     OutreachEventEntity,
     NotificationWorkflowTokenEntity,
+    NotificationEventEntity,
+    RecruiterNoteEntity,
+    RecruiterTaskEntity,
+    InterviewEvaluationEntity,
     RankingExplanationEntity,
     RankingRunEntity,
     RecruiterExperiencePreferenceEntity,
@@ -594,6 +600,52 @@ class OrchestrationSessionRepository:
         stmt = select(OrchestrationSessionEntity).where(*conditions).order_by(OrchestrationSessionEntity.updated_at.desc())
         return self.db.scalar(stmt)
 
+    def archive_active_by_slack_context(
+        self,
+        *,
+        slack_team_id: str = "",
+        slack_channel_id: str = "",
+        slack_thread_ts: str = "",
+        slack_user_id: str = "",
+        source: str = "slack",
+        exclude_session_id: str = "",
+    ) -> list[OrchestrationSessionEntity]:
+        normalized_source = (source or "slack").strip().lower() or "slack"
+        conditions = [OrchestrationSessionEntity.source == normalized_source]
+        if slack_team_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_team_id == slack_team_id.strip())
+        if slack_channel_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_channel_id == slack_channel_id.strip())
+        if slack_thread_ts.strip():
+            conditions.append(OrchestrationSessionEntity.slack_thread_ts == slack_thread_ts.strip())
+        if slack_user_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_user_id == slack_user_id.strip())
+        conditions.extend(
+            [
+                or_(OrchestrationSessionEntity.expires_at.is_(None), OrchestrationSessionEntity.expires_at > datetime.now(timezone.utc)),
+                OrchestrationSessionEntity.completed_at.is_(None),
+            ]
+        )
+        stmt = select(OrchestrationSessionEntity).where(*conditions).order_by(OrchestrationSessionEntity.updated_at.desc())
+        rows = list(self.db.scalars(stmt).all())
+        now = datetime.now(timezone.utc)
+        archived: list[OrchestrationSessionEntity] = []
+        for row in rows:
+            if exclude_session_id and str(getattr(row, "id", "")).strip() == exclude_session_id.strip():
+                continue
+            row.current_stage = "closed"
+            row.completed_at = row.completed_at or now
+            row.updated_at = now
+            if hasattr(row, "state_version"):
+                try:
+                    row.state_version = int(getattr(row, "state_version", 0) or 0) + 1
+                except (TypeError, ValueError):
+                    row.state_version = 1
+            archived.append(row)
+        if archived:
+            self.db.flush()
+        return archived
+
     def create(
         self,
         *,
@@ -876,6 +928,11 @@ class CandidateProfileRepository:
             job = JobRepository(self.db).get(job_id)
             if job:
                 row.company_id = job.company_id
+        if row and not _normalize_text(getattr(row, "ats_status", "")):
+            row.ats_status = "review_pending"
+            row.ats_status_source = "system"
+            row.ats_status_reason = ""
+            row.ats_status_updated_at = datetime.now(timezone.utc)
         if row and _ensure_candidate_profile_email(row):
             self.db.flush()
         return row
@@ -997,6 +1054,11 @@ class CandidateProfileRepository:
         row.strategy = strategy
         row.last_scored_at = now
         row.last_refreshed_at = now
+        if not _normalize_text(row.ats_status):
+            row.ats_status = "sourced"
+        if not _normalize_text(row.ats_status_source):
+            row.ats_status_source = "ingestion"
+        row.ats_status_updated_at = now
         if _ensure_candidate_profile_email(row):
             logger.info("candidate_profile_dev_email_backfilled job_id=%s candidate_id=%s", job_id, candidate_id)
         self.db.flush()
@@ -2250,7 +2312,7 @@ class OutreachEventRepository:
         """Return outreach events that are due for a follow-up and haven't exceeded max attempts."""
         rows = self.db.scalars(
             select(OutreachEventEntity).where(
-                OutreachEventEntity.status == "sent",
+                OutreachEventEntity.status.in_(("sent", "follow_up_sent")),
                 OutreachEventEntity.next_follow_up_at <= now,
                 OutreachEventEntity.follow_up_count < max_follow_up_count,
                 OutreachEventEntity.to_email != "",
@@ -2273,7 +2335,7 @@ class OutreachEventRepository:
         stmt = (
             select(OutreachEventEntity)
             .where(
-                OutreachEventEntity.status == "sent",
+                OutreachEventEntity.status.in_(("sent", "follow_up_sent")),
                 OutreachEventEntity.next_follow_up_at <= now,
                 OutreachEventEntity.follow_up_count < max_follow_up_count,
                 OutreachEventEntity.to_email != "",
@@ -2438,6 +2500,374 @@ class NotificationWorkflowTokenRepository:
         return row
 
 
+class CandidateLifecycleEventRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def create(
+        self,
+        *,
+        job_id: str,
+        company_id: str,
+        candidate_id: str,
+        from_status: str,
+        to_status: str,
+        source: str = "system",
+        actor_id: str | None = None,
+        transition_key: str,
+        event_metadata: dict | None = None,
+    ) -> CandidateLifecycleEventEntity:
+        row = CandidateLifecycleEventEntity(
+            id=str(uuid4()),
+            job_id=job_id,
+            company_id=company_id,
+            candidate_id=candidate_id,
+            from_status=(from_status or "").strip().lower(),
+            to_status=(to_status or "").strip().lower(),
+            source=(source or "system").strip().lower(),
+            actor_id=actor_id,
+            transition_key=(transition_key or "").strip(),
+            event_metadata=dict(event_metadata or {}),
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def list_for_candidate(self, *, job_id: str, candidate_id: str, limit: int = 100) -> list[CandidateLifecycleEventEntity]:
+        rows = self.db.scalars(
+            select(CandidateLifecycleEventEntity)
+            .where(
+                CandidateLifecycleEventEntity.job_id == job_id,
+                CandidateLifecycleEventEntity.candidate_id == candidate_id,
+            )
+            .order_by(CandidateLifecycleEventEntity.created_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+
+class NotificationEventRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_key(self, notification_key: str) -> NotificationEventEntity | None:
+        normalized = (notification_key or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(NotificationEventEntity).where(NotificationEventEntity.notification_key == normalized)
+        )
+
+    def upsert(
+        self,
+        *,
+        notification_key: str,
+        job_id: str | None = None,
+        company_id: str | None = None,
+        candidate_id: str | None = None,
+        actor_id: str | None = None,
+        recipient_type: str = "recruiter",
+        recipient: str = "",
+        channel: str = "slack",
+        title: str = "",
+        body: str = "",
+        status: str = "queued",
+        notification_type: str = "",
+        notification_metadata: dict | None = None,
+        delivery_reference: str = "",
+    ) -> NotificationEventEntity:
+        row = self.get_by_key(notification_key)
+        now = datetime.now(timezone.utc)
+        if not row:
+            row = NotificationEventEntity(
+                id=str(uuid4()),
+                notification_key=(notification_key or "").strip(),
+            )
+            self.db.add(row)
+            self.db.flush()
+        row.job_id = job_id
+        row.company_id = company_id
+        row.candidate_id = candidate_id
+        row.actor_id = actor_id
+        row.recipient_type = (recipient_type or "recruiter").strip().lower()
+        row.recipient = (recipient or "").strip()
+        row.channel = (channel or "slack").strip().lower()
+        row.title = (title or "").strip()
+        row.body = (body or "").strip()
+        row.status = (status or "queued").strip().lower()
+        row.notification_type = (notification_type or "").strip().lower()
+        row.notification_metadata = dict(notification_metadata or {})
+        row.delivery_reference = (delivery_reference or "").strip()
+        row.updated_at = now
+        if row.status == "delivered":
+            row.delivered_at = now
+        elif row.status in {"failed", "error"}:
+            row.failed_at = now
+        self.db.flush()
+        return row
+
+    def list_for_job(self, job_id: str, limit: int = 200) -> list[NotificationEventEntity]:
+        rows = self.db.scalars(
+            select(NotificationEventEntity)
+            .where(NotificationEventEntity.job_id == job_id)
+            .order_by(NotificationEventEntity.created_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+    def list_recent(self, limit: int = 100, *, unread_only: bool = False) -> list[NotificationEventEntity]:
+        stmt = select(NotificationEventEntity)
+        if unread_only:
+            stmt = stmt.where(NotificationEventEntity.is_read.is_(False))
+        rows = self.db.scalars(
+            stmt.order_by(NotificationEventEntity.created_at.desc()).limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+    def mark_read(self, notification_key: str) -> NotificationEventEntity | None:
+        row = self.get_by_key(notification_key)
+        if not row:
+            return None
+        now = datetime.now(timezone.utc)
+        row.is_read = True
+        row.read_at = now
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+
+class AutomationJobRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_by_key(self, automation_key: str) -> AutomationJobEntity | None:
+        normalized = (automation_key or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(AutomationJobEntity).where(AutomationJobEntity.automation_key == normalized))
+
+    def upsert(
+        self,
+        *,
+        automation_key: str,
+        automation_type: str,
+        job_id: str | None = None,
+        candidate_id: str | None = None,
+        scheduled_at: datetime | None = None,
+        payload: dict | None = None,
+        status: str = "queued",
+        max_attempts: int = 3,
+    ) -> AutomationJobEntity:
+        row = self.get_by_key(automation_key)
+        now = datetime.now(timezone.utc)
+        if not row:
+            row = AutomationJobEntity(
+                id=str(uuid4()),
+                automation_key=(automation_key or "").strip(),
+            )
+            self.db.add(row)
+            self.db.flush()
+        row.job_id = (job_id or "").strip() or None
+        row.candidate_id = (candidate_id or "").strip() or None
+        row.automation_type = (automation_type or "").strip().lower()
+        row.status = (status or "queued").strip().lower()
+        row.scheduled_at = scheduled_at or row.scheduled_at or now
+        row.max_attempts = max(1, int(max_attempts or 1))
+        row.automation_payload = dict(payload or {})
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def list_due(self, *, as_of: datetime | None = None, limit: int = 100) -> list[AutomationJobEntity]:
+        when = as_of or datetime.now(timezone.utc)
+        rows = self.db.scalars(
+            select(AutomationJobEntity)
+            .where(AutomationJobEntity.status.in_(["queued", "retryable"]), AutomationJobEntity.scheduled_at <= when)
+            .order_by(AutomationJobEntity.scheduled_at.asc(), AutomationJobEntity.created_at.asc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+    def list_recent(self, *, limit: int = 100) -> list[AutomationJobEntity]:
+        rows = self.db.scalars(
+            select(AutomationJobEntity)
+            .order_by(AutomationJobEntity.created_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+    def mark_started(self, row: AutomationJobEntity) -> AutomationJobEntity:
+        now = datetime.now(timezone.utc)
+        row.status = "running"
+        row.started_at = row.started_at or now
+        row.updated_at = now
+        row.attempt_count = int(row.attempt_count or 0) + 1
+        self.db.flush()
+        return row
+
+    def mark_completed(self, row: AutomationJobEntity, *, status: str = "completed") -> AutomationJobEntity:
+        now = datetime.now(timezone.utc)
+        row.status = status
+        row.completed_at = now
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def mark_failed(self, row: AutomationJobEntity, *, error: str) -> AutomationJobEntity:
+        now = datetime.now(timezone.utc)
+        row.status = "failed" if int(row.attempt_count or 0) >= int(row.max_attempts or 1) else "retryable"
+        row.last_error = error[:4000]
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+
+class RecruiterNoteRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create(
+        self,
+        *,
+        job_id: str,
+        body: str,
+        candidate_id: str | None = None,
+        recruiter_id: str | None = None,
+        note_type: str = "note",
+        metadata: dict | None = None,
+    ) -> RecruiterNoteEntity:
+        row = RecruiterNoteEntity(
+            id=str(uuid4()),
+            job_id=job_id,
+            candidate_id=(candidate_id or "").strip() or None,
+            recruiter_id=(recruiter_id or "").strip() or None,
+            note_type=(note_type or "note").strip().lower(),
+            body=(body or "").strip(),
+            metadata_json=dict(metadata or {}),
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def list_for_job(self, job_id: str, *, candidate_id: str | None = None, limit: int = 100) -> list[RecruiterNoteEntity]:
+        stmt = select(RecruiterNoteEntity).where(RecruiterNoteEntity.job_id == job_id)
+        if candidate_id:
+            stmt = stmt.where(RecruiterNoteEntity.candidate_id == candidate_id)
+        rows = self.db.scalars(stmt.order_by(RecruiterNoteEntity.created_at.desc()).limit(max(1, int(limit)))).all()
+        return list(rows)
+
+
+class RecruiterTaskRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create(
+        self,
+        *,
+        job_id: str,
+        title: str,
+        body: str = "",
+        candidate_id: str | None = None,
+        recruiter_id: str | None = None,
+        status: str = "open",
+        priority: str = "normal",
+        due_at: datetime | None = None,
+        metadata: dict | None = None,
+    ) -> RecruiterTaskEntity:
+        row = RecruiterTaskEntity(
+            id=str(uuid4()),
+            job_id=job_id,
+            candidate_id=(candidate_id or "").strip() or None,
+            recruiter_id=(recruiter_id or "").strip() or None,
+            title=(title or "").strip(),
+            body=(body or "").strip(),
+            status=(status or "open").strip().lower(),
+            priority=(priority or "normal").strip().lower(),
+            due_at=due_at,
+            metadata_json=dict(metadata or {}),
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def list_for_job(self, job_id: str, *, status: str | None = None, limit: int = 100) -> list[RecruiterTaskEntity]:
+        stmt = select(RecruiterTaskEntity).where(RecruiterTaskEntity.job_id == job_id)
+        if status:
+            stmt = stmt.where(RecruiterTaskEntity.status == status)
+        rows = self.db.scalars(stmt.order_by(RecruiterTaskEntity.created_at.desc()).limit(max(1, int(limit)))).all()
+        return list(rows)
+
+    def mark_done(self, task_id: str) -> RecruiterTaskEntity | None:
+        row = self.db.scalar(select(RecruiterTaskEntity).where(RecruiterTaskEntity.id == task_id))
+        if not row:
+            return None
+        now = datetime.now(timezone.utc)
+        row.status = "done"
+        row.completed_at = now
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+
+class InterviewEvaluationRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def upsert(
+        self,
+        *,
+        job_id: str,
+        candidate_id: str,
+        stage_name: str,
+        summary: str = "",
+        recommendation: str = "",
+        interviewer_id: str | None = None,
+        competency_scores: dict | None = None,
+        notes: str = "",
+        metadata: dict | None = None,
+        status: str = "draft",
+    ) -> InterviewEvaluationEntity:
+        row = self.db.scalar(
+            select(InterviewEvaluationEntity).where(
+                InterviewEvaluationEntity.job_id == job_id,
+                InterviewEvaluationEntity.candidate_id == candidate_id,
+                InterviewEvaluationEntity.stage_name == stage_name,
+            )
+        )
+        now = datetime.now(timezone.utc)
+        if not row:
+            row = InterviewEvaluationEntity(
+                id=str(uuid4()),
+                job_id=job_id,
+                candidate_id=candidate_id,
+                stage_name=(stage_name or "screen").strip().lower(),
+            )
+            self.db.add(row)
+            self.db.flush()
+        row.interviewer_id = (interviewer_id or row.interviewer_id or "").strip() or None
+        row.status = (status or "draft").strip().lower()
+        row.summary = (summary or "").strip()
+        row.recommendation = (recommendation or "").strip().lower()
+        row.competency_scores = dict(competency_scores or {})
+        row.notes = (notes or "").strip()
+        row.metadata_json = dict(metadata or {})
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def list_for_candidate(self, *, job_id: str, candidate_id: str, limit: int = 20) -> list[InterviewEvaluationEntity]:
+        rows = self.db.scalars(
+            select(InterviewEvaluationEntity)
+            .where(
+                InterviewEvaluationEntity.job_id == job_id,
+                InterviewEvaluationEntity.candidate_id == candidate_id,
+            )
+            .order_by(InterviewEvaluationEntity.updated_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+
 class InboundEmailRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -2453,6 +2883,18 @@ class InboundEmailRepository:
         if not normalized:
             return None
         return self.db.scalar(select(InboundEmailReplyEntity).where(InboundEmailReplyEntity.email_id == normalized))
+
+    def list_for_candidate(self, *, job_id: str, candidate_id: str, limit: int = 100) -> list[InboundEmailReplyEntity]:
+        rows = self.db.scalars(
+            select(InboundEmailReplyEntity)
+            .where(
+                InboundEmailReplyEntity.job_id == job_id,
+                InboundEmailReplyEntity.candidate_id == candidate_id,
+            )
+            .order_by(InboundEmailReplyEntity.received_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
 
     def create_or_get(
         self,

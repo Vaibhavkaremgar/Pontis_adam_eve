@@ -2,15 +2,14 @@
 
 /**
  * What this file does:
- * Lets recruiter select candidates, preview and edit the outreach email, then send.
- * Fetches shortlisted candidates server-side — does NOT rely on frontend state.
+ * Shows the legacy outreach fallback and delivery preview.
+ * The real outreach send now happens automatically from the Review flow.
  *
  * What API it connects to:
  * GET /candidates/shortlisted  — server-side shortlisted-only list
- * GET /outreach/preview        — fetches auto-generated subject + body
- * POST /outreach               — sends outreach with optional recruiter-edited body
+ * GET /outreach/preview        — fetches the legacy outreach draft
  */
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
@@ -21,7 +20,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppContext } from "@/context/AppContext";
 import { getShortlistedCandidates } from "@/lib/api/candidates";
-import { getEmailPreview, getOutreachStatuses, sendOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
+import { getEmailPreview } from "@/lib/api/outreach";
 import { getStoredShortlistedCandidateIds, getStoredShortlistedCandidates } from "@/lib/session";
 import type { Candidate } from "@/types";
 
@@ -38,17 +37,6 @@ function OutreachContent() {
   const [emailSubject, setEmailSubject] = useState("");
   const [previewToEmail, setPreviewToEmail] = useState("");
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
-  const [feedback, setFeedback] = useState("");
-  const [error, setError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isOutreachComplete, setIsOutreachComplete] = useState(false);
-  const [outreachStatuses, setOutreachStatuses] = useState<OutreachStatusItem[]>([]);
-  const [sendDebug, setSendDebug] = useState<{
-    details: { candidateId: string; status: string; reason?: string; toEmail?: string; providerId?: string; originalEmail?: string }[];
-    skipReasons: Record<string, number>;
-    warnings: string[];
-    debug?: { provider?: string; fromEmail?: string; providerConfigured?: boolean; dryRun?: boolean };
-  } | null>(null);
 
   // Auth + flow guard
   useEffect(() => {
@@ -95,27 +83,6 @@ function OutreachContent() {
     })();
   }, [isSessionReady, user, jobId]);
 
-  useEffect(() => {
-    if (!jobId || !isOutreachComplete) return;
-    const controller = new AbortController();
-    let intervalId: number | null = null;
-    const refresh = async () => {
-      if (controller.signal.aborted) return;
-      const result = await getOutreachStatuses(jobId);
-      if (!controller.signal.aborted && result.success && result.data) {
-        setOutreachStatuses(result.data);
-      }
-    };
-    void refresh();
-    intervalId = window.setInterval(() => void refresh(), 3000);
-    return () => {
-      controller.abort();
-      if (intervalId !== null) {
-        window.clearInterval(intervalId);
-      }
-    };
-  }, [isOutreachComplete, jobId]);
-
   // When selection changes to exactly one candidate, fetch the real preview from backend.
   useEffect(() => {
     if (!jobId) return;
@@ -151,67 +118,20 @@ function OutreachContent() {
     return () => controller.abort();
   }, [selectedCandidates, jobId]);
 
-  const canSubmit = useMemo(
-    () => {
-      return selectedCandidates.length === 1 && !isSubmitting;
-    },
-    [isSubmitting, selectedCandidates.length]
-  );
-
   const toggleCandidate = (candidateId: string) => {
     setSelectedCandidates((prev) => (prev[0] === candidateId ? [] : [candidateId]));
   };
 
-  const selectedCount = selectedCandidates.length;
-
   const handleSendOutreach = async () => {
-    if (!canSubmit) return;
-    setIsSubmitting(true);
-    setError("");
-    setFeedback("");
-    setIsOutreachComplete(false);
-    setSendDebug(null);
-
-    if (selectedCandidates.length !== 1) {
-      setError("Select exactly one candidate before sending outreach.");
-      setIsSubmitting(false);
-      return;
-    }
-
-    const customBody = emailBody.trim();
-    const result = await sendOutreach({ jobId, selectedCandidates: [selectedCandidates[0]], customBody });
-    if (!result.success || !result.data) {
-      setError(result.error || "Failed to send outreach.");
-      setIsSubmitting(false);
-      return;
-    }
-
-    setFeedback(
-      `Outreach processed: ${result.data.sent} sent, ${result.data.skipped} skipped.`
-    );
-    setSendDebug({
-      details: result.data.details || [],
-      skipReasons: result.data.skipReasons || {},
-      warnings: result.data.warnings || [],
-      debug: result.data.debug || undefined,
-    });
-    setIsOutreachComplete(true);
-    setIsSubmitting(false);
-
-    // Refresh shortlisted list to reflect contacted status
-    if (jobId) {
-      getShortlistedCandidates(jobId).then((r) => {
-        if (r.success && r.data) setShortlisted(r.data);
-      });
-    }
+    router.push("/review");
   };
 
   return (
     <AppShell activeStep={5}>
       <Card className="mx-auto w-full max-w-[560px]">
         <CardHeader className="space-y-2 text-center">
-          <CardTitle>Candidate Outreach</CardTitle>
-          <CardDescription>Select one candidate, review the email, then send</CardDescription>
+          <CardTitle>Outreach status</CardTitle>
+          <CardDescription>Outreach now starts automatically from Review. This page is a legacy fallback for delivery details.</CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-6">
@@ -242,7 +162,7 @@ function OutreachContent() {
                     className="mt-1 h-4 w-4"
                     checked={selectedCandidates.includes(candidate.id)}
                     onChange={() => toggleCandidate(candidate.id)}
-                    disabled={isSubmitting}
+                    disabled={false}
                   />
                   <div className="space-y-0.5">
                     <p className="font-semibold text-gray-900">{candidate.name || candidate.id.slice(0, 8)}</p>
@@ -266,6 +186,10 @@ function OutreachContent() {
 
           <Separator />
 
+          <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+            Review now auto-sends outreach when you select a candidate. Return to Review to continue.
+          </div>
+
           {/* Email preview */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -279,7 +203,7 @@ function OutreachContent() {
 
             {selectedCandidates.length === 0 && (
               <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-500">
-                Select exactly one candidate above to preview their outreach email.
+                Select exactly one candidate above to preview the legacy outreach draft.
               </div>
             )}
 
@@ -292,13 +216,13 @@ function OutreachContent() {
                 <Textarea
                   className="min-h-[200px] text-sm text-gray-800 leading-relaxed"
                   value={isLoadingPreview ? "Loading preview..." : emailBody}
-                  onChange={(e) => setEmailBody(e.target.value)}
-                  disabled={isLoadingPreview || isSubmitting || selectedCandidates.length > 1}
-                  placeholder="Email body will appear here once you select a candidate."
+                  onChange={() => undefined}
+                  disabled
+                  placeholder="Outreach now starts automatically from Review."
                 />
             {selectedCandidates.length === 1 && (
               <p className="text-xs text-gray-400">
-                You can edit this email before sending. Changes apply only to this send.
+                Outreach is selection-driven now. This route only shows the legacy draft.
               </p>
             )}
           </>
@@ -308,105 +232,9 @@ function OutreachContent() {
           <Button
             className="w-full justify-center"
             onClick={handleSendOutreach}
-            disabled={!canSubmit || shortlisted.length === 0}
+            disabled={false}
           >
-            {isSubmitting ? "Sending..." : "Select & Send"}
-          </Button>
-          {selectedCount > 0 && shortlisted.length > 0 && (
-            <p className="text-xs text-gray-500">
-              {selectedCount} shortlisted candidate selected for outreach.
-            </p>
-          )}
-
-          {isOutreachComplete && (
-            <div className="rounded-xl border border-green-100 bg-green-50 p-4 text-sm text-green-800">
-              Outreach processed. We’ll keep the page updated as statuses change.
-            </div>
-          )}
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          {feedback && <p className="text-sm text-gray-700">{feedback}</p>}
-
-          {sendDebug && (
-            <div className="space-y-3 rounded-2xl border border-dashed border-[#C7B89F] bg-[#FCFAF5] p-4">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold text-gray-900">Send debug</p>
-                  <p className="text-xs text-gray-500">Exact reasons returned by the backend</p>
-                </div>
-                {sendDebug.debug && (
-                  <Badge variant="neutral">
-                    {sendDebug.debug.provider || "provider"}{sendDebug.debug.dryRun ? " / dry-run" : ""}
-                  </Badge>
-                )}
-              </div>
-
-              {sendDebug.debug && (
-                <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
-                  <div>Provider configured: {String(sendDebug.debug.providerConfigured ?? false)}</div>
-                  <div>From: {sendDebug.debug.fromEmail || "n/a"}</div>
-                </div>
-              )}
-
-              {sendDebug.warnings.length > 0 && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-                  {sendDebug.warnings.map((warning) => (
-                    <p key={warning}>{warning}</p>
-                  ))}
-                </div>
-              )}
-
-              {sendDebug.skipReasons && Object.keys(sendDebug.skipReasons).length > 0 && (
-                <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-white/70 p-3 text-xs text-gray-700">
-                  <p className="mb-2 font-medium text-gray-900">Skip reasons</p>
-                  <div className="space-y-1">
-                    {Object.entries(sendDebug.skipReasons).map(([reason, count]) => (
-                      <p key={reason}>{reason}: {count}</p>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {sendDebug.details.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-xs font-medium text-gray-900">Per candidate</p>
-                  {sendDebug.details.map((item) => (
-                    <div key={item.candidateId} className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-white/70 px-3 py-2 text-xs text-gray-700">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium text-gray-900">{item.candidateId.slice(0, 8)}</span>
-                        <Badge variant={item.status === "sent" ? "high" : item.status === "failed" ? "low" : "info"}>
-                          {item.status}
-                        </Badge>
-                      </div>
-                      {item.originalEmail && <p className="mt-1">Original: {item.originalEmail}</p>}
-                      {item.reason && <p className="mt-1">Reason: {item.reason}</p>}
-                      {item.toEmail && <p>To: {item.toEmail}</p>}
-                      {item.providerId && <p>Provider id: {item.providerId}</p>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {outreachStatuses.length > 0 && (
-            <div className="space-y-2 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
-              <p className="text-sm font-semibold text-gray-900">Delivery status</p>
-              {outreachStatuses.slice(0, 5).map((item) => (
-                <div key={item.candidateId} className="flex items-center justify-between text-sm">
-                  <span className="text-gray-700">{item.candidateId.slice(0, 8)}</span>
-                  <Badge variant="medium">{item.status}</Badge>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <Button
-            className="w-full justify-center"
-            onClick={() => router.push("/ready")}
-            disabled={!isOutreachComplete}
-          >
-            Continue
+            Back to Review
           </Button>
         </CardContent>
       </Card>

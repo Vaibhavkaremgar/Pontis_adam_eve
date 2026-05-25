@@ -9,7 +9,7 @@ import unicodedata
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 from io import BytesIO
 from pathlib import Path
@@ -28,9 +28,18 @@ from app.core.config import (
     RESEND_API_KEY,
 )
 from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository, JobRepository
+from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.email_service import send_email
 from app.services.interview_invite_service import send_interview_invite
 from app.services.resume_ingestion_service import extract_resume_contact_details, parse_resume_profile
+from app.services.outreach_intelligence_service import (
+    classify_reply_state,
+    compute_outreach_engagement_snapshot,
+    outreach_reply_state_to_ats_state,
+    outreach_reply_state_to_notification_title,
+    scheduled_reengagement_delay,
+)
+from app.services.outreach_service import _record_notification
 from app.services.slack_service import notify_slack
 from app.services.webhook_security import get_webhook_header, verify_resend_webhook
 
@@ -658,7 +667,8 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
 
     match_status = "matched" if candidate_profile else "unmatched"
     processing_error = ""
-    intent = _detect_reply_intent({**payload, **email_record, "body": body_text, "text": body_text, "subject": subject})
+    reply_state = classify_reply_state(text=body_text, subject=subject, raw_event={**payload, **email_record, "body": body_text, "text": body_text, "subject": subject})
+    intent = reply_state.lower()
     logger.info("reply_intent_detected sender_email=%s intent=%s", sender_email, intent)
     resume_attachment: InboundAttachmentDownload | None = next(
         (attachment for attachment in downloaded_attachments if _is_resume_attachment(attachment.filename, attachment.content_type)),
@@ -700,22 +710,102 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
         _set_candidate_status(candidate_profile, "do_not_contact")
     elif candidate_profile and intent == "needs_more_info":
         _set_candidate_status(candidate_profile, "awaiting_recruiter_response")
+    elif candidate_profile and intent in {"asked_to_follow_up_later", "out_of_office"}:
+        _set_candidate_status(candidate_profile, "awaiting_recruiter_response")
+    elif candidate_profile and intent == "invalid_contact":
+        _set_candidate_status(candidate_profile, "do_not_contact")
+    elif candidate_profile and intent == "negative_response":
+        _set_candidate_status(candidate_profile, "declined")
     elif candidate_profile and intent == "ambiguous":
         _set_candidate_status(candidate_profile, "manual_review")
 
     if candidate_profile and outreach_event:
         _update_outreach_status(db, outreach_event=outreach_event, received_at=received_at)
         outreach_event.reply_intent = intent
+        outreach_event.reply_state = intent
+        outreach_event.reply_count = int(outreach_event.reply_count or 0) + 1
+        outreach_event.last_replied_at = received_at
+        outreach_event.last_contacted_at = received_at
+        if intent in {"asked_to_follow_up_later", "out_of_office"}:
+            delay_days = scheduled_reengagement_delay(reply_state=intent) or 30
+            outreach_event.next_follow_up_at = received_at + timedelta(days=delay_days)
+        if intent == "invalid_contact":
+            outreach_event.archive_reason = "invalid_contact"
+            outreach_event.status = "archived"
+            if outreach_event.to_email:
+                from app.services.outreach_service import _suppress_domain, _suppress_email, _email_domain
+
+                _suppress_email(outreach_event.to_email, reason="invalid_contact")
+                _suppress_domain(_email_domain(outreach_event.to_email), reason="invalid_contact")
+        snapshot = compute_outreach_engagement_snapshot(
+            status=outreach_event.status,
+            reply_state=outreach_event.reply_state,
+            open_count=outreach_event.open_count,
+            reply_count=outreach_event.reply_count,
+            follow_up_count=outreach_event.follow_up_count,
+            sent_at=outreach_event.sent_at,
+            responded_at=outreach_event.responded_at,
+            last_opened_at=getattr(outreach_event, "last_opened_at", None),
+            last_replied_at=getattr(outreach_event, "last_replied_at", None),
+        )
+        outreach_event.engagement_score = snapshot.engagement_score
+        outreach_event.reply_likelihood_score = snapshot.reply_likelihood_score
+        outreach_event.responsiveness_score = snapshot.responsiveness_score
     elif candidate_profile and not outreach_event:
         logger.warning("inbound_reply_outreach_event_missing candidate_id=%s job_id=%s", candidate_id, job_id)
     elif not candidate_profile:
         logger.info("inbound_reply_unmatched sender_email=%s subject=%s", sender_email, subject)
 
-    if candidate_profile and intent == "unsubscribe" and sender_email:
+    if candidate_profile and job_id:
+        ats_target = outreach_reply_state_to_ats_state(intent)
+        if intent == "invalid_contact":
+            ats_target = "archived"
+        transition_candidate_ats_state(
+            db=db,
+            job_id=job_id,
+            candidate_id=candidate_id or "",
+            to_status=ats_target,
+            source="resend_webhook",
+            reason=intent or "reply_received",
+            metadata={
+                "intent": intent,
+                "replyState": intent,
+                "providerMessageId": provider_message_id or "",
+                "replyId": row.id,
+            },
+        )
+
+    if candidate_profile and intent == "invalid_contact" and sender_email:
         from app.services.outreach_service import _suppress_domain, _suppress_email, _email_domain
 
-        _suppress_email(sender_email, reason="unsubscribe")
-        _suppress_domain(_email_domain(sender_email), reason="unsubscribe")
+        _suppress_email(sender_email, reason="invalid_contact")
+        _suppress_domain(_email_domain(sender_email), reason="invalid_contact")
+
+    if candidate_profile and intent in {"asked_to_follow_up_later", "out_of_office"}:
+        try:
+            from app.services.automation_service import schedule_automation_job
+
+            reminder_days = scheduled_reengagement_delay(reply_state=intent) or 30
+            schedule_automation_job(
+                db=db,
+                automation_type="recruiter_reminder",
+                job_id=job_id or "",
+                candidate_id=candidate_id or "",
+                run_at=received_at + timedelta(days=reminder_days),
+                payload={
+                    "outreachEventId": getattr(outreach_event, "id", None),
+                    "replyState": intent,
+                    "reason": "candidate_reconnect_requested",
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "reengagement_schedule_failed sender_email=%s candidate_id=%s error=%s",
+                sender_email,
+                candidate_id,
+                str(exc),
+                exc_info=exc,
+            )
 
     if candidate_profile and intent == "interested" and resume_attachment is not None and resume_parse_result is not None:
         try:
@@ -723,6 +813,15 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
                 candidate_id=candidate_id or "",
                 job_id=job_id or "",
                 outreach_event_id=getattr(outreach_event, "id", None),
+            )
+            transition_candidate_ats_state(
+                db=db,
+                job_id=job_id or "",
+                candidate_id=candidate_id or "",
+                to_status="interview_requested",
+                source="resend_webhook",
+                reason="resume_received",
+                metadata={"replyId": row.id, "resumeAttachment": True},
             )
         except Exception as exc:
             logger.warning(
@@ -769,8 +868,25 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
 
     candidate_name = _candidate_profile_display_name(candidate_profile, sender_email)
     profile_link = _build_candidate_profile_link(job_id=job_id or "", candidate_id=candidate_id or "") if candidate_profile else _build_candidate_profile_link(job_id="", candidate_id="")
+    _record_notification(
+        db=db,
+        job_id=job_id or (getattr(outreach_event, "job_id", "") or ""),
+        candidate_id=candidate_id or (getattr(outreach_event, "candidate_id", "") or ""),
+        notification_type="candidate_reply",
+        recipient_type="recruiter",
+        recipient=str(JobRepository(db).get_recruiter_id(job_id or "") or ""),
+        channel="slack",
+        title=outreach_reply_state_to_notification_title(intent, candidate_name=candidate_name),
+        body=f"State: {intent}",
+        status="delivered",
+        metadata={
+            "replyState": intent,
+            "providerMessageId": provider_message_id or (getattr(outreach_event, "provider_message_id", "") or ""),
+            "replyId": row.id,
+        },
+    )
     notify_slack(
-        title=f"Candidate reply received: {candidate_name}",
+        title=outreach_reply_state_to_notification_title(intent, candidate_name=candidate_name),
         lines=_build_slack_message(
             candidate_name=candidate_name,
             sender_email=sender_email,

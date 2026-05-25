@@ -196,6 +196,12 @@ export default function ReadyPage() {
                 <div>
                   <p className="text-sm font-medium text-gray-900">{item.candidateId.slice(0, 8)}</p>
                   <p className="text-xs text-gray-500">{item.toEmail || "No email on file"}</p>
+                  {item.replyState && <p className="text-xs text-slate-700">Reply state: {item.replyState.replace(/_/g, " ")}</p>}
+                  {item.nextFollowUpAt && <p className="text-xs text-slate-700">Next follow-up: {new Date(item.nextFollowUpAt).toLocaleDateString()}</p>}
+                  {item.archiveReason && <p className="text-xs text-slate-700">Archive reason: {item.archiveReason.replace(/_/g, " ")}</p>}
+                  <p className="text-xs text-slate-500">
+                    Engagement {((item.engagementScore ?? 0) * 100).toFixed(0)}% | Reply likelihood {((item.replyLikelihoodScore ?? 0) * 100).toFixed(0)}% | Responsiveness {((item.responsivenessScore ?? 0) * 100).toFixed(0)}%
+                  </p>
                   {item.lastError && <p className="text-xs text-amber-700">Reason: {item.lastError}</p>}
                 </div>
                 <Badge
@@ -251,9 +257,9 @@ export default function ReadyPage() {
           <Button
             variant="outline"
             className="w-full justify-center"
-            onClick={() => router.push("/outreach")}
+            onClick={() => router.push("/review")}
           >
-            ← Back to Outreach
+            ← Back to Review
           </Button>
         </CardContent>
       </Card>

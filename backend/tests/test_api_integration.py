@@ -330,6 +330,77 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(followup["pathSelectionNeeded"])
         self.assertEqual(followup["nextQuestionKey"], "path_selection")
 
+    def test_new_slack_hire_starts_fresh_session_without_reusing_previous_intake(self) -> None:
+        from app.db.repositories import OrchestrationSessionRepository
+        from app.services.orchestration_service import start_or_resume_slack_intake
+
+        repo = OrchestrationSessionRepository(self.db)
+        old_session = repo.create(
+            session_token="stale-slack-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-STALE",
+            slack_channel_id="C-STALE",
+            slack_thread_ts="",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What role are you hiring for?",
+            current_question_key="role_title",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "OldCo",
+                "role_title": "Frontend Developer",
+                "must_have_requirements": ["React", "TypeScript"],
+                "success_profile": "Previously captured role",
+                "skills": ["React", "TypeScript"],
+                "seniority": "senior",
+                "location": "Remote",
+                "compensation": "$180k",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-STALE", "channelId": "C-STALE", "threadTs": "", "userId": self.user.id},
+        )
+        self.db.commit()
+
+        result = start_or_resume_slack_intake(
+            db=self.db,
+            slack_team_id="T-STALE",
+            slack_channel_id="C-STALE",
+            slack_user_id=self.user.id,
+            initial_brief="digital marketer",
+        )
+
+        fresh_session_id = str((result.get("session") or {}).get("id") or "").strip()
+        self.assertTrue(fresh_session_id)
+        self.assertNotEqual(fresh_session_id, old_session.id)
+
+        fresh_session = repo.get(fresh_session_id)
+        archived_old = repo.get(old_session.id)
+
+        self.assertIsNotNone(fresh_session)
+        self.assertIsNotNone(archived_old)
+        assert fresh_session is not None
+        assert archived_old is not None
+        self.assertEqual(fresh_session.normalized_intake.get("company_name"), "")
+        self.assertEqual(fresh_session.normalized_intake.get("role_title"), "")
+        self.assertEqual(fresh_session.current_question_key, "company_name")
+        self.assertEqual(archived_old.current_stage, "closed")
+        self.assertIsNotNone(archived_old.completed_at)
+        self.assertEqual(archived_old.normalized_intake.get("role_title"), "Frontend Developer")
+
     def test_slack_message_helper_forwards_thread_ts(self) -> None:
         from app.api.routes import slack as slack_routes
 
@@ -755,6 +826,111 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(payload.get("session", {}).get("normalizedIntake", {}).get("success_profile"), "A strong communicator who collaborates well with product and engineering")
         self.assertIn("What compensation range are you targeting?", payload.get("currentQuestion", ""))
         self.assertEqual(payload.get("session", {}).get("currentQuestionKey"), payload.get("currentQuestionKey"))
+
+    def test_voice_handoff_token_is_scoped_to_the_requested_session(self) -> None:
+        from datetime import datetime, timezone, timedelta
+
+        from app.db.repositories import OrchestrationSessionRepository
+        from app.services.orchestration_service import start_voice_handoff
+
+        repo = OrchestrationSessionRepository(self.db)
+        stale_session = repo.create(
+            session_token="stale-voice-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-VOICE-STALE",
+            slack_channel_id="C-VOICE-STALE",
+            slack_thread_ts="1716612350.100000",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What kind of person succeeds in this role?",
+            current_question_key="success_profile",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "OldCo",
+                "role_title": "Backend Engineer",
+                "must_have_requirements": ["Python"],
+                "success_profile": "Should not leak into new token",
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-VOICE-STALE", "channelId": "C-VOICE-STALE", "threadTs": "1716612350.100000", "userId": self.user.id},
+        )
+        stale_session.voice_handoff_token = "voice-handoff-stale"
+        stale_session.voice_handoff_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+
+        fresh_session = repo.create(
+            session_token="fresh-voice-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-VOICE-FRESH",
+            slack_channel_id="C-VOICE-FRESH",
+            slack_thread_ts="1716612360.100000",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What company is hiring for this role?",
+            current_question_key="company_name",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "",
+                "role_title": "",
+                "must_have_requirements": [],
+                "success_profile": "",
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-VOICE-FRESH", "channelId": "C-VOICE-FRESH", "threadTs": "1716612360.100000", "userId": self.user.id},
+        )
+        fresh_session.voice_handoff_token = "voice-handoff-fresh"
+        fresh_session.voice_handoff_expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
+        self.db.commit()
+
+        payload = start_voice_handoff(db=self.db, token="voice-handoff-fresh")
+
+        refreshed_stale = repo.get(stale_session.id)
+        refreshed_fresh = repo.get(fresh_session.id)
+        self.assertIsNotNone(refreshed_stale)
+        self.assertIsNotNone(refreshed_fresh)
+        assert refreshed_stale is not None
+        assert refreshed_fresh is not None
+        self.assertEqual(payload.get("session", {}).get("id"), fresh_session.id)
+        self.assertEqual(payload.get("session", {}).get("normalizedIntake", {}).get("company_name"), "")
+        self.assertEqual(payload.get("session", {}).get("normalizedIntake", {}).get("role_title"), "")
+        self.assertEqual(refreshed_fresh.selected_path, "voice")
+        self.assertEqual(refreshed_stale.normalized_intake.get("role_title"), "Backend Engineer")
+        self.assertEqual(refreshed_stale.selected_path, "slack")
 
     def test_orchestration_session_can_start_without_job_company_or_agency(self) -> None:
         from sqlalchemy import inspect

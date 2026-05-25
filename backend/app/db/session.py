@@ -257,6 +257,16 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_json JSON NOT NULL DEFAULT '{}'"))
             if "parsed_resume_text" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_text TEXT NOT NULL DEFAULT ''"))
+            if "ats_status" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status VARCHAR(64) NOT NULL DEFAULT 'review_pending'"))
+            if "ats_status_source" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_source VARCHAR(32) NOT NULL DEFAULT 'system'"))
+            if "ats_status_reason" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_reason TEXT NOT NULL DEFAULT ''"))
+            if "ats_status_updated_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+            if "ats_metadata" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_metadata JSON NOT NULL DEFAULT '{}'"))
 
         if "ranking_explanations" in table_names:
             ranking_columns = {column["name"] for column in inspector.get_columns("ranking_explanations")}
@@ -288,6 +298,10 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "reply_intent" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN reply_intent VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "reply_state" not in outreach_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN reply_state VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "archive_reason" not in outreach_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN archive_reason VARCHAR(255) NOT NULL DEFAULT ''"))
             if "sent_at" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN sent_at TIMESTAMPTZ NULL DEFAULT NULL"))
 
@@ -372,6 +386,10 @@ def _ensure_optional_schema_columns() -> None:
             oe_columns = {column["name"] for column in inspector.get_columns("outreach_events")}
             if "follow_up_count" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN follow_up_count INTEGER NOT NULL DEFAULT 0"))
+            if "open_count" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN open_count INTEGER NOT NULL DEFAULT 0"))
+            if "reply_count" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN reply_count INTEGER NOT NULL DEFAULT 0"))
             if "provider_message_id" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN provider_message_id VARCHAR(255) NULL DEFAULT NULL"))
             else:
@@ -380,6 +398,10 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE outreach_events ALTER COLUMN provider_message_id DROP DEFAULT"))
             if "last_contacted_at" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN last_contacted_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "last_opened_at" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN last_opened_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "last_replied_at" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN last_replied_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "next_follow_up_at" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN next_follow_up_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "message_text" not in oe_columns:
@@ -388,6 +410,12 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN resume_url VARCHAR(500) NOT NULL DEFAULT ''"))
             if "responded_at" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN responded_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "engagement_score" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN engagement_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "reply_likelihood_score" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN reply_likelihood_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
+            if "responsiveness_score" not in oe_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN responsiveness_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
             if "learning_applied" not in oe_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN learning_applied BOOLEAN NOT NULL DEFAULT FALSE"))
             if dialect == "postgresql":
@@ -405,9 +433,19 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "outreach_event_id" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN outreach_event_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "stage" not in interview_session_columns:
+                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN stage VARCHAR(64) NOT NULL DEFAULT 'requested'"))
             if "scheduled_at" not in interview_session_columns:
                 scheduled_column_type = "TIMESTAMPTZ" if dialect == "postgresql" else "DATETIME"
                 conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN scheduled_at {scheduled_column_type} NULL DEFAULT NULL"))
+            if "interviewer_metadata" not in interview_session_columns:
+                conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN interviewer_metadata JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "scheduling_metadata" not in interview_session_columns:
+                conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN scheduling_metadata JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "evaluation_status" not in interview_session_columns:
+                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN evaluation_status VARCHAR(32) NOT NULL DEFAULT 'pending'"))
+            if "evaluation_ready_at" not in interview_session_columns:
+                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN evaluation_ready_at TIMESTAMPTZ NULL DEFAULT NULL"))
             elif dialect == "postgresql":
                 result = conn.execute(text("""
                     SELECT data_type
@@ -602,6 +640,169 @@ def _ensure_optional_schema_columns() -> None:
             if "created_at" not in orchestration_event_columns:
                 conn.execute(text("ALTER TABLE orchestration_events ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
 
+        if "candidate_lifecycle_events" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE candidate_lifecycle_events (
+                        id VARCHAR(36) PRIMARY KEY,
+                        job_id VARCHAR(36) NOT NULL,
+                        company_id VARCHAR(36) NOT NULL,
+                        candidate_id VARCHAR(128) NOT NULL,
+                        from_status VARCHAR(64) NOT NULL DEFAULT '',
+                        to_status VARCHAR(64) NOT NULL DEFAULT '',
+                        source VARCHAR(32) NOT NULL DEFAULT 'system',
+                        actor_id VARCHAR(36) NULL DEFAULT NULL,
+                        transition_key VARCHAR(255) NOT NULL DEFAULT '',
+                        event_metadata JSON NOT NULL DEFAULT {json_empty_object_default},
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        CONSTRAINT uq_candidate_lifecycle_events_transition UNIQUE (job_id, candidate_id, transition_key)
+                    )
+                    """
+                )
+            )
+        else:
+            lifecycle_columns = {column["name"] for column in inspector.get_columns("candidate_lifecycle_events")}
+            if "transition_key" not in lifecycle_columns:
+                conn.execute(text("ALTER TABLE candidate_lifecycle_events ADD COLUMN transition_key VARCHAR(255) NOT NULL DEFAULT ''"))
+            if "event_metadata" not in lifecycle_columns:
+                conn.execute(text(f"ALTER TABLE candidate_lifecycle_events ADD COLUMN event_metadata JSON NOT NULL DEFAULT {json_empty_object_default}"))
+
+        if "notification_events" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE notification_events (
+                        id VARCHAR(36) PRIMARY KEY,
+                        job_id VARCHAR(36) NULL DEFAULT NULL,
+                        company_id VARCHAR(36) NULL DEFAULT NULL,
+                        candidate_id VARCHAR(128) NULL DEFAULT NULL,
+                        actor_id VARCHAR(36) NULL DEFAULT NULL,
+                        recipient_type VARCHAR(32) NOT NULL DEFAULT 'recruiter',
+                        recipient VARCHAR(255) NOT NULL DEFAULT '',
+                        channel VARCHAR(32) NOT NULL DEFAULT 'slack',
+                        title VARCHAR(255) NOT NULL DEFAULT '',
+                        body TEXT NOT NULL DEFAULT '',
+                        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                        notification_type VARCHAR(64) NOT NULL DEFAULT '',
+                        notification_key VARCHAR(255) NOT NULL DEFAULT '',
+                        delivery_reference VARCHAR(255) NOT NULL DEFAULT '',
+                        notification_metadata JSON NOT NULL DEFAULT {json_empty_object_default},
+                        delivered_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        failed_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        CONSTRAINT uq_notification_events_notification_key UNIQUE (notification_key)
+                    )
+                    """
+                )
+            )
+        else:
+            notification_columns = {column["name"] for column in inspector.get_columns("notification_events")}
+            if "notification_key" not in notification_columns:
+                conn.execute(text("ALTER TABLE notification_events ADD COLUMN notification_key VARCHAR(255) NOT NULL DEFAULT ''"))
+            if "notification_metadata" not in notification_columns:
+                conn.execute(text(f"ALTER TABLE notification_events ADD COLUMN notification_metadata JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if "delivery_reference" not in notification_columns:
+                conn.execute(text("ALTER TABLE notification_events ADD COLUMN delivery_reference VARCHAR(255) NOT NULL DEFAULT ''"))
+            if "read_at" not in notification_columns:
+                conn.execute(text("ALTER TABLE notification_events ADD COLUMN read_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "is_read" not in notification_columns:
+                conn.execute(text("ALTER TABLE notification_events ADD COLUMN is_read BOOLEAN NOT NULL DEFAULT FALSE"))
+
+        if "automation_jobs" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE automation_jobs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        job_id VARCHAR(36) NULL DEFAULT NULL,
+                        candidate_id VARCHAR(128) NULL DEFAULT NULL,
+                        automation_type VARCHAR(64) NOT NULL DEFAULT '',
+                        automation_key VARCHAR(255) NOT NULL DEFAULT '',
+                        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+                        scheduled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        started_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        completed_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        max_attempts INTEGER NOT NULL DEFAULT 3,
+                        last_error TEXT NOT NULL DEFAULT '',
+                        automation_payload JSON NOT NULL DEFAULT {json_empty_object_default},
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        CONSTRAINT uq_automation_jobs_automation_key UNIQUE (automation_key)
+                    )
+                    """
+                )
+            )
+
+        if "recruiter_notes" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE recruiter_notes (
+                        id VARCHAR(36) PRIMARY KEY,
+                        job_id VARCHAR(36) NOT NULL,
+                        candidate_id VARCHAR(128) NULL DEFAULT NULL,
+                        recruiter_id VARCHAR(36) NULL DEFAULT NULL,
+                        note_type VARCHAR(32) NOT NULL DEFAULT 'note',
+                        body TEXT NOT NULL DEFAULT '',
+                        status VARCHAR(32) NOT NULL DEFAULT 'active',
+                        metadata JSON NOT NULL DEFAULT {json_empty_object_default},
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+
+        if "recruiter_tasks" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE recruiter_tasks (
+                        id VARCHAR(36) PRIMARY KEY,
+                        job_id VARCHAR(36) NOT NULL,
+                        candidate_id VARCHAR(128) NULL DEFAULT NULL,
+                        recruiter_id VARCHAR(36) NULL DEFAULT NULL,
+                        title VARCHAR(255) NOT NULL DEFAULT '',
+                        body TEXT NOT NULL DEFAULT '',
+                        status VARCHAR(32) NOT NULL DEFAULT 'open',
+                        priority VARCHAR(16) NOT NULL DEFAULT 'normal',
+                        due_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        completed_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        metadata JSON NOT NULL DEFAULT {json_empty_object_default},
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+
+        if "interview_evaluations" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE interview_evaluations (
+                        id VARCHAR(36) PRIMARY KEY,
+                        job_id VARCHAR(36) NOT NULL,
+                        candidate_id VARCHAR(128) NOT NULL,
+                        interviewer_id VARCHAR(36) NULL DEFAULT NULL,
+                        stage_name VARCHAR(64) NOT NULL DEFAULT 'screen',
+                        status VARCHAR(32) NOT NULL DEFAULT 'draft',
+                        summary TEXT NOT NULL DEFAULT '',
+                        recommendation VARCHAR(32) NOT NULL DEFAULT '',
+                        competency_scores JSON NOT NULL DEFAULT {json_empty_object_default},
+                        notes TEXT NOT NULL DEFAULT '',
+                        metadata JSON NOT NULL DEFAULT {json_empty_object_default},
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        CONSTRAINT uq_interview_evaluations_job_candidate_stage UNIQUE (job_id, candidate_id, stage_name)
+                    )
+                    """
+                )
+            )
+
         if "ats_exports" in table_names:
             ats_columns = {column["name"] for column in inspector.get_columns("ats_exports")}
             if "candidate_id" not in ats_columns:
@@ -628,7 +829,7 @@ def _ensure_optional_schema_columns() -> None:
                 "jobs": ("created_at", "last_candidate_attempt_at"),
                 "job_intakes": ("created_at", "completed_at", "updated_at"),
                 "interviews": ("created_at",),
-                "candidate_profiles": ("last_scored_at", "last_refreshed_at"),
+                "candidate_profiles": ("last_scored_at", "last_refreshed_at", "ats_status_updated_at"),
                 "scoring_profiles": ("updated_at",),
                 "candidate_feedback": ("updated_at", "created_at"),
                 "ats_exports": ("exported_at",),
@@ -636,6 +837,8 @@ def _ensure_optional_schema_columns() -> None:
                     "sent_at",
                     "last_sent_at",
                     "last_contacted_at",
+                    "last_opened_at",
+                    "last_replied_at",
                     "next_follow_up_at",
                     "responded_at",
                     "updated_at",
@@ -643,6 +846,13 @@ def _ensure_optional_schema_columns() -> None:
                 ),
                 "otps": ("expires_at", "created_at"),
                 "ats_export_retries": ("next_retry_at", "created_at", "updated_at"),
+                "notification_events": ("delivered_at", "failed_at", "created_at", "updated_at"),
+                "candidate_lifecycle_events": ("created_at",),
+                "interview_sessions": ("scheduled_at", "booked_at", "created_at", "evaluation_ready_at"),
+                "automation_jobs": ("scheduled_at", "started_at", "completed_at", "created_at", "updated_at"),
+                "recruiter_notes": ("created_at", "updated_at"),
+                "recruiter_tasks": ("due_at", "completed_at", "created_at", "updated_at"),
+                "interview_evaluations": ("created_at", "updated_at"),
             }
             for table_name, columns in timestamptz_columns.items():
                 if table_name not in table_names:

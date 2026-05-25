@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import INTERVIEW_SESSION_TTL_MINUTES, PUBLIC_APP_URL
 from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository
+from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.candidate_service import ensure_candidate_email
 from app.services.lifecycle_service import record_job_lifecycle_event
+from app.services.outreach_service import _record_notification
 from app.services.notification_service import build_slot_booking_payload, upsert_notification_workflow_token
 from app.services.interview_link_providers import get_interview_link
 from app.services.metrics_service import log_metric
@@ -21,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _legacy_booking_url(token: str) -> str:
-    return f"https://interview.pontis.one/booking.html?token={token}"
+    return f"https://interviewtesting-production.up.railway.app/interview?token={token}"
 
 
 def _utc_isoformat(value: datetime | None) -> str | None:
@@ -174,6 +176,8 @@ def create_interview_session(
         booking_url=booking_link,
         outreach_event_id=outreach_event_id,
     )
+    row.stage = "requested"
+    row.scheduling_metadata = {"sourceApp": source_app, "bookingLink": booking_link, "outreachEventId": outreach_event_id}
     booking_link = row.booking_url or _legacy_booking_url(token)
     db.commit()
     logger.info("interview_session_created job_id=%s candidate_id=%s token=%s", job_id, candidate_id, token)
@@ -189,6 +193,29 @@ def create_interview_session(
             "scheduledAt": None,
         },
         source="interview",
+    )
+    transition_candidate_ats_state(
+        db=db,
+        job_id=job_id,
+        candidate_id=candidate_id,
+        to_status="interview_requested",
+        source="interview",
+        reason="interview_session_created",
+        metadata={"token": token, "outreachEventId": outreach_event_id},
+    )
+    _record_notification(
+        db=db,
+        job_id=job_id,
+        candidate_id=candidate_id,
+        notification_type="interview_requested",
+        recipient_type="candidate",
+        recipient=email,
+        channel="email",
+        title="Interview request",
+        body=booking_link,
+        status="delivered",
+        delivery_reference=token,
+        metadata={"bookingLink": booking_link, "source": source_app},
     )
     return _session_payload(row=row, booking_link=booking_link)
 
@@ -227,11 +254,19 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
     if not row:
         raise APIError("Interview session not found", status_code=404)
     row.scheduled_at = scheduled_at_value
+    row.stage = "scheduled"
+    row.evaluation_status = "pending"
+    row.scheduling_metadata = {
+        **dict(row.scheduling_metadata or {}),
+        "scheduledAt": _utc_isoformat(row.scheduled_at),
+        "bookingConfirmedAt": _utc_isoformat(row.booked_at),
+    }
 
     job = JobRepository(db).get(row.job_id)
     profile = CandidateProfileRepository(db).get(job_id=row.job_id, candidate_id=row.candidate_id)
     scheduled_time = _utc_isoformat(row.scheduled_at) or _utc_isoformat(row.booked_at)
     meeting_link = get_interview_link(profile, job, scheduled_time) if job and profile else ""
+    meeting_link = f"https://interviewtesting-production.up.railway.app/interview?token={row.token}"
 
     InterviewRepository(db).upsert_status(job_id=row.job_id, candidate_id=row.candidate_id, status="booked")
     consumed_token = NotificationWorkflowTokenRepository(db).mark_consumed(token=token, source_app="adam")
@@ -246,6 +281,29 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
             [],
             signal_multiplier=3.0,
         )
+    transition_candidate_ats_state(
+        db=db,
+        job_id=row.job_id,
+        candidate_id=row.candidate_id,
+        to_status="interview_scheduled",
+        source="interview",
+        reason="booking_confirmed",
+        metadata={"scheduledAt": _utc_isoformat(row.scheduled_at), "meetingLink": meeting_link},
+    )
+    _record_notification(
+        db=db,
+        job_id=row.job_id,
+        candidate_id=row.candidate_id,
+        notification_type="interview_scheduled",
+        recipient_type="recruiter",
+        recipient=str(recruiter_id or ""),
+        channel="slack",
+        title="Interview scheduled",
+        body=meeting_link,
+        status="delivered",
+        delivery_reference=token,
+        metadata={"scheduledAt": _utc_isoformat(row.scheduled_at), "meetingLink": meeting_link},
+    )
     db.commit()
     logger.info("interview_session_booked job_id=%s candidate_id=%s token=%s", row.job_id, row.candidate_id, token)
     log_metric("interview_booked", job_id=row.job_id, candidate_id=row.candidate_id)
@@ -262,6 +320,17 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         },
         source="interview",
     )
+    transition_candidate_ats_state(
+        db=db,
+        job_id=row.job_id,
+        candidate_id=row.candidate_id,
+        to_status="interview_completed",
+        source="interview",
+        reason="booking_completed",
+        metadata={"scheduledAt": _utc_isoformat(row.scheduled_at), "meetingLink": meeting_link},
+    )
+    row.stage = "completed"
+    row.evaluation_ready_at = datetime.now(timezone.utc)
     return {
         "token": row.token,
         "status": row.status,

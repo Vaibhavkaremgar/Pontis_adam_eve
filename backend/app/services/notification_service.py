@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.db.repositories import NotificationWorkflowTokenRepository
 
-BOOKING_BASE_URL = "https://interview.pontis.one/booking.html"
+BOOKING_BASE_URL = "https://interviewtesting-production.up.railway.app/interview"
 
 
 def _normalize_text(value: Any) -> str:

@@ -38,6 +38,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
+import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
 import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
 import { sendOutreach } from "@/lib/api/outreach";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
@@ -49,6 +50,10 @@ function statusLabel(candidate: Candidate): string {
   if (candidate.status === "shortlisted") return "Selected";
   if (candidate.status === "rejected") return "Rejected";
   return "Awaiting choice";
+}
+
+function atsStatusLabel(candidate: Candidate): string {
+  return (candidate.ats_status || candidate.status || "review_pending").replace(/_/g, " ");
 }
 
 function candidateSubtitle(candidate: Candidate): string {
@@ -711,6 +716,32 @@ function CandidateListRow({
   );
 }
 
+function TimelineList({ items }: { items: any[] }) {
+  if (items.length === 0) {
+    return <p className="text-sm text-gray-500">No ATS events recorded yet.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {items.slice(0, 8).map((item, index) => (
+        <div key={`${String(item.type || "event")}-${String(item.createdAt || index)}`} className="rounded-xl border border-[#ECE7DE] bg-white p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Badge variant="neutral">{String(item.type || "event").replace(/_/g, " ")}</Badge>
+            <span className="text-xs text-gray-500">{String(item.createdAt || "")}</span>
+          </div>
+          <p className="mt-2 text-sm font-medium text-gray-900">
+            {item.toStatus ? `Moved to ${String(item.toStatus).replace(/_/g, " ")}` : item.status ? String(item.status).replace(/_/g, " ") : "Recorded event"}
+          </p>
+          <p className="text-xs text-gray-600">
+            {item.source ? `Source: ${String(item.source).replace(/_/g, " ")}` : ""}
+            {item.channel ? ` ${item.channel}` : ""}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ReviewPage() {
   const router = useRouter();
   const { user, isSessionReady, jobId, isRefined } = useAppContext();
@@ -729,6 +760,10 @@ export default function ReviewPage() {
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
   const [finalShortlistedIds, setFinalShortlistedIds] = useState<string[]>([]);
+  const [candidateTimeline, setCandidateTimeline] = useState<any[]>([]);
+  const [candidateNotifications, setCandidateNotifications] = useState<any[]>([]);
+  const [isTimelineLoading, setIsTimelineLoading] = useState(false);
+  const [timelineError, setTimelineError] = useState("");
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -796,6 +831,50 @@ export default function ReviewPage() {
       cancelled = true;
     };
   }, [isSessionReady, jobId, user]);
+
+  useEffect(() => {
+    if (!isSessionReady || !user || !jobId || !activeCandidate) {
+      setCandidateTimeline([]);
+      setCandidateNotifications([]);
+      setTimelineError("");
+      return;
+    }
+
+    let cancelled = false;
+    const loadTimeline = async () => {
+      setIsTimelineLoading(true);
+      setTimelineError("");
+
+      const [timelineResult, notificationsResult] = await Promise.all([
+        getCandidateAtsTimeline(jobId, activeCandidate.id),
+        getJobAtsNotifications(jobId),
+      ]);
+
+      if (cancelled) return;
+
+      if (timelineResult.success && timelineResult.data) {
+        setCandidateTimeline(timelineResult.data);
+      } else {
+        setCandidateTimeline([]);
+        setTimelineError(timelineResult.error || "Could not load ATS timeline.");
+      }
+
+      if (notificationsResult.success && notificationsResult.data) {
+        setCandidateNotifications(
+          notificationsResult.data.filter((item) => !item.candidateId || item.candidateId === activeCandidate.id)
+        );
+      } else {
+        setCandidateNotifications([]);
+      }
+
+      setIsTimelineLoading(false);
+    };
+
+    void loadTimeline();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCandidate, isSessionReady, jobId, user]);
 
   const currentBatch = session?.currentBatch ?? [];
   const completed = Boolean(session?.completed);
@@ -1320,9 +1399,9 @@ export default function ReviewPage() {
                   disabled={shortlistedCount === 0 || isAdvancing || isContinuingToOutreach}
                 >
                   {isContinuingToOutreach
-                    ? "Preparing shortlist..."
+                    ? "Preparing handoff..."
                     : shortlistedCount > 0
-                      ? "Continue to Outreach"
+                      ? "Continue to Ready"
                       : "Select candidates to continue"}
                 </Button>
                 <Button variant="outline" className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white text-[15px] font-semibold text-[#111827]" onClick={() => void refreshFinalResults()}>
@@ -1348,6 +1427,57 @@ export default function ReviewPage() {
             {activeCandidate && (
               <div className="max-h-[78vh] space-y-5 overflow-y-auto pr-1">
                 <CandidateDetails candidate={activeCandidate} />
+
+                <div className="rounded-[18px] border border-[#ECE7DE] bg-[#FBF8F1] p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">ATS status</p>
+                      <h3 className="mt-1 font-heading text-[18px] font-semibold text-[#111827]">{atsStatusLabel(activeCandidate)}</h3>
+                      <p className="mt-1 text-sm text-[#6B7280]">
+                        {activeCandidate.ats_status_reason || "Canonical ATS state tracked through orchestration and review."}
+                      </p>
+                    </div>
+                    <div className="text-right text-xs text-[#6B7280]">
+                      <p>Source: {activeCandidate.ats_status_source || "system"}</p>
+                      <p>Updated: {activeCandidate.ats_status_updated_at || "n/a"}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="font-body text-sm font-semibold text-[#111827]">Candidate timeline</h4>
+                        {isTimelineLoading ? <span className="text-xs text-gray-500">Loading...</span> : null}
+                      </div>
+                      <div className="mt-3">
+                        {timelineError ? <p className="text-sm text-red-600">{timelineError}</p> : <TimelineList items={candidateTimeline} />}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="font-body text-sm font-semibold text-[#111827]">Notifications</h4>
+                        <span className="text-xs text-gray-500">{candidateNotifications.length} items</span>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {candidateNotifications.length === 0 ? (
+                          <p className="text-sm text-gray-500">No recruiter or candidate notifications yet.</p>
+                        ) : (
+                          candidateNotifications.slice(0, 5).map((item) => (
+                            <div key={String(item.id)} className="rounded-xl border border-[#ECE7DE] bg-[#FBF8F1] p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <Badge variant="neutral">{String(item.channel || "notification")}</Badge>
+                                <span className="text-xs text-gray-500">{String(item.createdAt || "")}</span>
+                              </div>
+                              <p className="mt-2 text-sm font-medium text-gray-900">{String(item.title || "")}</p>
+                              <p className="text-xs text-gray-600">{String(item.status || "")}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
                 <div className="flex flex-col gap-3 md:flex-row">
                   <Button
