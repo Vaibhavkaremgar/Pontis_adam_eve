@@ -518,6 +518,112 @@ class IntegrationTests(unittest.TestCase):
         self.assertFalse(result.get("duplicate", False))
         self.assertEqual(result.get("nextQuestionKey"), "role_title")
 
+    def test_process_slack_answer_advances_success_profile_reply(self) -> None:
+        from app.services.orchestration_service import process_slack_answer
+        from app.db.repositories import OrchestrationSessionRepository
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="advance-success-profile-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-SUCCESS",
+            slack_channel_id="C-SUCCESS",
+            slack_thread_ts="1716612345.150000",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="What kind of person succeeds in this role?",
+            current_question_key="success_profile",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "PONTIS",
+                "role_title": "Frontend Developer",
+                "must_have_requirements": ["React", "TypeScript"],
+                "success_profile": "",
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-SUCCESS", "channelId": "C-SUCCESS", "threadTs": "1716612345.150000", "userId": self.user.id},
+        )
+
+        result = process_slack_answer(
+            db=self.db,
+            slack_team_id="T-SUCCESS",
+            slack_channel_id="C-SUCCESS",
+            slack_user_id=self.user.id,
+            thread_ts="1716612345.150000",
+            answer="A strong communicator who collaborates well with product and engineering",
+            timestamp="1716612345.250000",
+        )
+
+        refreshed = repo.get(session.id)
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        self.assertEqual(
+            refreshed.normalized_intake.get("success_profile"),
+            "A strong communicator who collaborates well with product and engineering",
+        )
+        self.assertEqual(refreshed.current_question_key, "compensation")
+        self.assertIn("What compensation range are you targeting?", refreshed.current_question)
+        self.assertFalse(result.get("duplicate", False))
+        self.assertEqual(result.get("nextQuestionKey"), "compensation")
+
+    def test_generate_adaptive_question_prioritizes_remaining_core_sequence(self) -> None:
+        from app.services import orchestration_service as orchestration_module
+        from app.services.orchestration_service import _generate_adaptive_question
+
+        intake = {
+            "company_name": "PONTIS",
+            "role_title": "Frontend Developer",
+            "must_have_requirements": ["React", "TypeScript"],
+            "success_profile": "strong communicator who collaborates well with product and engineering",
+            "skills": [],
+            "seniority": "",
+            "location": "",
+            "compensation": "",
+            "hiring_signals": [],
+            "tech_stack": [],
+            "hiring_priorities": [],
+            "culture_fit": "",
+            "communication_style": "",
+            "team_maturity": "",
+            "leadership_expectations": "",
+            "architecture_complexity": "",
+            "urgency": "",
+            "team_structure": "",
+            "stakeholder_management": "",
+        }
+
+        def fake_generate(*args, **kwargs):
+            return {"question": "What culture matters most for this team?", "question_key": "culture_fit", "confidence": 0.91}
+
+        with patch.object(orchestration_module, "generate", side_effect=fake_generate):
+            key, question, confidence = _generate_adaptive_question(
+                intake,
+                recent_conversation=[],
+                current_question_key="success_profile",
+            )
+
+        self.assertEqual(key, "compensation")
+        self.assertEqual(question, "What compensation range are you targeting?")
+        self.assertEqual(confidence, 1.0)
+
     def test_process_slack_answer_dedupes_replay_same_timestamp(self) -> None:
         from app.services.orchestration_service import process_slack_answer
         from app.db.repositories import OrchestrationSessionRepository

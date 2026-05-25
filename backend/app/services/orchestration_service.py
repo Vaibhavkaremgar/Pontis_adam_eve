@@ -74,6 +74,7 @@ INTAKE_FIELDS: list[str] = [
     "company_name",
     "role_title",
     "must_have_requirements",
+    "success_profile",
     "skills",
     "seniority",
     "location",
@@ -128,6 +129,14 @@ INTAKE_QUESTION_REGISTRY: dict[str, IntakeQuestionSpec] = {
         required=True,
         min_confidence=0.7,
         max_items=12,
+    ),
+    "success_profile": IntakeQuestionSpec(
+        key="success_profile",
+        field_name="success_profile",
+        question_type="text",
+        prompt="What kind of person succeeds in this role?",
+        required=True,
+        min_confidence=0.55,
     ),
     "skills": IntakeQuestionSpec(
         key="skills",
@@ -279,15 +288,7 @@ INTAKE_QUESTION_REGISTRY: dict[str, IntakeQuestionSpec] = {
     ),
 }
 
-CORE_QUESTION_SEQUENCE: list[str] = [
-    "company_name",
-    "role_title",
-    "must_have_requirements",
-    "skills",
-    "seniority",
-    "location",
-    "compensation",
-]
+CORE_QUESTION_SEQUENCE: list[str] = [key for key, _, _ in CORE_QUESTION_PLAN]
 
 FOLLOWUP_QUESTION_BANK: list[tuple[str, str]] = [
     ("startup_ownership", INTAKE_QUESTION_REGISTRY["startup_ownership"].prompt),
@@ -480,6 +481,8 @@ def _normalize_field_value(field_name: str, answer: str) -> tuple[Any, bool, flo
         if not values:
             return [], False, 0.0, "empty_list"
         return values, True, 0.8 if len(values) > 1 else 0.72, ""
+    if field_name in {"success_profile", "culture_fit", "communication_style", "team_maturity", "leadership_expectations", "architecture_complexity", "urgency", "team_structure", "stakeholder_management"}:
+        return text, True, 0.65 if len(text) > 8 else 0.58, ""
     if field_name == "location":
         normalized, accepted = _parse_location(text)
         return normalized, accepted, 0.85 if accepted else 0.25, "" if accepted else "answer_not_location"
@@ -568,6 +571,7 @@ def _initial_intake_state() -> dict[str, Any]:
         "company_name": "",
         "role_title": "",
         "must_have_requirements": [],
+        "success_profile": "",
         "skills": [],
         "seniority": "",
         "location": "",
@@ -645,6 +649,7 @@ def _completed_score(intake: dict[str, Any]) -> float:
         "company_name",
         "role_title",
         "must_have_requirements",
+        "success_profile",
         "skills",
         "seniority",
         "location",
@@ -677,6 +682,8 @@ def _missing_fields(intake: dict[str, Any]) -> list[str]:
         missing.append("role_title")
     if not _normalize_list(intake.get("must_have_requirements")):
         missing.append("must_have_requirements")
+    if not _normalize_text(intake.get("success_profile")):
+        missing.append("success_profile")
     if not _normalize_list(intake.get("skills")):
         missing.append("skills")
     if not _normalize_text(intake.get("seniority")):
@@ -764,6 +771,7 @@ def _build_followup_prompt(*, intake: dict[str, Any], recent_conversation: list[
         "company_name": intake.get("company_name", ""),
         "role_title": intake.get("role_title", ""),
         "must_have_requirements": intake.get("must_have_requirements", []),
+        "success_profile": intake.get("success_profile", ""),
         "skills": intake.get("skills", []),
         "seniority": intake.get("seniority", ""),
         "location": intake.get("location", ""),
@@ -816,6 +824,12 @@ def _generate_adaptive_question(
         field_name = spec.field_name
         if field_name in INTAKE_FIELDS and not _normalize_text(intake.get(field_name)) and not _normalize_list(intake.get(field_name)):
             return spec.key, spec.prompt, spec.min_confidence
+    missing = _missing_fields(intake)
+    for key in CORE_QUESTION_SEQUENCE:
+        if key in missing:
+            for plan_key, plan_question, _field in CORE_QUESTION_PLAN:
+                if plan_key == key:
+                    return plan_key, plan_question, 1.0
     if GROQ_API_KEY:
         try:
             payload = generate(_build_followup_prompt(intake=intake, recent_conversation=recent_conversation), expect_json=True)
@@ -824,8 +838,6 @@ def _generate_adaptive_question(
                 return parsed
         except Exception as exc:
             logger.warning("orchestration_followup_llm_failed error=%s", str(exc))
-
-    missing = _missing_fields(intake)
     for key, question in FOLLOWUP_QUESTION_BANK:
         if key in missing:
             return key, question, 0.55
