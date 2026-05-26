@@ -28,6 +28,7 @@ from app.core.config import (
     RANKING_WEIGHTS,
     SCORING_DEFAULT_MODE,
     SERPAPI_ENABLED,
+    SERPAPI_MAX_PAGES,
 )
 from app.db.repositories import (
     ATSExportRepository,
@@ -2858,16 +2859,18 @@ def fetch_ranked_candidates(
 
     if SOURCE_PROVIDER == "xray_apollo":
         try:
+            xray_target_limit = max(30, mode_config.top_k)
             xray_candidates = discover_xray_candidates(
                 job=job,
                 intake=getattr(job, "structured_data", None) or {},
-                limit=max(mode_config.top_k, 12),
+                limit=max(xray_target_limit * 3, 90),
+                pages_per_query=SERPAPI_MAX_PAGES,
                 recruiter_preferences=recruiter_preferences,
             )
             xray_results = build_xray_candidate_results(
                 job=job,
                 candidates=xray_candidates,
-                limit=max(mode_config.top_k, 12),
+                limit=xray_target_limit,
             )
             try:
                 xray_results = rerank_xray_candidates(
@@ -2877,6 +2880,7 @@ def fetch_ranked_candidates(
                     recruiter_id=recruiter_id,
                     source_query=(getattr(job, "title", "") or getattr(job, "role", "") or "").strip(),
                 )
+                xray_results = xray_results[:xray_target_limit]
                 logger.info(
                     "[semantic_rerank] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=applied",
                     job.id,

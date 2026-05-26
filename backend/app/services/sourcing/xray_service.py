@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.config import APOLLO_ENRICHMENT_ENABLED, SERPAPI_ENABLED, SOURCE_PROVIDER, XRAY_ENABLED
+from app.core.config import APOLLO_ENRICHMENT_ENABLED, SERPAPI_MAX_PAGES, SERPAPI_ENABLED, SOURCE_PROVIDER, XRAY_ENABLED
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.identity.candidate_identity_service import build_candidate_identity, normalize_linkedin_url
 from app.services.metrics_service import log_metric
@@ -47,6 +48,129 @@ def _job_skills(job: Any) -> list[str]:
     return []
 
 
+XRAY_TARGET_COUNT = 30
+XRAY_STRONG_MATCH_THRESHOLD = 4.0
+XRAY_HIGH_WATERMARK_THRESHOLD = 4.5
+
+
+def _candidate_identity_key(candidate: dict[str, Any]) -> str:
+    identity = build_candidate_identity(
+        candidate=candidate,
+        source_provider="xray_apollo",
+        source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""),
+    )
+    return (identity.identity_fingerprint or identity.canonical_linkedin_url or identity.normalized_name or _normalize_text(candidate.get("id") or candidate.get("name") or "")).strip().lower()
+
+
+def _broaden_intake(intake: dict[str, Any] | None, *, variant: int) -> dict[str, Any]:
+    payload = dict(intake or {})
+    if variant <= 0:
+        return payload
+    if variant == 1:
+        payload.pop("company_stage", None)
+        payload.pop("hiring_preferences", None)
+        payload.pop("industry", None)
+        payload.pop("leadership_expectations", None)
+        return payload
+    payload["skills"] = []
+    payload.pop("company_stage", None)
+    payload.pop("hiring_preferences", None)
+    payload.pop("industry", None)
+    payload.pop("leadership_expectations", None)
+    return payload
+
+
+def _trim_recruiter_preferences(recruiter_preferences: dict[str, Any] | None, *, variant: int) -> dict[str, Any]:
+    prefs = dict(recruiter_preferences or {})
+    if variant <= 0:
+        return prefs
+    preferred_keys = {
+        "top_roles",
+        "role_tokens",
+        "top_skills",
+        "skill_tokens",
+        "top_experience",
+        "experience_tokens",
+        "preferred_technical_strengths",
+        "preferredTechnicalStrengths",
+    }
+    if variant == 1:
+        return {key: value for key, value in prefs.items() if key in preferred_keys}
+    return {}
+
+
+def _dedupe_candidates(*candidate_groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in candidate_groups:
+        for candidate in group:
+            key = _candidate_identity_key(candidate)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(candidate)
+    return merged
+
+
+_ROLE_KEYWORDS = (
+    "engineer",
+    "developer",
+    "architect",
+    "platform",
+    "backend",
+    "frontend",
+    "full stack",
+    "fullstack",
+    "infra",
+    "infrastructure",
+    "systems",
+    "staff",
+    "senior",
+    "principal",
+    "lead",
+    "manager",
+    "ml",
+    "machine learning",
+    "data",
+    "product",
+    "security",
+    "devops",
+    "cloud",
+)
+
+
+def _extract_candidate_role(*values: Any) -> str:
+    cleaned_values = [_normalize_text(value) for value in values if _normalize_text(value)]
+    if not cleaned_values:
+        return ""
+
+    for value in cleaned_values:
+        parts = [part.strip() for part in re.split(r"\s*[|•–—-]\s*", value) if part.strip()]
+        role_parts: list[str] = []
+        for part in parts:
+            lowered = part.lower()
+            if "linkedin" in lowered or lowered.startswith("http"):
+                continue
+            if any(keyword in lowered for keyword in _ROLE_KEYWORDS):
+                role_parts.append(part)
+        if role_parts:
+            role = " - ".join(role_parts[:2]).strip()
+            if role:
+                return role
+
+    for value in cleaned_values:
+        parts = [part.strip() for part in re.split(r"\s*[|•–—-]\s*", value) if part.strip()]
+        if len(parts) >= 2:
+            middle_parts = [part for part in parts[1:] if "linkedin" not in part.lower() and not part.lower().startswith("http")]
+            if middle_parts:
+                return " - ".join(middle_parts[:2]).strip()
+
+    for value in cleaned_values:
+        if "linkedin" not in value.lower() and not value.lower().startswith("http"):
+            return value
+    return ""
+
+
 def _score_candidate(job: Any, candidate: dict[str, Any]) -> tuple[float, float, float, float]:
     job_title = _normalize_text(getattr(job, "title", "") or getattr(job, "role", "") or "")
     job_location = _normalize_text(getattr(job, "location", "") or "")
@@ -72,17 +196,26 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
     identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
     title_signal, skill_signal, location_signal, company_signal = _score_candidate(job, candidate)
     raw_score = float(candidate.get("score") or 0.0)
-    final_score = max(0.0, min(1.0, (raw_score * 0.5) + (title_signal * 0.2) + (skill_signal * 0.2) + (location_signal * 0.05) + company_signal))
+    query_alignment = 0.15 if title_signal >= 0.45 else 0.0
+    final_score = max(0.0, min(1.0, (raw_score * 0.3) + (title_signal * 0.35) + (skill_signal * 0.25) + (location_signal * 0.05) + company_signal + query_alignment))
     fit_score = round(final_score * 5.0, 2)
     skills = list(candidate.get("skills") or [])
     company = _normalize_text(candidate.get("current_company") or candidate.get("company") or candidate.get("job_company_name") or "")
-    title = _normalize_text(candidate.get("title") or candidate.get("headline") or candidate.get("job_title") or getattr(job, "title", "") or "")
+    role = _extract_candidate_role(
+        candidate.get("role"),
+        candidate.get("headline"),
+        candidate.get("title"),
+        candidate.get("job_title"),
+        candidate.get("snippet"),
+        candidate.get("displayed_link"),
+    ) or _normalize_text(candidate.get("role") or candidate.get("headline") or candidate.get("title") or candidate.get("job_title") or "")
+    title = _normalize_text(candidate.get("name") or candidate.get("full_name") or role or "")
     linkedin_url = normalize_linkedin_url(candidate.get("linkedin_url") or candidate.get("linkedinUrl") or "")
     source_query = _normalize_text(candidate.get("source_query") or candidate.get("sourceQuery") or candidate.get("search_query") or "")
     source_timestamp = _normalize_text(candidate.get("source_timestamp") or candidate.get("sourceTimestamp") or datetime.now(timezone.utc).isoformat())
     source_provider = _normalize_text(candidate.get("source_provider") or candidate.get("sourceProvider") or "xray_apollo") or "xray_apollo"
     location = _normalize_text(candidate.get("location") or "")
-    summary = _normalize_text(candidate.get("snippet") or candidate.get("summary") or candidate.get("displayed_link") or candidate.get("search_query") or "")
+    summary = _normalize_text(candidate.get("snippet") or candidate.get("summary") or "")
     experience = _normalize_text(candidate.get("inferred_experience") or candidate.get("experience") or getattr(job, "experience_required", "") or "")
 
     explanation = CandidateExplanation(
@@ -109,11 +242,11 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
     return CandidateResult(
         id=linkedin_url or candidate.get("id") or f"xray-{index}",
         name=_normalize_text(candidate.get("name") or candidate.get("full_name") or title or "Unknown Candidate"),
-        role=title or getattr(job, "title", "") or "Unknown Role",
+        role=role or "Unknown Role",
         company=company or "",
         email="",
         isMockEmail=False,
-        headline=title or company,
+        headline=role or company,
         location=location,
         yearsExperience=0.0,
         skills=skills,
@@ -174,47 +307,91 @@ def discover_xray_candidates(
         logger.info("[xray] skipped enabled=%s serpapi_enabled=%s", XRAY_ENABLED, SERPAPI_ENABLED)
         return []
 
+    effective_limit = max(1, int(limit))
+    max_pages = max(1, min(int(pages_per_query), SERPAPI_MAX_PAGES))
+    job_id = getattr(job, "id", "")
+    role = _normalize_text((intake or {}).get("role") or getattr(job, "title", "") or "")
     logger.info(
         "[xray] discovery_started job_id=%s role=%s limit=%s pages_per_query=%s apollo_enrichment_enabled=%s",
-        getattr(job, "id", ""),
-        _normalize_text(getattr(job, "title", "")),
-        limit,
-        pages_per_query,
+        job_id,
+        role,
+        effective_limit,
+        max_pages,
         APOLLO_ENRICHMENT_ENABLED,
     )
     log_metric(
         "xray_discovery_started",
-        job_id=getattr(job, "id", ""),
-        limit=limit,
-        pages_per_query=pages_per_query,
+        job_id=job_id,
+        limit=effective_limit,
+        pages_per_query=max_pages,
     )
 
-    queries = build_linkedin_xray_queries(
-        role=_normalize_text((intake or {}).get("role") or getattr(job, "title", "") or ""),
-        seniority=_normalize_text((intake or {}).get("seniority") or getattr(job, "experience_level", "") or ""),
-        skills=[str(skill).strip() for skill in ((intake or {}).get("skills") or []) if str(skill).strip()] if isinstance((intake or {}).get("skills"), list) else [token.strip() for token in _normalize_text((intake or {}).get("skills") or "").split(",") if token.strip()],
-        location=_normalize_text((intake or {}).get("location") or getattr(job, "location", "") or ""),
-        company_stage=_normalize_text((intake or {}).get("company_stage") or ""),
-        hiring_preferences=_normalize_text((intake or {}).get("hiring_preferences") or ""),
-        industry=_normalize_text((intake or {}).get("industry") or ""),
-        leadership_expectations=_normalize_text((intake or {}).get("leadership_expectations") or ""),
-        recruiter_preferences=recruiter_preferences,
-    )
-    for query in queries:
-        logger.info("[xray_query] job_id=%s query=%s", getattr(job, "id", ""), query)
+    raw_candidates: list[dict[str, Any]] = []
+    passed_variants: list[tuple[str, dict[str, Any], dict[str, Any]]] = [
+        ("strict", dict(intake or {}), dict(recruiter_preferences or {})),
+        ("balanced", _broaden_intake(intake, variant=1), _trim_recruiter_preferences(recruiter_preferences, variant=1)),
+        ("broad", _broaden_intake(intake, variant=2), _trim_recruiter_preferences(recruiter_preferences, variant=2)),
+    ]
 
-    candidates = discover_linkedin_xray_candidates(
-        job=job,
-        intake=intake,
-        limit=limit,
-        pages_per_query=pages_per_query,
-        recruiter_preferences=recruiter_preferences,
-    )
+    for pass_index, (label, intake_variant, preference_variant) in enumerate(passed_variants, start=1):
+        if len(raw_candidates) >= effective_limit:
+            break
 
-    seen: set[str] = set()
+        queries = build_linkedin_xray_queries(
+            role=_normalize_text(intake_variant.get("role") or getattr(job, "title", "") or ""),
+            seniority=_normalize_text(intake_variant.get("seniority") or getattr(job, "experience_level", "") or ""),
+            skills=[str(skill).strip() for skill in ((intake_variant or {}).get("skills") or []) if str(skill).strip()] if isinstance((intake_variant or {}).get("skills"), list) else [token.strip() for token in _normalize_text((intake_variant or {}).get("skills") or "").split(",") if token.strip()],
+            location=_normalize_text(intake_variant.get("location") or getattr(job, "location", "") or ""),
+            company_stage=_normalize_text(intake_variant.get("company_stage") or ""),
+            hiring_preferences=_normalize_text(intake_variant.get("hiring_preferences") or ""),
+            industry=_normalize_text(intake_variant.get("industry") or ""),
+            leadership_expectations=_normalize_text(intake_variant.get("leadership_expectations") or ""),
+            recruiter_preferences=preference_variant,
+        )
+        for query in queries:
+            logger.info("[xray_query] job_id=%s pass=%s query=%s", job_id, label, query)
+
+        candidates = discover_linkedin_xray_candidates(
+            job=job,
+            intake=intake_variant,
+            limit=max(effective_limit * 3, 90),
+            pages_per_query=max_pages,
+            recruiter_preferences=preference_variant,
+        )
+        raw_candidates = _dedupe_candidates(raw_candidates, candidates)
+        strong_preview = build_xray_candidate_results(job=job, candidates=raw_candidates, limit=max(effective_limit, XRAY_TARGET_COUNT))
+        strong_count = sum(1 for candidate in strong_preview if candidate.fitScore >= XRAY_STRONG_MATCH_THRESHOLD)
+
+        logger.info(
+            "[xray_pass] job_id=%s pass=%s raw_count=%s preview_count=%s strong_count=%s target=%s",
+            job_id,
+            label,
+            len(raw_candidates),
+            len(strong_preview),
+            strong_count,
+            XRAY_TARGET_COUNT,
+        )
+        log_metric(
+            "xray_pass_complete",
+            job_id=job_id,
+            pass_name=label,
+            raw_count=len(raw_candidates),
+            preview_count=len(strong_preview),
+            strong_count=strong_count,
+        )
+
+        if strong_count >= XRAY_TARGET_COUNT or any(candidate.fitScore >= XRAY_HIGH_WATERMARK_THRESHOLD for candidate in strong_preview):
+            break
+
+    if not raw_candidates:
+        logger.info("[xray_candidate_count] job_id=%s raw=0 deduped=0", job_id)
+        log_metric("xray_candidates_found", job_id=job_id, count=0)
+        return []
+
     normalized: list[dict[str, Any]] = []
-    for candidate in candidates:
-        identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=queries[0] if queries else "")
+    seen: set[str] = set()
+    for candidate in raw_candidates:
+        identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
         linkedin_url = identity.canonical_linkedin_url
         key = identity.identity_fingerprint or linkedin_url.lower() or identity.normalized_name.lower()
         if key and key in seen:
@@ -241,9 +418,9 @@ def discover_xray_candidates(
             }
         )
 
-    logger.info("[xray_candidate_count] job_id=%s raw=%s deduped=%s", getattr(job, "id", ""), len(candidates), len(normalized))
-    logger.info("[xray_deduped] job_id=%s count=%s", getattr(job, "id", ""), len(normalized))
-    log_metric("xray_candidates_found", job_id=getattr(job, "id", ""), count=len(normalized))
+    logger.info("[xray_candidate_count] job_id=%s raw=%s deduped=%s", job_id, len(raw_candidates), len(normalized))
+    logger.info("[xray_deduped] job_id=%s count=%s", job_id, len(normalized))
+    log_metric("xray_candidates_found", job_id=job_id, count=len(normalized))
     return normalized
 
 
@@ -255,4 +432,5 @@ def build_xray_candidate_results(
 ) -> list[CandidateResult]:
     ranked = [_build_preview_result(job=job, candidate=candidate, index=index) for index, candidate in enumerate(candidates, start=1)]
     ranked.sort(key=ranked_candidate_sort_key)
-    return ranked[: max(1, limit)]
+    strong = [candidate for candidate in ranked if candidate.fitScore >= XRAY_STRONG_MATCH_THRESHOLD]
+    return (strong or ranked)[: max(1, limit)]

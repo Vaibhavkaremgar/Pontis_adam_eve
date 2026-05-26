@@ -55,9 +55,6 @@ export function Navbar() {
           )}
 
           <Link href="/company" className="flex items-center gap-3 text-[#111827]">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[rgba(95,74,49,0.14)] bg-[#F6F0E6] font-heading text-2xl font-semibold leading-none text-[#111827] shadow-[0_2px_8px_rgba(0,0,0,0.04)]">
-              P
-            </div>
             <span className="font-heading text-[30px] font-semibold leading-none tracking-[-0.02em] text-[#111827]">
               Pontis
             </span>

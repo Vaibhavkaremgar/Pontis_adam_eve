@@ -44,6 +44,32 @@ _TITLE_ROLE_STOPWORDS = {
     "in",
 }
 
+_ROLE_KEYWORDS = {
+    "engineer",
+    "developer",
+    "architect",
+    "platform",
+    "backend",
+    "frontend",
+    "full stack",
+    "fullstack",
+    "infra",
+    "infrastructure",
+    "systems",
+    "staff",
+    "senior",
+    "principal",
+    "lead",
+    "manager",
+    "ml",
+    "machine learning",
+    "data",
+    "product",
+    "security",
+    "devops",
+    "cloud",
+}
+
 
 @dataclass(frozen=True)
 class SerpApiSearchResult:
@@ -134,6 +160,27 @@ def _candidate_name_from_title(title: str) -> str:
     # Prefer a human-style name over role headlines when the result is a profile page.
     if len(tokens) <= 8 and not any(token.lower() in _TITLE_ROLE_STOPWORDS for token in tokens[:2]):
         return first
+    return ""
+
+
+def _candidate_role_from_text(*values: str) -> str:
+    for value in values:
+        cleaned = _normalize_text(value)
+        if not cleaned:
+            continue
+        parts = [part.strip() for part in re.split(r"\s*[|•–—-]\s*", cleaned) if part.strip()]
+        for part in parts:
+            lowered = part.lower()
+            if "linkedin" in lowered or lowered.startswith("http"):
+                continue
+            if any(keyword in lowered for keyword in _ROLE_KEYWORDS):
+                return part
+        if len(parts) >= 2:
+            for part in parts[1:]:
+                lowered = part.lower()
+                if "linkedin" in lowered or lowered.startswith("http"):
+                    continue
+                return part
     return ""
 
 
@@ -607,6 +654,7 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
 
     text = " ".join([title, snippet, displayed_link])
     name = _candidate_name_from_title(title) or _candidate_name_from_title(displayed_link) or _candidate_name_from_title(snippet)
+    role = _candidate_role_from_text(title, snippet, displayed_link) or _normalize_text(title)
     company = _extract_company(snippet)
     location = _extract_location(snippet, fallback=intake.get("location", ""))
     skills = _extract_skills_from_text(text, [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()])
@@ -618,13 +666,15 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         "id": linkedin_url or github_url or link,
         "full_name": name or title or "Unknown Candidate",
         "name": name or title or "Unknown Candidate",
-        "job_title": _normalize_text(intake.get("role_title") or title),
-        "title": _normalize_text(intake.get("role_title") or title),
+        "job_title": role,
+        "title": role,
+        "role": role,
+        "headline": role,
         "job_company_name": company,
         "company": company,
         "location": location,
         "skills": skills,
-        "summary": snippet or title,
+        "summary": snippet or role,
         "experience": _normalize_text(intake.get("seniority") or ""),
         "linkedin_url": linkedin_url,
         "github_url": github_url,

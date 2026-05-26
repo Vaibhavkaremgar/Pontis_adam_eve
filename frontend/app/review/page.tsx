@@ -65,6 +65,20 @@ function candidateSubtitle(candidate: Candidate): string {
     .join(" - ");
 }
 
+function getCandidateLinkedInUrl(candidate: Candidate): string {
+  if (candidate.linkedinUrl) return candidate.linkedinUrl.trim();
+  const profileData = candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
+  return String(profileData.linkedin_url || profileData.linkedinUrl || profileData.linkedInUrl || "").trim();
+}
+
+function getCandidateCurrentRole(candidate: Candidate): string {
+  const profileData = candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
+  return (
+    String(profileData.current_role || profileData.currentRole || profileData.role || profileData.title || candidate.role || candidate.headline || "")
+      .trim()
+  );
+}
+
 function getSourcingConfidence(candidate: Candidate): number {
   const explanation = candidate.explanation;
   const semantic = explanation?.semanticScore ?? explanation?.semantic ?? 0;
@@ -271,110 +285,51 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
 }
 
 function CandidateDetails({ candidate }: { candidate: Candidate }) {
-  const sourcingConfidence = getSourcingConfidence(candidate);
-  const recruiterMatchSummary = candidate.explanation?.aiReasoning || candidate.explanation?.summary?.[0] || "Strong recruiter match for this role.";
+  const topSkills = formatList(candidate.skills, "Not provided").slice(0, 6);
+  const role = candidate.headline || candidate.role || "Not provided";
 
   return (
     <div className="space-y-5">
+      {getCandidateLinkedInUrl(candidate) && (
+        <div className="flex justify-end">
+          <a
+            href={getCandidateLinkedInUrl(candidate)}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+          >
+            Open LinkedIn
+          </a>
+        </div>
+      )}
+
       <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
         <div className="space-y-3">
-          <DetailRow label="Email" value={candidate.email || "Not provided"} />
-          <DetailRow label="Role" value={candidate.headline || candidate.role || "Not provided"} />
+          <DetailRow label="Name" value={candidate.name || "Not provided"} />
+          <DetailRow label="Current role" value={getCandidateCurrentRole(candidate) || role} />
+          <DetailRow label="Current company" value={candidate.currentCompany || candidate.company || "Not provided"} />
           <DetailRow label="Location" value={candidate.location || "Not provided"} />
-          <DetailRow label="Company" value={candidate.company || "Not provided"} />
           <DetailRow label="Experience" value={candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"} />
-          <DetailRow label="Recruiter match" value={recruiterMatchSummary} />
-          <DetailRow label="Sourcing confidence" value={`${(sourcingConfidence * 100).toFixed(0)}%`} />
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Education</p>
-          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
-            {formatList(candidate.education).map((item) => (
-              <li key={`education-${candidate.id}-${item}`} className="flex gap-2">
-                <GraduationCap className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Projects</p>
-          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
-            {formatList(candidate.projects).map((item) => (
-              <li key={`project-${candidate.id}-${item}`} className="flex gap-2">
-                <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Certifications</p>
-          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
-            {formatList(candidate.certifications).map((item) => (
-              <li key={`cert-${candidate.id}-${item}`} className="flex gap-2">
-                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Companies</p>
-          <ul className="mt-3 space-y-2 font-body text-[13px] text-[#4B5563]">
-            {formatList(candidate.companiesHistory).map((item) => (
-              <li key={`company-${candidate.id}-${item}`} className="flex gap-2">
-                <Building2 className="mt-0.5 h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{item}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 md:col-span-2">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Domain experience</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {formatList(candidate.domainExperience).map((item) => (
-              <span key={`domain-${candidate.id}-${item}`} className="rounded-full bg-[#F5E7B8] px-3 py-1 text-xs font-semibold text-[#8A5A00]">
-                {item}
-              </span>
-            ))}
-          </div>
+      <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
+        <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Top skills</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {topSkills.map((item) => (
+            <span key={`skill-${candidate.id}-${item}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-xs font-semibold text-[#0F6B3A]">
+              {item}
+            </span>
+          ))}
         </div>
       </div>
 
       {candidate.summary && (
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
-          <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(candidate.summary, 1200)}</p>
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Notes</p>
+          <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(candidate.summary, 420)}</p>
         </div>
       )}
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[13px] text-[#4B5563]">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Scoring</p>
-          <div className="mt-3 space-y-0.5">
-            <DetailRow label="Sourcing confidence" value={`${(sourcingConfidence * 100).toFixed(0)}%`} />
-            <DetailRow label="Fit score" value={`${candidate.fitScore.toFixed(1)} / 5`} />
-            <DetailRow label="Status" value={statusLabel(candidate)} />
-            <DetailRow label="Strategy" value={candidate.strategy} />
-          </div>
-        </div>
-
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5 font-body text-[13px] text-[#4B5563]">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Signals</p>
-          <div className="mt-3 space-y-0.5">
-            <DetailRow label="Mock email" value={candidate.isMockEmail ? "Yes" : "No"} />
-            <DetailRow label="Matched skills" value={candidate.skills.length ? `${candidate.skills.slice(0, 4).join(", ")}` : "Not provided"} />
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -881,7 +836,7 @@ function SwipeDeck({
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); triggerSwipe(current.id, "left"); }}
-                  disabled={isAdvancing || Boolean(swipingId)}
+                  disabled={isAdvancing || Boolean(swipingId) || (selectedCandidateId !== "" && selectedCandidateId !== current.id)}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
                 >
                   <CircleX className="h-5 w-5" /> Pass
@@ -889,7 +844,7 @@ function SwipeDeck({
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); triggerSwipe(current.id, "right"); }}
-                  disabled={isAdvancing || Boolean(swipingId)}
+                  disabled={isAdvancing || Boolean(swipingId) || (selectedCandidateId !== "" && selectedCandidateId !== current.id)}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] bg-[#0F6B3A] font-body text-[15px] font-semibold text-white shadow-[0_6px_16px_rgba(15,107,58,0.22)] transition hover:bg-[#0C5A31] disabled:opacity-50"
                 >
                   <CheckCircle2 className="h-5 w-5" /> Select
@@ -918,6 +873,316 @@ function SwipeDeck({
         ))}
       </div>
     </div>
+  );
+}
+
+function RecruiterSwipeDeck({
+  candidates,
+  shortlistedIds,
+  isAdvancing,
+  selectedCandidateId,
+  onSelect,
+  onReject,
+  onOpenDetails,
+}: {
+  candidates: Candidate[];
+  shortlistedIds: string[];
+  isAdvancing: boolean;
+  selectedCandidateId: string;
+  onSelect: (id: string) => void;
+  onReject: (id: string) => void;
+  onOpenDetails: (c: Candidate) => void;
+}) {
+  const [actedIds, setActedIds] = useState<Set<string>>(new Set());
+  const [swipeDir, setSwipeDir] = useState<"left" | "right" | null>(null);
+  const [swipingId, setSwipingId] = useState("");
+  const dragStartX = useRef(0);
+  const dragCurrentX = useRef(0);
+  const isDragging = useRef(false);
+  const [dragOffset, setDragOffset] = useState(0);
+
+  const pending = candidates.filter((candidate) => !actedIds.has(candidate.id));
+  const current = pending[0] ?? null;
+  const next = pending[1] ?? null;
+
+  const triggerSwipe = (id: string, dir: "left" | "right") => {
+    if (isAdvancing || swipingId) return;
+    setSwipingId(id);
+    setSwipeDir(dir);
+    setTimeout(() => {
+      setActedIds((prev) => new Set([...prev, id]));
+      setSwipeDir(null);
+      setSwipingId("");
+      setDragOffset(0);
+      if (dir === "right") onSelect(id);
+      else onReject(id);
+    }, 280);
+  };
+
+  const onPointerDown = (event: React.PointerEvent) => {
+    if (!current || isAdvancing || swipingId) return;
+    isDragging.current = true;
+    dragStartX.current = event.clientX;
+    dragCurrentX.current = event.clientX;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  };
+
+  const onPointerMove = (event: React.PointerEvent) => {
+    if (!isDragging.current || !current) return;
+    dragCurrentX.current = event.clientX;
+    setDragOffset(dragCurrentX.current - dragStartX.current);
+  };
+
+  const onPointerUp = () => {
+    if (!isDragging.current || !current) return;
+    isDragging.current = false;
+    const delta = dragCurrentX.current - dragStartX.current;
+    if (delta > 80) triggerSwipe(current.id, "right");
+    else if (delta < -80) triggerSwipe(current.id, "left");
+    else setDragOffset(0);
+  };
+
+  if (pending.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 rounded-[24px] border border-[#E7E0D4] bg-white py-16 text-center shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+        <p className="font-heading text-[22px] font-semibold text-[#111827]">All strong matches reviewed</p>
+        <p className="font-body text-sm text-[#6B7280]">We only surface candidates above the 4/5 shortlist threshold.</p>
+      </div>
+    );
+  }
+
+  const rotation = Math.min(Math.max(dragOffset / 20, -12), 12);
+  const overlayOpacity = Math.min(Math.abs(dragOffset) / 120, 1);
+  const isRight = dragOffset > 0;
+  const swipeTransform =
+    swipingId === current?.id
+      ? swipeDir === "right"
+        ? "translateX(120%) rotate(20deg)"
+        : "translateX(-120%) rotate(-20deg)"
+      : dragOffset !== 0
+        ? `translateX(${dragOffset}px) rotate(${rotation}deg)`
+        : "translateX(0) rotate(0deg)";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="space-y-1">
+          <p className="font-heading text-[22px] font-semibold text-[#111827]">Swipe to shortlist</p>
+          <p className="font-body text-sm text-[#8A6F55]">
+            {pending.length} remaining · {shortlistedIds.length} shortlisted
+          </p>
+        </div>
+        <Badge variant="high">{candidates.length} strong matches</Badge>
+      </div>
+
+      <p className="text-center font-body text-xs text-[#9CA3AF]">Swipe right to shortlist · Swipe left to reject · Tap for details</p>
+
+      <div className="relative mx-auto h-[520px] w-full max-w-[420px] select-none">
+        {next && <div className="absolute inset-0 scale-[0.96] rounded-[28px] border border-[#E7E0D4] bg-white shadow-[0_4px_16px_rgba(0,0,0,0.06)]" />}
+
+        {current && (
+          <div
+            className="absolute inset-0 cursor-grab rounded-[28px] border border-[#E7E0D4] bg-white shadow-[0_12px_32px_rgba(0,0,0,0.10)] active:cursor-grabbing"
+            style={{
+              transform: swipeTransform,
+              transition: swipingId === current.id ? "transform 0.28s cubic-bezier(0.4,0,0.2,1)" : dragOffset !== 0 ? "none" : "transform 0.2s ease",
+            }}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+            onClick={() => {
+              if (Math.abs(dragOffset) < 5) onOpenDetails(current);
+            }}
+          >
+            {dragOffset !== 0 && (
+              <>
+                <div className="pointer-events-none absolute inset-0 rounded-[28px] bg-[#DDF5E6]" style={{ opacity: isRight ? overlayOpacity * 0.55 : 0 }} />
+                <div className="pointer-events-none absolute inset-0 rounded-[28px] bg-[#FEE2E2]" style={{ opacity: !isRight ? overlayOpacity * 0.55 : 0 }} />
+                <div
+                  className="pointer-events-none absolute left-5 top-6 rounded-xl border-4 border-[#0F6B3A] px-4 py-2 font-heading text-[20px] font-bold text-[#0F6B3A]"
+                  style={{ opacity: isRight ? overlayOpacity : 0, transform: "rotate(-15deg)" }}
+                >
+                  SHORTLIST
+                </div>
+                <div
+                  className="pointer-events-none absolute right-5 top-6 rounded-xl border-4 border-[#DC2626] px-4 py-2 font-heading text-[20px] font-bold text-[#DC2626]"
+                  style={{ opacity: !isRight ? overlayOpacity : 0, transform: "rotate(15deg)" }}
+                >
+                  REJECT
+                </div>
+              </>
+            )}
+
+            <div className="flex h-full flex-col p-7">
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div className="space-y-2">
+                  <h3 className="font-heading text-[26px] font-bold leading-tight text-[#111827]">{current.name || current.id.slice(0, 8)}</h3>
+                  <p className="font-body text-[14px] text-[#4B5563]">
+                    {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
+                    {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
+                  </p>
+                  {current.location && (
+                    <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
+                      <MapPin className="h-3.5 w-3.5" />
+                      {current.location}
+                    </p>
+                  )}
+                </div>
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] font-body text-[13px] font-semibold text-[#0F6B3A]">
+                  {current.fitScore.toFixed(1)}/5
+                </div>
+              </div>
+
+              {getCandidateLinkedInUrl(current) && (
+                <div className="mb-4 flex justify-start">
+                  <a
+                    href={getCandidateLinkedInUrl(current)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    Open LinkedIn
+                  </a>
+                </div>
+              )}
+
+              {current.skills.length > 0 && (
+                <div className="mb-4 flex flex-wrap gap-2">
+                  {current.skills.slice(0, 4).map((skill) => (
+                    <span key={`${current.id}-${skill}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
+                <p>
+                  <span className="font-semibold text-[#111827]">Current role:</span>{" "}
+                  {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
+                </p>
+                <p>
+                  <span className="font-semibold text-[#111827]">Current company:</span> {current.currentCompany || current.company || "Not provided"}
+                </p>
+                <p>
+                  <span className="font-semibold text-[#111827]">Location:</span> {current.location || "Not provided"}
+                </p>
+              </div>
+
+              {(shortlistedIds.includes(current.id) || current.status === "selected") && (
+                <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
+                  Already shortlisted
+                </div>
+              )}
+
+              <div className="mt-auto flex gap-3">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    triggerSwipe(current.id, "left");
+                  }}
+                  disabled={isAdvancing || Boolean(swipingId)}
+                  className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
+                >
+                  <CircleX className="h-5 w-5" /> Reject
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    triggerSwipe(current.id, "right");
+                  }}
+                  disabled={isAdvancing || Boolean(swipingId)}
+                  className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] bg-[#0F6B3A] font-body text-[15px] font-semibold text-white shadow-[0_6px_16px_rgba(15,107,58,0.22)] transition hover:bg-[#0C5A31] disabled:opacity-50"
+                >
+                  <CheckCircle2 className="h-5 w-5" /> Shortlist
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex justify-center gap-1.5">
+        {candidates.map((candidate) => (
+          <div
+            key={candidate.id}
+            className={`h-2 w-2 rounded-full transition-colors ${
+              shortlistedIds.includes(candidate.id) || candidate.status === "selected"
+                ? "bg-[#0F6B3A]"
+                : actedIds.has(candidate.id)
+                  ? "bg-[#D1D5DB]"
+                  : candidate.id === current?.id
+                    ? "bg-[#111827]"
+                    : "bg-[#E5E7EB]"
+            }`}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecruiterCandidateModal({
+  candidate,
+  open,
+  onClose,
+  onReject,
+  onShortlist,
+  isAdvancing,
+  selectedCandidateId,
+}: {
+  candidate: Candidate | null;
+  open: boolean;
+  onClose: () => void;
+  onReject: () => void;
+  onShortlist: () => void;
+  isAdvancing: boolean;
+  selectedCandidateId: string;
+}) {
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
+      title={candidate?.name || "Candidate profile"}
+      description={candidate ? `${candidate.headline || candidate.role}${candidate.company ? ` @ ${candidate.company}` : ""}` : ""}
+      className="max-w-3xl"
+    >
+      {candidate && (
+        <div className="space-y-5">
+          <CandidateDetails candidate={candidate} />
+          <div className="flex flex-col gap-3 md:flex-row">
+            <Button
+              variant="outline"
+              className="w-full justify-center rounded-[14px] border-[#FCA5A5] bg-white text-red-700 hover:bg-red-50 md:w-auto md:flex-1"
+              onClick={onReject}
+              disabled={isAdvancing || (selectedCandidateId !== "" && selectedCandidateId !== candidate.id)}
+            >
+              Reject
+            </Button>
+            <Button
+              className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
+              onClick={onShortlist}
+              disabled={isAdvancing || selectedCandidateId !== "" || candidate.status === "selected"}
+            >
+              {isAdvancing && selectedCandidateId === candidate.id ? "Shortlisting..." : candidate.status === "selected" ? "Shortlisted" : "Shortlist"}
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white md:w-auto"
+              onClick={onClose}
+            >
+              Close
+            </Button>
+          </div>
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -978,8 +1243,16 @@ export default function ReviewPage() {
       return;
     }
 
-    setReviewCandidates(result.data);
-    setFeedbackMessage(result.data.length > 0 ? "X-Ray sourcing loaded. Review candidate cards below." : "X-Ray sourcing completed with no candidates returned.");
+    const strongMatches = result.data
+      .filter((candidate) => Number(candidate.fitScore || 0) >= 4)
+      .sort((left, right) => Number(right.fitScore || 0) - Number(left.fitScore || 0))
+      .slice(0, 30);
+    setReviewCandidates(strongMatches);
+    setFeedbackMessage(
+      strongMatches.length > 0
+        ? `X-Ray sourcing loaded ${strongMatches.length} strong candidate${strongMatches.length === 1 ? "" : "s"} above the 4/5 shortlist threshold.`
+        : "X-Ray sourcing completed, but no candidates cleared the 4/5 shortlist threshold."
+    );
     setReviewLoading(false);
   };
 
@@ -1088,9 +1361,6 @@ export default function ReviewPage() {
     };
   }, [activeCandidate, isSessionReady, jobId, user]);
 
-  const currentBatch = reviewCandidates;
-  const completed = reviewCandidates.length > 0;
-  const progress = completed ? 1 : 0;
   const finalCandidates = reviewCandidates;
   const analysis = null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
@@ -1102,6 +1372,11 @@ export default function ReviewPage() {
   const interviewProgression = activeInterviewInsights?.progression || [];
   const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
   const completedInterviewStages = interviewProgression.filter((item: any) => item?.completed).length;
+  const swipeCandidates = useMemo(() => reviewCandidates.filter((candidate) => Number(candidate.fitScore || 0) >= 4), [reviewCandidates]);
+  const topSwipeScore = useMemo(() => {
+    const scores = swipeCandidates.map((candidate) => Number(candidate.fitScore || 0)).filter((value) => Number.isFinite(value));
+    return scores.length > 0 ? Math.max(...scores) : 0;
+  }, [swipeCandidates]);
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of reviewCandidates) {
@@ -1266,7 +1541,7 @@ export default function ReviewPage() {
 
           {isRefined && (
             <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Voice intake completed. Archetype selection and X-Ray sourcing are now ready.
+              Voice intake completed. Archetypes and X-Ray sourcing are now ready.
             </div>
           )}
 
@@ -1294,14 +1569,14 @@ export default function ReviewPage() {
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    Archetype selection {calibrationRoundLabel}
+                    Archetype set {calibrationRoundLabel}
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Adam generated archetypes from the job details, voice intake, and recruiter preferences. Choose the one that best matches your hiring intent.
+                    Pick the closer candidate style. Each set has 2 short archetypes, and Adam uses your choice to guide X-Ray sourcing.
                   </p>
                 </div>
                 <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                  Archetype selection
+                  2 archetypes
                 </Badge>
               </div>
 
@@ -1375,20 +1650,18 @@ export default function ReviewPage() {
                           </div>
                         </div>
                         <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
-                          {ownership && <p><span className="font-semibold text-[#111827]">Ownership style:</span> {ownership}</p>}
-                          {environment && <p><span className="font-semibold text-[#111827]">Ideal environment:</span> {environment}</p>}
-                          {execution && <p><span className="font-semibold text-[#111827]">Execution style:</span> {execution}</p>}
-                          {risk && <p><span className="font-semibold text-[#111827]">Risk tolerance:</span> {risk}</p>}
-                          {leadership && <p><span className="font-semibold text-[#111827]">Leadership profile:</span> {leadership}</p>}
-                          {tradeoffs && <p><span className="font-semibold text-[#111827]">Hiring tradeoffs:</span> {tradeoffs}</p>}
+                          {ownership && <p><span className="font-semibold text-[#111827]">Work style:</span> {ownership}</p>}
+                          {leadership && <p><span className="font-semibold text-[#111827]">Leadership:</span> {leadership}</p>}
+                          <p><span className="font-semibold text-[#111827]">Best fit:</span> {environment || execution || risk || fitNote || "Fast-moving teams with clear ownership."}</p>
+                          {tradeoffs && <p><span className="font-semibold text-[#111827]">Tradeoff:</span> {tradeoffs}</p>}
                         </div>
                         <Button
-                          data-testid={`calibration-select-${archetypeId}`}
+                          data-testid={`archetype-select-${archetypeId}`}
                           className="h-12 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
                           onClick={() => void handleCalibrationSelect(archetypeId)}
                           disabled={isCalibrationLoading || !archetypeId}
                         >
-                          {isChoosing ? "Saving selection..." : "Select archetype"}
+                          {isChoosing ? "Saving selection..." : "Use archetype"}
                         </Button>
                       </CardContent>
                     </Card>
@@ -1412,7 +1685,7 @@ export default function ReviewPage() {
             </div>
           )}
 
-          {!isLoading && calibrationComplete && reviewCandidates.length > 0 && (
+          {!isLoading && calibrationComplete && swipeCandidates.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
@@ -1423,34 +1696,40 @@ export default function ReviewPage() {
                     Review the externally sourced candidates. Each card is ranked from X-Ray signals and reranked with recruiter memory.
                   </p>
                 </div>
-                <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                  {reviewCandidates.length} candidates
-                </Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
+                    Strong matches only
+                  </Badge>
+                  <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F4FBF7] px-5 py-2 text-[13px] font-semibold text-[#0F6B3A] shadow-none">
+                    Top 30 ranked
+                  </Badge>
+                  <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#FFF7ED] px-5 py-2 text-[13px] font-semibold text-[#B45309] shadow-none">
+                    {swipeCandidates.length} strong matches
+                  </Badge>
+                </div>
               </div>
 
-              <div className="grid gap-5">
-                {reviewCandidates.map((candidate, index) => {
-                  const isSelected = completedShortlistedIds.includes(candidate.id);
-                  return (
-                    <CandidateListRow
-                      key={candidate.id}
-                      candidate={candidate}
-                      rankLabel={`${index + 1}`}
-                      isSelected={isSelected}
-                      isSelecting={isAdvancing && selectedCandidateId === candidate.id}
-                      selectionLocked={isAdvancing && selectedCandidateId !== candidate.id}
-                      onOpenDetails={() => setActiveCandidate(candidate)}
-                      onSelect={() => void handleSelect(candidate.id)}
-                    />
-                  );
-                })}
-              </div>
+              {topSwipeScore > 0 && topSwipeScore < 4.5 && (
+                <div className="rounded-[20px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  The current top candidate is {topSwipeScore.toFixed(1)}/5. The backend will keep broadening X-Ray search to try to surface a 4.5/5 match when available.
+                </div>
+              )}
+
+              <RecruiterSwipeDeck
+                candidates={swipeCandidates}
+                shortlistedIds={completedShortlistedIds}
+                isAdvancing={isAdvancing}
+                selectedCandidateId={selectedCandidateId}
+                onOpenDetails={(candidate) => setActiveCandidate(candidate)}
+                onSelect={(candidateId) => void handleSelect(candidateId)}
+                onReject={(candidateId) => void handleReject(candidateId)}
+              />
 
               <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <p className="font-body text-[15px] font-semibold text-[#111827]">Ready is the next recruiter handoff</p>
-                    <p className="font-body text-sm text-[#6B7280]">Save selected candidates and continue into Ready when you are satisfied with the shortlist.</p>
+                    <p className="font-body text-sm text-[#6B7280]">Save selected candidates and continue into Ready when you are satisfied with the shortlist. Ready then hands off into Results.</p>
                   </div>
                   <Button
                     data-testid="continue-to-ready"
@@ -1465,12 +1744,12 @@ export default function ReviewPage() {
             </div>
           )}
 
-          {!isLoading && calibrationComplete && reviewCandidates.length === 0 && !reviewLoading && (
+          {!isLoading && calibrationComplete && swipeCandidates.length === 0 && !reviewLoading && (
             <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm text-[#6B7280]">
               <p>
                 {sourcingError
-                  ? "X-Ray sourcing did not return candidates. Check the sourcing error above."
-                  : "X-Ray sourcing finished, but no candidates matched the selected archetypes yet."}
+                  ? "X-Ray sourcing did not return strong matches. Check the sourcing error above."
+                  : "X-Ray sourcing finished, but no candidates cleared the 4/5 shortlist threshold yet."}
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button variant="outline" onClick={() => void refreshFinalResults()}>
@@ -1484,7 +1763,7 @@ export default function ReviewPage() {
           )}
 
           <Modal
-            open={Boolean(activeCandidate)}
+            open={false}
             onOpenChange={(open) => {
               if (!open) {
                 setActiveCandidate(null);
@@ -1678,6 +1957,19 @@ export default function ReviewPage() {
               </div>
             )}
           </Modal>
+          <RecruiterCandidateModal
+            candidate={activeCandidate}
+            open={Boolean(activeCandidate)}
+            onClose={() => setActiveCandidate(null)}
+            onReject={() => {
+              if (activeCandidate) void handleReject(activeCandidate.id);
+            }}
+            onShortlist={() => {
+              if (activeCandidate) void handleSelect(activeCandidate.id);
+            }}
+            isAdvancing={isAdvancing}
+            selectedCandidateId={selectedCandidateId}
+          />
           <div className="mt-6 flex items-center justify-center gap-2 font-body text-sm text-[#6B7280]">
             <ShieldCheck className="h-4 w-4 text-[#0F6B3A]" />
             <span>Your selection helps us improve future matches</span>

@@ -123,9 +123,9 @@ def _compact_archetype_label(value: str, fallback: str) -> str:
     if not normalized:
         return fallback
     words = normalized.split()
-    if len(words) <= 5:
+    if len(words) <= 4:
         return normalized
-    return " ".join(words[:5]).strip()
+    return " ".join(words[:4]).strip()
 
 
 def _candidate_headline_from_option(option: dict[str, Any], *, fallback: str) -> str:
@@ -906,8 +906,8 @@ def build_state_response(state: dict[str, Any] | None) -> dict[str, Any]:
 
 _CALIBRATION_STATE_PREFIX = "pontis:recruiter-preference-calibration:"
 _CALIBRATION_STATE_TTL_SECONDS = 24 * 60 * 60
-_CALIBRATION_SET_COUNT = 1
-_CALIBRATION_OPTIONS_PER_SET = 4
+_CALIBRATION_SET_COUNT = 3
+_CALIBRATION_OPTIONS_PER_SET = 2
 
 
 def _calibration_state_key(*, recruiter_id: str, job_id: str) -> str:
@@ -1009,14 +1009,14 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         "You are generating recruiter archetypes for X-Ray sourcing.\n"
         "Do not create personality cards or abstract summaries.\n"
         "Every archetype should be a concise, recruiter-actionable candidate persona.\n"
-        "Generate exactly 1 set with 4 archetypes.\n"
+        "Generate exactly 3 sets with 2 archetypes in each set.\n"
         "Each archetype must be short, distinct, and ready to drive sourcing queries.\n"
         "Rules:\n"
         "- Return ONLY valid JSON.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
-        "- Each set must contain exactly 4 archetypes.\n"
+        "- Each set must contain exactly 2 archetypes.\n"
         "- Each archetype must include: candidate_headline, experience_snapshot, career_pattern, technical_strengths, ownership_style, leadership_profile, ideal_environment, execution_style, hiring_tradeoffs, fit_note.\n"
-        "- Keep the candidate headline to 3 to 5 words max.\n"
+        "- Keep the candidate headline to 2 to 4 words max.\n"
         "- Keep the candidate headline role-like and specific, e.g. 'Founding AI Engineer' or 'Backend AI Systems Engineer'.\n"
         "- Make the experience snapshot short, concrete, and resume-like.\n"
         "- If the recruiter gave explicit years of experience in the voice intake or job requirements, stay close to that band while varying the profile shape.\n"
@@ -1024,9 +1024,9 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         "- Technical_strengths must include the requested stack or close equivalents from the job and voice intake.\n"
         "- ownership_style, leadership_profile, ideal_environment, execution_style, and hiring_tradeoffs should be concise notes, not paragraphs.\n"
         "- Use the job title, voice summary, company stage, hiring intent, and technical stack to shape the archetypes.\n"
-        "- Prefer four clearly differentiated personas such as builder, systems owner, product engineer, and infrastructure specialist.\n"
+        "- Prefer two clearly differentiated personas per set, such as builder versus systems owner or product engineer versus infrastructure specialist.\n"
         "- Keep the set theme grounded in the real hiring decision being made.\n"
-        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}, {...}, {...}]}]}\n\n"
+        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
         f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
         f"{sanitize_prompt_block('Location', _job_text_field(job, 'location'), max_length=160)}\n"

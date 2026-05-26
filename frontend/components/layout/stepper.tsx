@@ -20,9 +20,9 @@ type StepperProps = {
 export function Stepper({ activeStep }: StepperProps) {
   return (
     <div className="border-b border-[rgba(120,100,80,0.08)] bg-[#EFE6D8]/95 backdrop-blur">
-      <div className="mx-auto max-w-2xl px-4 py-4">
-        <div className="relative grid grid-cols-6 gap-2 text-center">
-          <div className="absolute left-[6%] right-[6%] top-3 h-px bg-gray-300" />
+      <div className="mx-auto w-full max-w-6xl px-4 py-4">
+        <div className="relative grid grid-cols-6 gap-1.5 text-center sm:gap-2">
+          <div className="absolute left-[4%] right-[4%] top-3 h-px bg-gray-300" />
           {STEPS.map((step) => {
             const isActive = step.id === activeStep;
             const isDone = step.id < activeStep;
