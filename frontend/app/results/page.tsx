@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
@@ -147,7 +147,7 @@ function emptyWorkspace(): ResultWorkspaceResponse {
   };
 }
 
-export default function ResultsPage() {
+function ResultsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, isSessionReady, jobId, setJobId } = useAppContext();
@@ -867,5 +867,13 @@ export default function ResultsPage() {
         onSubmit={(values) => void handleAdvanceSubmit(values)}
       />
     </div>
+  );
+}
+
+export default function ResultsPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto w-full max-w-7xl px-4 py-6 text-sm text-gray-600">Loading results page...</div>}>
+      <ResultsPageContent />
+    </Suspense>
   );
 }

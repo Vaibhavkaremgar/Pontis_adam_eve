@@ -11,7 +11,7 @@
  * POST /interview/evaluations
  * POST /interview/decision
  */
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
@@ -64,7 +64,7 @@ function statusVariant(status: InterviewStatus["status"]) {
   return "neutral";
 }
 
-export default function ReadyPage() {
+function ReadyPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, isSessionReady, jobId, setJobId } = useAppContext();
@@ -524,5 +524,13 @@ export default function ReadyPage() {
         </div>
       </Modal>
     </AppShell>
+  );
+}
+
+export default function ReadyPage() {
+  return (
+    <Suspense fallback={<div className="mx-auto w-full max-w-5xl px-4 py-6 text-sm text-gray-600">Loading ready page...</div>}>
+      <ReadyPageContent />
+    </Suspense>
   );
 }

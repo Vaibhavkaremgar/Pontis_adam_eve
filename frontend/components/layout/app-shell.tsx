@@ -8,7 +8,7 @@
  * How it fits in the pipeline:
  * Provides consistent shell for each step that performs backend-connected actions.
  */
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { Navbar } from "@/components/layout/navbar";
 import { Stepper } from "@/components/layout/stepper";
@@ -22,7 +22,9 @@ type AppShellProps = {
 export function AppShell({ activeStep, children, contentClassName }: AppShellProps) {
   return (
     <div className="min-h-screen bg-background">
-      <Navbar />
+      <Suspense fallback={<div className="h-[64px] border-b border-[rgba(120,100,80,0.08)] bg-[#EDE5D8]" />}>
+        <Navbar />
+      </Suspense>
       <Stepper activeStep={activeStep} />
       <main className={contentClassName || "mx-auto w-full max-w-4xl px-4 py-10"}>{children}</main>
     </div>
