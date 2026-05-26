@@ -267,7 +267,7 @@ def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: 
                 else:
                     _send_orchestration_message_sync(
                         channel_id=channel_id,
-                        text="✅ Intake captured.",
+                        text=" Intake captured.",
                         thread_ts=thread_ts,
                     )
                 return

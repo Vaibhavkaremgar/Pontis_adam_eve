@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { Navbar } from "@/components/layout/navbar";
+import { Stepper } from "@/components/layout/stepper";
 import { ResultsPipelineNav } from "@/components/results/results-pipeline-nav";
 import { InterviewRecordingPlayer } from "@/components/results/interview-recording-player";
 import { SecondRoundSchedulingModal, type SecondRoundSchedulingValues } from "@/components/results/second-round-scheduling-modal";
@@ -353,6 +354,7 @@ export default function ResultsPage() {
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(56,189,248,0.14),_transparent_35%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] text-slate-900">
       <Navbar />
+      <Stepper activeStep={6} />
       <ResultsPipelineNav active="Results" />
 
       <main className="mx-auto w-full max-w-[1600px] px-4 py-6 pb-28 sm:px-6 lg:px-8">

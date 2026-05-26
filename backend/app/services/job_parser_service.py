@@ -101,10 +101,56 @@ class _JobPageParser(HTMLParser):
         return text.strip()
 
 
+class _TextOnlyHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = unescape(data).strip()
+        if text:
+            self.parts.append(text)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"br", "p", "div", "li", "section", "article", "header", "footer", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"p", "div", "li", "section", "article", "header", "footer", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def get_text(self) -> str:
+        text = re.sub(r"\n{3,}", "\n\n", "\n".join(self.parts))
+        text = re.sub(r"[ \t]+", " ", text)
+        return text.strip()
+
+
 def _normalize_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _strip_html_markup(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if "<" not in text and ">" not in text:
+        return re.sub(r"\s+", " ", unescape(text)).strip()
+    parser = _TextOnlyHTMLParser()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:
+        fallback = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+        fallback = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", fallback)
+        fallback = re.sub(r"(?s)<[^>]+>", " ", fallback)
+        fallback = unescape(fallback)
+        return re.sub(r"\s+", " ", fallback).strip()
+    cleaned = parser.get_text()
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
 def _slug_title_from_url(url: str) -> str:
@@ -224,7 +270,7 @@ def _coerce_text(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        return _normalize_text(value)
+        return _strip_html_markup(value)
     return _normalize_text(str(value))
 
 
@@ -346,8 +392,8 @@ def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str
         job_schema = nested_job_schema if not job_schema else {**nested_job_schema, **job_schema}
 
     hints = {
-        "title": _normalize_text(job_schema.get("title") or parser.title or _best_meta(parser.meta, "og:title", "twitter:title", "title")) or _slug_title_from_url(url),
-        "description": _normalize_text(
+        "title": _strip_html_markup(job_schema.get("title") or parser.title or _best_meta(parser.meta, "og:title", "twitter:title", "title")) or _slug_title_from_url(url),
+        "description": _strip_html_markup(
             job_schema.get("description")
             or _best_meta(parser.meta, "og:description", "twitter:description", "description")
         ),
