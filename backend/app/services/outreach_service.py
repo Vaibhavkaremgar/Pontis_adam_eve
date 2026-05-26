@@ -467,6 +467,21 @@ def _build_heuristic_email(*, candidate_profile, job) -> tuple[str, str]:
     skills = (candidate_profile.skills or [])[:3]
     hook = skills[0] if skills else their_role
 
+    if _is_elite_job(job):
+        company_name = _job_company_name(job)
+        subject = f"Confidential leadership opportunity: {job.title} at {company_name}"
+        body = (
+            f"Dear {first_name},\n\n"
+            f"I am reaching out on behalf of {company_name} regarding a selective search for {job.title}"
+            f"{' in ' + job.location if getattr(job, 'location', '') else ''}.\n\n"
+            f"Your background in {hook} appears closely aligned with the mandate, particularly for a role where judgment, ownership, and senior execution matter as much as technical depth.\n\n"
+            "If the timing is appropriate, we would value the opportunity to share a concise overview and understand whether this aligns with your current priorities.\n\n"
+            "If you are open to exploring, please reply with your updated resume and we will coordinate next steps discreetly.\n\n"
+            "Best regards,\n"
+            "Pontis Talent Team"
+        )
+        return subject, body
+
     subject = f"quick question about {job.title} - thought of you"
 
     opening = (
@@ -507,16 +522,25 @@ def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
 
     try:
         skills_text = ", ".join((candidate_profile.skills or [])[:5]) or "not listed"
+        elite = _is_elite_job(job)
+        opening_instruction = (
+            (
+                "Write a polished, senior executive recruiting outreach email suitable for a CEO, CTO, VP, or principal-level leader.\n"
+                "The tone should be discreet, respectful, concise, and high-trust.\n"
+            )
+            if elite
+            else "Write a short, warm, personalized recruiting outreach email.\n"
+        )
         prompt = (
-            "Write a short, warm, personalized recruiting outreach email.\n"
+            opening_instruction +
             "Rules:\n"
-            "- Max 120 words in the body\n"
+            f"- Max {'150' if elite else '120'} words in the body\n"
             "- Do NOT invent facts about the candidate beyond what is given\n"
-            "- Do NOT use buzzwords or corporate language\n"
-            "- Sound like a human recruiter, not a bot\n"
+            "- Do NOT use hype, pressure, or sales language\n"
+            f"- Sound like a {'senior search partner' if elite else 'human recruiter'}, not a bot\n"
             "- Ask whether the candidate is open to the role\n"
             "- Ask the candidate to share an updated resume\n"
-            "- End with a soft call-to-action for a 15-minute chat\n\n"
+            f"- End with a {'discreet next-step offer' if elite else 'soft call-to-action for a 15-minute chat'}\n\n"
             f"{sanitize_prompt_block('Candidate name', candidate_profile.name or 'there', max_length=120)}\n"
             f"{sanitize_prompt_block('Candidate current role', candidate_profile.role or 'unknown', max_length=120)}\n"
             f"{sanitize_prompt_block('Candidate current company', candidate_profile.company or 'unknown', max_length=120)}\n"
@@ -584,6 +608,50 @@ def _build_shortlist_outreach_email(*, candidate_profile, job) -> tuple[str, str
     company_name = html.escape(company_name_raw)
     location_raw = (getattr(job, "location", "") or "").strip() or "flexible"
     location = html.escape(location_raw)
+    if _is_elite_job(job):
+        subject = f"Confidential opportunity: {job_title_raw} at {company_name_raw}"
+        email_template = f"""
+<div style="margin:0;padding:0;background-color:#eef2f7;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0;padding:0;background-color:#eef2f7;width:100%;">
+    <tr>
+      <td align="center" style="padding:36px 16px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:680px;background-color:#ffffff;border:1px solid #d7dee8;border-radius:18px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#0f172a;box-shadow:0 18px 42px rgba(15,23,42,0.10);">
+          <tr>
+            <td style="padding:26px 32px;background:linear-gradient(135deg,#0b1220 0%,#1e293b 100%);color:#ffffff;">
+              <div style="font-size:12px;letter-spacing:0.14em;text-transform:uppercase;font-weight:700;opacity:0.82;">Pontis Executive Search</div>
+              <div style="margin-top:12px;font-size:28px;line-height:1.25;font-weight:700;">Confidential leadership opportunity</div>
+              <div style="margin-top:8px;font-size:14px;line-height:1.6;opacity:0.86;">{job_title} at {company_name}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:34px 32px;">
+              <p style="margin:0 0 18px;font-size:16px;line-height:1.7;">Dear {first_name},</p>
+              <p style="margin:0 0 18px;font-size:16px;line-height:1.8;">We are reaching out on behalf of <strong>{company_name}</strong> regarding a selective search for <strong>{job_title}</strong>{' in <strong>' + location + '</strong>' if location_raw else ''}.</p>
+              <p style="margin:0 0 18px;font-size:16px;line-height:1.8;">Your profile stood out as closely aligned with the mandate, particularly for a role where judgment, ownership, and senior execution matter as much as technical depth.</p>
+              <div style="margin:26px 0;padding:20px 22px;border:1px solid #d7dee8;border-left:4px solid #0b1220;background-color:#f8fafc;border-radius:12px;">
+                <p style="margin:0;font-size:16px;line-height:1.8;font-weight:700;color:#0f172a;">If the timing is appropriate, please reply with your updated resume and we will coordinate next steps discreetly.</p>
+              </div>
+              <p style="margin:0 0 14px;font-size:16px;line-height:1.8;">We would be glad to share a concise overview and understand whether this aligns with your current priorities.</p>
+              <p style="margin:28px 0 0;font-size:16px;line-height:1.8;">Best regards,<br><strong>Pontis Talent Team</strong></p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</div>
+"""
+        text_template = (
+            f"Dear {_candidate_first_name(candidate_profile)},\n\n"
+            f"We are reaching out on behalf of {company_name_raw} regarding a selective search for {job_title_raw}"
+            f"{' in ' + location_raw if location_raw else ''}.\n\n"
+            "Your profile stood out as closely aligned with the mandate, particularly for a role where judgment, ownership, and senior execution matter as much as technical depth.\n\n"
+            "If the timing is appropriate, please reply with your updated resume and we will coordinate next steps discreetly.\n\n"
+            "We would be glad to share a concise overview and understand whether this aligns with your current priorities.\n\n"
+            "Best regards,\nPontis Talent Team"
+        )
+        return subject, email_template, text_template
+
     subject = f"Opportunity: {job_title_raw} at {company_name_raw}"
 
     intro = (
@@ -642,6 +710,10 @@ def _job_company_name(job) -> str:
     company = getattr(job, "company", None)
     company_name = getattr(company, "name", "") if company is not None else ""
     return (company_name or "your company").strip() or "your company"
+
+
+def _is_elite_job(job) -> bool:
+    return ((getattr(job, "vetting_mode", "") or getattr(job, "vettingMode", "") or "").strip().lower() == "elite")
 
 
 def _candidate_first_name(candidate_profile) -> str:

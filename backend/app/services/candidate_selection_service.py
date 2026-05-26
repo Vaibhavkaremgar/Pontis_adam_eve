@@ -30,12 +30,12 @@ from app.services.state_machine import assert_valid_transition, is_swipe_locked
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
-DEFAULT_BATCH_SIZE = 10
+DEFAULT_BATCH_SIZE = 30
 DEFAULT_TOTAL_BATCHES = 1
 DEFAULT_SELECTION_LIMIT = DEFAULT_BATCH_SIZE * DEFAULT_TOTAL_BATCHES
 DEFAULT_FINAL_LIMITS = {
-    "volume": 10,
-    "elite": 5,
+    "volume": 30,
+    "elite": 15,
 }
 
 
@@ -52,6 +52,10 @@ def _job_mode(job: Any) -> str:
 
 def _final_shortlist_limit(job: Any) -> int:
     return DEFAULT_FINAL_LIMITS.get(_job_mode(job), DEFAULT_FINAL_LIMITS["volume"])
+
+
+def _selection_limit(job: Any) -> int:
+    return _final_shortlist_limit(job)
 
 
 def _tokenize(value: str) -> list[str]:
@@ -132,11 +136,8 @@ def _build_batch_plan(candidates: list[CandidateResult]) -> list[list[str]]:
     if len(candidates) < DEFAULT_SELECTION_LIMIT:
         raise APIError("Not enough candidates to build the candidate set", status_code=409)
 
-    diverse_subset = _select_diverse_subset(candidates, limit=DEFAULT_SELECTION_LIMIT)
-    if len(diverse_subset) < DEFAULT_SELECTION_LIMIT:
-        diverse_subset = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))[:DEFAULT_SELECTION_LIMIT]
-
-    return [[candidate.id for candidate in diverse_subset[i : i + 2]] for i in range(0, DEFAULT_SELECTION_LIMIT, 2)]
+    highest_matches = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))[:DEFAULT_SELECTION_LIMIT]
+    return [[candidate.id for candidate in highest_matches]]
 
 
 def _candidate_lookup_snapshot(snapshot: list[dict[str, Any]]) -> dict[str, CandidateResult]:
@@ -174,7 +175,9 @@ def _selection_candidate_pool(*, db: Session, job: Any) -> list[CandidateResult]
         if _is_external_candidate(candidate)
     ]
     if external_candidates:
-        return external_candidates[:DEFAULT_SELECTION_LIMIT]
+        limit = _selection_limit(job)
+        highest_matches = sorted(external_candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+        return highest_matches[:limit]
     raise APIError("No external candidates available after archetype calibration", status_code=409)
 
 
@@ -542,7 +545,12 @@ def _get_or_create_selection_session(*, db: Session, job_id: str) -> tuple[Any, 
     state = get_preference_session(recruiter_id=recruiter_id, job_id=job_id) or {}
 
     if existing:
-        is_legacy_comparison = int(existing.total_batches or 0) != DEFAULT_TOTAL_BATCHES or int(existing.batch_size or 0) <= 2
+        expected_limit = _selection_limit(job)
+        is_legacy_comparison = (
+            int(existing.total_batches or 0) != DEFAULT_TOTAL_BATCHES
+            or int(existing.batch_size or 0) <= 2
+            or int(existing.batch_size or 0) != expected_limit
+        )
         if is_legacy_comparison:
             candidate_pool = _selection_candidate_pool(db=db, job=job)
             _sync_selection_session_to_candidate_set(existing, candidate_pool)

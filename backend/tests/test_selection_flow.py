@@ -208,8 +208,8 @@ class SelectionFlowTests(unittest.TestCase):
         elite_job = types.SimpleNamespace(vetting_mode="elite")
         volume_job = types.SimpleNamespace(vetting_mode="volume")
 
-        self.assertEqual(candidate_selection_service._final_shortlist_limit(elite_job), 5)
-        self.assertEqual(candidate_selection_service._final_shortlist_limit(volume_job), 10)
+        self.assertEqual(candidate_selection_service._final_shortlist_limit(elite_job), 15)
+        self.assertEqual(candidate_selection_service._final_shortlist_limit(volume_job), 30)
 
     def test_shortlist_email_does_not_bcc_test_mailbox(self) -> None:
         fake_send_calls: list[dict] = []
