@@ -157,6 +157,8 @@ export type Candidate = {
   sourceQuery?: string;
   sourceTimestamp?: string;
   sourceType?: string;
+  sourceUrl?: string;
+  source_url?: string;
   linkedinUrl?: string;
   currentCompany?: string;
   inferredExperience?: string;

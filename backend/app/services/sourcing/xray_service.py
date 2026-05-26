@@ -7,7 +7,7 @@ from typing import Any
 
 from app.core.config import APOLLO_ENRICHMENT_ENABLED, SERPAPI_ENABLED, SERPAPI_MAX_PAGES, SOURCE_PROVIDER, XRAY_ENABLED
 from app.schemas.candidate import CandidateExplanation, CandidateResult
-from app.services.identity.candidate_identity_service import build_candidate_identity, normalize_linkedin_url
+from app.services.identity.candidate_identity_service import build_candidate_id, build_candidate_identity, normalize_linkedin_url
 from app.services.metrics_service import log_metric
 from app.services.serpapi_sourcing_service import build_linkedin_xray_queries, discover_linkedin_xray_candidates
 from app.services.ranking.models import ranked_candidate_sort_key
@@ -57,7 +57,7 @@ def _candidate_identity_key(candidate: dict[str, Any]) -> str:
         source_provider="xray_apollo",
         source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""),
     )
-    return (identity.identity_fingerprint or identity.canonical_linkedin_url or identity.normalized_name or _normalize_text(candidate.get("id") or candidate.get("name") or "")).strip().lower()
+    return (build_candidate_id(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or "")) or identity.identity_fingerprint or identity.canonical_linkedin_url or identity.normalized_name or _normalize_text(candidate.get("id") or candidate.get("name") or "")).strip().lower()
 
 
 def _broaden_intake(intake: dict[str, Any] | None, *, variant: int) -> dict[str, Any]:
@@ -192,6 +192,7 @@ def _score_candidate(job: Any, candidate: dict[str, Any]) -> tuple[float, float,
 
 def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) -> CandidateResult:
     identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
+    candidate_id = build_candidate_id(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
     title_signal, skill_signal, location_signal, company_signal = _score_candidate(job, candidate)
     source_signal = float(candidate.get("score") or 0.0)
     snippet_quality = _normalize_text(candidate.get("snippet_quality") or candidate.get("snippetQuality") or "partial").lower()
@@ -241,7 +242,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
     )
 
     return CandidateResult(
-        id=linkedin_url or candidate.get("id") or f"xray-{index}",
+        id=candidate_id,
         name=_normalize_text(candidate.get("name") or candidate.get("full_name") or title or "Unknown Candidate"),
         role=role or "Unknown Role",
         company=company or "",
@@ -260,8 +261,10 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         resumeText="",
         profileData={
             "linkedin_url": linkedin_url,
-            "identity": identity.to_dict(),
-            "source_provider": source_provider,
+                "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
+                "identity": identity.to_dict(),
+                "id": candidate_id,
+                "source_provider": source_provider,
             "source_provider_label": "xray_apollo",
             "source_query": source_query,
             "source_timestamp": source_timestamp,
@@ -289,6 +292,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         sourceTimestamp=source_timestamp,
         sourceType="linkedin_xray",
         linkedinUrl=linkedin_url,
+        source_url=_normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
         currentCompany=company,
         inferredExperience=experience,
         snippetQuality=snippet_quality if snippet_quality in {"rich", "partial", "thin"} else "partial",
@@ -360,15 +364,24 @@ def discover_xray_candidates(
     seen: set[str] = set()
     for candidate in raw_candidates:
         identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
+        candidate_id = build_candidate_id(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
         linkedin_url = identity.canonical_linkedin_url
         key = identity.identity_fingerprint or linkedin_url.lower() or identity.normalized_name.lower()
         if key and key in seen:
             continue
         if key:
             seen.add(key)
+        logger.info(
+            "xray_candidate_id_normalized job_id=%s candidate_id=%s linkedin_url=%s source_url=%s",
+            job_id,
+            candidate_id,
+            linkedin_url,
+            _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
+        )
         normalized.append(
             {
                 **candidate,
+                "id": candidate_id,
                 "source_provider": "xray_apollo",
                 "sourceProvider": "xray_apollo",
                 "source": "linkedin_xray",
@@ -383,6 +396,7 @@ def discover_xray_candidates(
                 "inferred_experience": candidate.get("inferred_experience") or candidate.get("experience") or "",
                 "inferredExperience": candidate.get("inferred_experience") or candidate.get("experience") or "",
                 "identity": identity.to_dict(),
+                "candidate_id": candidate_id,
             }
         )
 

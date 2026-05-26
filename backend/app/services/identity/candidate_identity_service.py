@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from uuid import uuid4
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -45,6 +46,11 @@ def normalize_linkedin_url(value: Any) -> str:
     return urlunparse(("https", "www.linkedin.com", normalized_path, "", "", ""))
 
 
+def _is_linkedin_search_or_job_url(value: str) -> bool:
+    lowered = value.lower()
+    return "linkedin.com/jobs" in lowered or "/jobs/" in lowered or "/search/" in lowered
+
+
 def extract_linkedin_slug(value: Any) -> str:
     normalized = normalize_linkedin_url(value)
     if not normalized:
@@ -83,6 +89,28 @@ class CanonicalCandidateIdentity:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def build_candidate_id(*, candidate: dict[str, Any], source_provider: str = "", source_query: str = "") -> str:
+    identity = build_candidate_identity(candidate=candidate, source_provider=source_provider, source_query=source_query)
+    linkedin_url = identity.canonical_linkedin_url
+    if linkedin_url and not _is_linkedin_search_or_job_url(linkedin_url):
+        return hashlib.sha256(linkedin_url.encode("utf-8")).hexdigest()[:32]
+
+    material = "|".join(
+        [
+            identity.identity_fingerprint,
+            _normalize_text(source_provider),
+            _normalize_text(source_query),
+            _normalize_text(identity.normalized_name),
+            _normalize_text(identity.normalized_company),
+            _normalize_text(identity.normalized_title),
+            _normalize_text(identity.inferred_location),
+        ]
+    ).strip("|")
+    if material:
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+    return str(uuid4())
 
 
 def build_identity_fingerprint(

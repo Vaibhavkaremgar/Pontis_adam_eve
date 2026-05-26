@@ -342,17 +342,28 @@ def _candidate_url_identity(candidate: dict, *keys: str) -> str:
 def _is_reviewable_candidate(candidate: Any) -> bool:
     email = ""
     is_mock_email = False
+    source_provider = ""
+    source_type = ""
+    linkedin_url = ""
     if isinstance(candidate, dict):
         email = _extract_candidate_email(candidate)
         is_mock_email = bool(candidate.get("isMockEmail"))
+        source_provider = _normalize_text(candidate.get("sourceProvider") or candidate.get("source_provider") or "").lower()
+        source_type = _normalize_text(candidate.get("sourceType") or candidate.get("source_type") or "").lower()
+        linkedin_url = _candidate_url_identity(candidate, "linkedin_url", "linkedinUrl", "linkedin")
     else:
         email = str(getattr(candidate, "email", "") or "").strip().lower()
         is_mock_email = bool(getattr(candidate, "isMockEmail", False))
-    if not email:
-        return False
+        source_provider = str(getattr(candidate, "sourceProvider", "") or getattr(candidate, "source_provider", "") or "").strip().lower()
+        source_type = str(getattr(candidate, "sourceType", "") or getattr(candidate, "source_type", "") or "").strip().lower()
+        linkedin_url = _candidate_url_identity(candidate.model_dump() if hasattr(candidate, "model_dump") else {}, "linkedin_url", "linkedinUrl", "linkedin")
     if is_mock_email:
         return False
     if email.endswith("@test.local"):
+        return False
+    if source_provider == "xray_apollo" or source_type == "linkedin_xray":
+        return bool(email or linkedin_url or _normalize_text(getattr(candidate, "name", "") if not isinstance(candidate, dict) else candidate.get("name", "")))
+    if not email:
         return False
     return True
 

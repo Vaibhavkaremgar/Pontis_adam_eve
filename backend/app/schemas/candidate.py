@@ -78,6 +78,7 @@ class CandidateResult(BaseModel):
     sourceTimestamp: str = ""
     sourceType: str = ""
     source: str = ""
+    source_url: str = ""
     linkedinUrl: str = ""
     currentCompany: str = ""
     inferredExperience: str = ""

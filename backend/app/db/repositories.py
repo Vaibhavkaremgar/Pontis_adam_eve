@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import math
 import re
 from datetime import datetime, timezone
@@ -59,6 +60,26 @@ def ensure_candidate_profile(db: Session, job_id: str, candidate_id: str) -> Can
 
 def _normalize_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _sanitize_candidate_id(candidate_id: str) -> str:
+    normalized = _normalize_text(candidate_id)
+    if not normalized:
+        return str(uuid4())
+    if len(normalized) <= 128 and "linkedin.com/jobs" not in normalized.lower() and "/search/" not in normalized.lower():
+        return normalized
+    sanitized = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    logger.info(
+        "candidate_id_sanitized original_length=%s sanitized_length=%s reason=%s",
+        len(normalized),
+        len(sanitized),
+        "url_or_length_guard",
+    )
+    return sanitized
+
+
+def _clamp_text(value: object, *, max_length: int) -> str:
+    return _normalize_text(value)[:max_length]
 
 
 def _candidate_email_value(value: object) -> str:
@@ -924,12 +945,20 @@ class CandidateProfileRepository:
         self.db = db
 
     def get(self, *, job_id: str, candidate_id: str) -> CandidateProfileEntity | None:
+        normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         row = self.db.scalar(
             select(CandidateProfileEntity).where(
                 CandidateProfileEntity.job_id == job_id,
-                CandidateProfileEntity.candidate_id == candidate_id,
+                CandidateProfileEntity.candidate_id == normalized_candidate_id,
             )
         )
+        if not row and normalized_candidate_id != candidate_id:
+            row = self.db.scalar(
+                select(CandidateProfileEntity).where(
+                    CandidateProfileEntity.job_id == job_id,
+                    CandidateProfileEntity.candidate_id == candidate_id,
+                )
+            )
         if row and not getattr(row, "company_id", "").strip():
             job = JobRepository(self.db).get(job_id)
             if job:
@@ -969,7 +998,7 @@ class CandidateProfileRepository:
         return normalized.startswith("fallback-candidate")
 
     def ensure_candidate_profile(self, *, job_id: str, candidate_id: str) -> CandidateProfileEntity:
-        normalized_candidate_id = (candidate_id or "").strip()
+        normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         if not normalized_candidate_id:
             raise APIError("candidate_id is required", status_code=400)
 
@@ -1026,7 +1055,8 @@ class CandidateProfileRepository:
         decision: str,
         strategy: str,
     ) -> CandidateProfileEntity:
-        row = self.get(job_id=job_id, candidate_id=candidate_id)
+        normalized_candidate_id = _sanitize_candidate_id(candidate_id)
+        row = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
         now = datetime.now(timezone.utc)
         job = JobRepository(self.db).get(job_id)
         if not job:
@@ -1036,22 +1066,22 @@ class CandidateProfileRepository:
                 id=str(uuid4()),
                 job_id=job_id,
                 company_id=job.company_id,
-                candidate_id=candidate_id,
+                candidate_id=normalized_candidate_id,
             )
             try:
                 with self.db.begin_nested():
                     self.db.add(row)
                     self.db.flush()
             except IntegrityError:
-                logger.info("candidate_profile_duplicate_skipped job_id=%s candidate_id=%s", job_id, candidate_id)
-                row = self.get(job_id=job_id, candidate_id=candidate_id)
+                logger.info("candidate_profile_duplicate_skipped job_id=%s candidate_id=%s", job_id, normalized_candidate_id)
+                row = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
                 if not row:
                     raise
 
-        row.name = name.strip()
-        row.role = role.strip()
-        row.company = company.strip()
-        row.summary = summary.strip()
+        row.name = _clamp_text(name, max_length=255)
+        row.role = _clamp_text(role, max_length=255)
+        row.company = _clamp_text(company, max_length=255)
+        row.summary = _clamp_text(summary, max_length=5000)
         row.skills = skills
         row.raw_data = raw_data
         row.company_id = job.company_id

@@ -954,6 +954,14 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     displayed_link = _normalize_text(result.get("displayed_link") or "")
     linkedin_url = _extract_linkedin_url(link)
     if not linkedin_url:
+        logger.info(
+            "xray_candidate_rejected reason=missing_linkedin_profile_url query=%s page=%s position=%s link=%s displayed_link=%s",
+            query,
+            page,
+            position,
+            link,
+            displayed_link,
+        )
         return None
 
     text = " ".join([title, snippet, displayed_link])
@@ -1014,6 +1022,15 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
             "source": source,
         },
     }
+    logger.info(
+        "xray_candidate_normalized linkedin_url=%s source_url=%s query=%s page=%s position=%s snippet_quality=%s",
+        linkedin_url,
+        _normalize_text(result.get("link") or ""),
+        query,
+        page,
+        position,
+        snippet_quality,
+    )
     return normalized
 
 
