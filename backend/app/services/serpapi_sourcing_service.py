@@ -24,7 +24,6 @@ from app.core.config import (
     SERPAPI_URL,
 )
 from app.services.metrics_service import log_metric
-from app.services.skill_normalizer import normalize_skills
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +225,18 @@ def _extract_skills_from_text(text: str, known_skills: list[str]) -> list[str]:
     return _dedupe_preserve_order(matches)
 
 
+def _sanitize_role_query(value: str) -> str:
+    cleaned = _normalize_text(value)
+    if not cleaned:
+        return ""
+
+    cleaned = re.sub(r"^\s*\d+\s*[-–—]?\s*\d*\+?\s*(?:years?|yrs?|yr)\b[:,-]?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^\s*(?:senior|jr|junior|mid|lead|principal|staff)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*\(?\d+\s*[-–—]?\s*\d*\+?\s*(?:years?|yrs?|yr)\b.*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,-/")
+    return cleaned
+
+
 def build_linkedin_xray_queries(
     *,
     role: str,
@@ -245,52 +256,40 @@ def build_linkedin_xray_queries(
     hiring_preferences = _normalize_text(hiring_preferences)
     industry = _normalize_text(industry)
     leadership_expectations = _normalize_text(leadership_expectations)
-    recruiter_preferences = recruiter_preferences or {}
-    normalized_skills = _dedupe_preserve_order([_normalize_text(skill) for skill in skills if _normalize_text(skill)])
-    if not normalized_skills:
-        normalized_skills = _dedupe_preserve_order([skill for skill in (normalize_skills(skills) or [])])
 
-    def _join_block(values: list[str]) -> str:
-        cleaned = [f'"{value}"' if " " in value else value for value in values if value]
-        if not cleaned:
-            return ""
-        if len(cleaned) == 1:
-            return cleaned[0]
-        return "(" + " OR ".join(cleaned) + ")"
+    query_parts = ["site:linkedin.com/in"]
 
-    role_terms: list[str] = []
-    if seniority and role:
-        role_terms.append(f"{seniority} {role}".strip())
-    if role:
-        role_terms.append(role)
+    required_role = _sanitize_role_query(role) or _sanitize_role_query(seniority)
+    if required_role:
+        query_parts.append(f'"{required_role}"')
+    elif role:
+        query_parts.append(f'"{_sanitize_role_query(role) or role}"')
 
-    skill_terms = normalized_skills[:3]
-    if recruiter_preferences.get("top_skills"):
-        preferred_skills = _dedupe_preserve_order([
-            _normalize_text(item.get("skill") or item.get("role") or item)
-            for item in recruiter_preferences.get("top_skills") or []
-        ])
-        skill_terms = _dedupe_preserve_order([*skill_terms, *preferred_skills[:2]])[:3]
-
-    query_parts = ["site:linkedin.com/in/"]
-    if role_terms:
-        query_parts.append(_join_block(role_terms[:2]))
-    if skill_terms:
-        query_parts.append(_join_block(skill_terms))
     if location:
-        query_parts.append(_join_block([location]))
+        query_parts.append(f'"{location}"')
 
-    query_parts.extend([
+    # Keep the search strict and role-focused so the SERP returns fewer noisy results.
+    # We intentionally avoid OR-expansion and extra broad skill buckets here.
+    exclusions = [
         "-jobs",
         "-job",
         "-hiring",
         "-careers",
         "-recruiter",
         "-recruitment",
+        "-hr",
+        "-human resources",
+        "-talent acquisition",
         "-company",
         "-posts",
         "-openings",
-    ])
+        "-intern",
+        "-student",
+        "-bootcamp",
+        "-agency",
+        "-staffing",
+    ]
+    query_parts.extend(exclusions)
 
     query = " ".join(part for part in query_parts if part).strip()
     return [query] if query else []
@@ -594,6 +593,7 @@ def discover_linkedin_xray_candidates(
         return []
 
     resolved_intake = _normalize_intake(job, intake)
+    search_pages = 1
     query_batches = build_linkedin_xray_queries(
         role=resolved_intake["role_title"],
         seniority=resolved_intake["seniority"],
@@ -608,15 +608,16 @@ def discover_linkedin_xray_candidates(
 
     primary_query = query_batches[0] if query_batches else ""
     logger.info(
-        "serpapi_discovery_started role=%s location=%s query=%s limit=%s",
+        "serpapi_discovery_started role=%s location=%s query=%s limit=%s pages=%s",
         resolved_intake["role_title"],
         resolved_intake["location"],
         primary_query,
         limit,
+        search_pages,
     )
     log_metric("serpapi_usage", enabled=True, query_batches=1 if primary_query else 0, limit=limit)
 
-    raw_results = client.search(query=primary_query, pages=pages_per_query) if primary_query else []
+    raw_results = client.search(query=primary_query, pages=search_pages) if primary_query else []
     normalized_results: list[dict[str, Any]] = []
     seen_identities: set[str] = set()
 
