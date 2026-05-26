@@ -61,7 +61,7 @@ function atsStatusLabel(candidate: Candidate): string {
 }
 
 function candidateSubtitle(candidate: Candidate): string {
-  return [candidate.headline || candidate.role || "", candidate.company ? candidate.company : "", getCandidateLocation(candidate) || ""]
+  return [getCandidateCurrentRole(candidate) || "", candidate.company ? candidate.company : "", getCandidateLocation(candidate) || ""]
     .filter(Boolean)
     .join(" - ");
 }
@@ -74,21 +74,38 @@ function getCandidateLinkedInUrl(candidate: Candidate): string {
 
 function getCandidateCurrentRole(candidate: Candidate): string {
   const profileData = candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
-  return (
-    String(profileData.current_role || profileData.currentRole || profileData.role || profileData.title || candidate.role || candidate.headline || "")
-      .trim()
-  );
+  const values = [
+    profileData.current_role,
+    profileData.currentRole,
+    profileData.role,
+    profileData.title,
+    candidate.role,
+    candidate.headline,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter((value) => value && !isLikelySummaryText(value) && !looksLikeSkillList(value, getCandidateSkills(candidate)));
+  return values[0] || "";
 }
 
 function getCandidateProfileData(candidate: Candidate): Record<string, unknown> {
   return candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
 }
 
+function splitCandidateTextList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  if (typeof value !== "string") return [];
+  return value
+    .replace(/[•·]/g, ",")
+    .split(/[,/|;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function getCandidateSkills(candidate: Candidate): string[] {
   const profileData = getCandidateProfileData(candidate);
-  const merged = [...(candidate.skills || []), ...(Array.isArray(profileData.skills) ? profileData.skills : [])]
-    .map((skill) => String(skill || "").trim())
-    .filter(Boolean);
+  const merged = [...splitCandidateTextList(candidate.skills), ...splitCandidateTextList(profileData.skills)];
   const deduped: string[] = [];
   const seen = new Set<string>();
   for (const skill of merged) {
@@ -98,6 +115,14 @@ function getCandidateSkills(candidate: Candidate): string[] {
     deduped.push(skill);
   }
   return deduped;
+}
+
+function isLikelySummaryText(value: string): boolean {
+  const normalized = String(value || "").trim();
+  if (!normalized) return false;
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (normalized.length > 120 || words.length > 16) return true;
+  return /[.!?]/.test(normalized) && words.length > 10;
 }
 
 function looksLikeSkillList(value: string, skills: string[]): boolean {
@@ -127,6 +152,11 @@ function getCandidateLocation(candidate: Candidate): string {
     if (!looksLikeSkillList(location, skills)) return location;
   }
   return "";
+}
+
+function isInteractiveElement(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest("button, a, [role='button'], input, textarea, select, label"));
 }
 
 function getSnippetQualityLabel(candidate: Candidate): string {
@@ -334,7 +364,7 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
 
 function CandidateDetails({ candidate }: { candidate: Candidate }) {
   const topSkills = formatList(getCandidateSkills(candidate), "Not provided").slice(0, 6);
-  const role = candidate.headline || candidate.role || "Not provided";
+  const role = getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided";
   const linkedInUrl = getCandidateLinkedInUrl(candidate);
   const safeLocation = getCandidateLocation(candidate);
 
@@ -347,9 +377,10 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
             target="_blank"
             rel="noreferrer"
             onClick={(event) => event.stopPropagation()}
+            aria-label="Open LinkedIn profile"
             className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
           >
-            Go there
+            LinkedIn
             <ArrowUpRight className="h-3.5 w-3.5" />
           </a>
         </div>
@@ -415,7 +446,10 @@ function CandidateCard({
     <Card
       role="button"
       tabIndex={0}
-      onClick={onOpenDetails}
+      onClick={(event) => {
+        if (isInteractiveElement(event.target)) return;
+        onOpenDetails();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -430,13 +464,13 @@ function CandidateCard({
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-3">
             <CardTitle className="font-heading text-[30px] font-bold leading-none text-[#111827]">
-              {candidate.name || candidate.id.slice(0, 8)}
+              {candidate.name || "Unnamed candidate"}
             </CardTitle>
             <div className="space-y-2 font-body text-[14px] leading-5 text-[#4B5563]">
               <p className="flex items-center gap-2">
                 <BriefcaseBusiness className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
                 <span style={clampLines(2)}>
-                  {candidate.headline || candidate.role || "Not provided"}
+                  {getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided"}
                 </span>
               </p>
               <p className="flex items-center gap-2">
@@ -456,9 +490,10 @@ function CandidateCard({
                 target="_blank"
                 rel="noreferrer"
                 onClick={(event) => event.stopPropagation()}
+                aria-label="Open LinkedIn profile"
                 className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
               >
-                Go there
+                LinkedIn
                 <ArrowUpRight className="h-3.5 w-3.5" />
               </a>
             )}
@@ -571,7 +606,10 @@ function CandidateListRow({
     <Card
       role="button"
       tabIndex={0}
-      onClick={onOpenDetails}
+      onClick={(event) => {
+        if (isInteractiveElement(event.target)) return;
+        onOpenDetails();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -590,7 +628,7 @@ function CandidateListRow({
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <h3 className="font-heading text-[20px] font-semibold leading-tight text-[#111827]">
-              {candidate.name || candidate.id.slice(0, 8)}
+              {candidate.name || "Unnamed candidate"}
             </h3>
             <span className="text-[#A18E7C] transition-opacity group-hover:text-[#7D6A57]">↗</span>
           </div>
@@ -689,6 +727,7 @@ function SwipeDeck({
   onSelect,
   onReject,
   onOpenDetails,
+  onContinueToReady,
 }: {
   candidates: Candidate[];
   shortlistedIds: string[];
@@ -697,6 +736,7 @@ function SwipeDeck({
   onSelect: (id: string) => void;
   onReject: (id: string) => void;
   onOpenDetails: (c: Candidate) => void;
+  onContinueToReady: () => void;
 }) {
   // Track which candidates have been acted on in this session
   const [actedIds, setActedIds] = useState<Set<string>>(new Set());
@@ -819,7 +859,8 @@ function SwipeDeck({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
-            onClick={() => {
+            onClick={(event) => {
+              if (isInteractiveElement(event.target)) return;
               if (Math.abs(dragOffset) < 5) onOpenDetails(current);
             }}
           >
@@ -858,11 +899,11 @@ function SwipeDeck({
               <div className="mb-4 flex items-start justify-between">
                 <div className="space-y-1">
                   <h3 className="font-heading text-[26px] font-bold leading-tight text-[#111827]">
-                    {current.name || current.id.slice(0, 8)}
+                    {current.name || "Unnamed candidate"}
                   </h3>
                   <p className="font-body text-[14px] text-[#4B5563]">
-                    {current.headline || current.role || ""}
-                    {current.company ? ` @ ${current.company}` : ""}
+                    {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
+                    {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
                   </p>
                   {getCandidateLocation(current) && (
                     <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
@@ -878,9 +919,10 @@ function SwipeDeck({
                       target="_blank"
                       rel="noreferrer"
                       onClick={(event) => event.stopPropagation()}
+                      aria-label="Open LinkedIn profile"
                       className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
                     >
-                      Go there
+                      LinkedIn
                       <ArrowUpRight className="h-3.5 w-3.5" />
                     </a>
                   )}
@@ -986,6 +1028,7 @@ function RecruiterSwipeDeck({
   onSelect,
   onReject,
   onOpenDetails,
+  onContinueToReady,
 }: {
   candidates: Candidate[];
   shortlistedIds: string[];
@@ -994,6 +1037,7 @@ function RecruiterSwipeDeck({
   onSelect: (id: string) => void;
   onReject: (id: string) => void;
   onOpenDetails: (c: Candidate) => void;
+  onContinueToReady: () => void;
 }) {
   const [actedIds, setActedIds] = useState<Set<string>>(new Set());
   const [swipeDir, setSwipeDir] = useState<"left" | "right" | null>(null);
@@ -1049,6 +1093,16 @@ function RecruiterSwipeDeck({
       <div className="flex flex-col items-center justify-center gap-4 rounded-[24px] border border-[#E7E0D4] bg-white py-16 text-center shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
         <p className="font-heading text-[22px] font-semibold text-[#111827]">All candidates reviewed</p>
         <p className="font-body text-sm text-[#6B7280]">We surfaced the ranked pool directly, so recruiters can review the full high-signal set.</p>
+        <Button
+          className="rounded-[14px] bg-[#0F6B3A] px-5 py-2 text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
+          onClick={(event) => {
+            event.stopPropagation();
+            onContinueToReady();
+          }}
+          disabled={shortlistedIds.length === 0 || isAdvancing}
+        >
+          Move to Ready
+        </Button>
       </div>
     );
   }
@@ -1093,7 +1147,8 @@ function RecruiterSwipeDeck({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
-            onClick={() => {
+            onClick={(event) => {
+              if (isInteractiveElement(event.target)) return;
               if (Math.abs(dragOffset) < 5) onOpenDetails(current);
             }}
           >
@@ -1138,9 +1193,10 @@ function RecruiterSwipeDeck({
                       target="_blank"
                       rel="noreferrer"
                       onClick={(event) => event.stopPropagation()}
+                      aria-label="Open LinkedIn profile"
                       className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
                     >
-                      Go there
+                      LinkedIn
                       <ArrowUpRight className="h-3.5 w-3.5" />
                     </a>
                   )}
@@ -1255,7 +1311,7 @@ function RecruiterCandidateModal({
         if (!nextOpen) onClose();
       }}
       title={candidate?.name || "Candidate profile"}
-      description={candidate ? `${candidate.headline || candidate.role}${candidate.company ? ` @ ${candidate.company}` : ""}` : ""}
+      description={candidate ? `${getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided"}${candidate.company ? ` @ ${candidate.company}` : ""}` : ""}
       className="max-w-3xl"
     >
       {candidate && (
@@ -1815,6 +1871,7 @@ export default function ReviewPage() {
                 onOpenDetails={(candidate) => setActiveCandidate(candidate)}
                 onSelect={(candidateId) => void handleSelect(candidateId)}
                 onReject={(candidateId) => void handleReject(candidateId)}
+                onContinueToReady={() => void handleContinueToReady()}
               />
 
               <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4">
@@ -1829,7 +1886,7 @@ export default function ReviewPage() {
                     onClick={() => void handleContinueToReady()}
                     disabled={shortlistedCount === 0 || isAdvancing || isContinuingToReady}
                   >
-                    {isContinuingToReady ? "Opening Ready..." : "Open Ready"}
+                    {isContinuingToReady ? "Opening Ready..." : "Move to Ready"}
                   </Button>
                 </div>
               </div>

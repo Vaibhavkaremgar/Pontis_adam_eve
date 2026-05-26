@@ -518,6 +518,25 @@ function evaluateIntakeCompletion(turns: TranscriptTurn[], job: Record<string, u
   };
 }
 
+function assistantAskedForFinalConfirmation(turns: TranscriptTurn[]): boolean {
+  const assistantText = turns
+    .filter((turn) => turn.role === "assistant" && turn.isFinal)
+    .map((turn) => turnDisplayText(turn))
+    .slice(-2)
+    .join(" ")
+    .toLowerCase();
+
+  return /anything else|anything you(?:'|)d like to add|anything more to add|proceed with this info|is there anything else|final summary/.test(assistantText);
+}
+
+function isWrapUpConfirmation(text: string): boolean {
+  const normalized = stripTranscriptNoise(text);
+  if (!normalized) return false;
+  return /^(no|nope|nah|that's all|thats all|nothing else|nothing more|proceed|proceed with this info|sounds good|looks good|go ahead|all set|good to go|that's fine|thats fine|continue)$/i.test(
+    normalized,
+  );
+}
+
 function appendCommittedTranscript(previous: string, incoming: string): string {
   const prev = normalize(previous);
   const next = normalize(incoming);
@@ -820,7 +839,14 @@ export function VoiceUi() {
       assistantFinalTurns: completion.assistantFinalTurns,
     });
 
-    if (completion.ready) {
+    const wrapUpConfirmation = event.role === "user" && event.isFinal && assistantAskedForFinalConfirmation(turnsRef.current) && isWrapUpConfirmation(event.text);
+
+    if (completion.ready || wrapUpConfirmation) {
+      debugVoice("intake_wrapup_triggered", {
+        completionReady: completion.ready,
+        wrapUpConfirmation,
+        reason: completion.reason,
+      });
       if (autoEndTimerRef.current !== null) {
         window.clearTimeout(autoEndTimerRef.current);
       }
@@ -1085,7 +1111,7 @@ export function VoiceUi() {
       : `Let's refine your job requirements. ${firstQuestion}. I'll keep track of the requirements, summarize what I captured, and close the call only after the conversation looks complete.`;
     const closingInstructions = [
       "Keep collecting requirements until the conversation feels complete.",
-      "When the answers appear complete, briefly summarize the captured requirements, ask if anything important is still missing, and then end the call.",
+      "When the answers appear complete, briefly summarize the captured requirements, ask if anything important is still missing, and then end the call once the recruiter says no, that's all, proceed with this info, or anything similar.",
       "If the recruiter adds new information, keep the call open and update the intake first.",
     ].join(" ");
 

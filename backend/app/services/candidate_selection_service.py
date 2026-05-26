@@ -698,6 +698,43 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 str(exc),
                 exc_info=exc,
             )
+            try:
+                from app.services.sourcing.apollo_enrichment_service import enrich_selected_candidate
+                from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
+
+                enrichment = enrich_selected_candidate(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    source_type="linkedin_xray",
+                    workflow_token="",
+                    selection_session_id=str(session.id or ""),
+                    automation_job_id=str(session.id or ""),
+                )
+                outreach = trigger_outreach_after_enrichment(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    enrichment_result=enrichment,
+                    selection_session_id=str(session.id or ""),
+                    automation_job_id=str(session.id or ""),
+                    source_type="linkedin_xray",
+                )
+                logger.info(
+                    "selection_candidate_enrichment_fallback job_id=%s candidate_id=%s enrichment_status=%s outreach_status=%s",
+                    job_id,
+                    candidate_id,
+                    str(enrichment.get("status") or ""),
+                    str(outreach.get("status") or ""),
+                )
+            except Exception as fallback_exc:
+                logger.warning(
+                    "selection_candidate_enrichment_fallback_failed job_id=%s candidate_id=%s error=%s",
+                    job_id,
+                    candidate_id,
+                    str(fallback_exc),
+                    exc_info=fallback_exc,
+                )
 
         updated_session = repository.get_by_job(job_id)
         if not updated_session:

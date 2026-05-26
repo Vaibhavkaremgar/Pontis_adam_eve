@@ -95,6 +95,7 @@ function ReadyPageContent() {
   const [slotDate, setSlotDate] = useState("");
   const [slotOptions, setSlotOptions] = useState("");
   const [inviteNote, setInviteNote] = useState("");
+  const activeCandidateDetail = activeCandidate as Record<string, unknown> | null;
 
   const orderedItems = useMemo(() => {
     const priority: Record<string, number> = {
@@ -139,7 +140,7 @@ function ReadyPageContent() {
     const [result, outreachResult] = await Promise.all([getInterviewStatuses(effectiveJobId), getOutreachStatuses(effectiveJobId)]);
     const metricsResult = canViewOperationalMetrics ? await getMetrics() : null;
     if (!result.success || !result.data) {
-      setError(result.error || "Could not load interview statuses.");
+      setError(result.error || "Could not load candidate statuses.");
     } else {
       setItems(result.data);
     }
@@ -182,7 +183,7 @@ function ReadyPageContent() {
     setWorkflowError("");
     const result = await getInterviewInsights(effectiveJobId, candidate.candidateId);
     if (!result.success || !result.data) {
-      setWorkflowError(result.error || "Could not load hiring workflow details.");
+      setWorkflowError(result.error || "Could not load candidate status details.");
       setActiveInsights(null);
     } else {
       setActiveInsights(result.data);
@@ -244,9 +245,9 @@ function ReadyPageContent() {
       sourceType: "adam",
     });
     if (!result.success) {
-      setWorkflowError(result.error || "Could not update the hiring workflow.");
+      setWorkflowError(result.error || "Could not update candidate status.");
     } else {
-      setWorkflowMessage("Hiring workflow updated.");
+      setWorkflowMessage("Candidate status updated.");
       await refreshWorkflow(activeCandidate);
       await loadReady();
     }
@@ -287,7 +288,7 @@ function ReadyPageContent() {
     const evaluations = activeInsights?.evaluations || [];
     const latestEvaluation = evaluations[0] as Record<string, unknown> | undefined;
     return [
-      String(latestEvaluation?.summary || intelligence.summary || payload.summary || "Candidate has moved into the post-outreach hiring workflow."),
+      String(latestEvaluation?.summary || intelligence.summary || payload.summary || "Candidate has moved into the post-outreach status tracking."),
       String(intelligence.recommendationSignal || payload.recommendation || "Adam is tracking stage progression, reply context, and recruiter decisions."),
       String(payload.resumeText || payload.resume_text || "Resume/video profile appears here once candidate reply and interview recorder data are available."),
     ].filter(Boolean).slice(0, 3);
@@ -298,7 +299,7 @@ function ReadyPageContent() {
       <Card className="mx-auto w-full max-w-[760px]">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Candidates ready for interview</CardTitle>
-          <CardDescription>Adam tracks selected candidates here and continues the PDF hiring flow after resume replies</CardDescription>
+          <CardDescription>Adam tracks selected candidates here and keeps the status view moving after resume replies.</CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-4">
@@ -314,13 +315,12 @@ function ReadyPageContent() {
             <div key={item.candidateId} className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="font-semibold text-gray-900">{item.name || item.candidateId.slice(0, 8)}</p>
-                  <p className="text-xs text-gray-500">{item.candidateId.slice(0, 12)}...</p>
+                  <p className="font-semibold text-gray-900">{item.name || "Unnamed candidate"}</p>
                 </div>
                 <Badge variant={statusVariant(item.status)}>{formatStatus(item.status)}</Badge>
               </div>
               <Button className="w-full justify-center" variant="outline" disabled={isLoading} onClick={() => openWorkflow(item)}>
-                Open Hiring Workflow
+                View status
               </Button>
             </div>
           ))}
@@ -342,7 +342,7 @@ function ReadyPageContent() {
                 return (
                   <div key={item.candidateId} className="flex items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2">
                     <div>
-                      <p className="text-sm font-medium text-gray-900">{readyItem?.name || item.candidateId.slice(0, 8)}</p>
+                      <p className="text-sm font-medium text-gray-900">{readyItem?.name || "Unnamed candidate"}</p>
                       {readyItem?.status && <p className="text-xs text-gray-500">Candidate status: {formatStatus(readyItem.status)}</p>}
                       <p className="text-xs text-gray-500">{item.toEmail || "No email on file"}</p>
                       {item.replyState && <p className="text-xs text-slate-700">Reply state: {item.replyState.replace(/_/g, " ")}</p>}
@@ -401,7 +401,7 @@ function ReadyPageContent() {
                 <p className="mt-1 text-xl font-semibold text-gray-900">{completedResultCount}</p>
               </div>
             </div>
-            <p className="text-xs text-gray-500">Ready now hands off into the post-interview recruiter workspace instead of ending the workflow.</p>
+            <p className="text-xs text-gray-500">Ready now hands off into the post-interview recruiter workspace instead of ending the flow.</p>
           </div>
 
           <Button
@@ -427,100 +427,59 @@ function ReadyPageContent() {
             setActiveInsights(null);
           }
         }}
-        title={activeCandidate ? `${activeCandidate.name || activeCandidate.candidateId.slice(0, 8)} hiring workflow` : "Hiring workflow"}
-        description="PDF steps 7-15: profile, interview outcome, second round, offer, and placement."
+        title={activeCandidate ? `${activeCandidate.name || "Unnamed candidate"} status` : "Candidate status"}
+        description="Current ATS, outreach, and interview status for this candidate."
         className="max-w-4xl"
       >
         <div className="max-h-[78vh] space-y-5 overflow-y-auto pr-1">
-          {workflowLoading && <p className="text-sm text-gray-600">Updating workflow...</p>}
+          {workflowLoading && <p className="text-sm text-gray-600">Loading candidate status...</p>}
           {workflowError && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{workflowError}</p>}
           {workflowMessage && <p className="rounded-xl border border-green-100 bg-green-50 px-4 py-3 text-sm text-green-700">{workflowMessage}</p>}
 
-          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-white/70 p-4">
+          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-white/80 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Full profile card</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Candidate status</p>
                 <h3 className="mt-1 text-lg font-semibold text-gray-900">{formatStatus(activeCandidate?.status)}</h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  {String(activeCandidateDetail?.ats_status_reason || "Current status tracked across outreach and interview progression.")}
+                </p>
               </div>
-              <Badge variant="neutral">Video pending integration</Badge>
+              <Badge variant="neutral">{activeCandidate?.name || "Unnamed candidate"}</Badge>
             </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-[0.8fr_1.2fr]">
-              <div className="rounded-xl border border-dashed border-[#D8CDBD] bg-[#F8F5EE] p-4 text-sm text-gray-600">
-                <p className="font-semibold text-gray-900">Video interview</p>
-                <p className="mt-2">Recorder processing placeholder. Once wired, Adam can attach video, transcript, and score overlays here.</p>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-[#ECE7DE] bg-[#F8F5EE] p-4 text-sm text-gray-700">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Profile</p>
+                <div className="mt-2 space-y-1">
+                  <p>Name: {activeCandidate?.name || "Unnamed candidate"}</p>
+                  <p>Source: {activeCandidateDetail?.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : String(activeCandidateDetail?.sourceProvider || activeCandidateDetail?.ats_status_source || "system")}</p>
+                  <p>Updated: {String(activeCandidateDetail?.ats_status_updated_at || "n/a")}</p>
+                </div>
               </div>
-              <div className="space-y-2 text-sm text-gray-700">
+
+              <div className="rounded-xl border border-[#ECE7DE] bg-[#F8F5EE] p-4 text-sm text-gray-700">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Outreach</p>
+                <div className="mt-2 space-y-1">
+                  <p>Email: {String(activeCandidateDetail?.contactEmail || "pending")}</p>
+                  <p>Phone: {String(activeCandidateDetail?.contactPhone || "pending")}</p>
+                  <p>Enrichment: {String(activeCandidateDetail?.enrichmentStatus || "pending")}{activeCandidateDetail?.enrichmentSource ? ` via ${String(activeCandidateDetail.enrichmentSource)}` : ""}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {profileSummaryLines.length > 0 && (
+            <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F8F5EE] p-4 text-sm text-gray-700">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
+              <div className="mt-3 space-y-2">
                 {profileSummaryLines.map((line, index) => (
-                  <p key={`${activeCandidate?.candidateId}-summary-${index}`} className="rounded-xl bg-[#F8F5EE] p-3">{line}</p>
+                  <p key={`${activeCandidate?.candidateId}-summary-${index}`} className="rounded-xl bg-white/80 p-3">{line}</p>
                 ))}
               </div>
             </div>
-          </div>
+          )}
 
-          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Pre-screening interview completed</p>
-            <Textarea
-              className="mt-3"
-              value={evaluationSummary}
-              onChange={(event) => setEvaluationSummary(event.target.value)}
-              placeholder="Paste Adam's 3-paragraph summary, score notes, resume observations, or video notes."
-            />
-            <Button className="mt-3 w-full justify-center" onClick={() => void markPreScreenComplete()} disabled={workflowLoading}>
-              Mark Pre-screen Complete
-            </Button>
-          </div>
-
-          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-white/70 p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Recruiter swipes on interview</p>
-            <Textarea className="mt-3 min-h-[86px]" value={decisionNote} onChange={(event) => setDecisionNote(event.target.value)} placeholder="Decision note or reason." />
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              <Button variant="outline" className="justify-center text-red-700 hover:bg-red-50" onClick={() => void runDecision("reject")} disabled={workflowLoading}>
-                Pass / Disqualify
-              </Button>
-              <Button className="justify-center" onClick={() => void runDecision("advance", "technical_round")} disabled={workflowLoading}>
-                Like / 2nd Round
-              </Button>
-              <Button variant="outline" className="justify-center" onClick={() => void runDecision("no_show")} disabled={workflowLoading}>
-                No-show
-              </Button>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Second-round scheduling modal</p>
-            <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <Input value={scheduleMode} onChange={(event) => setScheduleMode(event.target.value)} placeholder="Mode, e.g. video / onsite" />
-              <Input value={interviewer} onChange={(event) => setInterviewer(event.target.value)} placeholder="Interviewer email or ID" />
-              <Input type="date" value={slotDate} onChange={(event) => setSlotDate(event.target.value)} />
-              <Input value={slotOptions} onChange={(event) => setSlotOptions(event.target.value)} placeholder="Slots, e.g. 10am, 2pm, 4pm" />
-            </div>
-            <Textarea className="mt-3 min-h-[86px]" value={inviteNote} onChange={(event) => setInviteNote(event.target.value)} placeholder="Note to candidate, recruiter, and interviewer." />
-            <Button className="mt-3 w-full justify-center" onClick={() => void runDecision("advance", "technical_round")} disabled={workflowLoading}>
-              Trigger 2nd Round Invite Draft
-            </Button>
-          </div>
-
-          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-white/70 p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Outcome and offer</p>
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              <Button variant="outline" className="justify-center" onClick={() => void runDecision("archive")} disabled={workflowLoading}>
-                Not Moving Forward
-              </Button>
-              <Button variant="outline" className="justify-center" onClick={() => void runDecision("mark_offer")} disabled={workflowLoading}>
-                Offer Made
-              </Button>
-              <Button className="justify-center" onClick={() => void runDecision("mark_placed")} disabled={workflowLoading}>
-                Offer Accepted / Placed
-              </Button>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F8F5EE] p-4 text-sm text-gray-700">
-            <p className="font-semibold text-gray-900">Workflow state</p>
-            <p className="mt-2">Current stage: {activeInsights?.currentStage || "Not started"}</p>
-            <p>Workflow token: {(activeInsights?.workflowToken || "").slice(0, 16) || "pending"}</p>
-            <p>Evaluations: {activeInsights?.evaluationCount ?? 0}</p>
-          </div>
         </div>
       </Modal>
     </AppShell>

@@ -56,7 +56,7 @@ GEMINI_BASE_URL = os.getenv(
     "GEMINI_BASE_URL",
     "https://generativelanguage.googleapis.com/v1beta/openai/",
 ).strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
 
 # Backward-compatible aliases while the codebase migrates from Groq to Gemini.
 GROQ_API_KEY = GEMINI_API_KEY
