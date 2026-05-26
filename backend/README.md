@@ -85,6 +85,7 @@ Required:
 - USE_INTERNAL_CANDIDATE_DB=false by default; set to `true` to source from the internal resume corpus instead of PDL
 - JWT_SECRET
 - REDIS_URL (recommended for multi-worker cache consistency)
+- RESEND_WEBHOOK_SECRET (preferred) or WEBHOOK_SHARED_SECRET (legacy fallback for inbound webhook signing)
 - HF_TOKEN (optional; enables HuggingFace-backed model loading when available)
 - Optional outreach/ATS keys: SENDGRID_API_KEY / POSTMARK_SERVER_TOKEN / MERGE_API_KEY / MERGE_ACCOUNT_TOKEN
 - Slack integration: SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET

@@ -657,44 +657,52 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         intake_status="completed",
         completed_at=datetime.now(timezone.utc),
     )
-    db.commit()
-    db.refresh(updated)
+    try:
+        # Re-embed the enriched job and upsert to Qdrant.
+        # Do NOT call fetch_ranked_candidates here — frontend triggers that separately with refresh=true.
+        vector_source = build_job_text(updated, structured_data=updated.structured_data, transcript=cleaned_text)
+        chunks = chunk_text(vector_source)
+        vectors = [get_embedding(chunk) for chunk in chunks]
+        ensure_all_collections()
+        delete_job_vectors(job_id)
+        upsert_job_chunks(job_id, vectors, chunks)
 
-    # Re-embed the enriched job and upsert to Qdrant.
-    # Do NOT call fetch_ranked_candidates here — frontend triggers that separately with refresh=true.
-    vector_source = build_job_text(updated, structured_data=updated.structured_data, transcript=cleaned_text)
-    chunks = chunk_text(vector_source)
-    vectors = [get_embedding(chunk) for chunk in chunks]
-    ensure_all_collections()
-    delete_job_vectors(job_id)
-    upsert_job_chunks(job_id, vectors, chunks)
+        db.commit()
+        db.refresh(updated)
 
-    logger.info(
-        "voice_refine_complete job_id=%s chunks=%s skills=%s responsibilities=%s",
-        job_id,
-        len(chunks),
-        len(merged_skills),
-        len(merged_responsibilities),
-    )
+        logger.info(
+            "voice_refine_complete job_id=%s chunks=%s skills=%s responsibilities=%s",
+            job_id,
+            len(chunks),
+            len(merged_skills),
+            len(merged_responsibilities),
+        )
 
-    return {
-        "refined": True,
-        "job": {
-            "title": updated.title,
-            "description": updated.description,
-            "location": updated.location,
-            "compensation": updated.compensation,
-            "skills_required": updated.skills_required or [],
-            "responsibilities": updated.responsibilities or [],
-            "experience_level": updated.experience_level or "",
-        },
-        "extraction": {
-            "success": True,
-            "usedFallback": used_fallback,
-            "confidence": confidence,
-            "fields": extracted_fields if not used_fallback else fallback_fields,
-        },
-    }
+        return {
+            "refined": True,
+            "job": {
+                "title": updated.title,
+                "description": updated.description,
+                "location": updated.location,
+                "compensation": updated.compensation,
+                "skills_required": updated.skills_required or [],
+                "responsibilities": updated.responsibilities or [],
+                "experience_level": updated.experience_level or "",
+            },
+            "extraction": {
+                "success": True,
+                "usedFallback": used_fallback,
+                "confidence": confidence,
+                "fields": extracted_fields if not used_fallback else fallback_fields,
+            },
+        }
+    except Exception:
+        db.rollback()
+        try:
+            delete_job_vectors(job_id)
+        except Exception:
+            pass
+        raise
 
 
 def _fallback_refinement(description: str, voice_notes: list[str]) -> str:

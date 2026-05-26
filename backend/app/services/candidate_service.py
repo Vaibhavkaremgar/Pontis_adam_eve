@@ -53,7 +53,7 @@ from app.services.evaluation_service import record_candidate_fetch, record_short
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 from app.services.lifecycle_service import record_job_lifecycle_event
-from app.services.notification_service import build_slot_booking_payload, upsert_notification_workflow_token
+from app.services.notification_service import build_slot_booking_payload, generate_workflow_token, upsert_notification_workflow_token
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
 from app.services.ranking_service import build_match_explanation, compute_final_score, compute_match_score
 from app.services.ranking.semantic_reranking_service import rerank_xray_candidates
@@ -2867,6 +2867,21 @@ def fetch_ranked_candidates(
                 recruiter_id=recruiter_id,
                 source_query=(getattr(job, "title", "") or getattr(job, "role", "") or "").strip(),
             )
+            profile_repo = CandidateProfileRepository(db)
+            for candidate in xray_results:
+                profile_repo.upsert(
+                    job_id=job.id,
+                    candidate_id=candidate.id,
+                    name=candidate.name,
+                    role=candidate.role,
+                    company=candidate.company,
+                    summary=candidate.summary,
+                    skills=list(candidate.skills or []),
+                    raw_data=candidate.model_dump(exclude_none=True),
+                    fit_score=float(candidate.fitScore or 0.0),
+                    decision=candidate.decision or "potential",
+                    strategy=candidate.strategy or "MEDIUM",
+                )
             logger.info(
                 "xray_only_candidates job_id=%s count=%s source_provider=%s",
                 job.id,
@@ -2874,6 +2889,7 @@ def fetch_ranked_candidates(
                 SOURCE_PROVIDER,
             )
             log_metric("candidate_count", job_id=job.id, count=len(xray_results), mode=resolved_mode, source="xray")
+            _safe_commit(db, context="candidate_fetch_xray", job_id=job.id)
             emit_trace(
                 logger,
                 "candidate_ranking_ready",
@@ -3351,6 +3367,14 @@ def build_selection_candidate_snapshot(
     def _reachable(candidate: CandidateResult) -> bool:
         email = _normalize_text(candidate.email or "").lower()
         if not email or "@" not in email:
+            source_provider = _normalize_text(
+                getattr(candidate, "sourceProvider", "") or ((candidate.profileData or {}).get("source_provider") if candidate.profileData else "") or ""
+            ).lower()
+            source_type = _normalize_text(
+                getattr(candidate, "sourceType", "") or ((candidate.profileData or {}).get("source_type") if candidate.profileData else "") or ""
+            ).lower()
+            if source_provider == "xray_apollo" or source_type == "linkedin_xray":
+                return True
             return False
         if candidate.isMockEmail:
             return False
@@ -3661,6 +3685,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
     profile_repo = CandidateProfileRepository(db)
     profiles = profile_repo.latest_by_candidate_ids(job_id=job_id, candidate_ids=shortlisted_ids)
     company = CompanyRepository(db).get_by_id(job.company_id)
+    recruiter_id = jobs.get_recruiter_id(job.id)
     outreach_status_map = {
         row.candidate_id: (row.status or "").strip().lower()
         for row in OutreachEventRepository(db).list_for_job(job_id)
@@ -3696,6 +3721,13 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
         slot_payload = build_slot_booking_payload(
             candidate=profile,
             job={"title": job.title, "company_name": company.name if company else ""},
+        )
+        slot_payload.update(
+            {
+                "jobId": job.id,
+                "companyId": job.company_id,
+                "recruiterId": recruiter_id,
+            }
         )
         shortlisted_rows.append(
             {
@@ -3741,6 +3773,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             job_id=job_id,
             candidate_id=row["candidate_id"],
             workflow_name="slot_booking",
+            token=generate_workflow_token(),
             payload=row["slot_payload"],
             expires_at=datetime.now(timezone.utc) + timedelta(days=7),
             token_type="slot_booking",

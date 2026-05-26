@@ -353,18 +353,22 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             issues.append(ConfigIssue(key="SLACK_SKIP_SIGNATURE_VERIFICATION", severity="critical", message="Slack signature verification must not be disabled in production"))
         if not REDIS_URL:
             issues.append(ConfigIssue(key="REDIS_URL", severity="critical", message="Redis is required in production"))
-        if not RESEND_WEBHOOK_SECRET:
-            issues.append(ConfigIssue(key="RESEND_WEBHOOK_SECRET", severity="critical", message="Resend webhook secret is required in production"))
-        if not WEBHOOK_SHARED_SECRET:
-            issues.append(ConfigIssue(key="WEBHOOK_SHARED_SECRET", severity="critical", message="Internal webhook shared secret is required in production"))
+        if not RESEND_WEBHOOK_SECRET and not WEBHOOK_SHARED_SECRET:
+            issues.append(
+                ConfigIssue(
+                    key="RESEND_WEBHOOK_SECRET",
+                    severity="critical",
+                    message="A webhook signing secret is required in production (set RESEND_WEBHOOK_SECRET, or WEBHOOK_SHARED_SECRET for legacy deployments)",
+                )
+            )
         if not SLACK_SIGNING_SECRET:
             issues.append(ConfigIssue(key="SLACK_SIGNING_SECRET", severity="critical", message="Slack signing secret is required in production"))
         if not COOKIE_SECURE:
             issues.append(ConfigIssue(key="COOKIE_SECURE", severity="warning", message="Secure cookies are disabled in a production-like environment"))
     if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
         issues.append(ConfigIssue(key="RESEND_API_KEY", severity="warning", message="Real outreach is configured but RESEND_API_KEY is missing"))
-    if not RESEND_WEBHOOK_SECRET:
-        issues.append(ConfigIssue(key="RESEND_WEBHOOK_SECRET", severity="warning", message="Inbound Resend webhooks are enabled but RESEND_WEBHOOK_SECRET is missing"))
+    if not RESEND_WEBHOOK_SECRET and not WEBHOOK_SHARED_SECRET:
+        issues.append(ConfigIssue(key="RESEND_WEBHOOK_SECRET", severity="warning", message="Inbound Resend webhooks are enabled but no webhook signing secret is configured"))
 
     return {
         "environment": APP_ENV,

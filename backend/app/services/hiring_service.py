@@ -107,12 +107,19 @@ def create_hiring_job(*, db: Session, user_id: str, company: dict, job: dict) ->
             "autoExportToAts": auto_export_to_ats,
         },
     )
-    db.commit()
-
-    vector_source = build_job_text(job_row)
-    chunks = chunk_text(vector_source)
-    vectors = [get_embedding(chunk) for chunk in chunks]
-    ensure_all_collections()
-    delete_job_vectors(job_row.id)
-    upsert_job_chunks(job_row.id, vectors, chunks)
-    return job_row.id
+    try:
+        vector_source = build_job_text(job_row)
+        chunks = chunk_text(vector_source)
+        vectors = [get_embedding(chunk) for chunk in chunks]
+        ensure_all_collections()
+        delete_job_vectors(job_row.id)
+        upsert_job_chunks(job_row.id, vectors, chunks)
+        db.commit()
+        return job_row.id
+    except Exception:
+        db.rollback()
+        try:
+            delete_job_vectors(job_row.id)
+        except Exception:
+            pass
+        raise

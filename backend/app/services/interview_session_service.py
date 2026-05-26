@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-import secrets
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,7 +14,7 @@ from app.services.candidate_service import ensure_candidate_email
 from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.notification_intelligence_service import route_recruiter_notification
 from app.services.outreach_service import _record_notification
-from app.services.notification_service import build_slot_booking_payload, upsert_notification_workflow_token
+from app.services.notification_service import build_slot_booking_payload, generate_workflow_token, upsert_notification_workflow_token
 from app.services.interview_link_providers import get_interview_link
 from app.services.metrics_service import log_metric
 from app.services.recruiter_preference_service import update_recruiter_preferences
@@ -288,8 +287,8 @@ def create_interview_session(
 
     company = CompanyRepository(db).get_by_id(job.company_id)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=INTERVIEW_SESSION_TTL_MINUTES)
-    session_token = secrets.token_urlsafe(32)
-    canonical_workflow_token = (workflow_token or "").strip() or session_token
+    canonical_workflow_token = (workflow_token or "").strip() or generate_workflow_token()
+    session_token = canonical_workflow_token
     stage_history = [
         {
             "stageName": normalized_stage_name,
@@ -303,6 +302,13 @@ def create_interview_session(
         job=job,
         company_name=company.name if company else "",
         resume_text=resume_text,
+    )
+    token_payload.update(
+        {
+            "jobId": job.id,
+            "companyId": job.company_id,
+            "recruiterId": JobRepository(db).get_recruiter_id(job.id),
+        }
     )
     token_payload.update(
         {
@@ -357,7 +363,15 @@ def create_interview_session(
     }
     booking_link = row.booking_url or _slot_booking_url(workflow_token_value)
     db.commit()
-    logger.info("interview_session_created job_id=%s candidate_id=%s token=%s workflow_token=%s", job_id, candidate_id, session_token, workflow_token_value)
+    recruiter_id = JobRepository(db).get_recruiter_id(job_id)
+    logger.info(
+        "interview_session_created job_id=%s candidate_id=%s recruiter_id=%s session_token=%s workflow_token=%s",
+        job_id,
+        candidate_id,
+        recruiter_id or "",
+        session_token,
+        workflow_token_value,
+    )
     record_job_lifecycle_event(
         db=db,
         job_id=job_id,
@@ -365,7 +379,8 @@ def create_interview_session(
         payload={
             "jobId": job_id,
             "candidateId": candidate_id,
-            "token": session_token,
+            "recruiterId": recruiter_id,
+            "sessionToken": session_token,
             "workflowToken": workflow_token_value,
             "stageName": normalized_stage_name,
             "outreachEventId": outreach_event_id,
@@ -393,7 +408,7 @@ def create_interview_session(
         title="Interview request",
         body=booking_link,
         status="delivered",
-        delivery_reference=session_token,
+        delivery_reference=workflow_token_value or session_token,
         metadata={"bookingLink": booking_link, "source": source_app},
     )
     return _session_payload(row=row, booking_link=booking_link)
@@ -515,6 +530,7 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         reason="booking_confirmed",
         metadata={"scheduledAt": _utc_isoformat(row.scheduled_at), "meetingLink": meeting_link},
     )
+    recruiter_id = JobRepository(db).get_recruiter_id(row.job_id)
     _record_notification(
         db=db,
         job_id=row.job_id,
@@ -526,11 +542,18 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         title="Interview scheduled",
         body=meeting_link,
         status="delivered",
-        delivery_reference=token,
+        delivery_reference=workflow_token_value or token,
         metadata={"scheduledAt": _utc_isoformat(row.scheduled_at), "meetingLink": meeting_link},
     )
     db.commit()
-    logger.info("interview_session_scheduled job_id=%s candidate_id=%s token=%s", row.job_id, row.candidate_id, token)
+    logger.info(
+        "interview_session_scheduled job_id=%s candidate_id=%s recruiter_id=%s session_token=%s workflow_token=%s",
+        row.job_id,
+        row.candidate_id,
+        recruiter_id or "",
+        row.token,
+        workflow_token_value,
+    )
     log_metric("interview_scheduled", job_id=row.job_id, candidate_id=row.candidate_id)
     record_job_lifecycle_event(
         db=db,
@@ -539,9 +562,11 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         payload={
             "jobId": row.job_id,
             "candidateId": row.candidate_id,
-            "token": token,
+            "recruiterId": recruiter_id,
+            "sessionToken": row.token,
             "scheduledAt": _utc_isoformat(row.scheduled_at),
             "meetingLink": meeting_link,
+            "workflowToken": workflow_token_value,
         },
         source="interview",
     )
@@ -582,6 +607,7 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
         raise APIError("Interview session not found", status_code=404)
 
     source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
+    recruiter_id = JobRepository(db).get_recruiter_id(row.job_id)
     requested_scheduled_at = _utc_isoformat(rescheduled_at)
     existing_scheduled_at = _utc_isoformat(row.scheduled_at)
     if existing_scheduled_at == requested_scheduled_at:
@@ -658,6 +684,14 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
         metadata={"scheduledAt": requested_scheduled_at, "reason": reason, "sourceType": source_type},
     )
     db.commit()
+    logger.info(
+        "interview_session_rescheduled job_id=%s candidate_id=%s recruiter_id=%s session_token=%s workflow_token=%s",
+        row.job_id,
+        row.candidate_id,
+        recruiter_id or "",
+        row.token,
+        workflow_token_value,
+    )
     record_job_lifecycle_event(
         db=db,
         job_id=row.job_id,
@@ -665,10 +699,12 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
         payload={
             "jobId": row.job_id,
             "candidateId": row.candidate_id,
-            "token": token,
+            "recruiterId": recruiter_id,
+            "sessionToken": row.token,
             "scheduledAt": requested_scheduled_at,
             "meetingLink": meeting_link,
             "reason": reason,
+            "workflowToken": workflow_token_value,
         },
         source="interview",
     )
@@ -699,6 +735,7 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
         raise APIError("Interview session not found", status_code=404)
 
     source_type = str((_metadata_map(row.scheduling_metadata).get("sourceType") or "adam"))
+    recruiter_id = JobRepository(db).get_recruiter_id(row.job_id)
     if (row.status or "").strip().lower() == "no_show":
         return {
             "token": row.token,
@@ -770,6 +807,14 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
         metadata={"token": row.token, "scheduledAt": _utc_isoformat(row.scheduled_at), "reason": reason, "sourceType": source_type},
     )
     db.commit()
+    logger.info(
+        "interview_session_no_show job_id=%s candidate_id=%s recruiter_id=%s session_token=%s workflow_token=%s",
+        row.job_id,
+        row.candidate_id,
+        recruiter_id or "",
+        row.token,
+        workflow_token_value,
+    )
     record_job_lifecycle_event(
         db=db,
         job_id=row.job_id,
@@ -777,9 +822,11 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
         payload={
             "jobId": row.job_id,
             "candidateId": row.candidate_id,
-            "token": row.token,
+            "recruiterId": recruiter_id,
+            "sessionToken": row.token,
             "scheduledAt": _utc_isoformat(row.scheduled_at),
             "reason": reason,
+            "workflowToken": workflow_token_value,
         },
         source="interview",
     )

@@ -22,6 +22,11 @@ def _metadata_map(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def generate_workflow_token() -> str:
+    """Generate an opaque, URL-safe workflow token with strong entropy."""
+    return secrets.token_urlsafe(32)
+
+
 def _candidate_source(candidate: Any) -> dict[str, Any]:
     if isinstance(candidate, dict):
         return dict(candidate)
@@ -298,12 +303,17 @@ def upsert_notification_workflow_token(
     normalized_source_app = repository._normalize_source_app(source_app)
     normalized_token_type = (token_type or workflow_name or "").strip().lower()
     normalized_workflow_name = (workflow_name or normalized_token_type or "").strip()
-    token_value = (token or "").strip() or secrets.token_urlsafe(32)
+    token_value = (token or "").strip()
+    if normalized_workflow_name == "slot_booking" and not token_value:
+        raise ValueError("slot_booking workflow tokens must be provided explicitly")
+    if not token_value:
+        token_value = generate_workflow_token()
 
     def _apply(row) -> dict[str, Any]:
         row.workflow_name = normalized_workflow_name
         row.token_type = normalized_token_type
-        normalized_payload = _metadata_map(payload)
+        normalized_payload = _metadata_map(row.payload)
+        normalized_payload.update(_metadata_map(payload))
         normalized_payload.setdefault("source_type", normalized_source_app)
         normalized_payload.setdefault("sourceType", normalized_source_app)
         row.payload = normalized_payload
