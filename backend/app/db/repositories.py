@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import String, case, cast, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -60,6 +60,10 @@ def ensure_candidate_profile(db: Session, job_id: str, candidate_id: str) -> Can
 
 def _normalize_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _string_id_match(column, value: object):
+    return cast(column, String) == _normalize_text(value)
 
 
 def _sanitize_candidate_id(candidate_id: str) -> str:
@@ -520,7 +524,7 @@ class JobIntakeRepository:
         normalized = (job_id or "").strip()
         if not normalized:
             return None
-        return self.db.scalar(select(JobIntakeEntity).where(JobIntakeEntity.job_id == normalized))
+        return self.db.scalar(select(JobIntakeEntity).where(_string_id_match(JobIntakeEntity.job_id, normalized)))
 
     def upsert_completed_intake(
         self,
@@ -589,7 +593,7 @@ class OrchestrationSessionRepository:
             return None
         return self.db.scalar(
             select(OrchestrationSessionEntity)
-            .where(OrchestrationSessionEntity.job_id == normalized)
+            .where(_string_id_match(OrchestrationSessionEntity.job_id, normalized))
             .order_by(OrchestrationSessionEntity.updated_at.desc(), OrchestrationSessionEntity.created_at.desc())
         )
 
@@ -786,7 +790,7 @@ class InterviewRepository:
     def get_by_job_and_candidate(self, job_id: str, candidate_id: str) -> InterviewEntity | None:
         return self.db.scalar(
             select(InterviewEntity).where(
-                InterviewEntity.job_id == job_id,
+                _string_id_match(InterviewEntity.job_id, job_id),
                 InterviewEntity.candidate_id == candidate_id,
                 InterviewEntity.source_app == ADAM_SOURCE_APP,
             )
@@ -826,7 +830,7 @@ class InterviewRepository:
         rows = self.db.scalars(
             select(InterviewEntity)
             .where(
-                InterviewEntity.job_id == job_id,
+                _string_id_match(InterviewEntity.job_id, job_id),
                 InterviewEntity.source_app == ADAM_SOURCE_APP,
             )
         ).all()
@@ -844,7 +848,7 @@ class InterviewSessionRepository:
             return None
         return self.db.scalar(
             select(InterviewSessionEntity).where(
-                InterviewSessionEntity.job_id == normalized_job_id,
+                _string_id_match(InterviewSessionEntity.job_id, normalized_job_id),
                 InterviewSessionEntity.candidate_id == normalized_candidate_id,
             ).order_by(InterviewSessionEntity.expires_at.desc())
         )
@@ -948,14 +952,14 @@ class CandidateProfileRepository:
         normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         row = self.db.scalar(
             select(CandidateProfileEntity).where(
-                CandidateProfileEntity.job_id == job_id,
+                _string_id_match(CandidateProfileEntity.job_id, job_id),
                 CandidateProfileEntity.candidate_id == normalized_candidate_id,
             )
         )
         if not row and normalized_candidate_id != candidate_id:
             row = self.db.scalar(
                 select(CandidateProfileEntity).where(
-                    CandidateProfileEntity.job_id == job_id,
+                    _string_id_match(CandidateProfileEntity.job_id, job_id),
                     CandidateProfileEntity.candidate_id == candidate_id,
                 )
             )
@@ -1129,7 +1133,7 @@ class CandidateProfileRepository:
     def list_for_job(self, job_id: str) -> list[CandidateProfileEntity]:
         rows = self.db.scalars(
             select(CandidateProfileEntity)
-            .where(CandidateProfileEntity.job_id == job_id)
+            .where(_string_id_match(CandidateProfileEntity.job_id, job_id))
             .order_by(CandidateProfileEntity.fit_score.desc())
         ).all()
         updated = False
@@ -1143,7 +1147,7 @@ class CandidateProfileRepository:
         count = self.db.scalar(
             select(func.count())
             .select_from(CandidateProfileEntity)
-            .where(CandidateProfileEntity.job_id == job_id)
+            .where(_string_id_match(CandidateProfileEntity.job_id, job_id))
         )
         return int(count or 0)
 
@@ -1156,7 +1160,7 @@ class CandidateProfileRepository:
             select(CandidateProfileEntity)
             .where(
                 CandidateProfileEntity.candidate_id.in_(unique_ids),
-                CandidateProfileEntity.job_id == job_id,
+                _string_id_match(CandidateProfileEntity.job_id, job_id),
             )
             .order_by(CandidateProfileEntity.last_scored_at.desc())
         ).all()
@@ -1370,7 +1374,7 @@ class CandidateFeedbackRepository:
     def get(self, *, job_id: str, candidate_id: str) -> CandidateFeedbackEntity | None:
         return self.db.scalar(
             select(CandidateFeedbackEntity).where(
-                CandidateFeedbackEntity.job_id == job_id,
+                _string_id_match(CandidateFeedbackEntity.job_id, job_id),
                 CandidateFeedbackEntity.candidate_id == candidate_id,
             )
         )
@@ -1417,12 +1421,12 @@ class CandidateFeedbackRepository:
         return row
 
     def list_for_job(self, job_id: str) -> list[CandidateFeedbackEntity]:
-        rows = self.db.scalars(select(CandidateFeedbackEntity).where(CandidateFeedbackEntity.job_id == job_id)).all()
+        rows = self.db.scalars(select(CandidateFeedbackEntity).where(_string_id_match(CandidateFeedbackEntity.job_id, job_id))).all()
         return list(rows)
 
     def list_by_job(self, job_id: str) -> list[CandidateFeedbackEntity]:
         rows = self.db.scalars(
-            select(CandidateFeedbackEntity).where(CandidateFeedbackEntity.job_id == job_id)
+            select(CandidateFeedbackEntity).where(_string_id_match(CandidateFeedbackEntity.job_id, job_id))
         ).all()
         return list(rows)
 
@@ -1440,7 +1444,7 @@ class CandidateFeedbackRepository:
 
     def count_for_job(self, job_id: str) -> int:
         count = self.db.scalar(
-            select(func.count()).select_from(CandidateFeedbackEntity).where(CandidateFeedbackEntity.job_id == job_id)
+            select(func.count()).select_from(CandidateFeedbackEntity).where(_string_id_match(CandidateFeedbackEntity.job_id, job_id))
         )
         return int(count or 0)
 
@@ -1479,9 +1483,9 @@ class RankingExplanationRepository:
 
     def store_bulk(self, rows: list[dict[str, float | str]]) -> None:
         cleaned = [
-            {
-                "id": str(uuid4()),
-                "job_id": str(row.get("job_id") or "").strip(),
+                {
+                    "id": str(uuid4()),
+                    "job_id": str(row.get("job_id") or "").strip(),
                 "candidate_id": str(row.get("candidate_id") or "").strip(),
                 "existing_score": float(row.get("existing_score") or 0.0),
                 "recruiter_score": float(row.get("recruiter_score") or 0.0),
@@ -1520,7 +1524,7 @@ class RankingExplanationRepository:
         for row in cleaned:
             existing = self.db.scalar(
                 select(RankingExplanationEntity).where(
-                    RankingExplanationEntity.job_id == row["job_id"],
+                    _string_id_match(RankingExplanationEntity.job_id, row["job_id"]),
                     RankingExplanationEntity.candidate_id == row["candidate_id"],
                 )
             )
@@ -1592,7 +1596,7 @@ class RankingRunRepository:
 
         stmt = select(RankingRunEntity).where(RankingRunEntity.recruiter_id == recruiter_id)
         if job_id:
-            stmt = stmt.where(RankingRunEntity.job_id == job_id)
+            stmt = stmt.where(_string_id_match(RankingRunEntity.job_id, job_id))
         rows = self.db.scalars(
             stmt.order_by(RankingRunEntity.created_at.desc()).limit(max(1, limit))
         ).all()
@@ -1816,7 +1820,7 @@ class ScoringProfileRepository:
         self.db = db
 
     def get(self, *, job_id: str) -> ScoringProfileEntity | None:
-        return self.db.scalar(select(ScoringProfileEntity).where(ScoringProfileEntity.job_id == job_id))
+        return self.db.scalar(select(ScoringProfileEntity).where(_string_id_match(ScoringProfileEntity.job_id, job_id)))
 
     def get_or_create(self, *, job_id: str) -> ScoringProfileEntity:
         row = self.get(job_id=job_id)
@@ -1884,7 +1888,7 @@ class CandidateSelectionSessionRepository:
     def get_by_job(self, job_id: str) -> CandidateSelectionSessionEntity | None:
         return self.db.scalar(
             select(CandidateSelectionSessionEntity)
-            .where(CandidateSelectionSessionEntity.job_id == job_id)
+            .where(_string_id_match(CandidateSelectionSessionEntity.job_id, job_id))
             .order_by(CandidateSelectionSessionEntity.created_at.desc())
         )
 
@@ -2001,7 +2005,7 @@ class ATSExportRepository:
     def get(self, *, job_id: str, candidate_id: str, provider: str) -> ATSExportEntity | None:
         row = self.db.scalar(
             select(ATSExportEntity).where(
-                ATSExportEntity.job_id == job_id,
+                _string_id_match(ATSExportEntity.job_id, job_id),
                 ATSExportEntity.candidate_id == candidate_id,
                 ATSExportEntity.provider == provider,
             ).order_by(ATSExportEntity.exported_at.desc())
@@ -2011,7 +2015,7 @@ class ATSExportRepository:
 
         rows = self.db.scalars(
             select(ATSExportEntity).where(
-                ATSExportEntity.job_id == job_id,
+                _string_id_match(ATSExportEntity.job_id, job_id),
                 ATSExportEntity.provider == provider,
             ).order_by(ATSExportEntity.exported_at.desc())
         ).all()
@@ -2115,7 +2119,7 @@ class ATSExportRepository:
         return row
 
     def list_for_job(self, job_id: str) -> list[ATSExportEntity]:
-        rows = self.db.scalars(select(ATSExportEntity).where(ATSExportEntity.job_id == job_id)).all()
+        rows = self.db.scalars(select(ATSExportEntity).where(_string_id_match(ATSExportEntity.job_id, job_id))).all()
         return list(rows)
 
 
@@ -2138,7 +2142,7 @@ class OutreachEventRepository:
         row = self.db.scalar(
             select(OutreachEventEntity)
             .where(
-                OutreachEventEntity.job_id == job_id,
+                _string_id_match(OutreachEventEntity.job_id, job_id),
                 OutreachEventEntity.candidate_id == candidate_id,
                 OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
@@ -2207,7 +2211,7 @@ class OutreachEventRepository:
         stmt = (
             update(OutreachEventEntity)
             .where(
-                OutreachEventEntity.job_id == job_id,
+                _string_id_match(OutreachEventEntity.job_id, job_id),
                 OutreachEventEntity.candidate_id == candidate_id,
                 OutreachEventEntity.provider_message_id.is_(None),
                 OutreachEventEntity.status.in_(("queued", "failed")),
@@ -2338,7 +2342,7 @@ class OutreachEventRepository:
     def list_for_job(self, job_id: str) -> list[OutreachEventEntity]:
         rows = self.db.scalars(
             select(OutreachEventEntity).where(
-                OutreachEventEntity.job_id == job_id,
+                _string_id_match(OutreachEventEntity.job_id, job_id),
                 OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
         ).all()
@@ -2363,7 +2367,7 @@ class OutreachEventRepository:
             OutreachEventEntity.source_app == ADAM_SOURCE_APP,
         )
         if job_id:
-            stmt = stmt.where(OutreachEventEntity.job_id == job_id)
+            stmt = stmt.where(_string_id_match(OutreachEventEntity.job_id, job_id))
         rows = self.db.scalars(stmt).all()
         return list(rows)
 
@@ -2467,7 +2471,7 @@ class NotificationWorkflowTokenRepository:
         if not normalized_job_id or not normalized_candidate_id:
             return None
         conditions = [
-            NotificationWorkflowTokenEntity.job_id == normalized_job_id,
+            _string_id_match(NotificationWorkflowTokenEntity.job_id, normalized_job_id),
             NotificationWorkflowTokenEntity.candidate_id == normalized_candidate_id,
             NotificationWorkflowTokenEntity.source_app == normalized_source_app,
             NotificationWorkflowTokenEntity.is_active.is_(True),
@@ -2573,7 +2577,7 @@ class CandidateLifecycleEventRepository:
         rows = self.db.scalars(
             select(CandidateLifecycleEventEntity)
             .where(
-                CandidateLifecycleEventEntity.job_id == job_id,
+                _string_id_match(CandidateLifecycleEventEntity.job_id, job_id),
                 CandidateLifecycleEventEntity.candidate_id == candidate_id,
             )
             .order_by(CandidateLifecycleEventEntity.created_at.desc())
@@ -2645,7 +2649,7 @@ class NotificationEventRepository:
     def list_for_job(self, job_id: str, limit: int = 200) -> list[NotificationEventEntity]:
         rows = self.db.scalars(
             select(NotificationEventEntity)
-            .where(NotificationEventEntity.job_id == job_id)
+            .where(_string_id_match(NotificationEventEntity.job_id, job_id))
             .order_by(NotificationEventEntity.created_at.desc())
             .limit(max(1, int(limit)))
         ).all()
@@ -2786,7 +2790,7 @@ class RecruiterNoteRepository:
         return row
 
     def list_for_job(self, job_id: str, *, candidate_id: str | None = None, limit: int = 100) -> list[RecruiterNoteEntity]:
-        stmt = select(RecruiterNoteEntity).where(RecruiterNoteEntity.job_id == job_id)
+        stmt = select(RecruiterNoteEntity).where(_string_id_match(RecruiterNoteEntity.job_id, job_id))
         if candidate_id:
             stmt = stmt.where(RecruiterNoteEntity.candidate_id == candidate_id)
         rows = self.db.scalars(stmt.order_by(RecruiterNoteEntity.created_at.desc()).limit(max(1, int(limit)))).all()
@@ -2827,7 +2831,7 @@ class RecruiterTaskRepository:
         return row
 
     def list_for_job(self, job_id: str, *, status: str | None = None, limit: int = 100) -> list[RecruiterTaskEntity]:
-        stmt = select(RecruiterTaskEntity).where(RecruiterTaskEntity.job_id == job_id)
+        stmt = select(RecruiterTaskEntity).where(_string_id_match(RecruiterTaskEntity.job_id, job_id))
         if status:
             stmt = stmt.where(RecruiterTaskEntity.status == status)
         rows = self.db.scalars(stmt.order_by(RecruiterTaskEntity.created_at.desc()).limit(max(1, int(limit)))).all()
@@ -2865,7 +2869,7 @@ class InterviewEvaluationRepository:
     ) -> InterviewEvaluationEntity:
         row = self.db.scalar(
             select(InterviewEvaluationEntity).where(
-                InterviewEvaluationEntity.job_id == job_id,
+                _string_id_match(InterviewEvaluationEntity.job_id, job_id),
                 InterviewEvaluationEntity.candidate_id == candidate_id,
                 InterviewEvaluationEntity.stage_name == stage_name,
             )
@@ -2895,7 +2899,7 @@ class InterviewEvaluationRepository:
         rows = self.db.scalars(
             select(InterviewEvaluationEntity)
             .where(
-                InterviewEvaluationEntity.job_id == job_id,
+                _string_id_match(InterviewEvaluationEntity.job_id, job_id),
                 InterviewEvaluationEntity.candidate_id == candidate_id,
             )
             .order_by(InterviewEvaluationEntity.updated_at.desc())
@@ -2924,7 +2928,7 @@ class InboundEmailRepository:
         rows = self.db.scalars(
             select(InboundEmailReplyEntity)
             .where(
-                InboundEmailReplyEntity.job_id == job_id,
+                _string_id_match(InboundEmailReplyEntity.job_id, job_id),
                 InboundEmailReplyEntity.candidate_id == candidate_id,
             )
             .order_by(InboundEmailReplyEntity.received_at.desc())

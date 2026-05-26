@@ -194,9 +194,9 @@ function ResultsPageContent() {
     setActionLoading("");
   };
 
-  // video src — served via backend proxy
-  const videoSrc = workspace.recording.videoAvailable && workspace.recording.recordingPath
-    ? `/api/backend/interview/recording?token=${encodeURIComponent(selectedToken)}`
+  // video src — proxied through Adam backend using workflow token
+  const videoSrc = workspace.recording.videoAvailable && selectedToken
+    ? `/api/backend/results/video/${encodeURIComponent(selectedToken)}`
     : null;
 
   const scores = workspace.scores;

@@ -9,7 +9,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from app.core.config import GROQ_API_KEY, GROQ_BASE_URL, GROQ_MODEL
+from app.core.config import GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL
 from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
@@ -21,9 +21,9 @@ LLM_DISABLE_COOLDOWN_SECONDS = 300
 
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
-    if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY missing")
-    return OpenAI(base_url=GROQ_BASE_URL, api_key=GROQ_API_KEY)
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY missing")
+    return OpenAI(base_url=GEMINI_BASE_URL, api_key=GEMINI_API_KEY)
 
 
 def _llm_is_disabled() -> bool:
@@ -89,10 +89,10 @@ def _extract_json_payload(text: str) -> dict | list | None:
 
 
 def generate(prompt: str, expect_json: bool = False):
-    if _llm_is_disabled() or not GROQ_API_KEY:
+    if _llm_is_disabled() or not GEMINI_API_KEY:
         if not _llm_disable_reason:
-            _disable_llm("GROQ_API_KEY missing" if not GROQ_API_KEY else "llm_disabled")
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
+            _disable_llm("GEMINI_API_KEY missing" if not GEMINI_API_KEY else "llm_disabled")
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=True, fallback=True, expect_json=expect_json)
         return _local_fallback(prompt, expect_json=expect_json)
 
     try:
@@ -100,12 +100,12 @@ def generate(prompt: str, expect_json: bool = False):
     except Exception as exc:
         _disable_llm(str(exc))
         logger.warning("llm_client_unavailable reason=%s", str(exc))
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=True, fallback=True, expect_json=expect_json)
         return _local_fallback(prompt, expect_json=expect_json)
 
     def _run(instruction: str) -> str:
         response = client.chat.completions.create(
-            model=GROQ_MODEL,
+            model=GEMINI_MODEL,
             messages=[{"role": "user", "content": instruction}],
             temperature=0.2,
         )
@@ -113,7 +113,7 @@ def generate(prompt: str, expect_json: bool = False):
 
     try:
         output = _run(prompt)
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=False, fallback=False, expect_json=expect_json)
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=False, fallback=False, expect_json=expect_json)
         if not expect_json:
             return output
 
@@ -122,27 +122,27 @@ def generate(prompt: str, expect_json: bool = False):
             return parsed
 
         retry_output = _run("Return ONLY valid JSON:\n" + prompt)
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=False, fallback=False, expect_json=expect_json, retry=True)
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=False, fallback=False, expect_json=expect_json, retry=True)
         parsed = _extract_json_payload(retry_output)
         if parsed is not None:
             return parsed
         return _local_fallback(prompt, expect_json=True)
     except Exception as exc:
         _disable_llm(str(exc))
-        logger.warning("llm_generation_failed model=%s reason=%s", GROQ_MODEL, str(exc))
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
+        logger.warning("llm_generation_failed model=%s reason=%s", GEMINI_MODEL, str(exc))
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=True, fallback=True, expect_json=expect_json)
         return _local_fallback(prompt, expect_json=expect_json)
 
 
 def llm_health() -> dict:
     try:
-        status = "disabled" if _llm_is_disabled() or not GROQ_API_KEY else "ok"
+        status = "disabled" if _llm_is_disabled() or not GEMINI_API_KEY else "ok"
         if status == "ok":
             generate("ping")
         return {
             "status": status,
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "model": GROQ_MODEL,
+            "model": GEMINI_MODEL,
             "retry_at": _llm_disabled_until.isoformat() if _llm_disabled_until else None,
             "last_error": _llm_last_error,
         }

@@ -51,9 +51,17 @@ def _is_placeholder_value(value: str | None) -> bool:
     )
 
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GROQ_API_KEY", "")).strip()
+GEMINI_BASE_URL = os.getenv(
+    "GEMINI_BASE_URL",
+    "https://generativelanguage.googleapis.com/v1beta/openai/",
+).strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
+
+# Backward-compatible aliases while the codebase migrates from Groq to Gemini.
+GROQ_API_KEY = GEMINI_API_KEY
+GROQ_BASE_URL = GEMINI_BASE_URL
+GROQ_MODEL = GEMINI_MODEL
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 SOURCE_PROVIDER = os.getenv("SOURCE_PROVIDER", "xray_apollo").strip().lower() or "xray_apollo"
@@ -245,8 +253,8 @@ FEEDBACK_WEIGHTS = {
 
 def missing_secret_warnings() -> list[str]:
     warnings: list[str] = []
-    if not GROQ_API_KEY:
-        warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
+    if not GEMINI_API_KEY:
+        warnings.append("GEMINI_API_KEY is missing; LLM features will use local fallback.")
     if SOURCE_PROVIDER == "xray_apollo" and XRAY_ENABLED and not SERPAPI_API_KEY:
         warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will be unavailable.")
     if SOURCE_PROVIDER == "xray_apollo" and APOLLO_ENRICHMENT_ENABLED and not APOLLO_API_KEY:
