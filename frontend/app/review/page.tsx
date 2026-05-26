@@ -926,9 +926,6 @@ function SwipeDeck({
                       <ArrowUpRight className="h-3.5 w-3.5" />
                     </a>
                   )}
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
-                    Rank
-                  </div>
                 </div>
               </div>
 
@@ -1200,9 +1197,6 @@ function RecruiterSwipeDeck({
                       <ArrowUpRight className="h-3.5 w-3.5" />
                     </a>
                   )}
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
-                    Rank
-                  </div>
                 </div>
               </div>
 

@@ -356,6 +356,8 @@ def _ensure_optional_schema_columns() -> None:
             token_columns = {column["name"] for column in inspector.get_columns("notification_workflow_tokens")}
             if "token_type" not in token_columns:
                 conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN token_type VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "workflow_name" not in token_columns:
+                conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN workflow_name VARCHAR(64) NOT NULL DEFAULT ''"))
             if "is_active" not in token_columns:
                 conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
 
