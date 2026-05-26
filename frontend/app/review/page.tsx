@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  ArrowUpRight,
   BriefcaseBusiness,
   Building2,
   CheckCircle2,
@@ -60,7 +61,7 @@ function atsStatusLabel(candidate: Candidate): string {
 }
 
 function candidateSubtitle(candidate: Candidate): string {
-  return [candidate.headline || candidate.role || "", candidate.company ? candidate.company : "", candidate.location || ""]
+  return [candidate.headline || candidate.role || "", candidate.company ? candidate.company : "", getCandidateLocation(candidate) || ""]
     .filter(Boolean)
     .join(" - ");
 }
@@ -81,6 +82,51 @@ function getCandidateCurrentRole(candidate: Candidate): string {
 
 function getCandidateProfileData(candidate: Candidate): Record<string, unknown> {
   return candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
+}
+
+function getCandidateSkills(candidate: Candidate): string[] {
+  const profileData = getCandidateProfileData(candidate);
+  const merged = [...(candidate.skills || []), ...(Array.isArray(profileData.skills) ? profileData.skills : [])]
+    .map((skill) => String(skill || "").trim())
+    .filter(Boolean);
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const skill of merged) {
+    const key = skill.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(skill);
+  }
+  return deduped;
+}
+
+function looksLikeSkillList(value: string, skills: string[]): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const skillTokens = skills.map((skill) => skill.trim().toLowerCase()).filter(Boolean);
+  if (skillTokens.length > 0 && skillTokens.every((skill) => normalized.includes(skill))) return true;
+  const parts = normalized.split(/[,/|·•]/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 3 && parts.every((part) => part.length <= 24)) return true;
+  const techMarkers = ["javascript", "typescript", "python", "react", "node", "html", "css", "sql", "aws", "docker", "kubernetes"];
+  return techMarkers.some((marker) => normalized.includes(marker)) && parts.length >= 2;
+}
+
+function getCandidateLocation(candidate: Candidate): string {
+  const profileData = getCandidateProfileData(candidate);
+  const skills = getCandidateSkills(candidate);
+  const candidates = [
+    profileData.location,
+    profileData.current_location,
+    profileData.currentLocation,
+    candidate.location,
+  ]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+
+  for (const location of candidates) {
+    if (!looksLikeSkillList(location, skills)) return location;
+  }
+  return "";
 }
 
 function getSnippetQualityLabel(candidate: Candidate): string {
@@ -287,20 +333,24 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
 }
 
 function CandidateDetails({ candidate }: { candidate: Candidate }) {
-  const topSkills = formatList(candidate.skills, "Not provided").slice(0, 6);
+  const topSkills = formatList(getCandidateSkills(candidate), "Not provided").slice(0, 6);
   const role = candidate.headline || candidate.role || "Not provided";
+  const linkedInUrl = getCandidateLinkedInUrl(candidate);
+  const safeLocation = getCandidateLocation(candidate);
 
   return (
     <div className="space-y-5">
-      {getCandidateLinkedInUrl(candidate) && (
+      {linkedInUrl && (
         <div className="flex justify-end">
           <a
-            href={getCandidateLinkedInUrl(candidate)}
+            href={linkedInUrl}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center justify-center rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
           >
-            Open LinkedIn
+            Go there
+            <ArrowUpRight className="h-3.5 w-3.5" />
           </a>
         </div>
       )}
@@ -310,7 +360,7 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
           <DetailRow label="Name" value={candidate.name || "Not provided"} />
           <DetailRow label="Current role" value={getCandidateCurrentRole(candidate) || role} />
           <DetailRow label="Current company" value={candidate.currentCompany || candidate.company || "Not provided"} />
-          <DetailRow label="Location" value={candidate.location || "Not provided"} />
+          <DetailRow label="Location" value={safeLocation || "Not provided"} />
           <DetailRow label="Experience" value={candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"} />
         </div>
       </div>
@@ -395,12 +445,26 @@ function CandidateCard({
               </p>
               <p className="flex items-center gap-2">
                 <MapPin className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{candidate.location || "Not provided"}</span>
+                <span>{getCandidateLocation(candidate) || "Not provided"}</span>
               </p>
             </div>
           </div>
-          <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center font-body text-[14px] font-semibold leading-tight text-[#0F6B3A]">
-            <span>Ranked</span>
+          <div className="flex flex-col items-end gap-2">
+            {getCandidateLinkedInUrl(candidate) && (
+              <a
+                href={getCandidateLinkedInUrl(candidate)}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => event.stopPropagation()}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+              >
+                Go there
+                <ArrowUpRight className="h-3.5 w-3.5" />
+              </a>
+            )}
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center font-body text-[14px] font-semibold leading-tight text-[#0F6B3A]">
+              <span>Ranked</span>
+            </div>
           </div>
         </div>
       </CardHeader>
@@ -437,6 +501,13 @@ function CandidateCard({
             <Building2 className="h-4 w-4 shrink-0 text-[#6B7280]" />
             <span className="font-body text-[14px] text-[#4B5563]">Company</span>
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">{candidate.company || "Not provided"}</span>
+          </div>
+          <div className="flex items-center gap-3 border-t border-[#ECE7DE] py-2">
+            <Sparkles className="h-4 w-4 shrink-0 text-[#6B7280]" />
+            <span className="font-body text-[14px] text-[#4B5563]">Skills</span>
+            <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
+              {getCandidateSkills(candidate).slice(0, 3).join(", ") || "Not provided"}
+            </span>
           </div>
           <div className="flex items-center gap-3 border-t border-[#ECE7DE] py-2">
             <Sparkles className="h-4 w-4 shrink-0 text-[#6B7280]" />
@@ -537,9 +608,9 @@ function CandidateListRow({
       </div>
 
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        {candidate.location && (
+        {getCandidateLocation(candidate) && (
           <span className="rounded-full bg-[#F7F3EB] px-3 py-1 text-[12px] font-medium text-[#7D6A57]">
-            {candidate.location}
+            {getCandidateLocation(candidate)}
           </span>
         )}
         {candidate.company && (
@@ -547,7 +618,7 @@ function CandidateListRow({
             {candidate.company}
           </span>
         )}
-        {candidate.skills?.slice(0, 3).map((skill) => (
+        {getCandidateSkills(candidate).slice(0, 3).map((skill) => (
           <span key={`${candidate.id}-${skill}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
             {skill}
           </span>
@@ -793,15 +864,29 @@ function SwipeDeck({
                     {current.headline || current.role || ""}
                     {current.company ? ` @ ${current.company}` : ""}
                   </p>
-                  {current.location && (
+                  {getCandidateLocation(current) && (
                     <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
                       <MapPin className="h-3.5 w-3.5" />
-                      {current.location}
+                      {getCandidateLocation(current)}
                     </p>
                   )}
                 </div>
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
-                  Rank
+                <div className="flex flex-col items-end gap-2">
+                  {getCandidateLinkedInUrl(current) && (
+                    <a
+                      href={getCandidateLinkedInUrl(current)}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+                    >
+                      Go there
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
+                    Rank
+                  </div>
                 </div>
               </div>
 
@@ -821,9 +906,9 @@ function SwipeDeck({
               </div>
 
               {/* Skills */}
-              {current.skills.length > 0 && (
+              {getCandidateSkills(current).length > 0 && (
                 <div className="mb-4 flex flex-wrap gap-2">
-                  {current.skills.slice(0, 5).map((skill) => (
+                  {getCandidateSkills(current).slice(0, 5).map((skill) => (
                     <span
                       key={`${current.id}-${skill}`}
                       className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]"
@@ -1039,35 +1124,35 @@ function RecruiterSwipeDeck({
                     {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
                     {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
                   </p>
-                  {current.location && (
+                  {getCandidateLocation(current) && (
                     <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
                       <MapPin className="h-3.5 w-3.5" />
-                      {current.location}
+                      {getCandidateLocation(current)}
                     </p>
                   )}
                 </div>
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
-                  Rank
+                <div className="flex flex-col items-end gap-2">
+                  {getCandidateLinkedInUrl(current) && (
+                    <a
+                      href={getCandidateLinkedInUrl(current)}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+                    >
+                      Go there
+                      <ArrowUpRight className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
+                    Rank
+                  </div>
                 </div>
               </div>
 
-              {getCandidateLinkedInUrl(current) && (
-                <div className="mb-4 flex justify-start">
-                  <a
-                    href={getCandidateLinkedInUrl(current)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center justify-center rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    Open LinkedIn
-                  </a>
-                </div>
-              )}
-
-              {current.skills.length > 0 && (
+              {getCandidateSkills(current).length > 0 && (
                 <div className="mb-4 flex flex-wrap gap-2">
-                  {current.skills.slice(0, 4).map((skill) => (
+                  {getCandidateSkills(current).slice(0, 4).map((skill) => (
                     <span key={`${current.id}-${skill}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
                       {skill}
                     </span>
@@ -1084,7 +1169,10 @@ function RecruiterSwipeDeck({
                   <span className="font-semibold text-[#111827]">Current company:</span> {current.currentCompany || current.company || "Not provided"}
                 </p>
                 <p>
-                  <span className="font-semibold text-[#111827]">Location:</span> {current.location || "Not provided"}
+                  <span className="font-semibold text-[#111827]">Location:</span> {getCandidateLocation(current) || "Not provided"}
+                </p>
+                <p>
+                  <span className="font-semibold text-[#111827]">Skills:</span> {getCandidateSkills(current).slice(0, 4).join(", ") || "Not provided"}
                 </p>
               </div>
 
