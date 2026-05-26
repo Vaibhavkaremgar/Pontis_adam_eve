@@ -25,6 +25,7 @@ from app.services.recruiter_preference_round_service import (
     finalize_preference_session,
     get_preference_session,
 )
+from app.services.ranking.models import coerce_candidate_explanation, ranked_candidate_sort_key
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.state_machine import assert_valid_transition, is_swipe_locked
 from app.utils.exceptions import APIError
@@ -378,7 +379,7 @@ def _rerank_with_selection_signals(
         final_score = max(0.0, min(1.0, (base_score * 0.55) + (preference_signal * 0.4) + selected_boost))
 
         candidate_copy = candidate.model_copy(deep=True)
-        explanation = candidate_copy.explanation or CandidateExplanation(
+        explanation = coerce_candidate_explanation(candidate_copy.explanation) if candidate_copy.explanation else CandidateExplanation(
             semanticScore=0.0,
             skillOverlap=0.0,
             finalScore=final_score,
@@ -386,7 +387,7 @@ def _rerank_with_selection_signals(
             recencyScore=0.0,
             penalties={},
         )
-        explanation.finalScore = round(final_score, 4)
+        setattr(explanation, "finalScore", round(final_score, 4))
         explanation.aiReasoning = analysis.get("summary", "")
         explanation.penalties = dict(explanation.penalties or {})
         explanation.penalties["selectionPreferenceBonus"] = round(selected_boost, 4)
@@ -400,7 +401,7 @@ def _rerank_with_selection_signals(
         candidate_copy.strategy = "HIGH" if candidate_copy.fitScore >= 4 else "MEDIUM" if candidate_copy.fitScore >= 2.5 else "LOW"
         reranked.append(candidate_copy)
 
-    reranked.sort(key=lambda candidate: (-float(candidate.explanation.finalScore if candidate.explanation else 0.0), -float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+    reranked.sort(key=ranked_candidate_sort_key)
     return reranked
 
 

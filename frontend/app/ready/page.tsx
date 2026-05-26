@@ -373,6 +373,10 @@ export default function ReadyPage() {
           </Button>
           {exportMessage && <p className="text-sm text-gray-700">{exportMessage}</p>}
 
+          <Button variant="outline" className="w-full justify-center" onClick={() => router.push("/results")} disabled={orderedItems.length === 0}>
+            Open Results Workspace
+          </Button>
+
           <Button variant="outline" className="w-full justify-center" onClick={() => router.push("/review")}>
             Back to Review
           </Button>

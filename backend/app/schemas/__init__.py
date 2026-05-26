@@ -12,6 +12,7 @@ from app.schemas.candidate import (
     OutreachRequest,
 )
 from app.schemas.company import CompanySaveRequest, CompanySaveResponse
+from app.schemas.results import ResultCandidateData, ResultListData, ResultListItem, ResultRecordingData, ResultScoresData, ResultWorkspaceData
 from app.schemas.job import (
     Company,
     Job,
@@ -52,6 +53,12 @@ __all__ = [
     "OutreachReplyData",
     "OutreachReplyRequest",
     "OutreachRequest",
+    "ResultCandidateData",
+    "ResultListData",
+    "ResultListItem",
+    "ResultRecordingData",
+    "ResultScoresData",
+    "ResultWorkspaceData",
     "UserProfile",
     "VoiceRefineData",
     "VoiceRefineRequest",

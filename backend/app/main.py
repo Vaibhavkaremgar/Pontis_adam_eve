@@ -23,7 +23,8 @@ from app.services.email_service import email_health_snapshot
 from app.services.job_queue_service import queue_health_snapshot, start_job_queue_workers, stop_job_queue_workers
 from app.services.metrics_service import get_metrics_snapshot
 from app.services.llm_service import llm_health
-from app.services.qdrant_service import ensure_qdrant_indexes, qdrant_health_snapshot
+from app.services.qdrant_service import ensure_collection_indexes, ensure_qdrant_indexes, qdrant_health_snapshot
+from app.core.config import RECRUITER_MEMORY_COLLECTION_NAME, RECRUITER_PREFERENCES_COLLECTION_NAME
 from app.services.qdrant_service import close_qdrant_client
 from app.services.pdl_service import pdl_health_snapshot
 from app.services.serpapi_sourcing_service import serpapi_health_snapshot
@@ -191,11 +192,12 @@ def on_startup() -> None:
         raise
 
     try:
-        if SOURCE_PROVIDER != "xray_apollo":
-            try:
-                ensure_qdrant_indexes()
-            except Exception as exc:
-                logger.warning("qdrant_index_initialization_failed error=%s", str(exc))
+        try:
+            ensure_qdrant_indexes()
+            ensure_collection_indexes(RECRUITER_PREFERENCES_COLLECTION_NAME)
+            ensure_collection_indexes(RECRUITER_MEMORY_COLLECTION_NAME)
+        except Exception as exc:
+            logger.warning("qdrant_index_initialization_failed error=%s", str(exc))
 
         for warning in missing_secret_warnings():
             logger.warning("configuration_warning %s", warning)

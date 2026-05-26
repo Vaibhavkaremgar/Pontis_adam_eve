@@ -166,6 +166,7 @@ export type InterviewStatus = {
     | "outreach_sent"
     | "interview_requested"
     | "interview_scheduled"
+    | "interview_in_progress"
     | "rejected"
     | "advanced"
     | "final_round"
@@ -175,7 +176,9 @@ export type InterviewStatus = {
     | "interview_completed"
     | "interview_no_show"
     | "new"
-    | "reviewed";
+    | "reviewed"
+    | "evaluation_processing"
+    | "results_ready";
 };
 
 export type CandidateSelectionAnalysis = {

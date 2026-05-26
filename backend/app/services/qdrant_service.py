@@ -35,7 +35,7 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
         "distance": Distance.COSINE,
         "indexes": {
             "jobId": PayloadSchemaType.KEYWORD,
-            "recruiterId": PayloadSchemaType.UUID,
+            "recruiterId": PayloadSchemaType.KEYWORD,
             "embeddingVersion": PayloadSchemaType.KEYWORD,
             "skillTokens": PayloadSchemaType.KEYWORD,
             "rolePattern": PayloadSchemaType.KEYWORD,
@@ -57,14 +57,14 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
         "vector_size": VECTOR_SIZE,
         "distance": Distance.COSINE,
         "indexes": {
-            "recruiterId": PayloadSchemaType.UUID,
+            "recruiterId": PayloadSchemaType.KEYWORD,
         },
     },
     RECRUITER_MEMORY_COLLECTION_NAME: {
         "vector_size": VECTOR_SIZE,
         "distance": Distance.COSINE,
         "indexes": {
-            "recruiterId": PayloadSchemaType.UUID,
+            "recruiterId": PayloadSchemaType.KEYWORD,
             "jobId": PayloadSchemaType.KEYWORD,
             "candidateId": PayloadSchemaType.KEYWORD,
             "memoryType": PayloadSchemaType.KEYWORD,
@@ -241,7 +241,7 @@ def _ensure_payload_index(
             wait=True,
         )
         logger.info(
-            "qdrant_payload_index_ready collection=%s field=%s schema=%s",
+            "[qdrant_index_create] collection=%s field=%s schema=%s status=ready",
             collection_name,
             field_name,
             schema.value,
@@ -250,7 +250,7 @@ def _ensure_payload_index(
     except Exception as exc:
         if _is_payload_index_already_exists_error(exc):
             logger.info(
-                "qdrant_payload_index_exists collection=%s field=%s schema=%s",
+                "[qdrant_index_create] collection=%s field=%s schema=%s status=exists",
                 collection_name,
                 field_name,
                 schema.value,
@@ -527,7 +527,7 @@ def load_recruiter_memory(recruiter_id: str, *, limit: int = 25) -> list[dict[st
     recruiter_id = (recruiter_id or "").strip()
     if not client or not recruiter_id:
         return []
-    ensure_collection(RECRUITER_MEMORY_COLLECTION_NAME)
+    ensure_collection_indexes(RECRUITER_MEMORY_COLLECTION_NAME)
     try:
         response = client.scroll(
             collection_name=RECRUITER_MEMORY_COLLECTION_NAME,
@@ -556,7 +556,7 @@ def load_recruiter_preferences(recruiter_id: str) -> dict[str, Any] | None:
     recruiter_id = (recruiter_id or "").strip()
     if not client or not recruiter_id:
         return None
-    ensure_collection(RECRUITER_PREFERENCES_COLLECTION_NAME)
+    ensure_collection_indexes(RECRUITER_PREFERENCES_COLLECTION_NAME)
     try:
         response = client.scroll(
             collection_name=RECRUITER_PREFERENCES_COLLECTION_NAME,

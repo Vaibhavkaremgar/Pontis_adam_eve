@@ -21,6 +21,7 @@ const BACK_TARGETS: Array<{ pattern: RegExp; href: string; label: string }> = [
   { pattern: /^\/voice$/, href: "/job", label: "Back to Job Details" },
   { pattern: /^\/review$/, href: "/voice", label: "Back to Voice Intake" },
   { pattern: /^\/ready$/, href: "/review", label: "Back to Review" },
+  { pattern: /^\/results$/, href: "/ready", label: "Back to Ready" },
   { pattern: /^\/interview\/book$/, href: "/ready", label: "Back to Ready" },
   { pattern: /^\/job$/, href: "/company", label: "Back to Company" },
   { pattern: /^\/company$/, href: "/job", label: "Back to Jobs" },

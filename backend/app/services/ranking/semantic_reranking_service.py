@@ -8,12 +8,13 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CandidateProfileRepository, JobRepository
-from app.schemas.candidate import CandidateResult
+from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_text import build_candidate_text
 from app.services.embedding_service import embed
 from app.services.metrics_service import log_metric
 from app.services.qdrant_service import load_recruiter_memory, load_recruiter_preferences, upsert_recruiter_memory
 from app.services.retrieval_quality_service import candidate_document_text, job_query_text
+from app.services.ranking.models import coerce_candidate_explanation, ranked_candidate_final_score, ranked_candidate_sort_key
 
 logger = logging.getLogger(__name__)
 
@@ -103,26 +104,29 @@ def _explain_candidate(
     if not evidence:
         evidence.append("Relevant X-Ray and semantic signals")
 
-    explanation = candidate.explanation.model_dump() if candidate.explanation else {}
-    explanation.update(
-        {
-            "semanticScore": round(semantic_similarity, 4),
-            "skillOverlap": round(explanation.get("skillOverlap", 0.0) if isinstance(explanation.get("skillOverlap"), (int, float)) else 0.0, 4),
-            "finalScore": round(final_score, 4),
-            "recruiterPreferenceInfluence": round(recruiter_preference_score, 4),
-            "freshnessInfluence": round(historical_success_score, 4),
-            "sourceBreakdown": {
-                **dict(explanation.get("sourceBreakdown") or {}),
-                "xrayRelevance": round(xray_relevance_score, 4),
-                "semanticSimilarity": round(semantic_similarity, 4),
-                "recruiterPreference": round(recruiter_preference_score, 4),
-                "historicalSuccess": round(historical_success_score, 4),
-                "skillSimilarity": round(len(matched_skills) / max(1, len(candidate.skills or [])), 4) if candidate.skills else 0.0,
-            },
-            "skillsMatched": matched_skills or explanation.get("skillsMatched") or [],
-            "aiReasoning": "Why this candidate matched: " + "; ".join(evidence),
-        }
+    explanation = coerce_candidate_explanation(candidate.explanation) if candidate.explanation else CandidateExplanation(
+        semanticScore=0.0,
+        skillOverlap=0.0,
+        finalScore=0.0,
+        pdlRelevance=0.0,
+        recencyScore=0.0,
+        penalties={},
     )
+    explanation.semanticScore = round(semantic_similarity, 4)
+    explanation.skillOverlap = round(explanation.skillOverlap if isinstance(explanation.skillOverlap, (int, float)) else 0.0, 4)
+    setattr(explanation, "finalScore", round(final_score, 4))
+    explanation.recruiterPreferenceInfluence = round(recruiter_preference_score, 4)
+    explanation.freshnessInfluence = round(historical_success_score, 4)
+    explanation.sourceBreakdown = {
+        **dict(explanation.sourceBreakdown or {}),
+        "xrayRelevance": round(xray_relevance_score, 4),
+        "semanticSimilarity": round(semantic_similarity, 4),
+        "recruiterPreference": round(recruiter_preference_score, 4),
+        "historicalSuccess": round(historical_success_score, 4),
+        "skillSimilarity": round(len(matched_skills) / max(1, len(candidate.skills or [])), 4) if candidate.skills else 0.0,
+    }
+    explanation.skillsMatched = matched_skills or list(explanation.skillsMatched or [])
+    explanation.aiReasoning = "Why this candidate matched: " + "; ".join(evidence)
 
     update = {
         "fitScore": fit_score,
@@ -158,9 +162,37 @@ def rerank_xray_candidates(
     recruiter_id = _normalize_text(recruiter_id)
     job_query = job_query_text(job)
     job_vector = embed(job_query)
-    recruiter_preferences = load_recruiter_preferences(recruiter_id) or {}
+    try:
+        recruiter_preferences = load_recruiter_preferences(recruiter_id) or {}
+    except Exception as exc:
+        logger.warning(
+            "[recruiter_memory] recruiter_id=%s job_id=%s candidate_count=%s rerank_status=preference_load_failed error=%s",
+            recruiter_id or "",
+            getattr(job, "id", ""),
+            len(candidates),
+            str(exc),
+        )
+        recruiter_preferences = {}
     recruiter_pref_vector = [float(value) for value in (recruiter_preferences.get("vector") or [])]
-    recruiter_memory = load_recruiter_memory(recruiter_id, limit=20) if recruiter_id else []
+    try:
+        recruiter_memory = load_recruiter_memory(recruiter_id, limit=20) if recruiter_id else []
+    except Exception as exc:
+        logger.warning(
+            "[recruiter_memory] recruiter_id=%s job_id=%s candidate_count=%s rerank_status=memory_load_failed error=%s",
+            recruiter_id or "",
+            getattr(job, "id", ""),
+            len(candidates),
+            str(exc),
+        )
+        recruiter_memory = []
+    logger.info(
+        "[recruiter_memory] recruiter_id=%s job_id=%s candidate_count=%s memory_count=%s rerank_status=%s",
+        recruiter_id or "",
+        getattr(job, "id", ""),
+        len(candidates),
+        len(recruiter_memory),
+        "loaded" if recruiter_memory else "empty",
+    )
 
     reranked: list[CandidateResult] = []
     for candidate in candidates:
@@ -175,7 +207,7 @@ def rerank_xray_candidates(
             }
         )
         candidate_vector = embed(candidate_text or candidate.name or candidate.id or " ")
-        xray_relevance_score = float(candidate.explanation.finalScore if candidate.explanation else candidate.fitScore / 5.0)
+        xray_relevance_score = ranked_candidate_final_score(candidate)
         semantic_similarity = _cosine_similarity(job_vector, candidate_vector)
         recruiter_preference_score = _cosine_similarity(recruiter_pref_vector, candidate_vector) if recruiter_pref_vector else 0.0
         historical_success_score = _historical_memory_score(recruiter_memory=recruiter_memory, candidate_vector=candidate_vector)
@@ -200,10 +232,20 @@ def rerank_xray_candidates(
             recruiter_preference=round(recruiter_preference_score, 4),
             historical_success=round(historical_success_score, 4),
         )
+        logger.info(
+            "[rerank_scores] job_id=%s recruiter_id=%s candidate_id=%s semantic=%.4f xray=%.4f recruiter=%.4f historical=%.4f",
+            getattr(job, "id", ""),
+            recruiter_id or "",
+            candidate.id,
+            semantic_similarity,
+            xray_relevance_score,
+            recruiter_preference_score,
+            historical_success_score,
+        )
 
-    reranked.sort(key=lambda item: (-float(item.explanation.finalScore if item.explanation else 0.0), -float(item.fitScore or 0.0), item.name or item.id))
+    reranked.sort(key=ranked_candidate_sort_key)
     logger.info(
-        "semantic_rerank_complete job_id=%s recruiter_id=%s candidate_count=%s source_query=%s",
+        "[semantic_rerank] job_id=%s recruiter_id=%s candidate_count=%s source_query=%s rerank_status=complete",
         getattr(job, "id", ""),
         recruiter_id or "",
         len(reranked),

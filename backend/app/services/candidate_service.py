@@ -64,6 +64,7 @@ from app.services.recruiter_preference_service import (
     load_recruiter_preference_profile,
     update_recruiter_preferences,
 )
+from app.services.ranking.models import coerce_candidate_explanation, ranked_candidate_final_score, ranked_candidate_sort_key
 from app.services.sourcing.xray_service import build_xray_candidate_results, discover_xray_candidates
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
@@ -1388,7 +1389,7 @@ def _ranking_run_metrics_for_candidates(
     for candidate in candidates:
         candidate_metrics = metrics_by_candidate_id.get(candidate.id)
         if candidate_metrics is None:
-            final_score = float(getattr(candidate.explanation, "finalScore", 0.0) or 0.0)
+            final_score = ranked_candidate_final_score(candidate)
             candidate_metrics = {
                 "existing_score": final_score,
                 "final_score": final_score,
@@ -2067,14 +2068,18 @@ def _build_local_candidates(
             bonus = 0.0
             if index < 6:
                 reason, bonus = _elite_reasoning(job, candidate)
-            candidate.explanation.aiReasoning = reason
-            candidate.explanation.finalScore = round(max(0.0, min(1.0, candidate.explanation.finalScore + bonus)), 4)
-            candidate.fitScore = round(candidate.explanation.finalScore * 5, 2)
-            candidate.decision = _decision_from_score(candidate.explanation.finalScore)
-            enriched.append((candidate, candidate.explanation.finalScore))
+            explanation = coerce_candidate_explanation(candidate.explanation)
+            current_score = ranked_candidate_final_score(candidate)
+            explanation.aiReasoning = reason
+            new_score = round(max(0.0, min(1.0, current_score + bonus)), 4)
+            setattr(explanation, "finalScore", new_score)
+            candidate.explanation = explanation
+            candidate.fitScore = round(new_score * 5, 2)
+            candidate.decision = _decision_from_score(new_score)
+            enriched.append((candidate, new_score))
         local_results = [candidate for candidate, _ in sorted(enriched, key=lambda row: row[1], reverse=True)]
 
-    ranked_local = sorted([(candidate, candidate.explanation.finalScore) for candidate in local_results], key=lambda row: row[1], reverse=True)
+    ranked_local = sorted([(candidate, ranked_candidate_final_score(candidate)) for candidate in local_results], key=lambda row: row[1], reverse=True)
     diverse_local = diversify_candidates(ranked_local, limit=mode_config.top_k)
     return [candidate for candidate, _ in diverse_local]
 
@@ -2490,11 +2495,15 @@ def _build_ranked_candidates_from_pdl(
             if index < 6:
                 reason, bonus = _elite_reasoning(job, candidate)
                 bonus = min(weights.elite_reasoning_bonus, bonus)
-            candidate.explanation.aiReasoning = reason
-            candidate.explanation.finalScore = round(max(0.0, min(1.0, candidate.explanation.finalScore + bonus)), 4)
-            candidate.fitScore = round(candidate.explanation.finalScore * 5, 2)
-            candidate.decision = _decision_from_score(candidate.explanation.finalScore)
-            enriched.append((candidate, candidate.explanation.finalScore))
+            explanation = coerce_candidate_explanation(candidate.explanation)
+            current_score = ranked_candidate_final_score(candidate)
+            explanation.aiReasoning = reason
+            new_score = round(max(0.0, min(1.0, current_score + bonus)), 4)
+            setattr(explanation, "finalScore", new_score)
+            candidate.explanation = explanation
+            candidate.fitScore = round(new_score * 5, 2)
+            candidate.decision = _decision_from_score(new_score)
+            enriched.append((candidate, new_score))
         diverse = sorted(enriched, key=lambda row: row[1], reverse=True)
 
     return [candidate for candidate, _ in diverse]
@@ -2860,13 +2869,28 @@ def fetch_ranked_candidates(
                 candidates=xray_candidates,
                 limit=max(mode_config.top_k, 12),
             )
-            xray_results = rerank_xray_candidates(
-                db=db,
-                job=job,
-                candidates=xray_results,
-                recruiter_id=recruiter_id,
-                source_query=(getattr(job, "title", "") or getattr(job, "role", "") or "").strip(),
-            )
+            try:
+                xray_results = rerank_xray_candidates(
+                    db=db,
+                    job=job,
+                    candidates=xray_results,
+                    recruiter_id=recruiter_id,
+                    source_query=(getattr(job, "title", "") or getattr(job, "role", "") or "").strip(),
+                )
+                logger.info(
+                    "[semantic_rerank] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=applied",
+                    job.id,
+                    recruiter_id or "",
+                    len(xray_results),
+                )
+            except Exception as rerank_exc:
+                logger.warning(
+                    "[ranking_fallback] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=failed error=%s",
+                    job.id,
+                    recruiter_id or "",
+                    len(xray_results),
+                    str(rerank_exc),
+                )
             profile_repo = CandidateProfileRepository(db)
             for candidate in xray_results:
                 profile_repo.upsert(
@@ -2901,11 +2925,31 @@ def fetch_ranked_candidates(
                 reviewable_count=len(xray_results),
             )
             record_candidate_fetch(job_id=job.id, candidates=xray_results)
+            logger.info(
+                "[xray_candidates] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=%s",
+                job.id,
+                recruiter_id or "",
+                len(xray_results),
+                "applied" if xray_results else "empty",
+            )
             return xray_results
         except Exception as exc:
             logger.warning("xray_candidate_retrieval_failed job_id=%s error=%s", job.id, str(exc))
             log_metric("candidate_retrieval_error", job_id=job.id, mode=resolved_mode, source="xray", error_type=type(exc).__name__)
-            return []
+            fallback_candidates = _fallback_stored_candidates(
+                db=db,
+                job_id=job.id,
+                swiped_ids=swiped_ids,
+                source="xray",
+                reason=str(exc),
+            )
+            logger.info(
+                "[ranking_fallback] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=fallback_to_stored",
+                job.id,
+                recruiter_id or "",
+                len(fallback_candidates),
+            )
+            return fallback_candidates
 
     local_diversity_seed = 0.0
     seed_confidence = _compute_system_confidence(

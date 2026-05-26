@@ -9,6 +9,7 @@ from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.identity.candidate_identity_service import build_candidate_identity, normalize_linkedin_url
 from app.services.metrics_service import log_metric
 from app.services.serpapi_sourcing_service import build_linkedin_xray_queries, discover_linkedin_xray_candidates
+from app.services.ranking.models import ranked_candidate_sort_key
 
 logger = logging.getLogger(__name__)
 
@@ -253,5 +254,5 @@ def build_xray_candidate_results(
     limit: int = 12,
 ) -> list[CandidateResult]:
     ranked = [_build_preview_result(job=job, candidate=candidate, index=index) for index, candidate in enumerate(candidates, start=1)]
-    ranked.sort(key=lambda candidate: (-float(candidate.explanation.finalScore if candidate.explanation else 0.0), -float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+    ranked.sort(key=ranked_candidate_sort_key)
     return ranked[: max(1, limit)]

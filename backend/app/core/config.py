@@ -90,6 +90,11 @@ VECTOR_SIZE = int(os.getenv("VECTOR_SIZE", "384"))
 QDRANT_SEARCH_LIMIT = int(os.getenv("QDRANT_SEARCH_LIMIT", "5"))
 PDL_SEARCH_SIZE = int(os.getenv("PDL_SEARCH_SIZE", "5"))
 HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "15"))
+PONTIS_API_BASE_URL = os.getenv("PONTIS_API_BASE_URL", "").strip().rstrip("/")
+PONTIS_INTERNAL_API_KEY = os.getenv("PONTIS_INTERNAL_API_KEY", "").strip()
+PONTIS_INTERVIEW_RESULT_PATH = os.getenv("PONTIS_INTERVIEW_RESULT_PATH", "/api/interview-result/{workflowToken}").strip()
+PONTIS_INTERVIEW_RECORDING_PATH = os.getenv("PONTIS_INTERVIEW_RECORDING_PATH", "/api/interview-recording/{workflowToken}").strip()
+PONTIS_REQUEST_TIMEOUT_SECONDS = int(os.getenv("PONTIS_REQUEST_TIMEOUT_SECONDS", str(HTTP_TIMEOUT_SECONDS)))
 DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
@@ -403,6 +408,7 @@ def config_diagnostics() -> dict[str, Any]:
             "queue_workers_per_type": JOB_QUEUE_WORKERS_PER_TYPE,
             "queue_visibility_timeout_seconds": JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS,
             "queue_job_ttl_seconds": JOB_QUEUE_JOB_TTL_SECONDS,
+            "pontis_api_configured": bool(PONTIS_API_BASE_URL),
         },
     }
 

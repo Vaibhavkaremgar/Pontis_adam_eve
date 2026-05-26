@@ -16,6 +16,11 @@ type LogRequestInput = {
   response?: unknown;
 };
 
+type LogEventInput = {
+  event: string;
+  payload?: Record<string, unknown>;
+};
+
 export function logRequest({ url, method, payload, response }: LogRequestInput) {
   console.log("[API LOG]", {
     timestamp: new Date().toISOString(),
@@ -23,5 +28,13 @@ export function logRequest({ url, method, payload, response }: LogRequestInput) 
     url,
     payload,
     response
+  });
+}
+
+export function logEvent({ event, payload }: LogEventInput) {
+  console.log("[APP LOG]", {
+    timestamp: new Date().toISOString(),
+    event,
+    payload: payload || {}
   });
 }
