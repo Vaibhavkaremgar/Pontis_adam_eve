@@ -260,16 +260,20 @@ def build_linkedin_xray_queries(
     query_parts = ["site:linkedin.com/in"]
 
     required_role = _sanitize_role_query(role) or _sanitize_role_query(seniority)
-    if required_role:
+    role_tokens = [token for token in re.findall(r"[A-Za-z0-9]+", required_role) if len(token) > 1]
+    if role_tokens:
+        query_parts.extend(f'"{token}"' for token in role_tokens[:3])
+    elif required_role:
         query_parts.append(f'"{required_role}"')
-    elif role:
-        query_parts.append(f'"{_sanitize_role_query(role) or role}"')
 
     if location:
-        query_parts.append(f'"{location}"')
+        query_parts.append(location)
 
-    # Keep the search strict and role-focused so the SERP returns fewer noisy results.
-    # We intentionally avoid OR-expansion and extra broad skill buckets here.
+    # Seniority is intentionally excluded from the search string.
+    # In practice, "2 years" and similar phrases cause Google to return no LinkedIn profile results.
+
+    # Keep the search focused on the role and city, but avoid overly exact phrase matching
+    # so Google can still return real profile pages that mention the title in slightly different ways.
     exclusions = [
         "-jobs",
         "-job",
