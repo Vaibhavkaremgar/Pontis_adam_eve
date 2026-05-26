@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.config import APOLLO_ENRICHMENT_ENABLED, SERPAPI_ENABLED, SOURCE_PROVIDER, XRAY_ENABLED
+from app.core.config import APOLLO_ENRICHMENT_ENABLED, SERPAPI_ENABLED, SERPAPI_MAX_PAGES, SOURCE_PROVIDER, XRAY_ENABLED
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.identity.candidate_identity_service import build_candidate_identity, normalize_linkedin_url
 from app.services.metrics_service import log_metric
@@ -49,7 +49,6 @@ def _job_skills(job: Any) -> list[str]:
 
 
 XRAY_TARGET_COUNT = 30
-XRAY_STRONG_MATCH_THRESHOLD = 4.0
 
 
 def _candidate_identity_key(candidate: dict[str, Any]) -> str:
@@ -307,7 +306,7 @@ def discover_xray_candidates(
         return []
 
     effective_limit = max(1, int(limit))
-    max_pages = 1
+    max_pages = max(1, min(3, SERPAPI_MAX_PAGES))
     job_id = getattr(job, "id", "")
     role = _normalize_text((intake or {}).get("role") or getattr(job, "title", "") or "")
     logger.info(
@@ -396,5 +395,4 @@ def build_xray_candidate_results(
 ) -> list[CandidateResult]:
     ranked = [_build_preview_result(job=job, candidate=candidate, index=index) for index, candidate in enumerate(candidates, start=1)]
     ranked.sort(key=ranked_candidate_sort_key)
-    strong = [candidate for candidate in ranked if candidate.fitScore >= XRAY_STRONG_MATCH_THRESHOLD]
-    return (strong or ranked)[: max(1, limit)]
+    return ranked[: max(1, limit)]
