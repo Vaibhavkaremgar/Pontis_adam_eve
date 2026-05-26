@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import logging
 
 from sqlalchemy import inspect, text
@@ -8,18 +9,36 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import AUTO_RECREATE_SCHEMA, DATABASE_URL, USE_INTERNAL_CANDIDATE_DB
+from app.db.database_url import normalize_database_url
+
 logger = logging.getLogger(__name__)
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is required")
 
+
+def _is_railway_environment() -> bool:
+    return any(
+        os.getenv(name, "").strip()
+        for name in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_DEPLOYMENT_ID",
+        )
+    )
+
+
+database_url = normalize_database_url(DATABASE_URL)
 engine_kwargs: dict[str, object] = {"pool_pre_ping": True}
-if DATABASE_URL.startswith("sqlite"):
+if database_url.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+elif _is_railway_environment():
+    engine_kwargs["pool_recycle"] = 300
 
-engine = create_engine(DATABASE_URL, **engine_kwargs)
+engine = create_engine(database_url, **engine_kwargs)
 
-if DATABASE_URL.startswith("sqlite"):
+if database_url.startswith("sqlite"):
     @event.listens_for(engine, "connect")
     def _configure_sqlite_connection(dbapi_connection, _connection_record):
         try:
@@ -93,7 +112,7 @@ def _reconcile_legacy_schema_if_needed() -> None:
     Keep local/dev startup resilient when an older Postgres schema is incompatible
     with the current UUID-based model definitions.
     """
-    if not DATABASE_URL.startswith("postgresql"):
+    if not database_url.startswith("postgresql"):
         return
 
     with engine.begin() as conn:

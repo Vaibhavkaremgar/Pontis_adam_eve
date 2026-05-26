@@ -5,6 +5,7 @@ from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
+from app.db.database_url import normalize_database_url
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -23,7 +24,7 @@ if config.config_file_name is not None:
 from app.models.entities import Base
 target_metadata = Base.metadata
 
-database_url = os.getenv("DATABASE_URL", "").strip()
+database_url = normalize_database_url(os.getenv("DATABASE_URL", ""))
 if not database_url:
     raise RuntimeError("DATABASE_URL is required for Alembic migrations")
 config.set_main_option("sqlalchemy.url", database_url)
