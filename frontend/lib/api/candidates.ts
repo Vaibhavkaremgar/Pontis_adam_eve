@@ -133,6 +133,14 @@ export async function submitSelectionChoice(payload: SelectionPayload): Promise<
   });
 }
 
+export async function selectCandidateForEnrichment(payload: SelectionPayload): Promise<ApiResponse<SelectionResponse>> {
+  return requestApi<SelectionResponse>({
+    url: `${API_BASE_URL}/candidates/select`,
+    method: "POST",
+    payload
+  });
+}
+
 export async function getFinalSelectionResults(jobId: string): Promise<ApiResponse<SelectionResponse>> {
   return requestApi<SelectionResponse>({
     url: `${API_BASE_URL}/candidates/selection/final?jobId=${encodeURIComponent(jobId)}`,

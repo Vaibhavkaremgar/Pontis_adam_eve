@@ -147,7 +147,7 @@ class InterviewEntity(Base):
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(64), nullable=False, default="shortlisted")
+    status: Mapped[str] = mapped_column(String(64), nullable=False, default="selected")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="interviews")
@@ -182,7 +182,7 @@ class CandidateProfileEntity(Base):
     strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="LOW")
     last_scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    ats_status: Mapped[str] = mapped_column(String(64), nullable=False, default="review_pending")
+    ats_status: Mapped[str] = mapped_column(String(64), nullable=False, default="reviewed")
     ats_status_source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
     ats_status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     ats_status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)

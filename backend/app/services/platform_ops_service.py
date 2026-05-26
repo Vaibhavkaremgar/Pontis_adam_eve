@@ -300,7 +300,7 @@ def get_pipeline_board(db: Session, job_id: str | None = None) -> dict[str, Any]
 
     counts: dict[str, int] = {}
     for profile in profiles:
-        key = (profile.ats_status or "review_pending").strip().lower()
+        key = (profile.ats_status or "reviewed").strip().lower()
         counts[key] = counts.get(key, 0) + 1
 
     upcoming_interviews: list[dict[str, Any]] = []
@@ -402,14 +402,14 @@ def get_pipeline_analytics(db: Session, job_id: str | None = None) -> dict[str, 
         profiles = CandidateProfileRepository(db).list_for_job(job.id)
         total_candidates += len(profiles)
         for profile in profiles:
-            status = (profile.ats_status or "review_pending").strip().lower()
+            status = (profile.ats_status or "reviewed").strip().lower()
             ats_counts[status] = ats_counts.get(status, 0) + 1
         interviews = InterviewSessionRepository(db)
         for profile in profiles:
             session = interviews.get_by_job_and_candidate(job_id=job.id, candidate_id=profile.candidate_id)
             if not session:
                 continue
-            if (session.status or "").strip().lower() in {"booked", "scheduled"}:
+            if (session.status or "").strip().lower() in {"interview_scheduled", "scheduled"}:
                 interviews_scheduled += 1
             if (session.stage or "").strip().lower() == "completed":
                 interviews_completed += 1

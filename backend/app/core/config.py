@@ -56,13 +56,17 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").str
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+SOURCE_PROVIDER = os.getenv("SOURCE_PROVIDER", "xray_apollo").strip().lower() or "xray_apollo"
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 JOB_COLLECTION_NAME = os.getenv("JOB_COLLECTION_NAME", "job_chunks")
 CANDIDATE_COLLECTION_NAME = os.getenv("CANDIDATE_COLLECTION_NAME", "candidate_chunks")
 INTERNAL_CANDIDATE_COLLECTION_NAME = os.getenv("INTERNAL_CANDIDATE_COLLECTION_NAME", "internal_candidate_chunks")
+XRAY_ENABLED = os.getenv("XRAY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+APOLLO_ENRICHMENT_ENABLED = os.getenv("APOLLO_ENRICHMENT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 RECRUITER_PREFERENCES_COLLECTION_NAME = os.getenv("RECRUITER_PREFERENCES_COLLECTION_NAME", "recruiter_preferences")
+RECRUITER_MEMORY_COLLECTION_NAME = os.getenv("RECRUITER_MEMORY_COLLECTION_NAME", "recruiter_memory")
 PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
@@ -166,7 +170,7 @@ OUTREACH_LEARNING_INTERVAL_MINUTES = int(os.getenv("OUTREACH_LEARNING_INTERVAL_M
 OUTREACH_LEARNING_BATCH_LIMIT = int(os.getenv("OUTREACH_LEARNING_BATCH_LIMIT", "75"))
 ENABLE_FOLLOWUPS = os.getenv("ENABLE_FOLLOWUPS", "true").strip().lower() in {"1", "true", "yes", "on"}
 ENABLE_REPLY_DETECTION = os.getenv("ENABLE_REPLY_DETECTION", "true").strip().lower() in {"1", "true", "yes", "on"}
-ENABLE_REPLY_POLLING = os.getenv("ENABLE_REPLY_POLLING", "true").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_REPLY_POLLING = os.getenv("ENABLE_REPLY_POLLING", "false").strip().lower() in {"1", "true", "yes", "on"}
 REPLY_POLL_INTERVAL_MINUTES = int(os.getenv("REPLY_POLL_INTERVAL_MINUTES", "3"))
 REPLY_POLL_BATCH_SIZE = int(os.getenv("REPLY_POLL_BATCH_SIZE", "50"))
 REPLY_INBOX_PROVIDER = os.getenv("REPLY_INBOX_PROVIDER", "imap").strip().lower()
@@ -232,6 +236,10 @@ def missing_secret_warnings() -> list[str]:
     warnings: list[str] = []
     if not GROQ_API_KEY:
         warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
+    if SOURCE_PROVIDER == "xray_apollo" and XRAY_ENABLED and not SERPAPI_API_KEY:
+        warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will be unavailable.")
+    if SOURCE_PROVIDER == "xray_apollo" and APOLLO_ENRICHMENT_ENABLED and not APOLLO_API_KEY:
+        warnings.append("APOLLO_API_KEY is missing; Apollo enrichment will be unavailable.")
     if PDL_ENABLED and not PDL_API_KEY:
         warnings.append("PDL_API_KEY is missing; candidate enrichment will skip PDL.")
     if not APOLLO_API_KEY:
@@ -311,16 +319,46 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             "QDRANT_URL": QDRANT_URL,
             "QDRANT_API_KEY": QDRANT_API_KEY,
             "RESEND_API_KEY": RESEND_API_KEY,
+            "RESEND_WEBHOOK_SECRET": RESEND_WEBHOOK_SECRET,
             "INTERNAL_API_KEY": INTERNAL_API_KEY,
             "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_OAUTH_CLIENT_ID,
         }
         for key, value in production_required.items():
             if _is_placeholder_value(str(value or "")):
                 issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required in production and must not be empty or placeholder"))
+        if SOURCE_PROVIDER != "xray_apollo":
+            issues.append(
+                ConfigIssue(
+                    key="SOURCE_PROVIDER",
+                    severity="critical",
+                    message="Production discovery must use SOURCE_PROVIDER=xray_apollo",
+                )
+            )
+        if SOURCE_PROVIDER == "xray_apollo":
+            if XRAY_ENABLED and _is_placeholder_value(SERPAPI_API_KEY):
+                issues.append(ConfigIssue(key="SERPAPI_API_KEY", severity="critical", message="SERPAPI_API_KEY is required when SOURCE_PROVIDER=xray_apollo"))
+            if APOLLO_ENRICHMENT_ENABLED and _is_placeholder_value(APOLLO_API_KEY):
+                issues.append(ConfigIssue(key="APOLLO_API_KEY", severity="critical", message="APOLLO_API_KEY is required when SOURCE_PROVIDER=xray_apollo"))
+        if PDL_ENABLED:
+            issues.append(ConfigIssue(key="PDL_ENABLED", severity="critical", message="PDL discovery is not allowed in production"))
+        if USE_INTERNAL_CANDIDATE_DB:
+            issues.append(ConfigIssue(key="USE_INTERNAL_CANDIDATE_DB", severity="critical", message="Internal candidate DB sourcing is not allowed in production"))
+        if ENABLE_MOCK_PDL:
+            issues.append(ConfigIssue(key="ENABLE_MOCK_PDL", severity="critical", message="Mock PDL discovery is not allowed in production"))
         if OUTREACH_DRY_RUN:
-            issues.append(ConfigIssue(key="OUTREACH_DRY_RUN", severity="warning", message="Outreach is running in dry-run mode"))
+            issues.append(ConfigIssue(key="OUTREACH_DRY_RUN", severity="critical", message="Outreach dry-run mode is not allowed in production"))
+        if ENABLE_REPLY_POLLING:
+            issues.append(ConfigIssue(key="ENABLE_REPLY_POLLING", severity="critical", message="Reply polling must remain disabled when webhooks are the source of truth"))
+        if SLACK_SKIP_SIGNATURE_VERIFICATION:
+            issues.append(ConfigIssue(key="SLACK_SKIP_SIGNATURE_VERIFICATION", severity="critical", message="Slack signature verification must not be disabled in production"))
         if not REDIS_URL:
             issues.append(ConfigIssue(key="REDIS_URL", severity="critical", message="Redis is required in production"))
+        if not RESEND_WEBHOOK_SECRET:
+            issues.append(ConfigIssue(key="RESEND_WEBHOOK_SECRET", severity="critical", message="Resend webhook secret is required in production"))
+        if not WEBHOOK_SHARED_SECRET:
+            issues.append(ConfigIssue(key="WEBHOOK_SHARED_SECRET", severity="critical", message="Internal webhook shared secret is required in production"))
+        if not SLACK_SIGNING_SECRET:
+            issues.append(ConfigIssue(key="SLACK_SIGNING_SECRET", severity="critical", message="Slack signing secret is required in production"))
         if not COOKIE_SECURE:
             issues.append(ConfigIssue(key="COOKIE_SECURE", severity="warning", message="Secure cookies are disabled in a production-like environment"))
     if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
@@ -346,6 +384,14 @@ def config_diagnostics() -> dict[str, Any]:
         "critical": [item for item in validation["issues"] if item["severity"] == "critical"],
         "warnings": [item for item in validation["issues"] if item["severity"] == "warning"],
         "missing_secrets": validation["missing_secrets"],
+        "enabled_providers": {
+            "source_provider": SOURCE_PROVIDER,
+            "xray_enabled": XRAY_ENABLED,
+            "apollo_enrichment_enabled": APOLLO_ENRICHMENT_ENABLED,
+            "pdl_enabled": PDL_ENABLED,
+            "internal_candidate_db": USE_INTERNAL_CANDIDATE_DB,
+            "serpapi_enabled": SERPAPI_ENABLED,
+        },
         "derived": {
             "cookie_secure": COOKIE_SECURE,
             "cookie_samesite": COOKIE_SAMESITE,

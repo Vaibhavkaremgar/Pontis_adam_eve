@@ -12,11 +12,12 @@ from fastapi.responses import JSONResponse
 from app.api.routes import api_router
 from app.api.routes.slack import router as slack_router
 from app.core.auth_middleware import auth_middleware
-from app.core.config import APP_ENV, CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, config_diagnostics, missing_secret_warnings, validate_runtime_config
+from app.core.config import APP_ENV, APOLLO_ENRICHMENT_ENABLED, CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, SOURCE_PROVIDER, XRAY_ENABLED, config_diagnostics, missing_secret_warnings, validate_runtime_config
 from app.core.rate_limit_middleware import rate_limit_middleware
 from app.core.security import verify_access_token
 from app.db.session import db_health_snapshot, init_db
 from app.services.candidate_service import warm_candidate_retrieval
+from app.services.embedding_service import embedding_health_snapshot
 from app.services.embedding_registry_service import ensure_embedding_version_registry
 from app.services.email_service import email_health_snapshot
 from app.services.job_queue_service import queue_health_snapshot, start_job_queue_workers, stop_job_queue_workers
@@ -24,7 +25,9 @@ from app.services.metrics_service import get_metrics_snapshot
 from app.services.llm_service import llm_health
 from app.services.qdrant_service import ensure_qdrant_indexes, qdrant_health_snapshot
 from app.services.qdrant_service import close_qdrant_client
-from app.services.pdl_service import pdl_health_snapshot, run_startup_connectivity_check
+from app.services.pdl_service import pdl_health_snapshot
+from app.services.serpapi_sourcing_service import serpapi_health_snapshot
+from app.services.apollo_enrichment_service import apollo_health_snapshot
 from app.services.redis_service import close_redis_client, get_redis
 from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
 from app.utils.exceptions import APIError
@@ -173,6 +176,13 @@ def on_startup() -> None:
     critical_issues = [item for item in validation["issues"] if item["severity"] == "critical"]
     if critical_issues:
         raise RuntimeError(f"Invalid runtime config: {critical_issues}")
+    logger.info(
+        "startup_sourcing_provider source_provider=%s xray_enabled=%s apollo_enrichment_enabled=%s embedding_model=%s",
+        SOURCE_PROVIDER,
+        XRAY_ENABLED,
+        APOLLO_ENRICHMENT_ENABLED,
+        embedding_health_snapshot().get("model") or "",
+    )
 
     try:
         init_db()
@@ -181,26 +191,57 @@ def on_startup() -> None:
         raise
 
     try:
-        ensure_qdrant_indexes()
-    except Exception as exc:
-        logger.warning("qdrant_index_initialization_failed error=%s", str(exc))
+        if SOURCE_PROVIDER != "xray_apollo":
+            try:
+                ensure_qdrant_indexes()
+            except Exception as exc:
+                logger.warning("qdrant_index_initialization_failed error=%s", str(exc))
 
-    for warning in missing_secret_warnings():
-        logger.warning("configuration_warning %s", warning)
-    for warning in [item for item in validation["issues"] if item["severity"] == "warning"]:
-        logger.warning("configuration_warning %s", warning["message"])
-    try:
-        run_startup_connectivity_check()
-    except Exception as exc:
-        logger.warning("pdl_startup_connectivity_check_failed error=%s", str(exc))
-    try:
-        ensure_embedding_version_registry()
-    except Exception as exc:
-        logger.warning("embedding_registry_initialization_failed error=%s", str(exc))
-    try:
-        warm_candidate_retrieval()
-    except Exception as exc:
-        logger.warning("candidate_warmup_failed error=%s", str(exc))
+        for warning in missing_secret_warnings():
+            logger.warning("configuration_warning %s", warning)
+        for warning in [item for item in validation["issues"] if item["severity"] == "warning"]:
+            logger.warning("configuration_warning %s", warning["message"])
+        if SOURCE_PROVIDER != "xray_apollo":
+            try:
+                pdl_snapshot = pdl_health_snapshot()
+                logger.info("startup_pdl_status status=%s last_error=%s", pdl_snapshot.get("status", ""), pdl_snapshot.get("last_error", ""))
+            except Exception as exc:
+                logger.warning("pdl_startup_health_check_failed error=%s", str(exc))
+        try:
+            ensure_embedding_version_registry()
+        except Exception as exc:
+            logger.warning("embedding_registry_initialization_failed error=%s", str(exc))
+        if SOURCE_PROVIDER == "xray_apollo":
+            logger.info("candidate_warmup_skipped reason=xray_apollo")
+        else:
+            try:
+                warm_candidate_retrieval()
+            except Exception as exc:
+                logger.warning("candidate_warmup_failed error=%s", str(exc))
+
+        if APP_ENV in {"production", "prod"}:
+            redis_client = get_redis()
+            if redis_client is None:
+                raise RuntimeError("Redis unavailable at startup")
+            serpapi_status = serpapi_health_snapshot()
+            if serpapi_status.get("status") != "ok":
+                raise RuntimeError(f"SerpAPI unavailable at startup: {serpapi_status}")
+            apollo_status = apollo_health_snapshot()
+            if apollo_status.get("status") != "ok":
+                raise RuntimeError(f"Apollo unavailable at startup: {apollo_status}")
+            embedding_status = embedding_health_snapshot()
+            if embedding_status.get("status") != "ok":
+                raise RuntimeError(f"Embedding model unavailable at startup: {embedding_status}")
+            qdrant_status = qdrant_health_snapshot()
+            if qdrant_status.get("status") != "ok":
+                raise RuntimeError(f"Qdrant unavailable at startup: {qdrant_status}")
+            logger.info(
+                "startup_runtime_dependencies_ok redis=ok serpapi=%s apollo=%s embedding=%s qdrant=%s",
+                serpapi_status.get("status", ""),
+                apollo_status.get("status", ""),
+                embedding_status.get("status", ""),
+                qdrant_status.get("status", ""),
+            )
     finally:
         start_job_queue_workers()
         start_scheduler()

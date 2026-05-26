@@ -913,7 +913,7 @@ class InterviewSessionRepository:
         row = self.get_by_token(token)
         if not row:
             return None
-        row.status = "booked"
+        row.status = "interview_scheduled"
         row.booked_at = datetime.now(timezone.utc)
         self.db.flush()
         return row
@@ -935,7 +935,7 @@ class CandidateProfileRepository:
             if job:
                 row.company_id = job.company_id
         if row and not _normalize_text(getattr(row, "ats_status", "")):
-            row.ats_status = "review_pending"
+            row.ats_status = "reviewed"
             row.ats_status_source = "system"
             row.ats_status_reason = ""
             row.ats_status_updated_at = datetime.now(timezone.utc)

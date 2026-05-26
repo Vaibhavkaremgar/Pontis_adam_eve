@@ -113,28 +113,28 @@ export type Candidate = {
   strategy: "HIGH" | "MEDIUM" | "LOW";
   status:
     | "new"
-    | "review_pending"
-    | "contacted"
-    | "shortlisted"
+    | "sourced"
+    | "reviewed"
+    | "selected"
+    | "enriching"
     | "enriched"
-    | "outreach_queued"
+    | "enrichment_failed"
+    | "outreach_pending"
     | "outreach_sent"
-    | "followup_sent"
     | "replied_interested"
     | "replied_not_interested"
+    | "interview_requested"
     | "interview_scheduled"
-    | "interview_invited"
     | "interview_no_show"
     | "no_show"
+    | "interview_completed"
     | "advanced"
     | "final_round"
-    | "booked"
     | "archived"
     | "rejected"
     | "offer_sent"
     | "placed"
-    | "hired"
-    | "exported";
+    | "hired";
   ats_status?: string;
   ats_status_source?: string;
   ats_status_reason?: string;
@@ -147,6 +147,13 @@ export type Candidate = {
   contactPhone?: string;
   exportStatus?: "pending" | "queued" | "exported" | "failed" | string;
   ats_export_status?: "sent" | "failed" | "not_sent" | string;
+  sourceProvider?: string;
+  sourceQuery?: string;
+  sourceTimestamp?: string;
+  sourceType?: string;
+  linkedinUrl?: string;
+  currentCompany?: string;
+  inferredExperience?: string;
 };
 
 /** Interview stage record shown in final ready step. */
@@ -154,12 +161,12 @@ export type InterviewStatus = {
   candidateId: string;
   name: string;
   status:
-    | "shortlisted"
-    | "contacted"
+    | "selected"
+    | "outreach_pending"
+    | "outreach_sent"
+    | "interview_requested"
     | "interview_scheduled"
-    | "interview_invited"
     | "rejected"
-    | "exported"
     | "advanced"
     | "final_round"
     | "offer_sent"
@@ -168,7 +175,7 @@ export type InterviewStatus = {
     | "interview_completed"
     | "interview_no_show"
     | "new"
-    | "booked";
+    | "reviewed";
 };
 
 export type CandidateSelectionAnalysis = {

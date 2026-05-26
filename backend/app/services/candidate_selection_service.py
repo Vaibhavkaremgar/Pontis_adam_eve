@@ -18,7 +18,7 @@ from app.db.repositories import (
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_service import fetch_ranked_candidates
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
-from app.services.automation_service import schedule_automation_job
+from app.services.job_queue_service import enqueue_job
 from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.recruiter_preference_service import update_recruiter_preferences
 from app.services.recruiter_preference_round_service import (
@@ -422,12 +422,12 @@ def _store_selection_feedback(
     if is_swipe_locked(selected_status):
         raise APIError(f"Cannot select candidate in '{selected_status}' state.", status_code=409)
 
-    if selected_status != "shortlisted":
+    if selected_status != "selected":
         assert_valid_transition(
             candidate_id=selected_candidate_id,
             job_id=job_id,
             from_status=selected_status,
-            to_status="shortlisted",
+            to_status="selected",
         )
     feedback_repo.upsert(
         job_id=job_id,
@@ -437,16 +437,16 @@ def _store_selection_feedback(
         session_id=session_id,
     )
     scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback="accept")
-    interview_repo.upsert_status(job_id=job_id, candidate_id=selected_candidate_id, status="shortlisted", create_default="shortlisted")
+    interview_repo.upsert_status(job_id=job_id, candidate_id=selected_candidate_id, status="selected", create_default="selected")
     transition_candidate_ats_state(
         db=db,
         job_id=job_id,
         candidate_id=selected_candidate_id,
-        to_status="shortlisted",
+        to_status="selected",
         source="selection",
         actor_id=recruiter_id,
         reason="selection_choice",
-        metadata={"selectionSessionId": session_id, "status": "shortlisted"},
+        metadata={"selectionSessionId": session_id, "status": "selected"},
     )
     record_job_lifecycle_event(
         db=db,
@@ -456,7 +456,7 @@ def _store_selection_feedback(
             "jobId": job_id,
             "candidateId": selected_candidate_id,
             "selectionSessionId": session_id,
-            "status": "shortlisted",
+            "status": "selected",
         },
         source="selection",
     )
@@ -654,17 +654,16 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             )
 
         try:
-            schedule_automation_job(
-                db=db,
-                automation_type="candidate_enrichment",
-                job_id=job_id,
-                candidate_id=candidate_id,
-                run_at=datetime.now(timezone.utc),
-                payload={
+            enqueue_job(
+                "candidate_enrichment",
+                {
+                    "job_id": job_id,
+                    "candidate_id": candidate_id,
                     "selectionSessionId": session.id,
-                    "sourceType": "adam",
+                    "sourceType": "linkedin_xray",
+                    "status": "queued",
                 },
-                automation_key=f"candidate-enrichment:{job_id}:{candidate_id}",
+                idempotency_key=f"candidate-enrichment:{job_id}:{candidate_id}",
             )
         except Exception as exc:
             logger.warning(

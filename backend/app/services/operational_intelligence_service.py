@@ -42,7 +42,7 @@ def get_candidate_engagement_intelligence(*, db: Session, job_id: str, candidate
     interview_session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
     if interview_session:
         engagement_score += 0.1
-        if _normalize_status(interview_session.status) == "booked":
+        if _normalize_status(interview_session.status) == "interview_scheduled":
             engagement_score += 0.1
     unread_notifications = [
         row for row in notification_repo.list_for_job(job_id)
@@ -162,7 +162,7 @@ def detect_operational_anomalies(*, db: Session, job_id: str | None = None) -> l
 
     for profile in profiles:
         status = _normalize_status(profile.ats_status)
-        if status in {"outreach_sent", "followup_sent"} and profile.ats_status_updated_at and (now - profile.ats_status_updated_at) > timedelta(days=14):
+        if status in {"outreach_sent"} and profile.ats_status_updated_at and (now - profile.ats_status_updated_at) > timedelta(days=14):
             anomalies.append(
                 {
                     "type": "stuck_candidate",
@@ -186,7 +186,7 @@ def detect_operational_anomalies(*, db: Session, job_id: str | None = None) -> l
         session = interviews.get_by_job_and_candidate(job_id=profile.job_id, candidate_id=profile.candidate_id)
         if session:
             scheduling_metadata = dict(session.scheduling_metadata or {})
-            if (session.status or "").strip().lower() == "booked" and not session.scheduled_at:
+            if (session.status or "").strip().lower() == "interview_scheduled" and not session.scheduled_at:
                 anomalies.append(
                     {
                         "type": "stale_booking_state",

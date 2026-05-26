@@ -10,6 +10,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from app.core.config import (
+    APP_ENV,
     JOB_QUEUE_BACKOFF_BASE_SECONDS,
     JOB_QUEUE_JOB_TTL_SECONDS,
     JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS,
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 QUEUE_TYPES = (
     "outreach_send",
     "outreach_followup",
+    "candidate_enrichment",
     "embedding_generation",
     "candidate_refresh",
     "reply_processing",
@@ -147,6 +149,9 @@ def enqueue_job(
         idempotency_key = _default_idempotency_key(queue_type, normalized_payload)
 
     if redis is None:
+        if APP_ENV in {"production", "prod"}:
+            logger.critical("queue_unavailable_production queue_type=%s", queue_type)
+            raise QueueError(f"Redis is required for queue '{queue_type}' in production")
         background_job_id = job_id or uuid4().hex
         normalized_payload["job_id"] = background_job_id
         normalized_payload["status"] = "queued_ephemeral"
@@ -280,6 +285,40 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
         def _handler(_: dict[str, Any]) -> Any:
             with SessionLocal() as db:
                 return run_followup_cycle(db)
+
+        return _handler
+
+    if queue_type == "candidate_enrichment":
+        from app.db.session import SessionLocal
+        from app.services.sourcing.apollo_enrichment_service import enrich_selected_candidate
+        from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            job_id = str(payload.get("job_id") or "")
+            candidate_id = str(payload.get("candidate_id") or "")
+            if not job_id or not candidate_id:
+                return {"status": "skipped", "reason": "missing_job_or_candidate"}
+            with SessionLocal() as db:
+                enrichment = enrich_selected_candidate(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    source_type=str(payload.get("source_type") or payload.get("sourceType") or "linkedin_xray"),
+                    workflow_token=str(payload.get("workflow_token") or payload.get("workflowToken") or ""),
+                    selection_session_id=str(payload.get("selection_session_id") or payload.get("selectionSessionId") or ""),
+                    automation_job_id=str(payload.get("automation_job_id") or payload.get("automationJobId") or payload.get("job_id") or ""),
+                )
+                outreach = trigger_outreach_after_enrichment(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    enrichment_result=enrichment,
+                    selection_session_id=str(payload.get("selection_session_id") or payload.get("selectionSessionId") or ""),
+                    automation_job_id=str(payload.get("automation_job_id") or payload.get("automationJobId") or payload.get("job_id") or ""),
+                    source_type=str(payload.get("source_type") or payload.get("sourceType") or "linkedin_xray"),
+                )
+                db.commit()
+                return {"status": enrichment.get("status") or "completed", "enrichment": enrichment, "outreach": outreach}
 
         return _handler
 

@@ -20,19 +20,41 @@ type CandidateModalProps = {
   onOpenChange: (open: boolean) => void;
 };
 
-type PipelineTab = "all" | "shortlisted" | "rejected";
+type PipelineTab = "all" | "selected" | "rejected";
 
-const DECIDED_STATUSES = new Set(["rejected", "shortlisted", "contacted", "exported", "interview_scheduled", "interview_invited"]);
+const DECIDED_STATUSES = new Set([
+  "rejected",
+  "selected",
+  "outreach_pending",
+  "outreach_sent",
+  "interview_scheduled",
+  "interview_completed",
+  "advanced",
+  "final_round",
+  "offer_sent",
+  "hired",
+  "archived",
+]);
 
 function statusLabel(status: Candidate["status"] | string | null | undefined): string {
   const normalized = (status || "Unknown").toString().trim();
   if (!normalized) return "Unknown";
   const map: Record<string, string> = {
-    shortlisted: "Shortlisted",
-    contacted: "Contacted",
-    exported: "Exported",
+    sourced: "LinkedIn Sourced",
+    selected: "Selected",
+    enriching: "Enriching",
+    enriched: "Enriched",
+    enrichment_failed: "Enrichment Failed",
+    outreach_pending: "Outreach Pending",
+    outreach_sent: "Outreach Sent",
     interview_scheduled: "Interview Scheduled",
-    interview_invited: "Interview Invited",
+    interview_requested: "Interview Requested",
+    interview_completed: "Interview Completed",
+    advanced: "Advanced",
+    final_round: "Final Round",
+    offer_sent: "Offer Sent",
+    hired: "Hired",
+    archived: "Archived",
     rejected: "Rejected",
     new: "New"
   };
@@ -76,13 +98,19 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [actionLoadingId, setActionLoadingId] = useState("");
 
-  const uniqueCandidates = useMemo(() => dedupeCandidates(candidates).filter(hasReachableEmail), [candidates]);
+  const uniqueCandidates = useMemo(
+    () =>
+      dedupeCandidates(candidates).filter(
+        (candidate) => hasReachableEmail(candidate) || candidate.sourceProvider === "xray_apollo" || candidate.status === "sourced"
+      ),
+    [candidates]
+  );
 
   const counts = useMemo(
     () => ({
       all: uniqueCandidates.length,
-      shortlisted: uniqueCandidates.filter((candidate) =>
-        ["shortlisted", "contacted", "exported", "interview_scheduled", "interview_invited"].includes(candidate.status)
+      selected: uniqueCandidates.filter((candidate) =>
+        ["selected", "outreach_pending", "outreach_sent", "interview_requested", "interview_scheduled", "interview_completed", "advanced", "final_round", "offer_sent", "hired", "archived"].includes(candidate.status)
       ).length,
       rejected: uniqueCandidates.filter((candidate) => candidate.status === "rejected").length
     }),
@@ -101,9 +129,9 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const currentReviewCandidate = reviewQueue[effectiveDeckIndex] || null;
 
   const tabCandidates = useMemo(() => {
-    if (pipelineTab === "shortlisted") {
+    if (pipelineTab === "selected") {
       return uniqueCandidates.filter((candidate) =>
-        ["shortlisted", "contacted", "exported", "interview_scheduled", "interview_invited"].includes(candidate.status)
+        ["selected", "outreach_pending", "outreach_sent", "interview_requested", "interview_scheduled", "interview_completed", "advanced", "final_round", "offer_sent", "hired", "archived"].includes(candidate.status)
       );
     }
     if (pipelineTab === "rejected") {
@@ -131,7 +159,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
               outreachStatus: found.status,
               status:
                 found.status === "sent" || found.status === "dry_run"
-                  ? "contacted"
+                  ? "outreach_sent"
                   : candidate.status
             };
           })
@@ -208,7 +236,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       return;
     }
 
-    updateCandidateStatus(candidateId, action === "accept" ? "shortlisted" : "rejected");
+    updateCandidateStatus(candidateId, action === "accept" ? "selected" : "rejected");
     setFeedbackMessage(result.data.message ?? "Feedback recorded.");
     setActionLoadingId("");
     setDeckIndex((prev) => Math.min(prev + 1, Math.max(0, reviewQueue.length - 1)));
@@ -228,8 +256,8 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     }
     const rowResult = result.data.results?.[0];
     const nextAtsStatus = rowResult?.status === "sent" ? "sent" : rowResult?.status === "failed" ? "failed" : result.data.status === "sent" ? "sent" : "not_sent";
-    updateCandidateStatus(candidateId, nextAtsStatus === "sent" ? "exported" : currentCandidate?.status || "shortlisted", {
-      exportStatus: nextAtsStatus === "sent" ? "exported" : nextAtsStatus === "failed" ? "failed" : "pending",
+    updateCandidateStatus(candidateId, nextAtsStatus === "sent" ? "outreach_sent" : currentCandidate?.status || "selected", {
+      exportStatus: nextAtsStatus === "sent" ? "sent" : nextAtsStatus === "failed" ? "failed" : "pending",
       ats_export_status: nextAtsStatus
     });
     setFeedbackMessage(
@@ -237,7 +265,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
         ? "Exported to ATS ✅"
         : nextAtsStatus === "failed"
           ? "Failed to export ❌"
-          : "Already exported"
+          : "Already sent"
     );
     setActionLoadingId("");
     void syncCandidates();
@@ -312,17 +340,27 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
         </div>
         <Badge
           variant={
-            candidate.status === "rejected"
+          candidate.status === "rejected"
               ? "low"
-              : candidate.status === "exported"
+              : candidate.status === "outreach_sent" || candidate.status === "interview_requested" || candidate.status === "interview_scheduled"
                 ? "high"
-                : candidate.status === "interview_invited"
-                  ? "info"
-                  : "medium"
+                : "medium"
           }
         >
           {candidate.fitScore}/5
         </Badge>
+      </div>
+      <div className="flex flex-wrap gap-2 text-[11px] font-medium text-gray-500">
+        <span className="rounded-full bg-blue-50 px-2 py-1 text-blue-700">
+          {candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider || "Source pending"}
+        </span>
+        <span className="rounded-full bg-green-50 px-2 py-1 text-green-700">
+          {candidate.enrichmentStatus === "pending"
+            ? "Not enriched yet"
+            : candidate.enrichmentStatus === "enriching"
+              ? "Enriching"
+              : candidate.enrichmentStatus || "Pending"}
+        </span>
       </div>
       {renderExplanation(candidate)}
       <div className="flex flex-wrap gap-2 text-xs text-gray-500">
@@ -358,7 +396,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
 
         <div className="flex items-center justify-between">
           <div className="flex gap-2">
-            {(["all", "shortlisted", "rejected"] as PipelineTab[]).map((tab) => (
+            {(["all", "selected", "rejected"] as PipelineTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -368,7 +406,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
                   pipelineTab === tab ? "bg-[#111111] text-white" : "bg-gray-100 text-gray-600"
                 )}
               >
-                {tab === "all" ? "All" : tab === "shortlisted" ? "Shortlisted" : "Rejected"} ({counts[tab]})
+                {tab === "all" ? "All" : tab === "selected" ? "Selected" : "Rejected"} ({counts[tab]})
               </button>
             ))}
           </div>

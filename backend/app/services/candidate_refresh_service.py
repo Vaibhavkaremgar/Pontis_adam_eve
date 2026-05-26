@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.core.config import REFRESH_CANDIDATE_LIMIT, STALE_DAYS
+from app.core.config import APP_ENV, REFRESH_CANDIDATE_LIMIT, STALE_DAYS
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
 from app.services.embedding_registry_service import get_active_embedding_version
@@ -51,14 +51,28 @@ def _candidate_embedding_version(candidate) -> str:
 
 def refresh_candidate(db: Session, candidate) -> bool:
     now = _utcnow()
+    embedding_failed = False
+    embedding_error = ""
     try:
         with db.begin_nested():
-            run_candidate_enrichment(candidate)
+            if APP_ENV in {"production", "prod"}:
+                logger.info(
+                    "candidate_refresh_legacy_enrichment_skipped job_id=%s candidate_id=%s reason=production_guard",
+                    candidate.job_id,
+                    candidate.candidate_id,
+                )
+            else:
+                run_candidate_enrichment(candidate)
             recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             candidate_payload = _candidate_text_payload(candidate)
             normalized_text = build_candidate_text(candidate_payload)
             chunks = chunk_text(normalized_text)
-            vectors = [embed(chunk) for chunk in chunks]
+            try:
+                vectors = [embed(chunk) for chunk in chunks]
+            except Exception as exc:
+                embedding_failed = True
+                embedding_error = str(exc)
+                raise
             active_embedding_version = get_active_embedding_version(db)
             if not vectors:
                 logger.info(
@@ -106,13 +120,34 @@ def refresh_candidate(db: Session, candidate) -> bool:
             )
             return True
     except Exception as exc:
-        logger.warning(
-            "candidate_refresh_failed job_id=%s candidate_id=%s error=%s",
-            getattr(candidate, "job_id", ""),
-            getattr(candidate, "candidate_id", ""),
-            str(exc),
-            exc_info=exc,
-        )
+        if embedding_failed:
+            raw_data = dict(getattr(candidate, "raw_data", {}) or {})
+            raw_data["embedding_status"] = "failed"
+            raw_data["embedding_error"] = embedding_error or str(exc)
+            raw_data["embedding_failed_at"] = now.isoformat()
+            candidate.raw_data = raw_data
+            candidate.last_refreshed_at = now
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            logger.error(
+                "candidate_refresh_embedding_failed job_id=%s candidate_id=%s error=%s",
+                getattr(candidate, "job_id", ""),
+                getattr(candidate, "candidate_id", ""),
+                embedding_error or str(exc),
+                exc_info=exc,
+            )
+            raise RuntimeError(embedding_error or "candidate embedding refresh failed") from exc
+        else:
+            logger.warning(
+                "candidate_refresh_failed job_id=%s candidate_id=%s error=%s",
+                getattr(candidate, "job_id", ""),
+                getattr(candidate, "candidate_id", ""),
+                str(exc),
+                exc_info=exc,
+            )
         return False
 
 

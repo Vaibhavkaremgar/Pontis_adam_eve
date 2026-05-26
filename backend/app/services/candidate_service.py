@@ -14,11 +14,13 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.config import (
+    APP_ENV,
     ENABLE_HARD_FILTERING,
     ENABLE_FAKE_EMAILS,
     FEEDBACK_WEIGHTS,
     GROQ_API_KEY,
     EMBEDDING_VERSION,
+    SOURCE_PROVIDER,
     USE_INTERNAL_CANDIDATE_DB,
     MIN_SKILL_MATCH_THRESHOLD,
     PDL_SEARCH_SIZE,
@@ -54,6 +56,7 @@ from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.notification_service import build_slot_booking_payload, upsert_notification_workflow_token
 from app.services.pdl_service import fetch_candidates_with_filters, is_pdl_disabled
 from app.services.ranking_service import build_match_explanation, compute_final_score, compute_match_score
+from app.services.ranking.semantic_reranking_service import rerank_xray_candidates
 from app.services.retrieval_quality_service import rerank_candidates, retrieval_explanation
 from app.services.recruiter_preference_service import (
     compute_recruiter_score_details,
@@ -61,7 +64,7 @@ from app.services.recruiter_preference_service import (
     load_recruiter_preference_profile,
     update_recruiter_preferences,
 )
-from app.services.serpapi_sourcing_service import discover_linkedin_xray_candidates, is_serpapi_disabled
+from app.services.sourcing.xray_service import build_xray_candidate_results, discover_xray_candidates
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
     delete_candidate_vectors,
@@ -1118,7 +1121,7 @@ def _feedback_outcome_multiplier(status: str | None) -> float:
         return 1.8
     if normalized in {"interview_scheduled", "interviewed", "onsite", "final_round"}:
         return 1.4
-    if normalized in {"contacted", "shortlisted"}:
+    if normalized in {"outreach_sent", "selected"}:
         return 1.15
     if normalized in {"rejected", "declined"}:
         return 0.7
@@ -2544,7 +2547,7 @@ def _build_candidate_state_maps(
     enrichment_state_map: dict[str, dict[str, Any]] = {}
 
     for row in CandidateProfileRepository(db).list_for_job(job_id):
-        ats_state_map[row.candidate_id] = (getattr(row, "ats_status", "") or "").strip().lower() or "review_pending"
+        ats_state_map[row.candidate_id] = (getattr(row, "ats_status", "") or "").strip().lower() or "reviewed"
         enrichment_state = dict((getattr(row, "raw_data", {}) or {}).get("enrichment") or {})
         enrichment_state_map[row.candidate_id] = {
             "status": str(enrichment_state.get("status") or "").strip().lower() or "pending",
@@ -2599,7 +2602,7 @@ def _attach_candidate_workflow_state(db: Session, *, job_id: str, candidates: li
         enrichment_state = enrichment_state_map.get(candidate.id, {})
 
         if export_status == "exported":
-            status = "exported"
+            status = "offer_sent"
         elif outreach_status in {"sent", "dry_run", "simulated"}:
             status = ats_state_map.get(candidate.id) or "outreach_sent"
 
@@ -2826,6 +2829,10 @@ def fetch_ranked_candidates(
     job_mode = (getattr(job, "vetting_mode", None) or SCORING_DEFAULT_MODE or "volume").strip().lower()
     resolved_mode = _resolve_mode(mode or job_mode)
     mode_config = get_mode_config(resolved_mode)
+    if APP_ENV in {"production", "prod"} and SOURCE_PROVIDER != "xray_apollo":
+        raise APIError("Production discovery must use SOURCE_PROVIDER=xray_apollo", status_code=503)
+    if APP_ENV in {"production", "prod"} and USE_INTERNAL_CANDIDATE_DB:
+        raise APIError("Internal candidate DB sourcing is disabled in production", status_code=503)
     log_metric("retrieval_request", job_id=job.id, mode=resolved_mode, refresh=refresh)
     logger.info("dynamic_switch_applied job_id=%s mode=%s strategy=%s", job.id, mode_config.mode, mode_config.strategy)
     log_metric("dynamic_switch_applied", job_id=job.id, mode=mode_config.mode, strategy=mode_config.strategy)
@@ -2839,6 +2846,51 @@ def fetch_ranked_candidates(
     run_type = _infer_ranking_run_type(refresh=refresh, selection_session=selection_session)
     local_run_metrics: dict[str, dict[str, float | bool]] = {}
     pdl_run_metrics: dict[str, dict[str, float | bool]] = {}
+
+    if SOURCE_PROVIDER == "xray_apollo":
+        try:
+            xray_candidates = discover_xray_candidates(
+                job=job,
+                intake=getattr(job, "structured_data", None) or {},
+                limit=max(mode_config.top_k, 12),
+                recruiter_preferences=recruiter_preferences,
+            )
+            xray_results = build_xray_candidate_results(
+                job=job,
+                candidates=xray_candidates,
+                limit=max(mode_config.top_k, 12),
+            )
+            xray_results = rerank_xray_candidates(
+                db=db,
+                job=job,
+                candidates=xray_results,
+                recruiter_id=recruiter_id,
+                source_query=(getattr(job, "title", "") or getattr(job, "role", "") or "").strip(),
+            )
+            logger.info(
+                "xray_only_candidates job_id=%s count=%s source_provider=%s",
+                job.id,
+                len(xray_results),
+                SOURCE_PROVIDER,
+            )
+            log_metric("candidate_count", job_id=job.id, count=len(xray_results), mode=resolved_mode, source="xray")
+            emit_trace(
+                logger,
+                "candidate_ranking_ready",
+                job_id=job.id,
+                recruiter_id=recruiter_id,
+                source="xray",
+                mode=resolved_mode,
+                returned_count=len(xray_results),
+                reviewable_count=len(xray_results),
+            )
+            record_candidate_fetch(job_id=job.id, candidates=xray_results)
+            return xray_results
+        except Exception as exc:
+            logger.warning("xray_candidate_retrieval_failed job_id=%s error=%s", job.id, str(exc))
+            log_metric("candidate_retrieval_error", job_id=job.id, mode=resolved_mode, source="xray", error_type=type(exc).__name__)
+            return []
+
     local_diversity_seed = 0.0
     seed_confidence = _compute_system_confidence(
         similarity=0.0,
@@ -3446,7 +3498,7 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             db=db,
             job_id=job_id,
             candidate_id=candidate_id,
-            to_status="shortlisted" if action == "accept" else "rejected",
+            to_status="selected" if action == "accept" else "rejected",
             source="candidate_feedback",
             actor_id=recruiter_id,
             reason="recruiter_feedback",
@@ -3481,7 +3533,7 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
 
     ats_export_status = "not_sent"
     export_status = "pending"
-    if target_status == "shortlisted" and bool(getattr(job, "auto_export_to_ats", False)):
+    if target_status == "selected" and bool(getattr(job, "auto_export_to_ats", False)):
         try:
             export_result = export_candidate_to_ats(profile, job, db=db)
             export_status = "exported" if export_result.get("status") == "sent" else "failed"
@@ -3594,7 +3646,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
     shortlisted_ids = [
         row.candidate_id
         for row in interview_rows
-        if (row.status or "").strip().lower() == "shortlisted"
+        if (row.status or "").strip().lower() == "selected"
     ]
 
     logger.info(

@@ -61,7 +61,7 @@ def run_db_cleanup(db: Session) -> dict[str, int]:
         cutoff_sessions = now - timedelta(days=7)
         result = db.execute(
             text(
-                "DELETE FROM interview_sessions WHERE expires_at < :cutoff AND status != 'booked'"
+                "DELETE FROM interview_sessions WHERE expires_at < :cutoff AND status != 'interview_scheduled'"
             ),
             {"cutoff": cutoff_sessions},
         )

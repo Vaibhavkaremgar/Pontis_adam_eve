@@ -260,7 +260,7 @@ def advance_interview_stage(
         }
 
     if current_session:
-        current_session.status = "booked" if (current_session.status or "").strip().lower() == "booked" else current_session.status
+        current_session.status = "interview_scheduled" if (current_session.status or "").strip().lower() == "interview_scheduled" else current_session.status
         current_session.stage = "completed"
         current_session.evaluation_status = "completed"
         _append_stage_history(current_session, action=normalized_action or "advance", from_stage=current_stage, to_stage=next_stage, notes=notes)

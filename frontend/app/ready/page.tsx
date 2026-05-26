@@ -2,7 +2,7 @@
 
 /**
  * What this file does:
- * Tracks contacted candidates and exposes the UI-side hiring workflow from the PDF.
+ * Tracks selected candidates through outreach, replies, and interview progression from the PDF.
  *
  * What API it connects to:
  * GET /interviews?jobId=...
@@ -35,16 +35,14 @@ import { getOutreachStatuses, type OutreachStatusItem } from "@/lib/api/outreach
 import type { InterviewStatus } from "@/types";
 
 const STATUS_LABELS: Record<string, string> = {
-  shortlisted: "Shortlisted",
-  contacted: "Contacted",
+  reviewed: "Reviewed",
+  selected: "Selected",
   interview_scheduled: "Interview Scheduled",
-  interview_invited: "Interview Invited",
+  interview_requested: "Interview Requested",
   interview_completed: "Interview Completed",
   interview_no_show: "No-show",
   no_show: "No-show",
-  booked: "Booked",
   rejected: "Rejected",
-  exported: "Exported",
   advanced: "Advanced",
   final_round: "Final Round",
   offer_sent: "Offer Sent",
@@ -59,9 +57,9 @@ function formatStatus(status: InterviewStatus["status"] | string | null | undefi
 }
 
 function statusVariant(status: InterviewStatus["status"]) {
-  if (["booked", "interview_scheduled", "advanced", "final_round", "hired"].includes(status)) return "high";
-  if (["interview_invited", "offer_sent"].includes(status)) return "info";
-  if (["contacted", "shortlisted", "interview_completed"].includes(status)) return "medium";
+  if (["interview_scheduled", "advanced", "final_round", "hired"].includes(status)) return "high";
+  if (["interview_requested", "offer_sent"].includes(status)) return "info";
+  if (["outreach_sent", "selected", "interview_completed"].includes(status)) return "medium";
   if (["rejected", "archived", "interview_no_show", "no_show"].includes(status)) return "low";
   return "neutral";
 }
@@ -97,15 +95,14 @@ export default function ReadyPage() {
 
   const orderedItems = useMemo(() => {
     const priority: Record<string, number> = {
-      contacted: 0,
-      interview_invited: 1,
-      booked: 2,
-      interview_scheduled: 3,
+      outreach_sent: 0,
+      interview_requested: 1,
+      interview_scheduled: 2,
       advanced: 4,
       final_round: 5,
       offer_sent: 6,
       hired: 7,
-      shortlisted: 8,
+      selected: 8,
       rejected: 9,
       archived: 10,
     };
@@ -292,7 +289,7 @@ export default function ReadyPage() {
 
           {!isLoading && !error && items.length === 0 && (
             <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-600">
-              No replies yet. Adam is still processing selections or no candidate has booked an interview.
+              No replies yet. Adam is still processing selections or no candidate has scheduled an interview.
             </div>
           )}
 
@@ -359,7 +356,7 @@ export default function ReadyPage() {
                 <p className="font-semibold text-gray-900">{metrics.replies_received}</p>
               </div>
               <div>
-                <p className="text-gray-500">Interviews booked</p>
+                <p className="text-gray-500">Interviews scheduled</p>
                 <p className="font-semibold text-gray-900">{metrics.interviews_booked}</p>
               </div>
               <div>

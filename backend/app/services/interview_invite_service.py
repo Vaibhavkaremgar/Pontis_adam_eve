@@ -119,6 +119,8 @@ def _send_interview_invite(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
         raise APIError("Candidate not found", status_code=404)
+    if not (resume_text or "").strip():
+        raise APIError("Resume text is required before sending an interview invite.", status_code=409)
 
     candidate_name = (profile.name or "").strip() or "there"
     role = (job.title or "").strip() or "the role"
@@ -151,8 +153,8 @@ def _send_interview_invite(
         InterviewRepository(db).upsert_status(
             job_id=job_id,
             candidate_id=candidate_id,
-            status="interview_invited",
-            create_default="interview_invited",
+            status="interview_requested",
+            create_default="interview_requested",
         )
         db.commit()
         logger.info(
@@ -169,7 +171,7 @@ def _send_interview_invite(
             "subject": subject,
             "body": body,
             "bookingLink": booking_link,
-            "status": "interview_invited",
+            "status": "interview_requested",
         }
     except Exception as exc:
         db.rollback()

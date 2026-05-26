@@ -249,7 +249,7 @@ export default function JobPage() {
         <Card className="overflow-hidden border-[rgba(120,100,80,0.08)]">
           <CardHeader className="border-b border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] px-6 py-5">
             <CardTitle>ATS Integration</CardTitle>
-            <CardDescription>Connect your ATS to export shortlisted candidates automatically.</CardDescription>
+            <CardDescription>Connect your ATS to export selected candidates automatically.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5 px-6 py-6">
             {isAtsLoading ? (
@@ -301,9 +301,9 @@ export default function JobPage() {
                 className="mt-1 h-4 w-4 rounded border-gray-300 text-green-700 focus:ring-green-700"
               />
               <span className="space-y-1">
-                <span className="block text-sm font-medium text-gray-900">Auto-send shortlisted candidates to ATS</span>
+                <span className="block text-sm font-medium text-gray-900">Auto-send selected candidates to ATS</span>
                 <span className="block text-xs text-gray-500">
-                  When enabled, candidates that reach shortlist will be exported automatically. The page still works if ATS
+                  When enabled, candidates that reach selection will be exported automatically. The page still works if ATS
                   is not connected.
                 </span>
               </span>

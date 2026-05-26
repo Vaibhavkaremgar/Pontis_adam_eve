@@ -638,6 +638,19 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         "displayed_link": displayed_link,
         "score": _score_result(query=query, result=result, page=page, position=position, intake=intake),
         "last_updated": datetime.now(timezone.utc).isoformat(),
+        "source_provider": "xray_apollo",
+        "sourceProvider": "xray_apollo",
+        "source": "linkedin_xray",
+        "source_type": "linkedin_xray",
+        "sourceType": "linkedin_xray",
+        "source_query": query,
+        "sourceQuery": query,
+        "source_timestamp": datetime.now(timezone.utc).isoformat(),
+        "sourceTimestamp": datetime.now(timezone.utc).isoformat(),
+        "current_company": company,
+        "currentCompany": company,
+        "inferred_experience": _normalize_text(intake.get("seniority") or ""),
+        "inferredExperience": _normalize_text(intake.get("seniority") or ""),
         "raw_discovery": {
             "query": query,
             "page": page,
@@ -772,3 +785,13 @@ def discover_linkedin_xray_candidates(
     )
     log_metric("serpapi_candidates_found", count=len(normalized_results), role=resolved_intake["role_title"])
     return normalized_results
+
+
+def serpapi_health_snapshot() -> dict[str, str]:
+    if not SERPAPI_ENABLED:
+        return {"status": "disabled", "reason": "SERPAPI_ENABLED=false"}
+    if not SERPAPI_API_KEY.strip():
+        return {"status": "down", "reason": "SERPAPI_API_KEY missing"}
+    if is_serpapi_disabled():
+        return {"status": "down", "reason": "serpapi_disabled"}
+    return {"status": "ok", "reason": "configured"}

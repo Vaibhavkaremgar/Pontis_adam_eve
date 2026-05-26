@@ -14,14 +14,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_BATCH_SIZE = 100
 _ALREADY_SHORTLISTED_STATUSES = {
-    "shortlisted",
-    "contacted",
+    "selected",
+    "outreach_sent",
     "interview_scheduled",
-    "booked",
-    "interviewed",
-    "onsite",
+    "interview_completed",
     "final_round",
-    "exported",
+    "offer_sent",
+    "hired",
+    "rejected",
+    "archived",
 }
 
 

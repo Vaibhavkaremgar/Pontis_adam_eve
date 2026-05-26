@@ -22,6 +22,7 @@ from app.db.repositories import (
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.notification_intelligence_service import route_recruiter_notification
 from app.services.persistent_cache_service import get_json as cache_get_json, set_json as cache_set_json
+from app.services.sourcing.candidate_matching_service import match_apollo_people as _rank_apollo_people_external
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -210,6 +211,19 @@ def _identity_fingerprint(candidate: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _enrichment_status_for_match(*, confidence: float, email: str, phone: str, match_type: str) -> str:
+    normalized_match_type = _normalize_lower(match_type)
+    has_contact = bool(email or phone)
+    strong_identity = normalized_match_type in {"linkedin_exact", "name_company_exact", "strong_fuzzy"} or confidence >= _MIN_IDENTITY_CONFIDENCE
+    if normalized_match_type == "linkedin_exact" and email and phone and confidence >= _MIN_IDENTITY_CONFIDENCE:
+        return "verified"
+    if has_contact and strong_identity:
+        return "high_confidence"
+    if has_contact:
+        return "partial"
+    return "no_match_found"
+
+
 def _identity_similarity(left: str, right: str) -> float:
     left_tokens = _tokens(left)
     right_tokens = _tokens(right)
@@ -297,31 +311,7 @@ def _resolve_person_identity(candidate: dict[str, str], person: dict[str, Any]) 
 
 
 def _rank_apollo_people(candidate: dict[str, str], people: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    ranked: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for person in people:
-        if not isinstance(person, dict):
-            continue
-        match = _resolve_person_identity(candidate, person)
-        person_id = match.get("personId") or _normalize_text(_candidate_value(person, "id", "person_id", "apollo_id", "uuid"))
-        dedupe_key = person_id or _normalize_lower(_candidate_value(person, "linkedin_url", "linkedinUrl", "linkedin")) or _normalize_lower(_candidate_value(person, "email", "work_email", "personal_email"))
-        if dedupe_key and dedupe_key in seen_ids:
-            continue
-        if dedupe_key:
-            seen_ids.add(dedupe_key)
-        ranked.append({**person, "_identity_match": match})
-
-    ranked.sort(
-        key=lambda item: (
-            -float(dict(item.get("_identity_match") or {}).get("confidence") or 0.0),
-            -1.0 if bool(dict(item.get("_identity_match") or {}).get("signals", {}).get("linkedinExactMatch")) else 0.0,
-            -1.0 if bool(dict(item.get("_identity_match") or {}).get("signals", {}).get("nameExactMatch")) else 0.0,
-            -1.0 if bool(dict(item.get("_identity_match") or {}).get("signals", {}).get("companyExactMatch")) else 0.0,
-            _normalize_text(_candidate_value(item, "name", "full_name", "fullName")).lower(),
-            _normalize_text(_candidate_value(item, "id", "person_id", "apollo_id", "uuid")).lower(),
-        )
-    )
-    return ranked
+    return _rank_apollo_people_external(candidate, people)
 
 
 def _apollo_cache_key(*, job_id: str, candidate_id: str, identity_fingerprint: str) -> str:
@@ -818,16 +808,21 @@ def enrich_candidate_with_apollo(
         }
 
     deterministic_failure_reasons = {"selection_required", "candidate_not_selected", "insufficient_identity", "missing_api_key"}
-    if existing_status in {"resolving", "enriched", "partial", "ambiguous_match", "no_match_found"} and (
+    if existing_status in {"resolving", "enriched", "partial", "verified", "high_confidence", "ambiguous_match", "no_match_found"} and (
         not stored_identity_fingerprint or stored_identity_fingerprint == identity_fingerprint
     ):
+        normalized_existing_status = existing_status
+        if normalized_existing_status == "enriched":
+            normalized_existing_status = "verified" if _normalize_text(raw_data.get("phone")) and _normalize_text(raw_data.get("email") or raw_data.get("work_email") or raw_data.get("personal_email")) else "high_confidence"
+        elif normalized_existing_status == "partial":
+            normalized_existing_status = "high_confidence"
         cached_payload = {
             "jobId": job_id,
             "candidateId": candidate_id,
-            "status": existing_status,
+            "status": normalized_existing_status,
             "duplicate": True,
             "confidence": float(enrichment_state.get("confidence") or enrichment_state.get("identityMatchConfidence") or 0.0),
-            "shouldOutreach": existing_status in {"enriched", "partial"} and bool(_normalize_text(raw_data.get("email") or raw_data.get("work_email") or raw_data.get("personal_email"))),
+            "shouldOutreach": normalized_existing_status in {"verified", "high_confidence"} and bool(_normalize_text(raw_data.get("email") or raw_data.get("work_email") or raw_data.get("personal_email"))),
             "workflowToken": workflow_token,
             "enrichment": enrichment_state,
             "contactEmail": _normalize_text(enrichment_state.get("enrichedEmail") or raw_data.get("email") or raw_data.get("work_email") or raw_data.get("personal_email")),
@@ -1209,7 +1204,12 @@ def enrich_candidate_with_apollo(
 
     email = _normalize_text(_candidate_value(top_match, "email", "work_email", "personal_email"))
     phone = _normalize_text(_candidate_value(top_match, "phone", "mobile_phone", "direct_dial", "phone_number"))
-    status = "enriched" if email and phone else "partial" if email or phone or _normalize_text(_candidate_value(top_match, "title", "headline", "organization_name")) else "no_match_found"
+    status = _enrichment_status_for_match(
+        confidence=confidence,
+        email=email,
+        phone=phone,
+        match_type=match_reason,
+    )
     raw_data = _merge_enrichment_payload(
         profile,
         job,
@@ -1227,7 +1227,7 @@ def enrich_candidate_with_apollo(
     )
     db.flush()
 
-    if status in {"enriched", "partial"}:
+    if status in {"verified", "high_confidence"}:
         transition_candidate_ats_state(
             db=db,
             job_id=job_id,
@@ -1277,7 +1277,7 @@ def enrich_candidate_with_apollo(
         token_row.updated_at = datetime.now(timezone.utc)
         db.flush()
 
-    should_outreach = bool(email) and status in {"enriched", "partial"}
+    should_outreach = bool(email) and status in {"verified", "high_confidence"}
     route_recruiter_notification(
         db=db,
         job_id=job_id,
@@ -1333,3 +1333,11 @@ def enrich_candidate_with_apollo(
         False,
     )
     return result
+
+
+def apollo_health_snapshot() -> dict[str, str]:
+    if not APOLLO_API_KEY.strip():
+        return {"status": "down", "reason": "APOLLO_API_KEY missing"}
+    if not APOLLO_URL.strip():
+        return {"status": "down", "reason": "APOLLO_URL missing"}
+    return {"status": "ok", "reason": "configured"}

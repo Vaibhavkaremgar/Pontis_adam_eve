@@ -22,10 +22,10 @@ from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.interview_session_service import mark_interview_no_show
 from app.services.outreach_service import run_followup_cycle
 from app.services.audit_service import record_audit_event
-from app.services.apollo_enrichment_service import enrich_candidate_with_apollo
 from app.services.metrics_service import log_metric
 from app.services.notification_intelligence_service import route_recruiter_notification
-from app.services.outreach_service import process_outreach
+from app.services.sourcing.apollo_enrichment_service import enrich_selected_candidate
+from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ def seed_automation_jobs(*, db: Session, job_id: str | None = None, limit: int =
             if row
         ]:
             scheduled_at = getattr(session, "scheduled_at", None)
-            if session.status == "booked" and scheduled_at:
+            if session.status == "interview_scheduled" and scheduled_at:
                 reminder_windows = [timedelta(hours=24), timedelta(hours=1)]
                 for window in reminder_windows:
                     reminder_at = scheduled_at - window
@@ -252,7 +252,7 @@ def _handle_candidate_reactivation(db: Session, row) -> dict[str, Any]:
         db=db,
         job_id=row.job_id or "",
         candidate_id=row.candidate_id or "",
-        to_status="review_pending",
+        to_status="reviewed",
         source="automation",
         reason="candidate_reactivation",
         metadata={"automationJobId": row.id, **_metadata_map(row.automation_payload)},
@@ -286,7 +286,21 @@ def _handle_candidate_enrichment(db: Session, row) -> dict[str, Any]:
     if not job:
         return {"status": "skipped", "reason": "job_missing"}
 
-    enrichment = enrich_candidate_with_apollo(
+    transition_candidate_ats_state(
+        db=db,
+        job_id=row.job_id or "",
+        candidate_id=row.candidate_id or "",
+        to_status="enriching",
+        source="candidate_enrichment",
+        reason="apollo_enrichment_started",
+        metadata={
+            "selectionSessionId": str((row.automation_payload or {}).get("selectionSessionId") or ""),
+            "automationJobId": str(row.id),
+            "sourceType": str((row.automation_payload or {}).get("sourceType") or "linkedin_xray"),
+        },
+    )
+
+    enrichment = enrich_selected_candidate(
         db=db,
         job_id=row.job_id or "",
         candidate_id=row.candidate_id or "",
@@ -297,16 +311,15 @@ def _handle_candidate_enrichment(db: Session, row) -> dict[str, Any]:
     )
 
     status = str(enrichment.get("status") or "").strip().lower()
-    should_outreach = bool(enrichment.get("shouldOutreach"))
-    outreach_result: dict[str, Any] = {}
-    if should_outreach:
-        outreach_result = process_outreach(
-            db=db,
-            job_id=row.job_id or "",
-            selected_candidates=[row.candidate_id or ""],
-            custom_body="",
-            recipient_email=str(enrichment.get("contactEmail") or ""),
-        )
+    outreach_result = trigger_outreach_after_enrichment(
+        db=db,
+        job_id=row.job_id or "",
+        candidate_id=row.candidate_id or "",
+        enrichment_result=enrichment,
+        selection_session_id=str((row.automation_payload or {}).get("selectionSessionId") or ""),
+        automation_job_id=str(row.id),
+        source_type=str((row.automation_payload or {}).get("sourceType") or "linkedin_xray"),
+    )
     return {"status": status or "completed", "enrichment": enrichment, "outreach": outreach_result}
 
 

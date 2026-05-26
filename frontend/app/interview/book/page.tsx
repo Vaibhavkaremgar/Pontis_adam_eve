@@ -65,7 +65,7 @@ function InterviewBookingContent() {
         ? {
             ...prev,
             ...bookedSession,
-            status: "booked",
+            status: "interview_scheduled",
             bookedAt: new Date().toISOString(),
             meetingLink: bookedSession.meetingLink || prev.meetingLink,
           }
@@ -88,7 +88,7 @@ function InterviewBookingContent() {
               <div className="space-y-2 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4">
                 <p className="text-sm font-medium text-gray-900">{session.email}</p>
                 <p className="text-sm text-gray-600">Job: {session.jobId}</p>
-                <Badge variant={session.status === "booked" ? "high" : "medium"}>{session.status}</Badge>
+                <Badge variant={session.status === "interview_scheduled" ? "high" : "medium"}>{session.status}</Badge>
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-900">Preferred interview time</label>
@@ -112,7 +112,7 @@ function InterviewBookingContent() {
                   Book Interview
                 </Button>
               </div>
-              {session.status === "booked" && session.meetingLink && (
+              {session.status === "interview_scheduled" && session.meetingLink && (
                 <Button
                   className="w-full justify-center"
                   onClick={() => openExternalLink(session.meetingLink || "#")}

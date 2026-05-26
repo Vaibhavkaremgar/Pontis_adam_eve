@@ -73,6 +73,14 @@ class CandidateResult(BaseModel):
     contactPhone: str = ""
     exportStatus: str = "pending"
     ats_export_status: str = "not_sent"
+    sourceProvider: str = ""
+    sourceQuery: str = ""
+    sourceTimestamp: str = ""
+    sourceType: str = ""
+    source: str = ""
+    linkedinUrl: str = ""
+    currentCompany: str = ""
+    inferredExperience: str = ""
 
 
 class OutreachRequest(BaseModel):

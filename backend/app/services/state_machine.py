@@ -1,42 +1,130 @@
 from __future__ import annotations
 
 """
-Candidate state machine - single source of truth for all status transitions.
+Compatibility guard for candidate swipe and outreach transitions.
 
-Allowed states:   new -> shortlisted -> contacted -> interview_scheduled -> exported
-                  new -> rejected
-
-Any other transition raises APIError(400).
+The canonical ATS lifecycle lives in `ats_lifecycle_service.py`; this module
+normalizes legacy labels before validating transitions so older code paths keep
+working without mutating the canonical state model in incompatible ways.
 """
 
 import logging
 
+from app.services.ats_lifecycle_service import normalize_ats_status
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
-# All valid states
+# Canonical states accepted by the runtime lifecycle service.
 VALID_STATES: frozenset[str] = frozenset(
-    {"new", "shortlisted", "rejected", "contacted", "interview_scheduled", "exported"}
+    {
+        "sourced",
+        "reviewed",
+        "selected",
+        "enriching",
+        "enriched",
+        "enrichment_failed",
+        "outreach_pending",
+        "outreach_sent",
+        "replied_interested",
+        "replied_not_interested",
+        "interview_requested",
+        "interview_scheduled",
+        "interview_no_show",
+        "interview_completed",
+        "advanced",
+        "final_round",
+        "offer_sent",
+        "hired",
+        "rejected",
+        "archived",
+    }
 )
 
 # Explicit allow-list - every other pair is forbidden
 _ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
-        ("new", "shortlisted"),
-        ("new", "rejected"),
-        ("shortlisted", "contacted"),
-        ("contacted", "interview_scheduled"),
-        ("interview_scheduled", "exported"),
+        ("reviewed", "sourced"),
+        ("reviewed", "selected"),
+        ("reviewed", "rejected"),
+        ("reviewed", "archived"),
+        ("sourced", "reviewed"),
+        ("selected", "enriching"),
+        ("selected", "rejected"),
+        ("selected", "archived"),
+        ("enriching", "enriched"),
+        ("enriching", "enrichment_failed"),
+        ("enriching", "archived"),
+        ("enriched", "outreach_pending"),
+        ("enriched", "outreach_sent"),
+        ("enriched", "rejected"),
+        ("enriched", "archived"),
+        ("outreach_pending", "outreach_sent"),
+        ("outreach_pending", "rejected"),
+        ("outreach_pending", "archived"),
+        ("outreach_sent", "replied_interested"),
+        ("outreach_sent", "replied_not_interested"),
+        ("outreach_sent", "interview_requested"),
+        ("outreach_sent", "archived"),
+        ("replied_interested", "interview_requested"),
+        ("replied_interested", "interview_scheduled"),
+        ("replied_interested", "advanced"),
+        ("replied_interested", "final_round"),
+        ("replied_interested", "offer_sent"),
+        ("replied_interested", "rejected"),
+        ("interview_requested", "interview_scheduled"),
+        ("interview_requested", "rejected"),
+        ("interview_requested", "archived"),
+        ("interview_scheduled", "interview_completed"),
+        ("interview_scheduled", "advanced"),
+        ("interview_scheduled", "final_round"),
+        ("interview_scheduled", "rejected"),
+        ("interview_scheduled", "archived"),
+        ("interview_completed", "advanced"),
+        ("interview_completed", "final_round"),
+        ("interview_completed", "offer_sent"),
+        ("interview_completed", "rejected"),
+        ("interview_completed", "archived"),
+        ("advanced", "final_round"),
+        ("advanced", "offer_sent"),
+        ("advanced", "hired"),
+        ("advanced", "rejected"),
+        ("advanced", "archived"),
+        ("final_round", "offer_sent"),
+        ("final_round", "hired"),
+        ("final_round", "rejected"),
+        ("final_round", "archived"),
+        ("offer_sent", "hired"),
+        ("offer_sent", "rejected"),
+        ("offer_sent", "archived"),
+        ("hired", "archived"),
+        ("rejected", "archived"),
     }
 )
 
 # States from which NO further transition is ever allowed
-_TERMINAL_STATES: frozenset[str] = frozenset({"rejected", "exported"})
+_TERMINAL_STATES: frozenset[str] = frozenset({"hired", "rejected", "archived"})
 
 # States that are locked against swipe (accept/reject) actions specifically
 _SWIPE_LOCKED_STATES: frozenset[str] = frozenset(
-    {"shortlisted", "contacted", "interview_scheduled", "exported"}
+    {
+        "selected",
+        "enriching",
+        "enriched",
+        "outreach_pending",
+        "outreach_sent",
+        "replied_interested",
+        "replied_not_interested",
+        "interview_requested",
+        "interview_scheduled",
+        "interview_completed",
+        "advanced",
+        "final_round",
+        "offer_sent",
+        "hired",
+        "rejected",
+        "archived",
+    }
 )
 
 
@@ -51,8 +139,8 @@ def assert_valid_transition(
     Raise APIError(400) if the transition from_status -> to_status is not allowed.
     None from_status is treated as 'new' (first-time write).
     """
-    effective_from = (from_status or "new").strip().lower()
-    effective_to = to_status.strip().lower()
+    effective_from = normalize_ats_status(from_status or "new")
+    effective_to = normalize_ats_status(to_status)
 
     if effective_to not in VALID_STATES:
         logger.warning(
@@ -110,13 +198,13 @@ def assert_valid_transition(
 
 def is_swipe_locked(status: str | None) -> bool:
     """Return True if the candidate's current status prevents a swipe action."""
-    return (status or "new").strip().lower() in _SWIPE_LOCKED_STATES
+    return normalize_ats_status(status or "new") in _SWIPE_LOCKED_STATES
 
 
 def swipe_to_status(action: str) -> str:
     """Map swipe action to the resulting interview status."""
     if action == "accept":
-        return "shortlisted"
+        return "selected"
     if action == "reject":
         return "rejected"
     raise APIError(f"Unknown swipe action '{action}'", status_code=400)

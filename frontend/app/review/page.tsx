@@ -39,8 +39,7 @@ import { Modal } from "@/components/ui/modal";
 import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
 import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
-import { getFinalSelectionResults, getFirstSelectionBatch, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
-import { sendOutreach } from "@/lib/api/outreach";
+import { getFinalSelectionResults, getFirstSelectionBatch, selectCandidateForEnrichment, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
 import { storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
@@ -48,15 +47,19 @@ import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession }
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
 function statusLabel(candidate: Candidate): string {
-  if (candidate.status === "shortlisted") return "Selected";
+  if (candidate.status === "sourced") return "LinkedIn sourced";
+  if (candidate.status === "reviewed") return "Reviewed";
+  if (candidate.status === "selected") return "Selected";
+  if (candidate.status === "enriching") return "Enriching";
   if (candidate.status === "enriched") return "Enriched";
+  if (candidate.status === "outreach_pending") return "Outreach pending";
   if (candidate.status === "outreach_sent") return "Outreach sent";
   if (candidate.status === "rejected") return "Rejected";
   return "Awaiting choice";
 }
 
 function atsStatusLabel(candidate: Candidate): string {
-  return (candidate.ats_status || candidate.status || "review_pending").replace(/_/g, " ");
+  return (candidate.ats_status || candidate.status || "reviewed").replace(/_/g, " ");
 }
 
 function candidateSubtitle(candidate: Candidate): string {
@@ -441,8 +444,20 @@ function CandidateCard({
       </CardHeader>
 
       <CardContent className="flex flex-1 flex-col p-8 pt-6">
-        <div className="mb-4 inline-flex rounded-full bg-[#F3F4F6] px-3 py-1 font-body text-[11px] font-semibold text-[#6B7280]">
-          {statusLabel(candidate)}
+        <div className="mb-4 flex flex-wrap gap-2">
+          <span className="inline-flex rounded-full bg-[#F3F4F6] px-3 py-1 font-body text-[11px] font-semibold text-[#6B7280]">
+            {statusLabel(candidate)}
+          </span>
+          <span className="inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 font-body text-[11px] font-semibold text-[#1D4ED8]">
+            {candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider || "Source pending"}
+          </span>
+          <span className="inline-flex rounded-full bg-[#F4FBF7] px-3 py-1 font-body text-[11px] font-semibold text-[#0F6B3A]">
+            {candidate.enrichmentStatus === "pending"
+              ? "Not enriched yet"
+              : candidate.enrichmentStatus === "enriching"
+                ? "Enriching"
+                : candidate.enrichmentStatus || "Pending"}
+          </span>
         </div>
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
@@ -463,6 +478,13 @@ function CandidateCard({
             <span className="font-body text-[14px] text-[#4B5563]">Sourcing confidence</span>
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
               {(getSourcingConfidence(candidate) * 100).toFixed(0)}%
+            </span>
+          </div>
+          <div className="flex items-center gap-3 border-t border-[#ECE7DE] py-2">
+            <Sparkles className="h-4 w-4 shrink-0 text-[#6B7280]" />
+            <span className="font-body text-[14px] text-[#4B5563]">Source</span>
+            <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
+              {candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider || "Pending"}
             </span>
           </div>
         </div>
@@ -851,7 +873,7 @@ function SwipeDeck({
               )}
 
               {/* Already selected badge */}
-              {(shortlistedIds.includes(current.id) || current.status === "shortlisted") && (
+              {(shortlistedIds.includes(current.id) || current.status === "selected") && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
                   ✓ Already selected
                 </div>
@@ -887,7 +909,7 @@ function SwipeDeck({
           <div
             key={c.id}
             className={`h-2 w-2 rounded-full transition-colors ${
-              shortlistedIds.includes(c.id) || c.status === "shortlisted"
+              shortlistedIds.includes(c.id) || c.status === "selected"
                 ? "bg-[#0F6B3A]"
                 : actedIds.has(c.id)
                   ? "bg-[#D1D5DB]"
@@ -1066,7 +1088,7 @@ export default function ReviewPage() {
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of finalCandidates) {
-      if (candidate.status === "shortlisted") {
+      if (candidate.status === "selected") {
         ids.add(candidate.id);
       }
     }
@@ -1084,10 +1106,10 @@ export default function ReviewPage() {
         ? {
             ...prev,
             finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
-              candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
+              candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate
             ),
             topCandidates: (prev.topCandidates || []).map((candidate) =>
-              candidate.id === candidateId ? { ...candidate, status: "shortlisted" } : candidate
+              candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate
             ),
           }
         : prev
@@ -1121,11 +1143,11 @@ export default function ReviewPage() {
     );
     const failed = results.find((result) => !result.success || !result.data);
     if (failed) {
-      setError(failed.error || "Could not prepare shortlisted candidates for Ready.");
+      setError(failed.error || "Could not prepare selected candidates for Ready.");
       setSelectionDebug(
         [
           `jobId=${jobId}`,
-          `shortlistedIds=${completedShortlistedIds.join(", ")}`,
+          `selectedIds=${completedShortlistedIds.join(", ")}`,
           `error=${failed.error || "Unknown error"}`
         ].join("\n")
       );
@@ -1190,26 +1212,18 @@ export default function ReviewPage() {
 
     if (completed) {
       markFinalSelectionLocally(candidateId);
-      const result = await swipeCandidate({ jobId, candidateId, action: "accept" });
+      const result = await selectCandidateForEnrichment({ jobId, candidateId });
       if (!result.success || !result.data) {
         revertFinalSelectionLocally(candidateId);
-        setError(result.error || "Could not shortlist candidate for automatic contact.");
+        setError(result.error || "Could not start Apollo enrichment.");
         setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\nerror=${result.error || "Unknown error"}`);
         setIsAdvancing(false);
         setSelectedCandidateId("");
         return;
       }
 
-      const outreachResult = await sendOutreach({ jobId, selectedCandidates: [candidateId] });
-      if (!outreachResult.success || !outreachResult.data) {
-        setError(outreachResult.error || "Selection saved, but outreach could not be completed.");
-      } else {
-        setFeedbackMessage(
-          outreachResult.data.sent > 0
-            ? `Outreach started for ${outreachResult.data.sent} candidate${outreachResult.data.sent === 1 ? "" : "s"}. Adam will keep ATS status updated.`
-            : "Selection saved. Track contact status in Ready."
-        );
-      }
+      setSession(result.data);
+      setFeedbackMessage("Selection saved. Apollo enrichment is now running.");
       setActiveCandidate(null);
       setIsAdvancing(false);
       setSelectedCandidateId("");
@@ -1534,7 +1548,7 @@ export default function ReviewPage() {
             <div className="space-y-5">
               <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#0F6B3A]">
                 <p className="font-semibold">Selection complete</p>
-                <p className="mt-1">The backend has analyzed your choices and reranked the candidate pool using the signals you showed. Select who should be contacted automatically, then track them in Ready.</p>
+                <p className="mt-1">The backend has analyzed your choices and reranked the candidate pool using the signals you showed. Select who should be moved forward automatically, then track them in Ready.</p>
               </div>
 
               {summaryLines.length > 0 && (
@@ -1609,7 +1623,8 @@ export default function ReviewPage() {
                       </p>
                     </div>
                     <div className="text-right text-xs text-[#6B7280]">
-                      <p>Source: {activeCandidate.ats_status_source || "system"}</p>
+                      <p>Source: {activeCandidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : activeCandidate.sourceProvider || activeCandidate.ats_status_source || "system"}</p>
+                      {activeCandidate.sourceQuery ? <p>Query: {activeCandidate.sourceQuery}</p> : null}
                       <p>Updated: {activeCandidate.ats_status_updated_at || "n/a"}</p>
                       <p>
                         Enrichment: {activeCandidate.enrichmentStatus || "pending"}
@@ -1757,11 +1772,11 @@ export default function ReviewPage() {
                     data-testid={`final-select-${activeCandidate.id}`}
                     className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
                     onClick={() => void handleSelect(activeCandidate.id)}
-                    disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"}
+                    disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "selected"}
                   >
                     {isAdvancing && selectedCandidateId === activeCandidate.id
-                      ? "Selecting candidate..."
-                      : finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "shortlisted"
+                      ? "Starting enrichment..."
+                      : finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "selected"
                         ? "Selected"
                         : "Select this candidate"}
                   </Button>

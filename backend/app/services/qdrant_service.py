@@ -14,6 +14,7 @@ from app.core.config import (
     JOB_COLLECTION_NAME,
     QDRANT_API_KEY,
     QDRANT_URL,
+    RECRUITER_MEMORY_COLLECTION_NAME,
     RECRUITER_PREFERENCES_COLLECTION_NAME,
     VECTOR_SIZE,
 )
@@ -57,6 +58,17 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
         "distance": Distance.COSINE,
         "indexes": {
             "recruiterId": PayloadSchemaType.UUID,
+        },
+    },
+    RECRUITER_MEMORY_COLLECTION_NAME: {
+        "vector_size": VECTOR_SIZE,
+        "distance": Distance.COSINE,
+        "indexes": {
+            "recruiterId": PayloadSchemaType.UUID,
+            "jobId": PayloadSchemaType.KEYWORD,
+            "candidateId": PayloadSchemaType.KEYWORD,
+            "memoryType": PayloadSchemaType.KEYWORD,
+            "embeddingVersion": PayloadSchemaType.KEYWORD,
         },
     },
 }
@@ -462,6 +474,81 @@ def upsert_recruiter_preferences(
     except Exception as exc:
         _mark_client_unavailable(str(exc))
         logger.warning("Failed to upsert recruiter preferences for recruiterId=%s error=%s", recruiter_id, str(exc))
+
+
+def upsert_recruiter_memory(
+    *,
+    recruiter_id: str,
+    job_id: str,
+    candidate_id: str,
+    vector: list[float],
+    payload: dict[str, Any] | None = None,
+) -> None:
+    client = _get_client()
+    recruiter_id = (recruiter_id or "").strip()
+    candidate_id = (candidate_id or "").strip()
+    job_id = (job_id or "").strip()
+    if not client or not recruiter_id or not candidate_id or not job_id or not vector:
+        return
+    ensure_collection(RECRUITER_MEMORY_COLLECTION_NAME)
+    point_payload = {
+        "recruiterId": recruiter_id,
+        "jobId": job_id,
+        "candidateId": candidate_id,
+        **(payload or {}),
+    }
+    point = PointStruct(
+        id=_stable_point_id(f"memory:{recruiter_id}:{job_id}:{candidate_id}"),
+        vector=vector,
+        payload=point_payload,
+    )
+    try:
+        client.upsert(collection_name=RECRUITER_MEMORY_COLLECTION_NAME, points=[point], wait=True)
+        logger.info(
+            "qdrant_recruiter_memory_upsert recruiterId=%s jobId=%s candidateId=%s memoryType=%s",
+            recruiter_id,
+            job_id,
+            candidate_id,
+            str((payload or {}).get("memoryType") or "unknown"),
+        )
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        logger.warning(
+            "Failed to upsert recruiter memory recruiterId=%s jobId=%s candidateId=%s error=%s",
+            recruiter_id,
+            job_id,
+            candidate_id,
+            str(exc),
+        )
+
+
+def load_recruiter_memory(recruiter_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
+    client = _get_client()
+    recruiter_id = (recruiter_id or "").strip()
+    if not client or not recruiter_id:
+        return []
+    ensure_collection(RECRUITER_MEMORY_COLLECTION_NAME)
+    try:
+        response = client.scroll(
+            collection_name=RECRUITER_MEMORY_COLLECTION_NAME,
+            scroll_filter=Filter(must=[FieldCondition(key="recruiterId", match=MatchValue(value=recruiter_id))]),
+            limit=max(1, limit),
+            with_payload=True,
+            with_vectors=True,
+        )
+        points = response[0] if isinstance(response, tuple) else response
+        items: list[dict[str, Any]] = []
+        for point in points or []:
+            items.append(
+                {
+                    "vector": [float(value) for value in (getattr(point, "vector", None) or [])],
+                    "payload": getattr(point, "payload", None) or {},
+                }
+            )
+        return items
+    except Exception as exc:
+        logger.warning("Failed to load recruiter memory recruiterId=%s error=%s", recruiter_id, str(exc))
+        return []
 
 
 def load_recruiter_preferences(recruiter_id: str) -> dict[str, Any] | None:

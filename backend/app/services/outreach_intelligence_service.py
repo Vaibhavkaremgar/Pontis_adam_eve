@@ -150,9 +150,10 @@ def outreach_reply_state_to_notification_title(reply_state: str, *, candidate_na
 
 def follow_up_delay_days(*, follow_up_count_after_send: int) -> int | None:
     mapping = {
-        0: 5,
-        1: 7,
-        2: 2,
+        0: 2,
+        1: 3,
+        2: 7,
+        3: 2,
     }
     return mapping.get(max(0, int(follow_up_count_after_send or 0)))
 

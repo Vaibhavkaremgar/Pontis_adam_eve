@@ -22,7 +22,7 @@ def _selected_candidate_ids(job_id: str, candidate_ids: list[str], db: Session) 
     return [
         row.candidate_id
         for row in interview_rows
-        if (row.status or "").strip().lower() in {"contacted", "interview_scheduled", "shortlisted"}
+        if (row.status or "").strip().lower() in {"outreach_sent", "interview_scheduled", "selected"}
     ]
 
 

@@ -106,6 +106,18 @@ def select_candidate(
     return success_response(result)
 
 
+@router.post("/candidates/select")
+def select_candidate_for_enrichment(
+    payload: CandidateSelectionRequest,
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
+    result = submit_selection_choice(db=db, job_id=payload.jobId, candidate_id=payload.candidateId)
+    return success_response(result)
+
+
 @router.get("/candidates/selection/final")
 def get_final_candidate_selection(
     jobId: str = Query(...),

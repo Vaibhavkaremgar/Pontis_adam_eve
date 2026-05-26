@@ -815,15 +815,6 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
                 outreach_event_id=getattr(outreach_event, "id", None),
                 resume_text=resume_parse_result.text,
             )
-            transition_candidate_ats_state(
-                db=db,
-                job_id=job_id or "",
-                candidate_id=candidate_id or "",
-                to_status="interview_requested",
-                source="resend_webhook",
-                reason="resume_received",
-                metadata={"replyId": row.id, "resumeAttachment": True},
-            )
         except Exception as exc:
             logger.warning(
                 "interview_invite_failed sender_email=%s candidate_id=%s job_id=%s error=%s",

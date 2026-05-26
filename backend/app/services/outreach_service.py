@@ -990,8 +990,8 @@ def _send_outreach_email(*, to_email: str, subject: str, body: str, html_body: s
 
 
 def _follow_up_time() -> datetime:
-    # Day 0 -> Day 5 follow-up cadence.
-    return datetime.now(timezone.utc) + timedelta(days=5)
+    # Day 0 -> 48 hour reminder cadence.
+    return datetime.now(timezone.utc) + timedelta(days=2)
 
 
 def _next_follow_up_time(*, follow_up_count_after_send: int, base_time: datetime | None = None) -> datetime | None:
@@ -1474,7 +1474,7 @@ def process_outreach(
     outreach_events = OutreachEventRepository(db)
     recruiter_id = JobRepository(db).get_recruiter_id(job_id)
 
-    # ── Enforce shortlisted-only ──────────────────────────────────────────────
+    # ── Enforce selected-only ────────────────────────────────────────────────
     session = selection_sessions.get_by_job(job_id)
     session_status = ""
     session_selected_candidate_ids: list[str] = []
@@ -1505,10 +1505,18 @@ def process_outreach(
     else:
         logger.info("outreach_selection_session_missing job_id=%s", job_id)
 
-    if not session or session_status != "completed":
+    if not session:
         raise APIError(
             "Outreach is selection-driven. Complete the current candidate selection session before sending outreach.",
             status_code=409,
+        )
+    if session_status != "completed":
+        logger.info(
+            "outreach_session_not_completed job_id=%s session_id=%s status=%s allowing_enrichment_pipeline=%s",
+            job_id,
+            session.id,
+            session_status,
+            True,
         )
 
     unique_selected_candidates = list(dict.fromkeys((candidate_id or "").strip() for candidate_id in selected_candidates if str(candidate_id or "").strip()))
@@ -1567,11 +1575,26 @@ def process_outreach(
                 candidate_id,
             )
 
+    selected_profile = candidate_profiles.get(valid_candidates[0])
+    if not selected_profile:
+        raise APIError("Selected candidate profile is missing", status_code=404)
+    raw_data = dict(getattr(selected_profile, "raw_data", {}) or {})
+    enrichment_state = raw_data.get("enrichment") if isinstance(raw_data.get("enrichment"), dict) else {}
+    enrichment_status = str(enrichment_state.get("status") or getattr(selected_profile, "ats_status", "") or "").strip().lower()
+    if enrichment_status not in {"verified", "high_confidence"}:
+        logger.warning(
+            "outreach_enrichment_gate_blocked job_id=%s candidate_id=%s status=%s",
+            job_id,
+            valid_candidates[0],
+            enrichment_status or "missing",
+        )
+        raise APIError("Outreach is only allowed after verified or high-confidence Apollo enrichment.", status_code=409)
+
     logger.info(
-        "outreach_candidates job_id=%s shortlisted=%s rejected_non_shortlisted=%s",
+        "outreach_candidates job_id=%s selected=%s rejected_non_selected=%s",
         job_id, len(valid_candidates), rejected_count,
     )
-    log_metric("outreach_candidates", job_id=job_id, shortlisted=len(valid_candidates), rejected=rejected_count)
+    log_metric("outreach_candidates", job_id=job_id, selected=len(valid_candidates), rejected=rejected_count)
 
     if not valid_candidates:
         raise APIError(
@@ -1630,14 +1653,12 @@ def process_outreach(
     for candidate_id in valid_candidates:
         processed += 1
         profile = candidate_profiles[candidate_id]
-        current_status = "shortlisted"
-
         raw_data = profile.raw_data or {}
         enrichment_state = dict(raw_data.get("enrichment") or {})
         enrichment_status = str(enrichment_state.get("status") or "").strip().lower()
-        if enrichment_status not in {"enriched", "partial"}:
+        if enrichment_status not in {"verified", "high_confidence"}:
             raise APIError(
-                "Candidate must be enriched before outreach can be sent.",
+                "Candidate must be verified or high-confidence enriched before outreach can be sent.",
                 status_code=409,
             )
         delivery_target = _resolve_outreach_recipient(
@@ -1780,7 +1801,7 @@ def process_outreach(
                 candidate_id=candidate_id,
                 job_id=job_id,
                 from_status=current_status,
-                to_status="contacted",
+            to_status="outreach_sent",
             )
         except APIError as exc:
             skipped += 1
@@ -1799,7 +1820,7 @@ def process_outreach(
 
         simulate_send = OUTREACH_DRY_RUN or to_email.endswith("@test.local") or not ENABLE_REAL_EMAIL_SENDING
         if simulate_send:
-            interviews.upsert_status(job_id=job_id, candidate_id=candidate_id, status="contacted", create_default="shortlisted")
+            interviews.upsert_status(job_id=job_id, candidate_id=candidate_id, status="outreach_sent", create_default="selected")
             outreach_events.upsert(
                 job_id=job_id,
                 candidate_id=candidate_id,
@@ -1809,7 +1830,7 @@ def process_outreach(
                 body=body,
                 status="simulated",
                 sent_at=datetime.now(timezone.utc),
-                next_follow_up_at=(datetime.now(timezone.utc) + timedelta(days=5)) if ENABLE_FOLLOWUPS else None,
+                next_follow_up_at=_follow_up_time() if ENABLE_FOLLOWUPS else None,
                 last_error="",
             )
             current_event = outreach_events.get(job_id=job_id, candidate_id=candidate_id)
@@ -1905,7 +1926,7 @@ def process_outreach(
             db.commit()
             continue
 
-        interviews.upsert_status(job_id=job_id, candidate_id=candidate_id, status="contacted", create_default="shortlisted")
+        interviews.upsert_status(job_id=job_id, candidate_id=candidate_id, status="outreach_sent", create_default="selected")
         event = outreach_events.claim_outreach_for_sending(
             job_id=job_id,
             candidate_id=candidate_id,
@@ -1952,7 +1973,7 @@ def process_outreach(
                 event.status = "sent"
                 event.last_sent_at = now
                 event.last_contacted_at = now
-                event.next_follow_up_at = now + timedelta(days=5) if ENABLE_FOLLOWUPS else None
+                event.next_follow_up_at = _follow_up_time() if ENABLE_FOLLOWUPS else None
                 event.follow_up_count = 0
                 event.last_error = ""
                 snapshot = compute_outreach_engagement_snapshot(
@@ -2397,7 +2418,7 @@ def queue_outreach_delivery(*, job_id: str, selected_candidates: list[str], cust
         idempotency_key=idempotency_key,
     )
     logger.info(
-        "request_started outreach_queued job_id=%s selected_count=%s mode=%s",
+        "request_started outreach_pending job_id=%s selected_count=%s mode=%s",
         job_id,
         len(unique_selected_candidates),
         result.get("mode", "redis"),
@@ -2456,7 +2477,7 @@ def run_followup_cycle(db: Session) -> dict:
                 continue
 
             follow_up_number = int(event.follow_up_count or 0) + 1
-            if follow_up_number >= 3:
+            if int(event.follow_up_count or 0) >= 3:
                 event.status = "archived"
                 event.next_follow_up_at = None
                 event.last_error = "no_response_archive"
@@ -2517,7 +2538,7 @@ def run_followup_cycle(db: Session) -> dict:
                 outreach_repo.upsert(
                     job_id=event.job_id, candidate_id=event.candidate_id, provider=event.provider,
                     to_email=to_email, subject=subject, body=body, status="follow_up_sent",
-                    sent_at=now, next_follow_up_at=now + timedelta(days=7 if follow_up_number == 1 else 2), increment_follow_up=True,
+                    sent_at=now, next_follow_up_at=_next_follow_up_time(follow_up_count_after_send=follow_up_number, base_time=now), increment_follow_up=True,
                 )
                 current_event = outreach_repo.get(job_id=event.job_id, candidate_id=event.candidate_id)
                 if current_event:
@@ -2539,18 +2560,18 @@ def run_followup_cycle(db: Session) -> dict:
                     db=db,
                     job_id=event.job_id,
                     candidate_id=event.candidate_id,
-                    to_status="followup_sent",
+                    to_status="outreach_sent",
                     source="outreach",
                     reason=f"dry_run_followup_{follow_up_number}",
                     metadata={"followUpCount": follow_up_number, "dryRun": True},
                 )
                 sent += 1
                 logger.info(
-                    "followup_sent job_id=%s candidate_id=%s follow_up_count=%s dry_run=%s",
+                    "outreach_followup_sent job_id=%s candidate_id=%s follow_up_count=%s dry_run=%s",
                     event.job_id, event.candidate_id, follow_up_number,
                     True,
                 )
-                log_metric("followup_sent", job_id=event.job_id, candidate_id=event.candidate_id,
+                log_metric("outreach_followup_sent", job_id=event.job_id, candidate_id=event.candidate_id,
                            follow_up_count=follow_up_number, dry_run=True)
                 continue
 
@@ -2578,7 +2599,7 @@ def run_followup_cycle(db: Session) -> dict:
                         outreach_repo.upsert(
                             job_id=event.job_id, candidate_id=event.candidate_id, provider=event.provider,
                             to_email=to_email, subject=subject, body=body, status="follow_up_sent",
-                            sent_at=now, next_follow_up_at=now + timedelta(days=7 if follow_up_number == 1 else 2),
+                            sent_at=now, next_follow_up_at=_next_follow_up_time(follow_up_count_after_send=follow_up_number, base_time=now),
                             provider_message_id=msg_id, increment_follow_up=True,
                         )
                         current_event = outreach_repo.get(job_id=event.job_id, candidate_id=event.candidate_id)
@@ -2601,7 +2622,7 @@ def run_followup_cycle(db: Session) -> dict:
                             db=db,
                             job_id=event.job_id,
                             candidate_id=event.candidate_id,
-                            to_status="followup_sent",
+                            to_status="outreach_sent",
                             source="outreach",
                             reason=f"followup_{follow_up_number}_sent",
                             metadata={"followUpCount": follow_up_number, "providerMessageId": msg_id},
@@ -2621,10 +2642,10 @@ def run_followup_cycle(db: Session) -> dict:
                         continue
                     sent += 1
                     logger.info(
-                        "followup_sent job_id=%s candidate_id=%s follow_up_count=%s provider_id=%s",
+                        "outreach_followup_sent job_id=%s candidate_id=%s follow_up_count=%s provider_id=%s",
                         event.job_id, event.candidate_id, follow_up_number, msg_id,
                     )
-                    log_metric("followup_sent", job_id=event.job_id, candidate_id=event.candidate_id,
+                    log_metric("outreach_followup_sent", job_id=event.job_id, candidate_id=event.candidate_id,
                                follow_up_count=follow_up_number, provider_id=msg_id)
                 else:
                     skipped += 1

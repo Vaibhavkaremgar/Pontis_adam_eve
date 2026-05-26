@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 
 CANONICAL_ATS_STATES: tuple[str, ...] = (
     "sourced",
+    "reviewed",
+    "selected",
+    "enriching",
     "enriched",
-    "review_pending",
-    "shortlisted",
-    "outreach_queued",
+    "enrichment_failed",
+    "outreach_pending",
     "outreach_sent",
-    "followup_sent",
     "replied_interested",
     "replied_not_interested",
     "interview_requested",
@@ -48,16 +49,22 @@ CANONICAL_ATS_STATES: tuple[str, ...] = (
 _CANONICAL_SET = set(CANONICAL_ATS_STATES)
 
 _LEGACY_TO_CANONICAL: dict[str, str] = {
-    "new": "review_pending",
-    "shortlisted": "shortlisted",
+    "new": "reviewed",
+    "review_pending": "reviewed",
+    "shortlisted": "selected",
+    "enriching": "enriching",
+    "enriched": "enriched",
+    "enrichment_failed": "enrichment_failed",
+    "outreach_pending": "outreach_pending",
+    "outreach_queued": "outreach_pending",
     "contacted": "outreach_sent",
     "interview_scheduled": "interview_scheduled",
     "exported": "offer_sent",
     "rejected": "rejected",
     "booked": "interview_scheduled",
     "sent": "outreach_sent",
-    "follow_up_sent": "followup_sent",
-    "followup_sent": "followup_sent",
+    "follow_up_sent": "outreach_sent",
+    "followup_sent": "outreach_sent",
     "responded": "replied_interested",
     "qualified": "replied_interested",
     "awaiting_resume": "replied_interested",
@@ -66,14 +73,14 @@ _LEGACY_TO_CANONICAL: dict[str, str] = {
 }
 
 _TRANSITION_ORDER: dict[str, set[str]] = {
-    "review_pending": {"sourced", "enriched", "shortlisted", "rejected", "archived"},
-    "sourced": {"enriched", "review_pending", "shortlisted", "rejected", "archived"},
-    "enriched": {"review_pending", "shortlisted", "rejected", "archived"},
-    "shortlisted": {"enriched", "outreach_queued", "outreach_sent", "rejected", "archived"},
-    "enriched": {"outreach_queued", "outreach_sent", "shortlisted", "rejected", "archived"},
-    "outreach_queued": {"outreach_sent", "archived", "rejected", "enriched"},
-    "outreach_sent": {"followup_sent", "replied_interested", "replied_not_interested", "archived", "interview_requested"},
-    "followup_sent": {"replied_interested", "replied_not_interested", "archived", "interview_requested"},
+    "reviewed": {"sourced", "enriched", "selected", "rejected", "archived"},
+    "sourced": {"enriched", "reviewed", "selected", "rejected", "archived"},
+    "selected": {"enriching", "rejected", "archived"},
+    "enriching": {"enriched", "enrichment_failed", "selected", "rejected", "archived"},
+    "enrichment_failed": {"selected", "reviewed", "archived"},
+    "enriched": {"reviewed", "outreach_pending", "outreach_sent", "rejected", "archived"},
+    "outreach_pending": {"outreach_sent", "rejected", "archived"},
+    "outreach_sent": {"replied_interested", "replied_not_interested", "archived", "interview_requested"},
     "replied_interested": {"interview_requested", "interview_scheduled", "advanced", "final_round", "offer_sent", "rejected"},
     "replied_not_interested": {"archived", "rejected"},
     "interview_requested": {"interview_scheduled", "archived", "rejected"},
@@ -93,7 +100,7 @@ def normalize_ats_status(value: str | None) -> str:
     normalized = (value or "").strip().lower().replace("-", "_")
     if normalized in _CANONICAL_SET:
         return normalized
-    return _LEGACY_TO_CANONICAL.get(normalized, normalized or "review_pending")
+    return _LEGACY_TO_CANONICAL.get(normalized, normalized or "reviewed")
 
 
 def _transition_key(*, job_id: str, candidate_id: str, to_status: str, source: str, actor_id: str | None, metadata: dict[str, Any]) -> str:
@@ -112,7 +119,7 @@ def _transition_key(*, job_id: str, candidate_id: str, to_status: str, source: s
 def get_candidate_ats_state(*, db: Session, job_id: str, candidate_id: str) -> str:
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
-        return "review_pending"
+        return "reviewed"
     return normalize_ats_status(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", ""))
 
 

@@ -258,7 +258,7 @@ def _ensure_optional_schema_columns() -> None:
             if "parsed_resume_text" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_text TEXT NOT NULL DEFAULT ''"))
             if "ats_status" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status VARCHAR(64) NOT NULL DEFAULT 'review_pending'"))
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status VARCHAR(64) NOT NULL DEFAULT 'reviewed'"))
             if "ats_status_source" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_source VARCHAR(32) NOT NULL DEFAULT 'system'"))
             if "ats_status_reason" not in candidate_columns:
