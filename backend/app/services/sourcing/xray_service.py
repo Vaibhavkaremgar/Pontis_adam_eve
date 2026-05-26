@@ -50,7 +50,6 @@ def _job_skills(job: Any) -> list[str]:
 
 XRAY_TARGET_COUNT = 30
 XRAY_STRONG_MATCH_THRESHOLD = 4.0
-XRAY_HIGH_WATERMARK_THRESHOLD = 4.5
 
 
 def _candidate_identity_key(candidate: dict[str, Any]) -> str:
@@ -326,62 +325,27 @@ def discover_xray_candidates(
         pages_per_query=max_pages,
     )
 
-    raw_candidates: list[dict[str, Any]] = []
-    passed_variants: list[tuple[str, dict[str, Any], dict[str, Any]]] = [
-        ("strict", dict(intake or {}), dict(recruiter_preferences or {})),
-        ("balanced", _broaden_intake(intake, variant=1), _trim_recruiter_preferences(recruiter_preferences, variant=1)),
-        ("broad", _broaden_intake(intake, variant=2), _trim_recruiter_preferences(recruiter_preferences, variant=2)),
-    ]
+    queries = build_linkedin_xray_queries(
+        role=_normalize_text((intake or {}).get("role") or getattr(job, "title", "") or ""),
+        seniority=_normalize_text((intake or {}).get("seniority") or getattr(job, "experience_level", "") or ""),
+        skills=[str(skill).strip() for skill in ((intake or {}).get("skills") or []) if str(skill).strip()] if isinstance((intake or {}).get("skills"), list) else [token.strip() for token in _normalize_text((intake or {}).get("skills") or "").split(",") if token.strip()],
+        location=_normalize_text((intake or {}).get("location") or getattr(job, "location", "") or ""),
+        company_stage=_normalize_text((intake or {}).get("company_stage") or ""),
+        hiring_preferences=_normalize_text((intake or {}).get("hiring_preferences") or ""),
+        industry=_normalize_text((intake or {}).get("industry") or ""),
+        leadership_expectations=_normalize_text((intake or {}).get("leadership_expectations") or ""),
+        recruiter_preferences=recruiter_preferences,
+    )
+    primary_query = queries[0] if queries else ""
+    logger.info("[xray_query] job_id=%s query=%s pages=%s", job_id, primary_query, max_pages)
 
-    for pass_index, (label, intake_variant, preference_variant) in enumerate(passed_variants, start=1):
-        if len(raw_candidates) >= effective_limit:
-            break
-
-        queries = build_linkedin_xray_queries(
-            role=_normalize_text(intake_variant.get("role") or getattr(job, "title", "") or ""),
-            seniority=_normalize_text(intake_variant.get("seniority") or getattr(job, "experience_level", "") or ""),
-            skills=[str(skill).strip() for skill in ((intake_variant or {}).get("skills") or []) if str(skill).strip()] if isinstance((intake_variant or {}).get("skills"), list) else [token.strip() for token in _normalize_text((intake_variant or {}).get("skills") or "").split(",") if token.strip()],
-            location=_normalize_text(intake_variant.get("location") or getattr(job, "location", "") or ""),
-            company_stage=_normalize_text(intake_variant.get("company_stage") or ""),
-            hiring_preferences=_normalize_text(intake_variant.get("hiring_preferences") or ""),
-            industry=_normalize_text(intake_variant.get("industry") or ""),
-            leadership_expectations=_normalize_text(intake_variant.get("leadership_expectations") or ""),
-            recruiter_preferences=preference_variant,
-        )
-        for query in queries:
-            logger.info("[xray_query] job_id=%s pass=%s query=%s", job_id, label, query)
-
-        candidates = discover_linkedin_xray_candidates(
-            job=job,
-            intake=intake_variant,
-            limit=max(effective_limit * 3, 90),
-            pages_per_query=max_pages,
-            recruiter_preferences=preference_variant,
-        )
-        raw_candidates = _dedupe_candidates(raw_candidates, candidates)
-        strong_preview = build_xray_candidate_results(job=job, candidates=raw_candidates, limit=max(effective_limit, XRAY_TARGET_COUNT))
-        strong_count = sum(1 for candidate in strong_preview if candidate.fitScore >= XRAY_STRONG_MATCH_THRESHOLD)
-
-        logger.info(
-            "[xray_pass] job_id=%s pass=%s raw_count=%s preview_count=%s strong_count=%s target=%s",
-            job_id,
-            label,
-            len(raw_candidates),
-            len(strong_preview),
-            strong_count,
-            XRAY_TARGET_COUNT,
-        )
-        log_metric(
-            "xray_pass_complete",
-            job_id=job_id,
-            pass_name=label,
-            raw_count=len(raw_candidates),
-            preview_count=len(strong_preview),
-            strong_count=strong_count,
-        )
-
-        if strong_count >= XRAY_TARGET_COUNT or any(candidate.fitScore >= XRAY_HIGH_WATERMARK_THRESHOLD for candidate in strong_preview):
-            break
+    raw_candidates = discover_linkedin_xray_candidates(
+        job=job,
+        intake=intake,
+        limit=XRAY_TARGET_COUNT,
+        pages_per_query=max_pages,
+        recruiter_preferences=recruiter_preferences,
+    )
 
     if not raw_candidates:
         logger.info("[xray_candidate_count] job_id=%s raw=0 deduped=0", job_id)

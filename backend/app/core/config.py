@@ -78,7 +78,9 @@ SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip(
 SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
 SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "10"))
-SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "3"))
+# LinkedIn X-Ray uses this page budget to pull a larger raw candidate pool.
+# With the default 10 results/page, 6 pages yields up to 60 raw results.
+SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "6"))
 SERPAPI_RETRY_ATTEMPTS = int(os.getenv("SERPAPI_RETRY_ATTEMPTS", "3"))
 SERPAPI_MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("SERPAPI_MIN_REQUEST_INTERVAL_SECONDS", "0.35"))
 SERPAPI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("SERPAPI_REQUEST_TIMEOUT_SECONDS", "15"))

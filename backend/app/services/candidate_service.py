@@ -3226,7 +3226,8 @@ def fetch_ranked_candidates(
             serpapi_candidates = discover_linkedin_xray_candidates(
                 job=job,
                 intake=getattr(job, "structured_data", None) or {},
-                limit=size,
+                limit=max(size, 30),
+                pages_per_query=SERPAPI_MAX_PAGES,
                 recruiter_preferences=recruiter_preferences,
             )
             if serpapi_candidates:

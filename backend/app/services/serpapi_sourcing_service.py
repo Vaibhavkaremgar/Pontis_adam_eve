@@ -250,123 +250,6 @@ def build_linkedin_xray_queries(
     if not normalized_skills:
         normalized_skills = _dedupe_preserve_order([skill for skill in (normalize_skills(skills) or [])])
 
-    preferred_skills = _dedupe_preserve_order(
-        [
-            _normalize_text(item.get("skill") or item.get("role") or item)
-            for item in (
-                recruiter_preferences.get("top_skills")
-                or recruiter_preferences.get("skill_tokens")
-                or []
-            )
-        ]
-    )
-    preferred_roles = _dedupe_preserve_order(
-        [
-            _normalize_text(item.get("role") or item.get("skill") or item)
-            for item in (
-                recruiter_preferences.get("top_roles")
-                or recruiter_preferences.get("role_tokens")
-                or []
-            )
-        ]
-    )
-    preferred_experience = _dedupe_preserve_order(
-        [
-            _normalize_text(item.get("experience_bucket") or item.get("bucket") or item)
-            for item in (
-                recruiter_preferences.get("top_experience")
-                or recruiter_preferences.get("experience_tokens")
-                or []
-            )
-        ]
-    )
-    preferred_technical_strengths = _dedupe_preserve_order(
-        [
-            _normalize_text(item)
-            for item in (
-                recruiter_preferences.get("preferred_technical_strengths")
-                or recruiter_preferences.get("preferredTechnicalStrengths")
-                or []
-            )
-        ]
-    )
-    preferred_ownership_styles = _dedupe_preserve_order(
-        [
-            _normalize_text(item)
-            for item in (
-                recruiter_preferences.get("preferred_ownership_styles")
-                or recruiter_preferences.get("preferredOwnershipStyles")
-                or []
-            )
-        ]
-    )
-    preferred_leadership_profiles = _dedupe_preserve_order(
-        [
-            _normalize_text(item)
-            for item in (
-                recruiter_preferences.get("preferred_leadership_profiles")
-                or recruiter_preferences.get("preferredLeadershipProfiles")
-                or []
-            )
-        ]
-    )
-    preferred_ideal_environments = _dedupe_preserve_order(
-        [
-            _normalize_text(item)
-            for item in (
-                recruiter_preferences.get("preferred_ideal_environments")
-                or recruiter_preferences.get("preferredIdealEnvironments")
-                or []
-            )
-        ]
-    )
-    preferred_execution_styles = _dedupe_preserve_order(
-        [
-            _normalize_text(item)
-            for item in (
-                recruiter_preferences.get("preferred_execution_styles")
-                or recruiter_preferences.get("preferredExecutionStyles")
-                or []
-            )
-        ]
-    )
-    preferred_hiring_tradeoffs = _dedupe_preserve_order(
-        [
-            _normalize_text(item)
-            for item in (
-                recruiter_preferences.get("preferred_hiring_tradeoffs")
-                or recruiter_preferences.get("preferredHiringTradeoffs")
-                or []
-            )
-        ]
-    )
-    preference_text = _normalize_text(recruiter_preferences.get("preference_text") or "")
-    archetype = _normalize_text(recruiter_preferences.get("archetype") or "")
-
-    role_terms = [role] if role else []
-    if seniority and seniority.lower() not in role.lower():
-        role_terms.insert(0, f"{seniority} {role}".strip())
-    if seniority and "manager" in seniority.lower() and "manager" not in role.lower():
-        role_terms.append(f"{seniority} {role}".strip())
-    if preferred_roles:
-        role_terms.extend(preferred_roles[:2])
-
-    skill_terms = normalized_skills[:6]
-    if preferred_skills:
-        skill_terms = _dedupe_preserve_order([*skill_terms, *preferred_skills[:4]])[:6]
-    if preferred_technical_strengths:
-        skill_terms = _dedupe_preserve_order([*skill_terms, *preferred_technical_strengths[:4]])[:6]
-    stage_terms = [company_stage] if company_stage else []
-    preference_terms = [term for term in [hiring_preferences, industry, leadership_expectations, preference_text, archetype] if term]
-    preference_terms.extend(preferred_ownership_styles[:3])
-    preference_terms.extend(preferred_leadership_profiles[:3])
-    preference_terms.extend(preferred_ideal_environments[:3])
-    preference_terms.extend(preferred_execution_styles[:3])
-    preference_terms.extend(preferred_hiring_tradeoffs[:3])
-    location_terms = [location] if location else []
-    if preferred_experience:
-        stage_terms.extend(preferred_experience[:2])
-
     def _join_block(values: list[str]) -> str:
         cleaned = [f'"{value}"' if " " in value else value for value in values if value]
         if not cleaned:
@@ -375,60 +258,42 @@ def build_linkedin_xray_queries(
             return cleaned[0]
         return "(" + " OR ".join(cleaned) + ")"
 
-    queries: list[str] = []
-    base = ['site:linkedin.com/in/']
+    role_terms: list[str] = []
+    if seniority and role:
+        role_terms.append(f"{seniority} {role}".strip())
+    if role:
+        role_terms.append(role)
+
+    skill_terms = normalized_skills[:3]
+    if recruiter_preferences.get("top_skills"):
+        preferred_skills = _dedupe_preserve_order([
+            _normalize_text(item.get("skill") or item.get("role") or item)
+            for item in recruiter_preferences.get("top_skills") or []
+        ])
+        skill_terms = _dedupe_preserve_order([*skill_terms, *preferred_skills[:2]])[:3]
+
+    query_parts = ["site:linkedin.com/in/"]
     if role_terms:
-        base.append(_join_block(role_terms))
+        query_parts.append(_join_block(role_terms[:2]))
     if skill_terms:
-        base.append(_join_block(skill_terms[:4]))
-    if stage_terms:
-        base.append(_join_block(stage_terms))
-    if location_terms:
-        base.append(_join_block(location_terms))
-    if preference_terms:
-        base.append(_join_block(preference_terms[:3]))
-    queries.append(" ".join(part for part in base if part))
+        query_parts.append(_join_block(skill_terms))
+    if location:
+        query_parts.append(_join_block([location]))
 
-    if role_terms and skill_terms:
-        queries.append(
-            " ".join(
-                part for part in [
-                    'site:linkedin.com/in/',
-                    _join_block(role_terms[:2]),
-                    _join_block(skill_terms[2:6] or skill_terms[:3]),
-                    _join_block(location_terms[:1]),
-                ]
-                if part
-            )
-        )
+    query_parts.extend([
+        "-jobs",
+        "-job",
+        "-hiring",
+        "-careers",
+        "-recruiter",
+        "-recruitment",
+        "-company",
+        "-posts",
+        "-openings",
+    ])
 
-    if role_terms and leadership_expectations:
-        queries.append(
-            " ".join(
-                part for part in [
-                    'site:linkedin.com/in/',
-                    _join_block(role_terms[:2]),
-                    _join_block([leadership_expectations]),
-                    _join_block(stage_terms),
-                ]
-                if part
-            )
-        )
-
-    if industry and role_terms:
-        queries.append(
-            " ".join(
-                part for part in [
-                    'site:linkedin.com/in/',
-                    _join_block(role_terms[:2]),
-                    _join_block([industry]),
-                    _join_block(location_terms),
-                ]
-                if part
-            )
-        )
-
-    return _dedupe_preserve_order([query for query in queries if query.strip()])
+    query = " ".join(part for part in query_parts if part).strip()
+    return [query] if query else []
 
 
 class SerpApiClient:
@@ -648,8 +513,7 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     snippet = _normalize_text(result.get("snippet") or "")
     displayed_link = _normalize_text(result.get("displayed_link") or "")
     linkedin_url = _extract_linkedin_url(link)
-    github_url = _extract_github_url(link)
-    if not linkedin_url and not github_url:
+    if not linkedin_url:
         return None
 
     text = " ".join([title, snippet, displayed_link])
@@ -658,12 +522,9 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     company = _extract_company(snippet)
     location = _extract_location(snippet, fallback=intake.get("location", ""))
     skills = _extract_skills_from_text(text, [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()])
-    github_signals = []
-    if github_url:
-        github_signals.append({"url": github_url, "title": title, "snippet": snippet})
 
     normalized = {
-        "id": linkedin_url or github_url or link,
+        "id": linkedin_url or link,
         "full_name": name or title or "Unknown Candidate",
         "name": name or title or "Unknown Candidate",
         "job_title": role,
@@ -677,8 +538,6 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         "summary": snippet or role,
         "experience": _normalize_text(intake.get("seniority") or ""),
         "linkedin_url": linkedin_url,
-        "github_url": github_url,
-        "github_signals": github_signals,
         "source": source,
         "source_type": "linkedin_xray",
         "search_query": query,
@@ -715,53 +574,6 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     return normalized
 
 
-def _attach_github_signals(candidates: list[dict[str, Any]], *, intake: dict[str, str], client: SerpApiClient) -> None:
-    if not candidates or not _is_technical_role(intake.get("role_title", ""), [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()]):
-        return
-
-    unique_candidates: list[dict[str, Any]] = []
-    seen_names: set[str] = set()
-    for candidate in candidates:
-        name = _normalize_lower(candidate.get("full_name") or candidate.get("name") or "")
-        if not name or name in seen_names:
-            continue
-        seen_names.add(name)
-        unique_candidates.append(candidate)
-        if len(unique_candidates) >= 5:
-            break
-
-    for candidate in unique_candidates:
-        name = _normalize_text(candidate.get("full_name") or candidate.get("name") or "")
-        if not name:
-            continue
-        skill_terms = [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()]
-        github_query_parts = [
-            'site:github.com/',
-            f'"{name}"',
-        ]
-        if skill_terms:
-            github_query_parts.append(f'("{skill_terms[0]}" OR "{skill_terms[1]}")' if len(skill_terms) > 1 else f'"{skill_terms[0]}"')
-        github_query = " ".join(part for part in github_query_parts if part)
-        github_results = client.search(query=github_query, pages=1)
-        for result in github_results:
-            link = _normalize_text(result.get("link") or "")
-            github_url = _extract_github_url(link)
-            if not github_url:
-                continue
-            candidate["github_url"] = github_url
-            signals = list(candidate.get("github_signals") or [])
-            signals.append(
-                {
-                    "url": github_url,
-                    "title": _normalize_text(result.get("title") or ""),
-                    "snippet": _normalize_text(result.get("snippet") or ""),
-                    "query": github_query,
-                }
-            )
-            candidate["github_signals"] = signals
-            break
-
-
 def discover_linkedin_xray_candidates(
     *,
     job: Any,
@@ -794,16 +606,17 @@ def discover_linkedin_xray_candidates(
         recruiter_preferences=recruiter_preferences,
     )
 
+    primary_query = query_batches[0] if query_batches else ""
     logger.info(
-        "serpapi_discovery_started role=%s location=%s queries=%s limit=%s",
+        "serpapi_discovery_started role=%s location=%s query=%s limit=%s",
         resolved_intake["role_title"],
         resolved_intake["location"],
-        len(query_batches),
+        primary_query,
         limit,
     )
-    log_metric("serpapi_usage", enabled=True, query_batches=len(query_batches), limit=limit)
+    log_metric("serpapi_usage", enabled=True, query_batches=1 if primary_query else 0, limit=limit)
 
-    raw_results = client.search_many(query_batches, pages=pages_per_query)
+    raw_results = client.search(query=primary_query, pages=pages_per_query) if primary_query else []
     normalized_results: list[dict[str, Any]] = []
     seen_identities: set[str] = set()
 
@@ -818,15 +631,13 @@ def discover_linkedin_xray_candidates(
         )
         if not normalized:
             continue
-        identity = _normalize_lower(normalized.get("linkedin_url") or normalized.get("github_url") or normalized.get("full_name") or normalized.get("name") or "")
+        identity = _normalize_lower(normalized.get("linkedin_url") or normalized.get("full_name") or normalized.get("name") or "")
         if not identity or identity in seen_identities:
             continue
         seen_identities.add(identity)
         normalized_results.append(normalized)
         if len(normalized_results) >= max(1, limit):
             break
-
-    _attach_github_signals(normalized_results, intake=resolved_intake, client=client)
 
     logger.info(
         "serpapi_discovery_completed role=%s count=%s",
