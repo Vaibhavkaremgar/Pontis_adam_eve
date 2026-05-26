@@ -43,6 +43,7 @@ from app.db.repositories import (
     RankingRunRepository,
     ScoringProfileRepository,
     _candidate_email_value,
+    CandidateSelectionSessionEntity,
 )
 from app.schemas.candidate import CandidateExplanation, CandidateRankingDebug, CandidateResult
 from app.services.candidate_text import build_candidate_text
@@ -67,6 +68,8 @@ from app.services.recruiter_preference_service import (
 )
 from app.services.ranking.models import coerce_candidate_explanation, ranked_candidate_final_score, ranked_candidate_sort_key
 from app.services.sourcing.xray_service import build_xray_candidate_results, discover_xray_candidates
+from app.services.serpapi_sourcing_service import discover_linkedin_xray_candidates
+from app.services.retrieval_quality_service import hybrid_retrieval_score
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
     delete_candidate_vectors,
@@ -1957,7 +1960,6 @@ def _build_local_candidates(
             stored_raw_data["is_mock_email"] = True
             stored_raw_data["email_source"] = "generated"
         profile_details = _candidate_profile_details(profile=profile, raw_data=stored_raw_data)
-        profile_details = _candidate_profile_details(profile=profile, raw_data=stored_raw_data)
 
         strategy = _strategy_from_score(fit_score)
         debug_payload = None
@@ -2343,6 +2345,7 @@ def _build_ranked_candidates_from_pdl(
                 experience_score=float(recruiter_score_details.get("experience_score") or 0.0),
             )
 
+        profile_details = _candidate_profile_details(raw_data=stored_raw_data)
         result = CandidateResult(
             id=candidate_id,
             name=candidate_name,
