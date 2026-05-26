@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.repositories import CandidateFeedbackRepository, RecruiterPreferenceRepository
 from app.services.embedding_service import embed
+from app.services.metrics_service import log_metric
 from app.services.qdrant_service import load_recruiter_preferences as load_recruiter_preferences_vector
 from app.services.qdrant_service import upsert_recruiter_preferences
 from app.services.skill_normalizer import normalize_skills, parse_experience
@@ -27,6 +28,15 @@ _EXPERIENCE_WEIGHT = 0.2
 _MIN_FEEDBACK_FOR_FULL_RECRUITER_WEIGHT = 5
 
 _EXPERIENCE_BUCKETS = ("0-2", "3-5", "6-9", "10+")
+_COMPANY_DOMAIN_KEYWORDS = {
+    "payments": ("payment", "payments", "fintech", "settlement", "card", "wallet", "upi", "fraud", "risk"),
+    "developer_infrastructure": ("infra", "platform", "observability", "devops", "sre", "cloud", "distributed", "developer"),
+    "ai_infrastructure": ("ai", "ml", "machine learning", "llm", "retrieval", "ranking", "model", "inference", "prompt"),
+    "security": ("security", "identity", "auth", "iam", "zero trust", "threat", "vulnerability", "appsec"),
+    "data": ("data", "analytics", "warehouse", "etl", "pipeline", "lakehouse", "bi"),
+    "sales": ("sales", "revenue", "pipeline", "revops", "account executive", "bdr", "sdr", "gtm"),
+    "enterprise": ("enterprise", "saas", "workforce", "erp", "crm", "workflow", "it"),
+}
 
 
 def _infer_recruiter_archetype(*, top_skills: list[dict[str, Any]], top_roles: list[dict[str, Any]], average_experience: float | None) -> str:
@@ -110,6 +120,44 @@ def _text_list_value(candidate: Any, *keys: str) -> list[str]:
             continue
         seen.add(lowered)
         ordered.append(normalized)
+    return ordered
+
+
+def _normalize_company_name(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _candidate_company(candidate: Any) -> str:
+    return _normalize_company_name(_text_value(candidate, "company", "current_company", "job_company_name"))
+
+
+def _candidate_domain(candidate: Any) -> str:
+    text = " ".join(
+        [
+            _text_value(candidate, "company", "current_company", "job_company_name"),
+            _candidate_role(candidate),
+            _candidate_experience_text(candidate),
+            " ".join(_candidate_skills(candidate)),
+        ]
+    ).lower()
+    for domain, keywords in _COMPANY_DOMAIN_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return domain
+    return "general"
+
+
+def _unique_non_empty(values: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _normalize_company_name(value)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(cleaned)
     return ordered
 
 
@@ -272,6 +320,10 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
             "preferred_ideal_environments": [],
             "preferred_execution_styles": [],
             "preferred_hiring_tradeoffs": [],
+            "preferred_companies": [],
+            "rejected_companies": [],
+            "preferred_domains": [],
+            "rejected_domains": [],
             "average_experience_years": None,
             "preference_text": "",
             "vector": [],
@@ -338,6 +390,10 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
     preferred_ideal_environments = _text_list_value(payload, "preferredIdealEnvironments", "idealEnvironments", "ideal_environments")
     preferred_execution_styles = _text_list_value(payload, "preferredExecutionStyles", "executionStyles", "execution_styles")
     preferred_hiring_tradeoffs = _text_list_value(payload, "preferredHiringTradeoffs", "hiringTradeoffs", "hiring_tradeoffs")
+    preferred_companies = _text_list_value(payload, "preferredCompanies", "selectedCompanies", "topCompanies")
+    rejected_companies = _text_list_value(payload, "rejectedCompanies", "negativeCompanies")
+    preferred_domains = _text_list_value(payload, "preferredDomains", "selectedDomains", "topDomains")
+    rejected_domains = _text_list_value(payload, "rejectedDomains", "negativeDomains")
 
     preference_text = _preference_text(
         skills=top_skills,
@@ -376,6 +432,10 @@ def load_recruiter_preference_profile(db: Session, recruiter_id: str) -> dict[st
         "preferred_ideal_environments": preferred_ideal_environments,
         "preferred_execution_styles": preferred_execution_styles,
         "preferred_hiring_tradeoffs": preferred_hiring_tradeoffs,
+        "preferred_companies": preferred_companies,
+        "rejected_companies": rejected_companies,
+        "preferred_domains": preferred_domains,
+        "rejected_domains": rejected_domains,
         "average_experience_years": average_experience,
         "preference_text": preference_text,
         "vector": vector,
@@ -559,6 +619,8 @@ def update_recruiter_preferences(
 
     repo = RecruiterPreferenceRepository(db)
     selected_snapshot = {"skills": [], "role": "", "experience_years": 0}
+    selected_company = ""
+    selected_domain = ""
     if selected_candidate is not None:
         selected_snapshot = _update_candidate_preferences(
             repo=repo,
@@ -567,6 +629,8 @@ def update_recruiter_preferences(
             selected=True,
             signal_multiplier=signal_multiplier,
         )
+        selected_company = _candidate_company(selected_candidate)
+        selected_domain = _candidate_domain(selected_candidate)
 
     rejected_snapshots = [
         _update_candidate_preferences(
@@ -578,6 +642,8 @@ def update_recruiter_preferences(
         )
         for candidate in (rejected_candidates or [])
     ]
+    rejected_companies = _unique_non_empty([_candidate_company(candidate) for candidate in (rejected_candidates or [])])
+    rejected_domains = _unique_non_empty([_candidate_domain(candidate) for candidate in (rejected_candidates or [])])
 
     selected_calibration = _candidate_calibration_tokens(selected_candidate) if selected_candidate is not None else {
         "headline": "",
@@ -607,6 +673,10 @@ def update_recruiter_preferences(
                 "preferredIdealEnvironments": [str(selected_calibration.get("ideal_environment") or "").strip()] if str(selected_calibration.get("ideal_environment") or "").strip() else [],
                 "preferredExecutionStyles": [str(selected_calibration.get("execution_style") or "").strip()] if str(selected_calibration.get("execution_style") or "").strip() else [],
                 "preferredHiringTradeoffs": list(selected_calibration.get("hiring_tradeoffs") or []),
+                "preferredCompanies": [selected_company] if selected_company else [],
+                "preferredDomains": [selected_domain] if selected_domain else [],
+                "rejectedCompanies": rejected_companies,
+                "rejectedDomains": rejected_domains,
                 "averageExperienceYears": profile.get("average_experience_years"),
                 "selectedCount": 1 if selected_candidate is not None else 0,
                 "rejectedCount": len([item for item in rejected_snapshots if item.get("skills") or item.get("role")]),
@@ -617,10 +687,22 @@ def update_recruiter_preferences(
         logger.info("recruiter_qdrant_update_skipped recruiter_id=%s error=%s", recruiter_id, str(exc))
 
     logger.info(
-        "recruiter_preferences_updated recruiter_id=%s selected_skills=%s rejected_count=%s",
+        "recruiter_preferences_updated recruiter_id=%s selected_skills=%s rejected_count=%s selected_company=%s selected_domain=%s",
         recruiter_id,
         len(selected_snapshot.get("skills", [])),
         len(rejected_snapshots),
+        selected_company,
+        selected_domain,
+    )
+    log_metric(
+        "recruiter_feedback_learning",
+        recruiter_id=recruiter_id,
+        selected_company=selected_company,
+        selected_domain=selected_domain,
+        rejected_companies="|".join(rejected_companies),
+        rejected_domains="|".join(rejected_domains),
+        selected_count=1 if selected_candidate is not None else 0,
+        rejected_count=len(rejected_snapshots),
     )
     return load_recruiter_preference_profile(db, recruiter_id)
 

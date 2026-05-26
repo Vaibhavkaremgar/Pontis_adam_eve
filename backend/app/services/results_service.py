@@ -89,37 +89,84 @@ def _build_candidate_snapshot(
     evaluations = InterviewEvaluationRepository(db).list_for_candidate(job_id=job_id, candidate_id=candidate_id, limit=20)
     timeline = candidate_timeline(db=db, job_id=job_id, candidate_id=candidate_id, limit=100)
 
+    # ── Pull from interview_evaluations (primary source for AI analysis) ──────
+    latest_eval = evaluations[0] if evaluations else None
+    competency_scores = dict(getattr(latest_eval, "competency_scores", {}) or {}) if latest_eval else {}
+
+    # ── Transcript: concatenate all evaluation summaries/notes ────────────────
+    transcript_parts = []
+    for ev in evaluations:
+        if _normalize_text(ev.summary):
+            transcript_parts.append(f"{ev.stage_name}: {ev.summary}")
+        if _normalize_text(ev.notes):
+            transcript_parts.append(f"Notes: {ev.notes}")
+    transcript = "\n".join(transcript_parts).strip()
+
+    # ── AI summary: latest evaluation summary ─────────────────────────────────
+    summary = _normalize_text(getattr(latest_eval, "summary", "") if latest_eval else "")
+    if not summary:
+        summary = _normalize_text(insights.get("intelligence", {}).get("summary") or "")
+
+    # ── Scores: from competency_scores JSON in interview_evaluations ──────────
+    def _score(key: str, fallback: float = 0.0) -> float:
+        for k in (key, key.lower(), key.upper()):
+            v = competency_scores.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    pass
+        return fallback
+
+    overall_score = _score("overall", float(getattr(profile, "fit_score", 0.0) or 0.0))
+    technical_score = _score("technical", overall_score)
+    communication_score = _score("communication", 0.0)
+    culture_fit_score = _score("cultureFit", _score("culture_fit", 0.0))
+
+    # ── Video: scheduling_metadata.recordingPath in interview_sessions ─────────
+    scheduling_meta = dict(getattr(session, "scheduling_metadata", {}) or {}) if session else {}
+    recording_path = _normalize_text(
+        scheduling_meta.get("recordingPath")
+        or scheduling_meta.get("recording_path")
+        or scheduling_meta.get("videoPath")
+        or ""
+    )
+    video_available = bool(recording_path) or bool(
+        session and (session.evaluation_status or "").strip().lower() == "completed"
+    )
+
+    # ── Merge with remote Pontis data if available (remote wins) ──────────────
     remote = dict(remote_result or {})
     candidate_remote = remote.get("candidate") if isinstance(remote.get("candidate"), dict) else {}
     recording_remote = remote.get("recording") if isinstance(remote.get("recording"), dict) else {}
     scores_remote = remote.get("scores") if isinstance(remote.get("scores"), dict) else {}
     timeline_remote = remote.get("timeline") if isinstance(remote.get("timeline"), dict) else {}
-    raw_data = getattr(profile, "raw_data", {}) if isinstance(getattr(profile, "raw_data", {}), dict) else {}
-    raw_location = candidate_remote.get("location") or raw_data.get("location") or ""
-    raw_email = candidate_remote.get("email") or raw_data.get("email") or ""
 
-    overall_score = float(scores_remote.get("overall") or getattr(profile, "fit_score", 0.0) or 0.0)
-    recommendation = _normalize_text(remote.get("decision") or remote.get("recommendation") or getattr(profile, "decision", "")).lower()
+    if remote.get("transcript"):
+        transcript = _normalize_text(remote["transcript"])
+    if remote.get("summary"):
+        summary = _normalize_text(remote["summary"])
+    if scores_remote.get("overall"):
+        overall_score = float(scores_remote["overall"])
+        technical_score = float(scores_remote.get("technical", technical_score))
+        communication_score = float(scores_remote.get("communication", communication_score))
+        culture_fit_score = float(scores_remote.get("cultureFit", culture_fit_score))
+    if recording_remote.get("recordingPath"):
+        recording_path = _normalize_text(recording_remote["recordingPath"])
+        video_available = True
+
+    raw_data = getattr(profile, "raw_data", {}) if isinstance(getattr(profile, "raw_data", {}), dict) else {}
+    recommendation = _normalize_text(
+        remote.get("decision") or remote.get("recommendation")
+        or getattr(latest_eval, "recommendation", "") if latest_eval else ""
+        or getattr(profile, "decision", "")
+    ).lower()
     current_status = normalize_ats_status(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", ""))
     ats_metadata = getattr(profile, "ats_metadata", {}) if isinstance(getattr(profile, "ats_metadata", {}), dict) else {}
-    evaluation_ready = (session.evaluation_status or "").strip().lower() == "completed" if session else False
-    status = _normalize_text(remote.get("status") or current_status or getattr(session, "status", "") or "interview_completed")
-
-    transcript = _normalize_text(remote.get("transcript") or "")
-    if not transcript:
-        transcript = _normalize_text(remote.get("conversation") or remote.get("transcriptText") or "")
-    if not transcript and evaluations:
-        transcript = "\n".join(
-            [
-                f"{row.stage_name}: {row.summary}"
-                for row in evaluations
-                if _normalize_text(row.summary)
-            ]
-        ).strip()
-
-    summary = _normalize_text(remote.get("summary") or remote.get("analysisSummary") or "")
-    if not summary:
-        summary = _normalize_text(getattr(evaluations[0], "summary", "") if evaluations else "") or _normalize_text(insights.get("intelligence", {}).get("summary"))
+    evaluation_ready = (session.evaluation_status or "").strip().lower() == "completed" if session else bool(evaluations)
+    status = _normalize_text(
+        remote.get("status") or current_status or getattr(session, "status", "") or "interview_completed"
+    )
 
     response = {
         "candidate": {
@@ -128,28 +175,28 @@ def _build_candidate_snapshot(
             "role": _normalize_text(getattr(profile, "role", "") or candidate_remote.get("role")),
             "company": _normalize_text(getattr(profile, "company", "") or candidate_remote.get("company")),
             "headline": _normalize_text(getattr(profile, "current_title", "") or candidate_remote.get("headline")),
-            "location": _normalize_text(raw_location),
-            "email": _normalize_text(raw_email),
+            "location": _normalize_text((raw_data.get("location") or candidate_remote.get("location") or "")),
+            "email": _normalize_text((raw_data.get("email") or candidate_remote.get("email") or "")),
             "summary": _normalize_text(getattr(profile, "summary", "") or candidate_remote.get("summary")),
             "skills": list(getattr(profile, "skills", []) or candidate_remote.get("skills") or []),
-            "source": "pontis" if remote_result else "local_fallback",
+            "source": "pontis" if remote_result else "local",
         },
         "recording": {
-            "sessionToken": _normalize_text(recording_remote.get("sessionToken") or session.token if session else ""),
-            # Keep the frontend blind to Pontis filesystem or internal recording URLs.
+            "sessionToken": _normalize_text(getattr(session, "token", "") if session else ""),
+            # recordingPath is intentionally hidden from frontend; video is served via proxy
             "recordingPath": "",
-            "videoAvailable": bool(recording_remote.get("videoAvailable", False) or status in {"interview_completed", "results_ready"}),
+            "videoAvailable": video_available,
         },
         "transcript": transcript,
         "summary": summary,
         "scores": {
             "overall": overall_score,
-            "technical": float(scores_remote.get("technical") or getattr(profile, "fit_score", 0.0) or 0.0),
-            "communication": float(scores_remote.get("communication") or insights.get("intelligence", {}).get("communicationScore") or 0.0),
-            "cultureFit": float(scores_remote.get("cultureFit") or insights.get("intelligence", {}).get("cultureFitScore") or 0.0),
+            "technical": technical_score,
+            "communication": communication_score,
+            "cultureFit": culture_fit_score,
         },
-        "decision": _normalize_text(remote.get("decision") or recommendation or getattr(profile, "decision", "")).lower(),
-        "status": _normalize_text(remote.get("status") or status or "interview_completed"),
+        "decision": recommendation,
+        "status": status,
         "timeline": timeline_remote or {"events": timeline},
         "recommendation": recommendation,
         "analysis": {
@@ -165,6 +212,7 @@ def _build_candidate_snapshot(
             "candidateId": candidate_id,
             "recruiterId": recruiter_id,
             "evaluationReady": evaluation_ready,
+            "scheduledAt": session.scheduled_at.isoformat() if session and session.scheduled_at else None,
             "insights": insights,
             "evaluations": [
                 {
@@ -172,6 +220,7 @@ def _build_candidate_snapshot(
                     "stageName": row.stage_name,
                     "summary": row.summary,
                     "recommendation": row.recommendation,
+                    "competencyScores": row.competency_scores,
                     "updatedAt": row.updated_at.isoformat(),
                 }
                 for row in evaluations

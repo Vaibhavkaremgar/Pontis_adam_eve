@@ -160,6 +160,7 @@ export type Candidate = {
   linkedinUrl?: string;
   currentCompany?: string;
   inferredExperience?: string;
+  snippetQuality?: "rich" | "partial" | "thin";
 };
 
 /** Interview stage record shown in final ready step. */

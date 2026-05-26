@@ -675,6 +675,21 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 },
                 idempotency_key=f"candidate-enrichment:{job_id}:{candidate_id}",
             )
+            logger.info(
+                "selection_conversion job_id=%s candidate_id=%s session_id=%s enrichment_queued=true",
+                job_id,
+                candidate_id,
+                session.id,
+            )
+            from app.services.metrics_service import log_metric as _log_metric
+
+            _log_metric(
+                "selection_conversion",
+                job_id=job_id,
+                candidate_id=candidate_id,
+                session_id=session.id,
+                enrichment_queued=True,
+            )
         except Exception as exc:
             logger.warning(
                 "selection_candidate_enrichment_schedule_failed job_id=%s candidate_id=%s error=%s",

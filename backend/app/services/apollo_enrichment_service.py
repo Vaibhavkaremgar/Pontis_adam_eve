@@ -21,6 +21,7 @@ from app.db.repositories import (
 )
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.notification_intelligence_service import route_recruiter_notification
+from app.services.metrics_service import log_metric
 from app.services.persistent_cache_service import get_json as cache_get_json, set_json as cache_set_json
 from app.services.sourcing.candidate_matching_service import match_apollo_people as _rank_apollo_people_external
 from app.utils.exceptions import APIError
@@ -1331,6 +1332,14 @@ def enrich_candidate_with_apollo(
         confidence,
         should_outreach,
         False,
+    )
+    log_metric(
+        "enrichment_conversion",
+        job_id=job_id,
+        candidate_id=candidate_id,
+        status=status,
+        should_outreach=should_outreach,
+        cache_hit=False,
     )
     return result
 

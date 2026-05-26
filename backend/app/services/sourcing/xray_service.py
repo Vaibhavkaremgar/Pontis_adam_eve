@@ -193,9 +193,11 @@ def _score_candidate(job: Any, candidate: dict[str, Any]) -> tuple[float, float,
 def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) -> CandidateResult:
     identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
     title_signal, skill_signal, location_signal, company_signal = _score_candidate(job, candidate)
-    raw_score = float(candidate.get("score") or 0.0)
-    query_alignment = 0.15 if title_signal >= 0.45 else 0.0
-    final_score = max(0.0, min(1.0, (raw_score * 0.3) + (title_signal * 0.35) + (skill_signal * 0.25) + (location_signal * 0.05) + company_signal + query_alignment))
+    source_signal = float(candidate.get("score") or 0.0)
+    snippet_quality = _normalize_text(candidate.get("snippet_quality") or candidate.get("snippetQuality") or "partial").lower()
+    snippet_bonus = {"rich": 0.12, "partial": 0.07, "thin": 0.03}.get(snippet_quality, 0.05)
+    semantic_base = max(0.0, min(1.0, (title_signal * 0.4) + (skill_signal * 0.35) + (location_signal * 0.1) + (company_signal * 0.15)))
+    final_score = max(0.0, min(1.0, (semantic_base * 0.72) + (source_signal * 0.13) + snippet_bonus))
     fit_score = round(final_score * 5.0, 2)
     skills = list(candidate.get("skills") or [])
     company = _normalize_text(candidate.get("current_company") or candidate.get("company") or candidate.get("job_company_name") or "")
@@ -228,12 +230,13 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         experienceMatch=experience,
         candidateExperience=experience,
         jobExperience=_normalize_text(getattr(job, "experience_required", "") or getattr(job, "experience_level", "") or ""),
-        aiReasoning="LinkedIn X-Ray preview derived from title, skill, and location signals.",
+        aiReasoning="LinkedIn X-Ray preview derived from semantic title, skill, location, and snippet quality signals.",
         sourceBreakdown={
             "title": round(title_signal, 4),
             "skills": round(skill_signal, 4),
             "location": round(location_signal, 4),
             "company": round(company_signal, 4),
+            "snippetQuality": snippet_quality,
         },
     )
 
@@ -265,6 +268,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
             "current_company": company,
             "inferred_experience": experience,
             "snippet": summary,
+            "snippet_quality": snippet_quality,
         },
         fitScore=fit_score,
         decision="strong_match" if fit_score >= 4 else "potential" if fit_score >= 2.5 else "weak",
@@ -287,6 +291,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         linkedinUrl=linkedin_url,
         currentCompany=company,
         inferredExperience=experience,
+        snippetQuality=snippet_quality if snippet_quality in {"rich", "partial", "thin"} else "partial",
     )
 
 

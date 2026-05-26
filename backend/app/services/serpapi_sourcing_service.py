@@ -5,6 +5,7 @@ import random
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -12,17 +13,21 @@ from typing import Any
 import requests
 
 from app.core.config import (
+    DAILY_SERPAPI_BUDGET,
     HTTP_TIMEOUT_SECONDS,
+    MAX_CALLS_PER_ROLE,
+    MAX_TOTAL_PROFILES,
     SERPAPI_API_KEY,
     SERPAPI_ENABLED,
     SERPAPI_ENGINE,
-    SERPAPI_MAX_PAGES,
+    SERPAPI_MAX_PAGES_PER_LAYER,
     SERPAPI_MIN_REQUEST_INTERVAL_SECONDS,
     SERPAPI_REQUEST_TIMEOUT_SECONDS,
     SERPAPI_RETRY_ATTEMPTS,
     SERPAPI_RESULTS_PER_PAGE,
     SERPAPI_URL,
 )
+from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
@@ -31,6 +36,11 @@ _request_lock = threading.Lock()
 _last_request_epoch = 0.0
 _serpapi_disabled_until: datetime | None = None
 _serpapi_disable_reason = ""
+_quota_lock = threading.Lock()
+_quota_day = ""
+_quota_used_calls = 0
+_quota_used_profiles = 0
+_quota_budget = max(0, DAILY_SERPAPI_BUDGET)
 
 _TITLE_ROLE_STOPWORDS = {
     "linkedin",
@@ -69,6 +79,16 @@ _ROLE_KEYWORDS = {
     "cloud",
 }
 
+_COMPANY_CLUSTER_LIBRARY: dict[str, list[str]] = {
+    "payments": ["Stripe", "Razorpay", "PhonePe", "Adyen", "PayPal"],
+    "developer_infrastructure": ["Datadog", "HashiCorp", "Cloudflare", "Vercel", "Grafana"],
+    "ai_infrastructure": ["OpenAI", "Anthropic", "Scale AI", "Hugging Face", "Cohere"],
+    "security": ["CrowdStrike", "Zscaler", "Wiz", "SentinelOne", "Snyk"],
+    "data": ["Snowflake", "Databricks", "Confluent", "dbt Labs", "Fivetran"],
+    "sales": ["Salesforce", "HubSpot", "Gong", "ZoomInfo", "Gainsight"],
+    "enterprise": ["ServiceNow", "SAP", "Oracle", "Workday", "Atlassian"],
+}
+
 
 @dataclass(frozen=True)
 class SerpApiSearchResult:
@@ -81,6 +101,101 @@ class SerpApiSearchResult:
     displayed_link: str
     source: str
     score: float
+
+
+@dataclass(frozen=True)
+class XRayQueryLayer:
+    layer_type: str
+    query: str
+    enabled: bool = True
+    pages: int = 1
+
+
+@dataclass(frozen=True)
+class SerpQuotaSnapshot:
+    date: str
+    used_calls: int
+    used_profiles: int
+    budget: int
+
+
+def _utc_day_key() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _reset_quota_if_needed() -> None:
+    global _quota_day, _quota_used_calls, _quota_used_profiles, _quota_budget
+    day = _utc_day_key()
+    if _quota_day != day:
+        _quota_day = day
+        _quota_used_calls = 0
+        _quota_used_profiles = 0
+        _quota_budget = max(0, DAILY_SERPAPI_BUDGET)
+
+
+def _quota_snapshot() -> SerpQuotaSnapshot:
+    with _quota_lock:
+        _reset_quota_if_needed()
+        return SerpQuotaSnapshot(
+            date=_quota_day,
+            used_calls=_quota_used_calls,
+            used_profiles=_quota_used_profiles,
+            budget=_quota_budget,
+        )
+
+
+def _reserve_serpapi_call(*, role: str, layer_type: str, query: str) -> bool:
+    global _quota_used_calls, _quota_budget
+
+    with _quota_lock:
+        _reset_quota_if_needed()
+        if _quota_budget <= 0:
+            logger.warning(
+                "serpapi_quota_exhausted reason=daily_budget_exhausted date=%s role=%s layer_type=%s",
+                _quota_day,
+                role,
+                layer_type,
+            )
+            log_metric(
+                "serpapi_quota_exhausted",
+                date=_quota_day,
+                role=role,
+                layer_type=layer_type,
+                used_calls=_quota_used_calls,
+                used_profiles=_quota_used_profiles,
+                budget=DAILY_SERPAPI_BUDGET,
+            )
+            return False
+        _quota_used_calls += 1
+        _quota_budget -= 1
+        logger.info(
+            "serpapi_quota_reserved date=%s role=%s layer_type=%s used_calls=%s remaining_budget=%s",
+            _quota_day,
+            role,
+            layer_type,
+            _quota_used_calls,
+            _quota_budget,
+        )
+        log_metric(
+            "serpapi_quota_usage",
+            date=_quota_day,
+            role=role,
+            layer_type=layer_type,
+            query=query,
+            used_calls=_quota_used_calls,
+            used_profiles=_quota_used_profiles,
+            budget=DAILY_SERPAPI_BUDGET,
+        )
+        return True
+
+
+def _register_profiles_found(*, count: int) -> None:
+    global _quota_used_profiles
+    if count <= 0:
+        return
+    with _quota_lock:
+        _reset_quota_if_needed()
+        _quota_used_profiles += count
 
 
 def _normalize_text(value: Any) -> str:
@@ -106,6 +221,165 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
         seen.add(key)
         ordered.append(cleaned)
     return ordered
+
+
+def _tokenize_query_terms(value: str) -> list[str]:
+    tokens = [token for token in re.split(r"[^a-z0-9+.#-]+", _normalize_lower(value)) if token]
+    stopwords = {
+        "site",
+        "linkedin",
+        "in",
+        "com",
+        "profile",
+        "profiles",
+        "jobs",
+        "people",
+        "and",
+        "or",
+        "the",
+        "for",
+        "with",
+        "at",
+    }
+    return [token for token in tokens if token not in stopwords]
+
+
+def _query_overlap_ratio(queries: list[str]) -> float:
+    token_sets = [set(_tokenize_query_terms(query)) for query in queries if query]
+    if len(token_sets) < 2:
+        return 0.0
+    overlap_total = 0
+    pair_total = 0
+    for index, left in enumerate(token_sets):
+        for right in token_sets[index + 1 :]:
+            pair_total += 1
+            overlap_total += len(left.intersection(right))
+    if pair_total <= 0:
+        return 0.0
+    return min(1.0, overlap_total / float(pair_total * 10 or 1))
+
+
+def _infer_company_cluster(*, role: str, skills: list[str], recruiter_preferences: dict[str, Any] | None = None) -> tuple[str, list[str]]:
+    preference_text = _normalize_lower((recruiter_preferences or {}).get("preference_text") or "")
+    selected_companies = _dedupe_preserve_order(
+        [
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("preferred_companies") or []) if str(item).strip()],
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("preferredCompanies") or []) if str(item).strip()],
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("selectedCompanies") or []) if str(item).strip()],
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("topCompanies") or []) if str(item).strip()],
+        ]
+    )
+    domain_tokens = _dedupe_preserve_order(
+        [
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("preferred_domains") or []) if str(item).strip()],
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("preferredDomains") or []) if str(item).strip()],
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("selectedDomains") or []) if str(item).strip()],
+            *[str(item).strip() for item in ((recruiter_preferences or {}).get("topDomains") or []) if str(item).strip()],
+        ]
+    )
+    text = " ".join([role, " ".join(skills), preference_text, " ".join(selected_companies), " ".join(domain_tokens)]).lower()
+    if any(token in text for token in ("payment", "fintech", "settlement", "upi", "wallet", "fraud", "risk")):
+        return "payments", selected_companies or _COMPANY_CLUSTER_LIBRARY["payments"]
+    if any(token in text for token in ("ai", "ml", "machine learning", "retrieval", "ranking", "llm", "model", "inference")):
+        return "ai_infrastructure", selected_companies or _COMPANY_CLUSTER_LIBRARY["ai_infrastructure"]
+    if any(token in text for token in ("infra", "platform", "observability", "cloud", "sre", "devops", "distributed")):
+        return "developer_infrastructure", selected_companies or _COMPANY_CLUSTER_LIBRARY["developer_infrastructure"]
+    if any(token in text for token in ("security", "identity", "auth", "iam", "appsec", "threat")):
+        return "security", selected_companies or _COMPANY_CLUSTER_LIBRARY["security"]
+    if any(token in text for token in ("data", "analytics", "warehouse", "etl", "pipeline", "lakehouse")):
+        return "data", selected_companies or _COMPANY_CLUSTER_LIBRARY["data"]
+    if any(token in text for token in ("sales", "revenue", "bdr", "sdr", "revops", "gtm", "pipeline")):
+        return "sales", selected_companies or _COMPANY_CLUSTER_LIBRARY["sales"]
+    if any(token in text for token in ("enterprise", "saas", "erp", "crm", "workflow", "it")):
+        return "enterprise", selected_companies or _COMPANY_CLUSTER_LIBRARY["enterprise"]
+    return "general", selected_companies or []
+
+
+def _diversify_query_layer_query(query: str, anchors: list[str]) -> str:
+    cleaned = _normalize_text(query)
+    if not cleaned or not anchors:
+        return cleaned
+    lower_query = cleaned.lower()
+    for anchor in anchors:
+        token = _normalize_text(anchor)
+        if token and token.lower() in lower_query:
+            return cleaned
+    selected = anchors[:2]
+    anchor_phrase = " OR ".join(f'"{anchor}"' for anchor in selected if anchor)
+    if not anchor_phrase:
+        return cleaned
+    return f"{cleaned} ({anchor_phrase})"
+
+
+def _query_diversity_report(*, layers: list[XRayQueryLayer], recruiter_preferences: dict[str, Any] | None = None) -> dict[str, Any]:
+    enabled_queries = [layer.query for layer in layers if layer.enabled and layer.query]
+    overlap_ratio = _query_overlap_ratio(enabled_queries)
+    duplicate_query_count = max(0, len(enabled_queries) - len(set(enabled_queries)))
+    token_sets = [set(_tokenize_query_terms(query)) for query in enabled_queries]
+    duplicate_tokens = sum(len(left.intersection(right)) for index, left in enumerate(token_sets) for right in token_sets[index + 1 :])
+    cluster_name, anchors = _infer_company_cluster(
+        role=" ".join(enabled_queries[:1]),
+        skills=_dedupe_preserve_order(_tokenize_query_terms(" ".join(enabled_queries)))[:12],
+        recruiter_preferences=recruiter_preferences,
+    )
+    company_concentration = sum(1 for query in enabled_queries if any(anchor.lower() in query.lower() for anchor in anchors[:3]))
+    title_tokens = {token for token in _tokenize_query_terms(" ".join(enabled_queries)) if token in {"engineer", "developer", "architect", "manager", "director", "lead", "principal", "staff", "senior", "vp", "head"}}
+    seniority_tokens = sum(1 for query in enabled_queries if any(token in query.lower() for token in ("senior", "principal", "staff", "lead", "director", "vp", "head", "manager")))
+    return {
+        "overlap_ratio": round(overlap_ratio, 4),
+        "duplicate_query_count": duplicate_query_count,
+        "duplicate_token_count": duplicate_tokens,
+        "company_concentration": company_concentration,
+        "title_token_count": len(title_tokens),
+        "seniority_token_count": seniority_tokens,
+        "cluster_name": cluster_name,
+        "anchors": anchors,
+    }
+
+
+def _diversify_query_layers(*, layers: list[XRayQueryLayer], recruiter_preferences: dict[str, Any] | None = None) -> list[XRayQueryLayer]:
+    report = _query_diversity_report(layers=layers, recruiter_preferences=recruiter_preferences)
+    if report["overlap_ratio"] < 0.35 and report["company_concentration"] <= 1:
+        return layers
+
+    cluster_name, anchors = _infer_company_cluster(
+        role=" ".join(layer.query for layer in layers[:1]),
+        skills=_dedupe_preserve_order(_tokenize_query_terms(" ".join(layer.query for layer in layers))),
+        recruiter_preferences=recruiter_preferences,
+    )
+    diversified: list[XRayQueryLayer] = []
+    used_anchors: set[str] = set()
+    for index, layer in enumerate(layers):
+        updated = layer
+        if index >= 2 and layer.enabled and layer.query:
+            remaining_anchors = [anchor for anchor in anchors if anchor.lower() not in used_anchors]
+            if remaining_anchors:
+                updated_query = _diversify_query_layer_query(layer.query, remaining_anchors)
+                if updated_query != layer.query:
+                    updated = XRayQueryLayer(layer_type=layer.layer_type, query=updated_query, enabled=layer.enabled, pages=layer.pages)
+                    used_anchors.update(anchor.lower() for anchor in remaining_anchors[:2])
+        diversified.append(updated)
+
+    logger.info(
+        "serpapi_query_diversity_adjusted cluster=%s overlap_ratio=%.4f duplicate_queries=%s company_concentration=%s title_tokens=%s seniority_tokens=%s",
+        cluster_name,
+        report["overlap_ratio"],
+        report["duplicate_query_count"],
+        report["company_concentration"],
+        report["title_token_count"],
+        report["seniority_token_count"],
+    )
+    log_metric(
+        "serpapi_query_diversity",
+        cluster_name=cluster_name,
+        overlap_ratio=report["overlap_ratio"],
+        duplicate_queries=report["duplicate_query_count"],
+        duplicate_tokens=report["duplicate_token_count"],
+        company_concentration=report["company_concentration"],
+        title_tokens=report["title_token_count"],
+        seniority_tokens=report["seniority_token_count"],
+    )
+    return diversified
 
 
 def _is_disabled() -> bool:
@@ -237,6 +511,187 @@ def _sanitize_role_query(value: str) -> str:
     return cleaned
 
 
+def _fallback_query_layers(
+    *,
+    role: str,
+    seniority: str,
+    skills: list[str],
+    location: str,
+    company_stage: str,
+    hiring_preferences: str,
+    industry: str,
+    leadership_expectations: str,
+) -> list[XRayQueryLayer]:
+    required_role = _sanitize_role_query(role) or _sanitize_role_query(seniority)
+    title_phrase = required_role or role or seniority or ""
+    skill_phrase = " ".join(_dedupe_preserve_order(skills[:4]))
+    domain_phrase = " ".join(
+        _dedupe_preserve_order(
+            [part for part in [company_stage, industry, hiring_preferences, leadership_expectations] if part]
+        )
+    )
+    layers: list[XRayQueryLayer] = []
+    if title_phrase:
+        layers.append(
+            XRayQueryLayer(
+                layer_type="exact_title",
+                query=f'site:linkedin.com/in/ "{title_phrase}" {location}'.strip(),
+            )
+        )
+    if role or skill_phrase:
+        variation_terms = " ".join(
+            _dedupe_preserve_order([part for part in [role, seniority, skill_phrase] if part])
+        )
+        if variation_terms:
+            layers.append(
+                XRayQueryLayer(
+                    layer_type="title_variation",
+                    query=f"site:linkedin.com/in/ {variation_terms} {location}".strip(),
+                )
+            )
+    if domain_phrase:
+        layers.append(
+            XRayQueryLayer(
+                layer_type="company_domain",
+                query=f"site:linkedin.com/in/ {domain_phrase} {location}".strip(),
+            )
+        )
+    if skill_phrase:
+        layers.append(
+            XRayQueryLayer(
+                layer_type="skills_signal",
+                query=f"site:linkedin.com/in/ {skill_phrase} {location}".strip(),
+            )
+        )
+    layers.append(XRayQueryLayer(layer_type="github_placeholder", query="", enabled=False))
+    return [layer for layer in layers if layer.query or not layer.enabled]
+
+
+def _normalize_query_layer(payload: dict[str, Any], *, fallback_index: int) -> XRayQueryLayer | None:
+    layer_type = _normalize_text(payload.get("layer_type") or payload.get("type") or payload.get("name") or "")
+    query = _normalize_text(payload.get("query") or payload.get("search_query") or payload.get("value") or "")
+    enabled_value = payload.get("enabled", True)
+    if isinstance(enabled_value, str):
+        enabled = enabled_value.strip().lower() not in {"false", "0", "no", "off"}
+    else:
+        enabled = bool(enabled_value)
+    pages_value = payload.get("pages", 1)
+    try:
+        pages = max(1, min(int(pages_value), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
+    except (TypeError, ValueError):
+        pages = 1
+    if not query and not enabled:
+        return XRayQueryLayer(layer_type=layer_type or f"layer_{fallback_index + 1}", query="", enabled=False, pages=pages)
+    if not query:
+        return None
+    if not layer_type:
+        layer_type = f"layer_{fallback_index + 1}"
+    return XRayQueryLayer(layer_type=layer_type, query=query, enabled=enabled, pages=pages)
+
+
+def build_linkedin_xray_query_layers(
+    *,
+    role: str,
+    seniority: str,
+    skills: list[str],
+    location: str,
+    company_stage: str,
+    hiring_preferences: str,
+    industry: str,
+    leadership_expectations: str,
+    recruiter_preferences: dict[str, Any] | None = None,
+) -> list[XRayQueryLayer]:
+    role = _normalize_text(role)
+    seniority = _normalize_text(seniority)
+    location = _normalize_text(location)
+    company_stage = _normalize_text(company_stage)
+    hiring_preferences = _normalize_text(hiring_preferences)
+    industry = _normalize_text(industry)
+    leadership_expectations = _normalize_text(leadership_expectations)
+    skill_list = _dedupe_preserve_order(skills)
+
+    prompt = (
+        "Decompose this recruiter role into 3-5 LinkedIn X-Ray search layers.\n"
+        "Return only JSON with a top-level 'layers' array.\n"
+        "Each layer should have: layer_type, query, enabled, pages.\n"
+        "Required layers: exact_title, title_variation, company_domain, skills_signal.\n"
+        "Optional layer: github_placeholder, but keep it disabled by default.\n"
+        "Do not use hardcoded role vocabularies. Infer semantic search intent from the role, skills, location,\n"
+        "company stage, hiring preferences, industry, and leadership expectations.\n"
+        "Keep LinkedIn profile search queries broad and high-signal, not deep-pagination oriented.\n\n"
+        f"role: {role}\n"
+        f"seniority: {seniority}\n"
+        f"skills: {', '.join(skill_list)}\n"
+        f"location: {location}\n"
+        f"company_stage: {company_stage}\n"
+        f"hiring_preferences: {hiring_preferences}\n"
+        f"industry: {industry}\n"
+        f"leadership_expectations: {leadership_expectations}\n"
+        f"recruiter_preferences: {recruiter_preferences or {}}\n"
+    )
+
+    layers: list[XRayQueryLayer] = []
+    try:
+        response = generate(prompt, expect_json=True)
+        payload = response if isinstance(response, dict) else {}
+        raw_layers = payload.get("layers") if isinstance(payload.get("layers"), list) else payload.get("query_layers")
+        if isinstance(raw_layers, list):
+            for index, item in enumerate(raw_layers[:5]):
+                if isinstance(item, dict):
+                    normalized = _normalize_query_layer(item, fallback_index=index)
+                    if normalized is not None:
+                        layers.append(normalized)
+    except Exception as exc:
+        logger.info("serpapi_query_layer_llm_fallback error=%s", str(exc))
+
+    if not layers:
+        layers = _fallback_query_layers(
+            role=role,
+            seniority=seniority,
+            skills=skill_list,
+            location=location,
+            company_stage=company_stage,
+            hiring_preferences=hiring_preferences,
+            industry=industry,
+            leadership_expectations=leadership_expectations,
+        )
+
+    active_layers: list[XRayQueryLayer] = []
+    seen_keys: set[str] = set()
+    for layer in layers:
+        if not layer.enabled and not layer.query:
+            active_layers.append(layer)
+            continue
+        key = _normalize_lower(layer.query)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        active_layers.append(layer)
+
+    if len([layer for layer in active_layers if layer.enabled]) < 3:
+        fallback_layers = _fallback_query_layers(
+            role=role,
+            seniority=seniority,
+            skills=skill_list,
+            location=location,
+            company_stage=company_stage,
+            hiring_preferences=hiring_preferences,
+            industry=industry,
+            leadership_expectations=leadership_expectations,
+        )
+        for layer in fallback_layers:
+            if not layer.enabled and not layer.query:
+                continue
+            key = _normalize_lower(layer.query)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            active_layers.append(layer)
+
+    active_layers = _diversify_query_layers(layers=active_layers, recruiter_preferences=recruiter_preferences)
+    return [layer for layer in active_layers[:5] if layer.query or not layer.enabled]
+
+
 def build_linkedin_xray_queries(
     *,
     role: str,
@@ -249,54 +704,21 @@ def build_linkedin_xray_queries(
     leadership_expectations: str,
     recruiter_preferences: dict[str, Any] | None = None,
 ) -> list[str]:
-    role = _normalize_text(role)
-    seniority = _normalize_text(seniority)
-    location = _normalize_text(location)
-    company_stage = _normalize_text(company_stage)
-    hiring_preferences = _normalize_text(hiring_preferences)
-    industry = _normalize_text(industry)
-    leadership_expectations = _normalize_text(leadership_expectations)
-
-    query_parts = ["site:linkedin.com/in"]
-
-    required_role = _sanitize_role_query(role) or _sanitize_role_query(seniority)
-    role_tokens = [token for token in re.findall(r"[A-Za-z0-9]+", required_role) if len(token) > 1]
-    if role_tokens:
-        query_parts.extend(f'"{token}"' for token in role_tokens[:3])
-    elif required_role:
-        query_parts.append(f'"{required_role}"')
-
-    if location:
-        query_parts.append(location)
-
-    # Seniority is intentionally excluded from the search string.
-    # In practice, "2 years" and similar phrases cause Google to return no LinkedIn profile results.
-
-    # Keep the search focused on the role and city, but avoid overly exact phrase matching
-    # so Google can still return real profile pages that mention the title in slightly different ways.
-    exclusions = [
-        "-jobs",
-        "-job",
-        "-hiring",
-        "-careers",
-        "-recruiter",
-        "-recruitment",
-        "-hr",
-        "-human resources",
-        "-talent acquisition",
-        "-company",
-        "-posts",
-        "-openings",
-        "-intern",
-        "-student",
-        "-bootcamp",
-        "-agency",
-        "-staffing",
+    return [
+        layer.query
+        for layer in build_linkedin_xray_query_layers(
+            role=role,
+            seniority=seniority,
+            skills=skills,
+            location=location,
+            company_stage=company_stage,
+            hiring_preferences=hiring_preferences,
+            industry=industry,
+            leadership_expectations=leadership_expectations,
+            recruiter_preferences=recruiter_preferences,
+        )
+        if layer.enabled and layer.query
     ]
-    query_parts.extend(exclusions)
-
-    query = " ".join(part for part in query_parts if part).strip()
-    return [query] if query else []
 
 
 class SerpApiClient:
@@ -419,7 +841,7 @@ class SerpApiClient:
         query = _normalize_text(query)
         if not query:
             return results
-        page_count = max(1, min(int(pages), SERPAPI_MAX_PAGES))
+        page_count = max(1, min(int(pages), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
             payload = self._request(query=query, start=start)
@@ -429,9 +851,6 @@ class SerpApiClient:
             for item in organic_results:
                 if isinstance(item, dict):
                     results.append(item)
-            serpapi_pagination = payload.get("serpapi_pagination") if isinstance(payload, dict) else {}
-            if page_count > 1 and not serpapi_pagination:
-                continue
         return results
 
     def search_many(self, queries: list[str], *, pages: int = 1) -> list[dict[str, Any]]:
@@ -510,6 +929,24 @@ def _score_result(*, query: str, result: dict[str, Any], page: int, position: in
     return max(0.0, min(1.0, score))
 
 
+def _snippet_quality(*, title: str, snippet: str, displayed_link: str, company: str, location: str) -> str:
+    richness = 0
+    text = " ".join([title, snippet, displayed_link, company, location]).strip()
+    if len(_normalize_text(snippet)) >= 160:
+        richness += 1
+    if company:
+        richness += 1
+    if location:
+        richness += 1
+    if any(token in text.lower() for token in ("linkedin.com/in/", "at ", "engineering", "product", "sales", "platform", "infrastructure")):
+        richness += 1
+    if richness >= 3:
+        return "rich"
+    if richness >= 1:
+        return "partial"
+    return "thin"
+
+
 def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int, position: int, intake: dict[str, str], source: str) -> dict[str, Any] | None:
     link = _normalize_text(result.get("link") or "")
     title = _normalize_text(result.get("title") or "")
@@ -525,6 +962,7 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     company = _extract_company(snippet)
     location = _extract_location(snippet, fallback=intake.get("location", ""))
     skills = _extract_skills_from_text(text, [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()])
+    snippet_quality = _snippet_quality(title=title, snippet=snippet, displayed_link=displayed_link, company=company, location=location)
 
     normalized = {
         "id": linkedin_url or link,
@@ -547,6 +985,8 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         "search_page": page,
         "search_position": position,
         "snippet": snippet,
+        "snippet_quality": snippet_quality,
+        "snippetQuality": snippet_quality,
         "displayed_link": displayed_link,
         "score": _score_result(query=query, result=result, page=page, position=position, intake=intake),
         "last_updated": datetime.now(timezone.utc).isoformat(),
@@ -597,8 +1037,8 @@ def discover_linkedin_xray_candidates(
         return []
 
     resolved_intake = _normalize_intake(job, intake)
-    search_pages = 1
-    query_batches = build_linkedin_xray_queries(
+    search_pages = max(1, min(int(pages_per_query or 1), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
+    query_layers = build_linkedin_xray_query_layers(
         role=resolved_intake["role_title"],
         seniority=resolved_intake["seniority"],
         skills=[skill.strip() for skill in resolved_intake["skills"].split(",") if skill.strip()],
@@ -610,46 +1050,164 @@ def discover_linkedin_xray_candidates(
         recruiter_preferences=recruiter_preferences,
     )
 
-    primary_query = query_batches[0] if query_batches else ""
+    active_layers = [layer for layer in query_layers if layer.enabled and layer.query]
+    limited_layers = active_layers[: max(1, min(MAX_CALLS_PER_ROLE, 5))]
+    job_role = resolved_intake["role_title"]
+    diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
+    quota_before = _quota_snapshot()
     logger.info(
-        "serpapi_discovery_started role=%s location=%s query=%s limit=%s pages=%s",
-        resolved_intake["role_title"],
+        "serpapi_discovery_started role=%s location=%s layers=%s limit=%s pages=%s quota_date=%s quota_budget=%s",
+        job_role,
         resolved_intake["location"],
-        primary_query,
+        ",".join(layer.layer_type for layer in limited_layers),
         limit,
         search_pages,
+        quota_before.date,
+        quota_before.budget,
     )
-    log_metric("serpapi_usage", enabled=True, query_batches=1 if primary_query else 0, limit=limit)
+    logger.info(
+        "serpapi_query_layers role=%s layers=%s",
+        job_role,
+        [
+            {"layer_type": layer.layer_type, "enabled": layer.enabled, "pages": layer.pages, "query": layer.query}
+            for layer in limited_layers
+        ],
+    )
+    logger.info(
+        "serpapi_query_diversity role=%s overlap_ratio=%.4f duplicate_queries=%s company_concentration=%s cluster=%s",
+        job_role,
+        diversity_report["overlap_ratio"],
+        diversity_report["duplicate_query_count"],
+        diversity_report["company_concentration"],
+        diversity_report["cluster_name"],
+    )
+    log_metric(
+        "serpapi_query_diversity",
+        role=job_role,
+        overlap_ratio=diversity_report["overlap_ratio"],
+        duplicate_queries=diversity_report["duplicate_query_count"],
+        duplicate_tokens=diversity_report["duplicate_token_count"],
+        company_concentration=diversity_report["company_concentration"],
+        cluster_name=diversity_report["cluster_name"],
+        title_tokens=diversity_report["title_token_count"],
+        seniority_tokens=diversity_report["seniority_token_count"],
+    )
+    log_metric(
+        "serpapi_query_layers",
+        role=job_role,
+        layer_count=len(limited_layers),
+        total_layers=len(query_layers),
+        max_calls=MAX_CALLS_PER_ROLE,
+        limit=limit,
+    )
 
-    raw_results = client.search(query=primary_query, pages=search_pages) if primary_query else []
+    if not limited_layers:
+        logger.info("serpapi_discovery_completed role=%s count=0 reason=no_active_layers", job_role)
+        return []
+
+    layer_results: list[tuple[XRayQueryLayer, list[dict[str, Any]]]] = []
+    with ThreadPoolExecutor(max_workers=len(limited_layers)) as executor:
+        future_map = {}
+        for layer in limited_layers:
+            if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
+                continue
+            future = executor.submit(client.search, query=layer.query, pages=min(search_pages, layer.pages))
+            future_map[future] = layer
+
+        for future in as_completed(future_map):
+            layer = future_map[future]
+            try:
+                raw = future.result()
+            except Exception as exc:
+                logger.warning(
+                    "serpapi_layer_failed role=%s layer_type=%s error=%s",
+                    job_role,
+                    layer.layer_type,
+                    str(exc),
+                )
+                log_metric(
+                    "serpapi_layer_error",
+                    role=job_role,
+                    layer_type=layer.layer_type,
+                    error_type=type(exc).__name__,
+                )
+                raw = []
+            logger.info(
+                "serpapi_layer_results role=%s layer_type=%s raw_count=%s pages=%s",
+                job_role,
+                layer.layer_type,
+                len(raw),
+                min(search_pages, layer.pages),
+            )
+            log_metric(
+                "serpapi_layer_results",
+                role=job_role,
+                layer_type=layer.layer_type,
+                raw_count=len(raw),
+                pages=min(search_pages, layer.pages),
+            )
+            layer_results.append((layer, raw))
+
     normalized_results: list[dict[str, Any]] = []
     seen_identities: set[str] = set()
 
-    for position, result in enumerate(raw_results, start=1):
-        normalized = _normalize_candidate_result(
-            result=result,
-            query=query_batches[min(len(query_batches) - 1, (position - 1) % max(1, len(query_batches)))],
-            page=((position - 1) // max(1, SERPAPI_RESULTS_PER_PAGE)) + 1,
-            position=((position - 1) % max(1, SERPAPI_RESULTS_PER_PAGE)) + 1,
-            intake=resolved_intake,
-            source="serpapi",
+    for layer, raw_results in layer_results:
+        layer_count = 0
+        for position, result in enumerate(raw_results, start=1):
+            if len(normalized_results) >= max(1, min(MAX_TOTAL_PROFILES, int(limit))):
+                break
+            normalized = _normalize_candidate_result(
+                result=result,
+                query=layer.query,
+                page=((position - 1) // max(1, SERPAPI_RESULTS_PER_PAGE)) + 1,
+                position=((position - 1) % max(1, SERPAPI_RESULTS_PER_PAGE)) + 1,
+                intake=resolved_intake,
+                source="serpapi",
+            )
+            if not normalized:
+                continue
+            identity = _normalize_lower(normalized.get("linkedin_url") or normalized.get("full_name") or normalized.get("name") or "")
+            if not identity or identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+            normalized_results.append(normalized)
+            layer_count += 1
+            if len(normalized_results) >= max(1, min(MAX_TOTAL_PROFILES, int(limit))):
+                break
+        logger.info(
+            "serpapi_layer_dedup role=%s layer_type=%s kept=%s dedup_total=%s",
+            job_role,
+            layer.layer_type,
+            layer_count,
+            len(normalized_results),
         )
-        if not normalized:
-            continue
-        identity = _normalize_lower(normalized.get("linkedin_url") or normalized.get("full_name") or normalized.get("name") or "")
-        if not identity or identity in seen_identities:
-            continue
-        seen_identities.add(identity)
-        normalized_results.append(normalized)
-        if len(normalized_results) >= max(1, limit):
-            break
+        log_metric(
+            "serpapi_layer_dedup",
+            role=job_role,
+            layer_type=layer.layer_type,
+            kept=layer_count,
+            dedup_total=len(normalized_results),
+        )
 
+    normalized_results = normalized_results[: max(1, min(MAX_TOTAL_PROFILES, int(limit)))]
+    _register_profiles_found(count=len(normalized_results))
+    quota_after = _quota_snapshot()
     logger.info(
-        "serpapi_discovery_completed role=%s count=%s",
-        resolved_intake["role_title"],
+        "serpapi_discovery_completed role=%s count=%s quota_calls=%s quota_profiles=%s budget_remaining=%s",
+        job_role,
         len(normalized_results),
+        quota_after.used_calls,
+        quota_after.used_profiles,
+        quota_after.budget,
     )
-    log_metric("serpapi_candidates_found", count=len(normalized_results), role=resolved_intake["role_title"])
+    log_metric(
+        "serpapi_candidates_found",
+        count=len(normalized_results),
+        role=job_role,
+        quota_used_calls=quota_after.used_calls,
+        quota_used_profiles=quota_after.used_profiles,
+        quota_budget=quota_after.budget,
+    )
     return normalized_results
 
 

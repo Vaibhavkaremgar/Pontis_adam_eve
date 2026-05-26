@@ -28,7 +28,7 @@ from app.core.config import (
     RANKING_WEIGHTS,
     SCORING_DEFAULT_MODE,
     SERPAPI_ENABLED,
-    SERPAPI_MAX_PAGES,
+    MAX_TOTAL_PROFILES,
 )
 from app.db.repositories import (
     ATSExportRepository,
@@ -1730,6 +1730,7 @@ def _build_local_candidates(
     debug: bool = False,
     run_metrics_by_candidate_id: dict[str, dict[str, float | bool]] | None = None,
 ) -> list[CandidateResult]:
+    raise APIError("Legacy sourcing paths are disabled; X-Ray retrieval is the only supported sourcing path", status_code=503)
     ensure_all_collections()
     recruiter_id = JobRepository(db).get_recruiter_id(job.id)
     job_vec = _job_vector(job, feedback_learning)
@@ -2104,6 +2105,7 @@ def _build_ranked_candidates_from_pdl(
     source_candidates: list[dict[str, Any]] | None = None,
     source_label: str = "pdl",
 ) -> list[CandidateResult]:
+    raise APIError("Legacy sourcing paths are disabled; X-Ray retrieval is the only supported sourcing path", status_code=503)
     filters = _normalize_job_filters(
         job,
         preferred_tokens=feedback_learning.preferred_tokens,
@@ -2686,6 +2688,7 @@ def _fallback_stored_candidates(
     source: str,
     reason: str,
 ) -> list[CandidateResult]:
+    raise APIError("Legacy sourcing paths are disabled; X-Ray retrieval is the only supported sourcing path", status_code=503)
     stored_candidates = list_stored_candidates(db=db, job_id=job_id)
     if not stored_candidates:
         return []
@@ -2862,12 +2865,12 @@ def fetch_ranked_candidates(
 
     if SOURCE_PROVIDER == "xray_apollo":
         try:
-            xray_target_limit = max(30, mode_config.top_k)
+            xray_target_limit = min(MAX_TOTAL_PROFILES, max(30, mode_config.top_k))
             xray_candidates = discover_xray_candidates(
                 job=job,
                 intake=getattr(job, "structured_data", None) or {},
-                limit=max(xray_target_limit * 3, 90),
-                pages_per_query=SERPAPI_MAX_PAGES,
+                limit=xray_target_limit,
+                pages_per_query=1,
                 recruiter_preferences=recruiter_preferences,
             )
             xray_results = build_xray_candidate_results(
@@ -2913,6 +2916,33 @@ def fetch_ranked_candidates(
                     decision=candidate.decision or "potential",
                     strategy=candidate.strategy or "MEDIUM",
                 )
+            raw_xray_count = len(xray_results)
+            reviewable_seed_candidates = list(xray_results)
+            xray_results = _filter_unswiped_candidates(
+                _attach_candidate_workflow_state(db, job_id=job.id, candidates=xray_results),
+                swiped_ids,
+                job_id=job.id,
+            )
+            unswiped_xray_count = len(xray_results)
+            xray_results = [candidate for candidate in xray_results if _is_reviewable_candidate(candidate)]
+            if not xray_results:
+                logger.warning("xray_reviewable_candidates_missing job_id=%s returning_raw_xray_pool", job.id)
+                return reviewable_seed_candidates
+            logger.info(
+                "candidate_filter_counts job_id=%s source=xray raw_count=%s unswiped_count=%s reviewable_count=%s",
+                job.id,
+                raw_xray_count,
+                unswiped_xray_count,
+                len(xray_results),
+            )
+            log_metric(
+                "candidate_filter_counts",
+                job_id=job.id,
+                source="xray",
+                raw_count=raw_xray_count,
+                unswiped_count=unswiped_xray_count,
+                reviewable_count=len(xray_results),
+            )
             logger.info(
                 "xray_only_candidates job_id=%s count=%s source_provider=%s",
                 job.id,
@@ -2943,20 +2973,12 @@ def fetch_ranked_candidates(
         except Exception as exc:
             logger.warning("xray_candidate_retrieval_failed job_id=%s error=%s", job.id, str(exc))
             log_metric("candidate_retrieval_error", job_id=job.id, mode=resolved_mode, source="xray", error_type=type(exc).__name__)
-            fallback_candidates = _fallback_stored_candidates(
-                db=db,
-                job_id=job.id,
-                swiped_ids=swiped_ids,
-                source="xray",
-                reason=str(exc),
-            )
-            logger.info(
-                "[ranking_fallback] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=fallback_to_stored",
-                job.id,
-                recruiter_id or "",
-                len(fallback_candidates),
-            )
-            return fallback_candidates
+            return []
+
+    raise APIError(
+        "Legacy sourcing paths are disabled; X-Ray retrieval is the only supported sourcing path",
+        status_code=503,
+    )
 
     local_diversity_seed = 0.0
     seed_confidence = _compute_system_confidence(
@@ -3123,7 +3145,23 @@ def fetch_ranked_candidates(
             swiped_ids,
             job_id=job.id,
         )
+        unswiped_local_count = len(final_local)
         final_local = [candidate for candidate in final_local if _is_reviewable_candidate(candidate)]
+        logger.info(
+            "candidate_filter_counts job_id=%s source=local raw_count=%s unswiped_count=%s reviewable_count=%s",
+            job.id,
+            len(local_results),
+            unswiped_local_count,
+            len(final_local),
+        )
+        log_metric(
+            "candidate_filter_counts",
+            job_id=job.id,
+            source="local",
+            raw_count=len(local_results),
+            unswiped_count=unswiped_local_count,
+            reviewable_count=len(final_local),
+        )
         emit_trace(
             logger,
             "candidate_ranking_ready",
@@ -3174,7 +3212,23 @@ def fetch_ranked_candidates(
             swiped_ids,
             job_id=job.id,
         )
+        unswiped_suppressed_count = len(final_suppressed)
         final_suppressed = [candidate for candidate in final_suppressed if _is_reviewable_candidate(candidate)]
+        logger.info(
+            "candidate_filter_counts job_id=%s source=local_fallback raw_count=%s unswiped_count=%s reviewable_count=%s",
+            job.id,
+            len(local_results),
+            unswiped_suppressed_count,
+            len(final_suppressed),
+        )
+        log_metric(
+            "candidate_filter_counts",
+            job_id=job.id,
+            source="local_fallback",
+            raw_count=len(local_results),
+            unswiped_count=unswiped_suppressed_count,
+            reviewable_count=len(final_suppressed),
+        )
         emit_trace(
             logger,
             "candidate_ranking_ready",
@@ -3229,8 +3283,8 @@ def fetch_ranked_candidates(
             serpapi_candidates = discover_linkedin_xray_candidates(
                 job=job,
                 intake=getattr(job, "structured_data", None) or {},
-                limit=max(size, 30),
-                pages_per_query=SERPAPI_MAX_PAGES,
+                limit=min(MAX_TOTAL_PROFILES, max(size, 30)),
+                pages_per_query=1,
                 recruiter_preferences=recruiter_preferences,
             )
             if serpapi_candidates:
@@ -3382,7 +3436,24 @@ def fetch_ranked_candidates(
         swiped_ids,
         job_id=job.id,
     )
+    unswiped_final_count = len(final_candidates)
     final_candidates = [candidate for candidate in final_candidates if _is_reviewable_candidate(candidate)]
+    logger.info(
+        "candidate_filter_counts job_id=%s source=%s raw_count=%s unswiped_count=%s reviewable_count=%s",
+        job.id,
+        resolved_mode,
+        len(candidates),
+        unswiped_final_count,
+        len(final_candidates),
+    )
+    log_metric(
+        "candidate_filter_counts",
+        job_id=job.id,
+        source=resolved_mode,
+        raw_count=len(candidates),
+        unswiped_count=unswiped_final_count,
+        reviewable_count=len(final_candidates),
+    )
     emit_trace(
         logger,
         "candidate_ranking_ready",
@@ -3434,24 +3505,17 @@ def build_selection_candidate_snapshot(
             return False
         return True
 
+    candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh)
     collected: list[CandidateResult] = []
     seen_ids: set[str] = set()
-    attempts = 0
-    max_attempts = 3
-
-    while attempts < max_attempts and len(collected) < max(2, limit):
-        attempts += 1
-        candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh or attempts > 1)
-        for candidate in candidates:
-            candidate_id = str(candidate.id or "").strip()
-            if not candidate_id or candidate_id in seen_ids:
-                continue
-            if not _reachable(candidate):
-                continue
-            collected.append(candidate)
-            seen_ids.add(candidate_id)
-            if len(collected) >= max(2, limit):
-                break
+    for candidate in candidates:
+        candidate_id = str(candidate.id or "").strip()
+        if not candidate_id or candidate_id in seen_ids:
+            continue
+        if not _reachable(candidate):
+            continue
+        collected.append(candidate)
+        seen_ids.add(candidate_id)
         if len(collected) >= max(2, limit):
             break
 

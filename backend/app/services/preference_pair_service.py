@@ -50,6 +50,13 @@ def _feature_score(text: str, terms: tuple[str, ...]) -> float:
     return max(0.0, min(1.0, score / max(1, len(terms))))
 
 
+def _safe_embed(text: str) -> list[float]:
+    try:
+        return embed(text)
+    except Exception:
+        return []
+
+
 def _candidate_features(candidate: Any) -> dict[str, Any]:
     row = _candidate_dict(candidate)
     summary = " ".join(
@@ -81,7 +88,7 @@ def _candidate_features(candidate: Any) -> dict[str, Any]:
         "leadership_score": _feature_score(summary, _LEADERSHIP_TERMS),
         "ic_score": _feature_score(summary, _IC_TERMS),
         "experience_years": experience,
-        "embedding": embed(build_candidate_text(row)),
+        "embedding": _safe_embed(build_candidate_text(row)),
         "token_set": _tokens(summary),
     }
 

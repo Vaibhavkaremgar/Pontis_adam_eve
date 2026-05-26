@@ -213,13 +213,11 @@ def on_startup() -> None:
             ensure_embedding_version_registry()
         except Exception as exc:
             logger.warning("embedding_registry_initialization_failed error=%s", str(exc))
-        if SOURCE_PROVIDER == "xray_apollo":
-            logger.info("candidate_warmup_skipped reason=xray_apollo")
-        else:
-            try:
-                warm_candidate_retrieval()
-            except Exception as exc:
-                logger.warning("candidate_warmup_failed error=%s", str(exc))
+        try:
+            warm_candidate_retrieval()
+            logger.info("candidate_warmup_completed source_provider=%s", SOURCE_PROVIDER)
+        except Exception as exc:
+            logger.warning("candidate_warmup_failed error=%s", str(exc))
 
         if APP_ENV in {"production", "prod"}:
             redis_client = get_redis()

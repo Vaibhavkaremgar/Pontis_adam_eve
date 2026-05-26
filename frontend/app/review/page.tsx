@@ -79,22 +79,27 @@ function getCandidateCurrentRole(candidate: Candidate): string {
   );
 }
 
-function getSourcingConfidence(candidate: Candidate): number {
+function getCandidateProfileData(candidate: Candidate): Record<string, unknown> {
+  return candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
+}
+
+function getSnippetQualityLabel(candidate: Candidate): string {
+  const profileData = getCandidateProfileData(candidate);
+  const quality = String(candidate.snippetQuality || profileData.snippet_quality || "").toLowerCase();
+  if (quality === "rich") return "Rich snippet";
+  if (quality === "thin") return "Thin snippet";
+  if (quality === "partial") return "Partial snippet";
+  return "Snippet quality unknown";
+}
+
+function getReasoningSummary(candidate: Candidate): string {
   const explanation = candidate.explanation;
-  const semantic = explanation?.semanticScore ?? explanation?.semantic ?? 0;
-  const finalScore = explanation?.finalScore ?? candidate.fitScore;
-  const recruiterPreference = explanation?.sourceBreakdown?.recruiterPreference ?? 0;
-  const selectionRound = explanation?.sourceBreakdown?.selectionRound ?? explanation?.selectionRoundInfluence ?? 0;
-  const freshness = explanation?.sourceBreakdown?.freshness ?? explanation?.freshnessInfluence ?? 0;
-
-  const blended =
-    semantic * 0.4 +
-    (finalScore / 5) * 0.35 +
-    recruiterPreference * 0.15 +
-    selectionRound * 0.05 +
-    freshness * 0.05;
-
-  return Math.max(0, Math.min(1, blended));
+  if (explanation?.aiReasoning) return explanation.aiReasoning;
+  const profileData = getCandidateProfileData(candidate);
+  const quality = String(candidate.snippetQuality || profileData.snippet_quality || "").toLowerCase();
+  if (quality === "rich") return "High-signal profile with enough detail for confident review.";
+  if (quality === "partial") return "Moderate signal profile with enough context to keep in the review set.";
+  return "Low-information profile kept in the queue so recruiters do not lose potentially relevant candidates.";
 }
 
 function renderSignals(candidate: Candidate) {
@@ -103,15 +108,12 @@ function renderSignals(candidate: Candidate) {
   const semantic = explanation?.semanticScore ?? explanation?.semantic ?? 0;
   const matchedSkills = explanation?.skillsMatched ?? explanation?.skills_match ?? [];
   const experienceMatch = explanation?.experienceMatch || explanation?.candidateExperience || explanation?.jobExperience || "";
-  const sourcingConfidence = getSourcingConfidence(candidate);
+  const semanticLabel = semantic >= 0.7 ? "Strong semantic match" : semantic >= 0.45 ? "Solid semantic match" : "Light semantic signal";
 
   return (
     <div className="space-y-1 rounded-xl bg-white/70 p-3 text-xs text-gray-600">
       <p>
-        Semantic: <span className="font-medium text-gray-800">{(semantic * 100).toFixed(0)}%</span>
-      </p>
-      <p>
-        Sourcing confidence: <span className="font-medium text-gray-800">{(sourcingConfidence * 100).toFixed(0)}%</span>
+        Semantic match: <span className="font-medium text-gray-800">{semanticLabel}</span>
       </p>
       {experienceMatch && (
         <p>
@@ -125,7 +127,7 @@ function renderSignals(candidate: Candidate) {
       )}
       {typeof penalties.selectionPreferenceBonus === "number" && (
         <p>
-          Selection boost: <span className="font-medium text-green-700">+{penalties.selectionPreferenceBonus.toFixed(3)}</span>
+          Recruiter preference signal applied
         </p>
       )}
       {explanation?.aiReasoning && <p className="italic text-gray-500">{explanation.aiReasoning}</p>}
@@ -330,6 +332,14 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
           <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(candidate.summary, 420)}</p>
         </div>
       )}
+
+      <div className="rounded-[18px] border border-[#E5E7EB] bg-white p-5">
+        <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why ranked here</p>
+        <p className="mt-3 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 420)}</p>
+        <div className="mt-3 inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 text-[11px] font-semibold text-[#1D4ED8]">
+          {getSnippetQualityLabel(candidate)}
+        </div>
+      </div>
     </div>
   );
 }
@@ -390,7 +400,7 @@ function CandidateCard({
             </div>
           </div>
           <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center font-body text-[14px] font-semibold leading-tight text-[#0F6B3A]">
-            <span>{candidate.fitScore.toFixed(1)} / 5</span>
+            <span>Ranked</span>
           </div>
         </div>
       </CardHeader>
@@ -410,6 +420,9 @@ function CandidateCard({
                 ? "Enriching"
                 : candidate.enrichmentStatus || "Pending"}
           </span>
+          <span className="inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 font-body text-[11px] font-semibold text-[#1D4ED8]">
+            {getSnippetQualityLabel(candidate)}
+          </span>
         </div>
 
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
@@ -426,19 +439,17 @@ function CandidateCard({
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">{candidate.company || "Not provided"}</span>
           </div>
           <div className="flex items-center gap-3 border-t border-[#ECE7DE] py-2">
-            <ShieldCheck className="h-4 w-4 shrink-0 text-[#6B7280]" />
-            <span className="font-body text-[14px] text-[#4B5563]">Sourcing confidence</span>
-            <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
-              {(getSourcingConfidence(candidate) * 100).toFixed(0)}%
-            </span>
-          </div>
-          <div className="flex items-center gap-3 border-t border-[#ECE7DE] py-2">
             <Sparkles className="h-4 w-4 shrink-0 text-[#6B7280]" />
             <span className="font-body text-[14px] text-[#4B5563]">Source</span>
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
               {candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider || "Pending"}
             </span>
           </div>
+        </div>
+
+        <div className="mt-4 rounded-[18px] border border-[#E5E7EB] bg-white p-4">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why ranked here</p>
+          <p className="mt-2 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 320)}</p>
         </div>
 
         <div className="mt-6">
@@ -516,11 +527,12 @@ function CandidateListRow({
           <p style={clampLines(3)} className="max-w-4xl overflow-hidden font-body text-[15px] leading-6 text-[#5F564D]">
             {trimText(candidate.summary || candidate.headline || candidate.role || "No summary provided", 260)}
           </p>
+          <p className="mt-2 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 220)}</p>
         </div>
 
-        <div className="flex shrink-0 flex-col items-end gap-1 pl-2 text-right">
-          <div className="font-heading text-[28px] font-semibold leading-none text-[#0F6B3A]">{candidate.fitScore.toFixed(1)}</div>
-          <div className="font-body text-[12px] text-[#8A6F55]">fit score</div>
+        <div className="flex shrink-0 flex-col items-end gap-2 pl-2 text-right">
+          <div className="rounded-full bg-[#EEF7FF] px-3 py-1 text-[12px] font-semibold text-[#1D4ED8]">{getSnippetQualityLabel(candidate)}</div>
+          <div className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-semibold text-[#0F6B3A]">Ranked</div>
         </div>
       </div>
 
@@ -540,9 +552,6 @@ function CandidateListRow({
             {skill}
           </span>
         ))}
-        <span className="rounded-full bg-[#EAF4FF] px-3 py-1 text-[12px] font-medium text-[#1D4ED8]">
-          {(getSourcingConfidence(candidate) * 100).toFixed(0)}% match confidence
-        </span>
       </div>
 
       <div className="mt-5 flex items-center justify-end gap-3">
@@ -791,8 +800,8 @@ function SwipeDeck({
                     </p>
                   )}
                 </div>
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] font-body text-[13px] font-semibold text-[#0F6B3A]">
-                  {current.fitScore.toFixed(1)}/5
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
+                  Rank
                 </div>
               </div>
 
@@ -802,6 +811,14 @@ function SwipeDeck({
                   {current.summary}
                 </p>
               )}
+
+              <div className="mb-4 rounded-[18px] border border-[#E5E7EB] bg-white p-4">
+                <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why ranked here</p>
+                <p className="mt-2 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(current), 260)}</p>
+                <div className="mt-3 inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 text-[11px] font-semibold text-[#1D4ED8]">
+                  {getSnippetQualityLabel(current)}
+                </div>
+              </div>
 
               {/* Skills */}
               {current.skills.length > 0 && (
@@ -945,8 +962,8 @@ function RecruiterSwipeDeck({
   if (pending.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 rounded-[24px] border border-[#E7E0D4] bg-white py-16 text-center shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
-        <p className="font-heading text-[22px] font-semibold text-[#111827]">All strong matches reviewed</p>
-        <p className="font-body text-sm text-[#6B7280]">We only surface candidates above the 4/5 shortlist threshold.</p>
+        <p className="font-heading text-[22px] font-semibold text-[#111827]">All candidates reviewed</p>
+        <p className="font-body text-sm text-[#6B7280]">We surfaced the ranked pool directly, so recruiters can review the full high-signal set.</p>
       </div>
     );
   }
@@ -972,7 +989,7 @@ function RecruiterSwipeDeck({
             {pending.length} remaining · {shortlistedIds.length} shortlisted
           </p>
         </div>
-        <Badge variant="high">{candidates.length} strong matches</Badge>
+        <Badge variant="high">{candidates.length} ranked candidates</Badge>
       </div>
 
       <p className="text-center font-body text-xs text-[#9CA3AF]">Swipe right to shortlist · Swipe left to reject · Tap for details</p>
@@ -1029,8 +1046,8 @@ function RecruiterSwipeDeck({
                     </p>
                   )}
                 </div>
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] font-body text-[13px] font-semibold text-[#0F6B3A]">
-                  {current.fitScore.toFixed(1)}/5
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#EEF7FF] font-body text-[13px] font-semibold text-[#1D4ED8]">
+                  Rank
                 </div>
               </div>
 
@@ -1243,15 +1260,12 @@ export default function ReviewPage() {
       return;
     }
 
-    const strongMatches = result.data
-      .filter((candidate) => Number(candidate.fitScore || 0) >= 4)
-      .sort((left, right) => Number(right.fitScore || 0) - Number(left.fitScore || 0))
-      .slice(0, 30);
-    setReviewCandidates(strongMatches);
+    const rankedCandidates = result.data.slice(0, 30);
+    setReviewCandidates(rankedCandidates);
     setFeedbackMessage(
-      strongMatches.length > 0
-        ? `X-Ray sourcing loaded ${strongMatches.length} strong candidate${strongMatches.length === 1 ? "" : "s"} above the 4/5 shortlist threshold.`
-        : "X-Ray sourcing completed, but no candidates cleared the 4/5 shortlist threshold."
+      rankedCandidates.length > 0
+        ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
+        : "X-Ray sourcing completed, but no candidates were returned."
     );
     setReviewLoading(false);
   };
@@ -1372,11 +1386,7 @@ export default function ReviewPage() {
   const interviewProgression = activeInterviewInsights?.progression || [];
   const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
   const completedInterviewStages = interviewProgression.filter((item: any) => item?.completed).length;
-  const swipeCandidates = useMemo(() => reviewCandidates.filter((candidate) => Number(candidate.fitScore || 0) >= 4), [reviewCandidates]);
-  const topSwipeScore = useMemo(() => {
-    const scores = swipeCandidates.map((candidate) => Number(candidate.fitScore || 0)).filter((value) => Number.isFinite(value));
-    return scores.length > 0 ? Math.max(...scores) : 0;
-  }, [swipeCandidates]);
+  const swipeCandidates = useMemo(() => reviewCandidates, [reviewCandidates]);
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of reviewCandidates) {
@@ -1698,22 +1708,16 @@ export default function ReviewPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                    Strong matches only
+                    Ranked candidates
                   </Badge>
                   <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F4FBF7] px-5 py-2 text-[13px] font-semibold text-[#0F6B3A] shadow-none">
                     Top 30 ranked
                   </Badge>
                   <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#FFF7ED] px-5 py-2 text-[13px] font-semibold text-[#B45309] shadow-none">
-                    {swipeCandidates.length} strong matches
+                    {swipeCandidates.length} candidates
                   </Badge>
                 </div>
               </div>
-
-              {topSwipeScore > 0 && topSwipeScore < 4.5 && (
-                <div className="rounded-[20px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  The current top candidate is {topSwipeScore.toFixed(1)}/5. The backend will keep broadening X-Ray search to try to surface a 4.5/5 match when available.
-                </div>
-              )}
 
               <RecruiterSwipeDeck
                 candidates={swipeCandidates}
@@ -1748,8 +1752,8 @@ export default function ReviewPage() {
             <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm text-[#6B7280]">
               <p>
                 {sourcingError
-                  ? "X-Ray sourcing did not return strong matches. Check the sourcing error above."
-                  : "X-Ray sourcing finished, but no candidates cleared the 4/5 shortlist threshold yet."}
+                  ? "X-Ray sourcing did not return candidates. Check the sourcing error above."
+                  : "X-Ray sourcing finished, but no candidates were returned yet."}
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button variant="outline" onClick={() => void refreshFinalResults()}>

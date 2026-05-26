@@ -81,6 +81,7 @@ class CandidateResult(BaseModel):
     linkedinUrl: str = ""
     currentCompany: str = ""
     inferredExperience: str = ""
+    snippetQuality: Literal["rich", "partial", "thin"] = "partial"
 
 
 class OutreachRequest(BaseModel):

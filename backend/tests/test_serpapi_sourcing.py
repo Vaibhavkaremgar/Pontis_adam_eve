@@ -80,8 +80,10 @@ class SerpApiSourcingTests(unittest.TestCase):
 
         with patch("app.services.serpapi_sourcing_service.SERPAPI_API_KEY", "test-serpapi-key"), patch(
             "app.services.serpapi_sourcing_service.SERPAPI_ENABLED", True
-        ), patch("app.services.serpapi_sourcing_service.SerpApiClient.search_many", return_value=raw_results), patch(
-            "app.services.serpapi_sourcing_service.SerpApiClient.search", return_value=[]
+        ), patch.object(
+            SerpApiClient,
+            "search",
+            side_effect=[raw_results, [], [], []],
         ):
             candidates = discover_linkedin_xray_candidates(job=job, intake=job.structured_data, limit=5)
 
