@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import requests
 
@@ -33,11 +34,12 @@ def send_email(
     body: str,
     from_email: str | None = None,
     reply_to: str | None = None,
+    cc: list[str] | None = None,
     html: str | None = None,
     text: str | None = None,
     tags: dict[str, str] | None = None,
     headers: dict[str, str] | None = None,
-) -> None:
+) -> dict[str, Any]:
     sender = (from_email or FROM_EMAIL).strip()
     logger.info("email_config_check from=%s api_key_present=%s", sender, bool(RESEND_API_KEY))
     logger.info("email_send_called to=%s", to_email)
@@ -60,6 +62,9 @@ def send_email(
         normalized_reply_to = (reply_to or "").strip()
         if normalized_reply_to:
             payload["reply_to"] = normalized_reply_to
+        normalized_cc = [str(item).strip() for item in (cc or []) if str(item).strip()]
+        if normalized_cc:
+            payload["cc"] = normalized_cc
         normalized_tags = {str(key).strip(): str(value).strip() for key, value in (tags or {}).items() if str(key).strip() and str(value).strip()}
         if normalized_tags:
             payload["tags"] = normalized_tags
@@ -79,6 +84,14 @@ def send_email(
         if response.status_code >= 400:
             raise APIError(f"Email API failed: {response.text}", status_code=502)
         logger.info("email_sent_success to=%s", to_email)
+        parsed: dict[str, Any] = {}
+        try:
+            parsed_json = response.json()
+            if isinstance(parsed_json, dict):
+                parsed = parsed_json
+        except Exception:
+            parsed = {}
+        return parsed
     except APIError:
         logger.error("email_send_failed to=%s error=%s", to_email, "provider_rejected")
         raise

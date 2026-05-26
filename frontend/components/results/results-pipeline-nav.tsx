@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const ITEMS = [
@@ -16,6 +17,14 @@ type ResultsPipelineNavProps = {
 };
 
 export function ResultsPipelineNav({ active }: ResultsPipelineNavProps) {
+  const searchParams = useSearchParams();
+  const jobId = String(searchParams.get("jobId") || "").trim();
+
+  const withJobId = (href: string) => {
+    if (!jobId) return href;
+    return `${href}?jobId=${encodeURIComponent(jobId)}`;
+  };
+
   return (
     <div className="border-b border-slate-200 bg-white/75 backdrop-blur">
       <div className="mx-auto flex w-full max-w-[1600px] items-center gap-2 overflow-x-auto px-4 py-3 sm:px-6 lg:px-8">
@@ -38,7 +47,7 @@ export function ResultsPipelineNav({ active }: ResultsPipelineNavProps) {
           }
 
           return (
-            <Link key={item.label} href={item.href} className={cn(baseClass, variantClass)}>
+            <Link key={item.label} href={withJobId(item.href)} className={cn(baseClass, variantClass)}>
               {item.label}
             </Link>
           );
@@ -47,4 +56,3 @@ export function ResultsPipelineNav({ active }: ResultsPipelineNavProps) {
     </div>
   );
 }
-

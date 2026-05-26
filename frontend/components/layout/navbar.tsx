@@ -11,7 +11,7 @@
  * Gives consistent orientation while recruiter moves through backend-connected workflow stages.
  */
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { ArrowLeft, LogOut } from "lucide-react";
 
 import { useAppContext } from "@/context/AppContext";
@@ -29,8 +29,14 @@ const BACK_TARGETS: Array<{ pattern: RegExp; href: string; label: string }> = [
 
 export function Navbar() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { logout } = useAppContext();
   const backTarget = BACK_TARGETS.find((entry) => entry.pattern.test(pathname || "")) || null;
+  const jobId = String(searchParams.get("jobId") || "").trim();
+  const backHref =
+    backTarget && jobId && ["/ready", "/review", "/results"].includes(backTarget.href)
+      ? `${backTarget.href}?jobId=${encodeURIComponent(jobId)}`
+      : backTarget?.href || "";
 
   return (
     <header className="border-b border-[rgba(120,100,80,0.08)] bg-[#EDE5D8]">
@@ -38,7 +44,7 @@ export function Navbar() {
         <div className="flex min-w-0 items-center gap-3">
           {backTarget ? (
             <Link
-              href={backTarget.href}
+              href={backHref}
               className="inline-flex items-center gap-2 rounded-full border border-[rgba(95,74,49,0.12)] bg-[#F4EEE3] px-4 py-2 text-sm font-medium text-[#403325] shadow-[0_2px_8px_rgba(0,0,0,0.04)] transition-all hover:bg-white hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]"
             >
               <ArrowLeft className="h-4 w-4" />

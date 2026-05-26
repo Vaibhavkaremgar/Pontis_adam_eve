@@ -12,7 +12,7 @@
  * POST /interview/decision
  */
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -66,7 +66,10 @@ function statusVariant(status: InterviewStatus["status"]) {
 
 export default function ReadyPage() {
   const router = useRouter();
-  const { user, isSessionReady, jobId } = useAppContext();
+  const searchParams = useSearchParams();
+  const { user, isSessionReady, jobId, setJobId } = useAppContext();
+  const queryJobId = String(searchParams.get("jobId") || "").trim();
+  const effectiveJobId = jobId || queryJobId;
   const [items, setItems] = useState<InterviewStatus[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -115,16 +118,25 @@ export default function ReadyPage() {
     });
   }, [items]);
 
+  const resultReadyCount = useMemo(
+    () => orderedItems.filter((item) => ["interview_completed", "evaluation_processing", "results_ready"].includes(item.status)).length,
+    [orderedItems],
+  );
+  const completedResultCount = useMemo(
+    () => orderedItems.filter((item) => item.status === "results_ready").length,
+    [orderedItems],
+  );
+
   const itemByCandidateId = useMemo(() => {
     return new Map(orderedItems.map((item) => [item.candidateId, item]));
   }, [orderedItems]);
 
   const loadReady = async () => {
-    if (!jobId || !user) return;
+    if (!effectiveJobId || !user) return;
     const canViewOperationalMetrics = user.role === "admin" || user.role === "internal_ops";
     setIsLoading(true);
     setError("");
-    const [result, outreachResult] = await Promise.all([getInterviewStatuses(jobId), getOutreachStatuses(jobId)]);
+    const [result, outreachResult] = await Promise.all([getInterviewStatuses(effectiveJobId), getOutreachStatuses(effectiveJobId)]);
     const metricsResult = canViewOperationalMetrics ? await getMetrics() : null;
     if (!result.success || !result.data) {
       setError(result.error || "Could not load interview statuses.");
@@ -152,18 +164,23 @@ export default function ReadyPage() {
       router.replace("/login");
       return;
     }
-    if (!jobId) {
+    if (!effectiveJobId) {
       router.replace("/job");
       return;
     }
     void loadReady();
-  }, [isSessionReady, jobId, router, user]);
+  }, [effectiveJobId, isSessionReady, router, user]);
+
+  useEffect(() => {
+    if (jobId || !queryJobId) return;
+    setJobId(queryJobId);
+  }, [jobId, queryJobId, setJobId]);
 
   const refreshWorkflow = async (candidate: InterviewStatus) => {
-    if (!jobId) return;
+    if (!effectiveJobId) return;
     setWorkflowLoading(true);
     setWorkflowError("");
-    const result = await getInterviewInsights(jobId, candidate.candidateId);
+    const result = await getInterviewInsights(effectiveJobId, candidate.candidateId);
     if (!result.success || !result.data) {
       setWorkflowError(result.error || "Could not load hiring workflow details.");
       setActiveInsights(null);
@@ -184,11 +201,11 @@ export default function ReadyPage() {
   };
 
   const handleExport = async () => {
-    if (!jobId || isExporting) return;
+    if (!effectiveJobId || isExporting) return;
     setIsExporting(true);
     setExportMessage("");
     const candidateIds = orderedItems.filter((item) => !["rejected", "archived"].includes(item.status)).map((item) => item.candidateId);
-    const result = await exportCandidates({ jobId, candidateIds });
+    const result = await exportCandidates({ jobId: effectiveJobId, candidateIds });
     if (!result.success || !result.data) {
       setExportMessage(result.error || "Failed to export candidates.");
       setIsExporting(false);
@@ -199,7 +216,7 @@ export default function ReadyPage() {
   };
 
   const runDecision = async (action: string, targetStage = "") => {
-    if (!jobId || !activeCandidate || workflowLoading) return;
+    if (!effectiveJobId || !activeCandidate || workflowLoading) return;
     setWorkflowLoading(true);
     setWorkflowMessage("");
     setWorkflowError("");
@@ -217,7 +234,7 @@ export default function ReadyPage() {
             .join("\n")
         : decisionNote;
     const result = await submitInterviewDecision({
-      jobId,
+      jobId: effectiveJobId,
       candidateId: activeCandidate.candidateId,
       action,
       targetStage,
@@ -237,13 +254,13 @@ export default function ReadyPage() {
   };
 
   const markPreScreenComplete = async () => {
-    if (!jobId || !activeCandidate || workflowLoading) return;
+    if (!effectiveJobId || !activeCandidate || workflowLoading) return;
     setWorkflowLoading(true);
     setWorkflowMessage("");
     setWorkflowError("");
     const stageName = String(activeInsights?.currentStage || "recruiter_screen");
     const result = await recordInterviewEvaluation({
-      jobId,
+      jobId: effectiveJobId,
       candidateId: activeCandidate.candidateId,
       stageName,
       summary: evaluationSummary || "Pre-screen completed. Full video/profile processing can be attached when the recorder is wired.",
@@ -373,7 +390,26 @@ export default function ReadyPage() {
           </Button>
           {exportMessage && <p className="text-sm text-gray-700">{exportMessage}</p>}
 
-          <Button variant="outline" className="w-full justify-center" onClick={() => router.push("/results")} disabled={orderedItems.length === 0}>
+          <div className="grid gap-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F8F5EE] p-4 text-sm text-gray-700">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl bg-white/80 p-3">
+                <p className="text-xs uppercase tracking-[0.16em] text-gray-500">Results-ready</p>
+                <p className="mt-1 text-xl font-semibold text-gray-900">{resultReadyCount}</p>
+              </div>
+              <div className="rounded-xl bg-white/80 p-3">
+                <p className="text-xs uppercase tracking-[0.16em] text-gray-500">Results complete</p>
+                <p className="mt-1 text-xl font-semibold text-gray-900">{completedResultCount}</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500">Ready now hands off into the post-interview recruiter workspace instead of ending the workflow.</p>
+          </div>
+
+          <Button
+            variant="outline"
+            className="w-full justify-center"
+            onClick={() => router.push(effectiveJobId ? `/results?jobId=${encodeURIComponent(effectiveJobId)}` : "/results")}
+            disabled={orderedItems.length === 0}
+          >
             Open Results Workspace
           </Button>
 

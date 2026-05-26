@@ -27,7 +27,7 @@ from app.core.config import (
     REPLY_ATTACHMENT_STORAGE_DIR,
     RESEND_API_KEY,
 )
-from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository, JobRepository
+from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository, JobRepository, NotificationWorkflowTokenRepository
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.email_service import send_email
 from app.services.interview_invite_service import send_interview_invite
@@ -42,6 +42,7 @@ from app.services.outreach_intelligence_service import (
 from app.services.outreach_service import _record_notification
 from app.services.slack_service import notify_slack
 from app.services.webhook_security import get_webhook_header, verify_resend_webhook
+from app.utils.observability import emit_trace
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,27 @@ _NEEDS_MORE_INFO_REPLY_KEYWORDS = (
     "salary",
     "compensation",
     "job description",
+)
+_SECOND_ROUND_CONFIRM_KEYWORDS = (
+    "confirmed",
+    "confirm",
+    "works for me",
+    "available",
+    "sounds good",
+    "yes",
+    "see you then",
+    "locked in",
+)
+_SECOND_ROUND_RESCHEDULE_KEYWORDS = (
+    "reschedule",
+    "can't make",
+    "cannot make",
+    "need to move",
+    "another time",
+    "different time",
+    "not available",
+    "conflict",
+    "later slot",
 )
 _UNSUBSCRIBE_REPLY_KEYWORDS = (
     "unsubscribe",
@@ -247,6 +269,28 @@ def _detect_reply_intent(raw_event: dict[str, Any]) -> str:
     if _contains_any(lowered, _INTERESTED_REPLY_KEYWORDS):
         return "interested"
     return "ambiguous"
+
+
+def _detect_second_round_reply_state(*, text: str, subject: str, outreach_event: Any | None = None) -> str:
+    context_text = " ".join(
+        part
+        for part in (
+            _normalize_text(text),
+            _normalize_text(subject),
+            _normalize_text(getattr(outreach_event, "subject", "")),
+            _normalize_text(getattr(outreach_event, "body", "")),
+        )
+        if part
+    ).lower()
+    if not context_text:
+        return ""
+    if _contains_any(context_text, _SECOND_ROUND_RESCHEDULE_KEYWORDS):
+        return "second_round_reschedule_requested"
+    if _contains_any(context_text, _SECOND_ROUND_CONFIRM_KEYWORDS):
+        return "second_round_scheduled"
+    if "second round" in context_text or "final round" in context_text:
+        return "second_round_requested"
+    return ""
 
 
 def _extract_docx_text(content: bytes) -> str:
@@ -669,7 +713,45 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
     processing_error = ""
     reply_state = classify_reply_state(text=body_text, subject=subject, raw_event={**payload, **email_record, "body": body_text, "text": body_text, "subject": subject})
     intent = reply_state.lower()
+    second_round_context = bool(
+        outreach_event
+        and (
+            (getattr(outreach_event, "reply_state", "") or "").strip().lower() == "second_round_requested"
+            or "second round" in f"{subject} {body_text}".lower()
+            or "final round" in f"{subject} {body_text}".lower()
+        )
+    )
+    if candidate_profile and second_round_context:
+        second_round_intent = _detect_second_round_reply_state(text=body_text, subject=subject, outreach_event=outreach_event)
+        intent = second_round_intent or "second_round_requested"
     logger.info("reply_intent_detected sender_email=%s intent=%s", sender_email, intent)
+    workflow_token_row = NotificationWorkflowTokenRepository(db).get_active_by_candidate(
+        job_id=job_id or "",
+        candidate_id=candidate_id or "",
+        source_app="adam",
+        token_type="slot_booking",
+    ) if job_id and candidate_id else None
+    workflow_token = str(getattr(workflow_token_row, "token", "") or "").strip()
+    recruiter_id = str(JobRepository(db).get_recruiter_id(job_id or "") or "").strip()
+    emit_trace(
+        logger,
+        "inbound_email_processed",
+        workflow_token=workflow_token,
+        recruiter_id=recruiter_id,
+        candidate_id=candidate_id or "",
+        intent=intent,
+        email_id=email_id,
+    )
+    if second_round_context:
+        emit_trace(
+            logger,
+            "second_round_reply_received",
+            workflow_token=workflow_token,
+            recruiter_id=recruiter_id,
+            candidate_id=candidate_id or "",
+            reply_state=intent,
+            email_id=email_id,
+        )
     resume_attachment: InboundAttachmentDownload | None = next(
         (attachment for attachment in downloaded_attachments if _is_resume_attachment(attachment.filename, attachment.content_type)),
         None,
@@ -718,6 +800,12 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
         _set_candidate_status(candidate_profile, "declined")
     elif candidate_profile and intent == "ambiguous":
         _set_candidate_status(candidate_profile, "manual_review")
+    elif candidate_profile and intent == "second_round_requested":
+        _set_candidate_status(candidate_profile, "second_round_requested")
+    elif candidate_profile and intent == "second_round_scheduled":
+        _set_candidate_status(candidate_profile, "second_round_scheduled")
+    elif candidate_profile and intent == "second_round_reschedule_requested":
+        _set_candidate_status(candidate_profile, "second_round_reschedule_requested")
 
     if candidate_profile and outreach_event:
         _update_outreach_status(db, outreach_event=outreach_event, received_at=received_at)
@@ -760,6 +848,12 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
         ats_target = outreach_reply_state_to_ats_state(intent)
         if intent == "invalid_contact":
             ats_target = "archived"
+        elif intent == "second_round_scheduled":
+            ats_target = "second_round_scheduled"
+        elif intent == "second_round_reschedule_requested":
+            ats_target = "second_round_requested"
+        elif intent == "second_round_requested":
+            ats_target = "second_round_requested"
         transition_candidate_ats_state(
             db=db,
             job_id=job_id,
@@ -801,6 +895,31 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
         except Exception as exc:
             logger.warning(
                 "reengagement_schedule_failed sender_email=%s candidate_id=%s error=%s",
+                sender_email,
+                candidate_id,
+                str(exc),
+                exc_info=exc,
+            )
+
+    if candidate_profile and intent == "second_round_reschedule_requested":
+        try:
+            from app.services.automation_service import schedule_automation_job
+
+            schedule_automation_job(
+                db=db,
+                automation_type="recruiter_reminder",
+                job_id=job_id or "",
+                candidate_id=candidate_id or "",
+                run_at=received_at + timedelta(days=1),
+                payload={
+                    "outreachEventId": getattr(outreach_event, "id", None),
+                    "replyState": intent,
+                    "reason": "second_round_reschedule_requested",
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "second_round_reschedule_schedule_failed sender_email=%s candidate_id=%s error=%s",
                 sender_email,
                 candidate_id,
                 str(exc),

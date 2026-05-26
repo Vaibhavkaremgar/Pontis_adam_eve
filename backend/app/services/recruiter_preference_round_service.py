@@ -118,8 +118,19 @@ def _list_field(data: dict[str, Any], *keys: str) -> list[str]:
     return _ordered_unique(collected)
 
 
+def _compact_archetype_label(value: str, fallback: str) -> str:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return fallback
+    words = normalized.split()
+    if len(words) <= 5:
+        return normalized
+    return " ".join(words[:5]).strip()
+
+
 def _candidate_headline_from_option(option: dict[str, Any], *, fallback: str) -> str:
-    return _text_field(
+    return _compact_archetype_label(
+        _text_field(
         option,
         "candidate_headline",
         "candidateHeadline",
@@ -128,7 +139,9 @@ def _candidate_headline_from_option(option: dict[str, Any], *, fallback: str) ->
         "name",
         "role",
         "label",
-    ) or fallback
+    ),
+        fallback,
+    )
 
 
 def _ordered_unique(values: list[str]) -> list[str]:
@@ -893,8 +906,8 @@ def build_state_response(state: dict[str, Any] | None) -> dict[str, Any]:
 
 _CALIBRATION_STATE_PREFIX = "pontis:recruiter-preference-calibration:"
 _CALIBRATION_STATE_TTL_SECONDS = 24 * 60 * 60
-_CALIBRATION_SET_COUNT = 3
-_CALIBRATION_OPTIONS_PER_SET = 2
+_CALIBRATION_SET_COUNT = 1
+_CALIBRATION_OPTIONS_PER_SET = 4
 
 
 def _calibration_state_key(*, recruiter_id: str, job_id: str) -> str:
@@ -993,28 +1006,27 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
     role_seniority = _text_field(job, "experience_level", "experienceRequired", "seniority") or "unknown"
 
     return (
-        "You are generating recruiter calibration archetypes as realistic IDEAL CANDIDATE SNAPSHOTS.\n"
-        "Do not create personality cards or abstract labels.\n"
-        "Every archetype should feel like a believable mini-resume the recruiter would genuinely consider hiring.\n"
-        "Generate 3 distinct archetype sets with 2 archetypes in each set.\n"
-        "Each set should contrast two hireable candidate profiles for the same role and stage.\n"
+        "You are generating recruiter archetypes for X-Ray sourcing.\n"
+        "Do not create personality cards or abstract summaries.\n"
+        "Every archetype should be a concise, recruiter-actionable candidate persona.\n"
+        "Generate exactly 1 set with 4 archetypes.\n"
+        "Each archetype must be short, distinct, and ready to drive sourcing queries.\n"
         "Rules:\n"
         "- Return ONLY valid JSON.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
-        "- Each set must contain exactly 2 archetypes.\n"
+        "- Each set must contain exactly 4 archetypes.\n"
         "- Each archetype must include: candidate_headline, experience_snapshot, career_pattern, technical_strengths, ownership_style, leadership_profile, ideal_environment, execution_style, hiring_tradeoffs, fit_note.\n"
-        "- Keep the candidate headline role-like and specific, e.g. 'Senior Backend Engineer' or 'Founding AI Engineer'.\n"
-        "- Make the experience snapshot sound like a real resume line, e.g. years of experience, notable companies, stage context, or team scope.\n"
-        "- If the recruiter gave explicit years of experience in the voice intake or job requirements, every archetype must stay close to that experience band while varying the profile shape.\n"
-        "- Make the career pattern sound like a real hiring pattern, e.g. early startup joiner, internal promo, founder-office, long-tenure scaler.\n"
-        "- Technical_strengths must include the requested skills or close equivalents from the job and voice intake, with small variations across archetypes.\n"
-        "- Make the years of experience and skill variations obvious enough to highlight in the UI.\n"
-        "- Ownership_style, leadership_profile, ideal_environment, execution_style, and hiring_tradeoffs should read like recruiter notes, not personality labels.\n"
-        "- Use the job context, company stage, seniority, and voice summary to shape the archetypes.\n"
-        "- Prefer contrast within each set so the recruiter reveals taste.\n"
-        "- Anchor the profiles to believable hiring tradeoffs, such as startup depth over pedigree, execution over polish, or specialization over breadth.\n"
+        "- Keep the candidate headline to 3 to 5 words max.\n"
+        "- Keep the candidate headline role-like and specific, e.g. 'Founding AI Engineer' or 'Backend AI Systems Engineer'.\n"
+        "- Make the experience snapshot short, concrete, and resume-like.\n"
+        "- If the recruiter gave explicit years of experience in the voice intake or job requirements, stay close to that band while varying the profile shape.\n"
+        "- Keep the career pattern short and recruiter-facing.\n"
+        "- Technical_strengths must include the requested stack or close equivalents from the job and voice intake.\n"
+        "- ownership_style, leadership_profile, ideal_environment, execution_style, and hiring_tradeoffs should be concise notes, not paragraphs.\n"
+        "- Use the job title, voice summary, company stage, hiring intent, and technical stack to shape the archetypes.\n"
+        "- Prefer four clearly differentiated personas such as builder, systems owner, product engineer, and infrastructure specialist.\n"
         "- Keep the set theme grounded in the real hiring decision being made.\n"
-        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n\n"
+        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}, {...}, {...}]}]}\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
         f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
         f"{sanitize_prompt_block('Location', _job_text_field(job, 'location'), max_length=160)}\n"
@@ -1025,7 +1037,7 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         f"{sanitize_prompt_block('Experience', _job_text_field(job, 'experience_level', 'experienceRequired', 'seniority'), max_length=160)}\n"
         f"{sanitize_prompt_block('Skills', ', '.join(_job_list_values(job, 'skills_required', 'skills')), max_length=1200)}\n"
         f"{sanitize_prompt_block('Responsibilities', ', '.join(_job_list_values(job, 'responsibilities')), max_length=1200)}\n"
-        f"{sanitize_prompt_block('Voice summary', voice_summary, max_length=2000)}\n"
+        f"{sanitize_prompt_block('Voice summary', voice_summary, max_length=1200)}\n"
         f"{sanitize_prompt_block('Missing fields', missing_fields, max_length=800)}\n"
         f"{sanitize_prompt_block('Ambiguous fields', ambiguous_fields, max_length=800)}\n"
         f"{sanitize_prompt_block('Preferred skills', preferred_skills, max_length=800)}\n"
@@ -1246,6 +1258,30 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
                     "execution_style": "Measured shipping with clear plans, documentation, and low-regret decisions.",
                     "hiring_tradeoffs": ["reliability over flash", "scale depth over startup scrappiness", "discipline over improvisation"],
                     "fit_note": f"Best when {job_title} needs robustness, architecture rigor, and careful systems ownership.",
+                },
+                {
+                    "candidate_headline": "LLM Product Engineer",
+                    "experience_snapshot": "6 years shipping AI-assisted workflows in product teams with rapid experimentation cycles.",
+                    "career_pattern": "Builder who moved from product engineering into AI-heavy feature delivery.",
+                    "technical_strengths": ["llms", "react", "typescript", "prompt design"],
+                    "ownership_style": "Product-aware and comfortable turning vague ideas into shippable features.",
+                    "leadership_profile": ["bridges engineering and product", "explains tradeoffs clearly", "keeps momentum high"],
+                    "ideal_environment": "Product-led team that wants AI features shipped quickly and iterated often.",
+                    "execution_style": "Fast iteration with clear user-feedback loops and pragmatic delivery.",
+                    "hiring_tradeoffs": ["product leverage over deep research", "shipping speed over academic rigor", "adaptability over narrow depth"],
+                    "fit_note": f"Best when {job_title} needs AI features that feel native to the product experience.",
+                },
+                {
+                    "candidate_headline": "AI Infrastructure Engineer",
+                    "experience_snapshot": "8 years building deployment, retrieval, and observability layers for applied AI systems.",
+                    "career_pattern": "Systems owner who keeps model-serving and platform reliability moving together.",
+                    "technical_strengths": ["model deployment", "observability", "vector search", "python"],
+                    "ownership_style": "Operationally careful and strong on production guardrails.",
+                    "leadership_profile": ["sets technical standards", "documents failure modes", "mentors on reliability"],
+                    "ideal_environment": "AI team that needs dependable infra under real usage pressure.",
+                    "execution_style": "Methodical delivery with careful handoffs and low-risk releases.",
+                    "hiring_tradeoffs": ["stability over novelty", "reliability over flash", "platform depth over broad generalism"],
+                    "fit_note": f"Best when {job_title} needs production durability around AI delivery.",
                 },
             ],
         ),

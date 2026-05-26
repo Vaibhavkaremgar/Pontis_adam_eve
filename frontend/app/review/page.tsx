@@ -2,17 +2,15 @@
 
 /**
  * What this file does:
- * Runs the 3-step candidate selection flow.
- * Shows 2 candidates at a time, records one recruiter choice per batch,
- * and then renders the preference-driven reranked result set.
+ * Runs archetype selection and the post-selection X-Ray review flow.
  *
  * What API it connects to:
- * GET /candidates/selection/first
- * POST /candidates/selection
- * GET /candidates/selection/final
+ * GET /recruiters/:recruiterId/intelligence/jobs/:jobId
+ * POST /recruiters/:recruiterId/intelligence/jobs/:jobId/choice
+ * GET /candidates?jobId=...&refresh=true
  *
  * How it fits in the pipeline:
- * Voice intake -> archetype calibration -> recruiter review -> ready tracking
+ * Voice intake -> archetype generation -> X-Ray sourcing -> recruiter review
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -36,10 +34,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Modal } from "@/components/ui/modal";
-import { Separator } from "@/components/ui/separator";
 import { useAppContext } from "@/context/AppContext";
 import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
-import { getFinalSelectionResults, getFirstSelectionBatch, selectCandidateForEnrichment, submitSelectionChoice, swipeCandidate } from "@/lib/api/candidates";
+import { getCandidates, selectCandidateForEnrichment, swipeCandidate } from "@/lib/api/candidates";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
 import { storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
@@ -930,15 +927,17 @@ export default function ReviewPage() {
 
   const [session, setSession] = useState<CandidateSelectionSession | null>(null);
   const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
+  const [reviewCandidates, setReviewCandidates] = useState<Candidate[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
   const [isCalibrationLoading, setIsCalibrationLoading] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [isContinuingToReady, setIsContinuingToReady] = useState(false);
   const [error, setError] = useState("");
   const [calibrationError, setCalibrationError] = useState("");
+  const [sourcingError, setSourcingError] = useState("");
   const [calibrationSelectionId, setCalibrationSelectionId] = useState("");
   const [feedbackMessage, setFeedbackMessage] = useState("");
-  const [selectionDebug, setSelectionDebug] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
   const [activeInterviewInsights, setActiveInterviewInsights] = useState<any>(null);
@@ -961,6 +960,29 @@ export default function ReviewPage() {
     }
   }, [isSessionReady, jobId, router, user]);
 
+  const loadSourcedCandidates = async () => {
+    if (!isSessionReady || !user || !jobId) return;
+    setReviewLoading(true);
+    setSourcingError("");
+
+    const result = await getCandidates({
+      jobId,
+      refined: true,
+    });
+
+    if (!result.success || !result.data) {
+      const message = result.error || "Could not load sourced candidates.";
+      setSourcingError(message);
+      setReviewCandidates([]);
+      setReviewLoading(false);
+      return;
+    }
+
+    setReviewCandidates(result.data);
+    setFeedbackMessage(result.data.length > 0 ? "X-Ray sourcing loaded. Review candidate cards below." : "X-Ray sourcing completed with no candidates returned.");
+    setReviewLoading(false);
+  };
+
   useEffect(() => {
     if (!isSessionReady || !user || !jobId) return;
 
@@ -974,7 +996,7 @@ export default function ReviewPage() {
       if (cancelled) return;
 
       if (!intelligenceResult.success || !intelligenceResult.data) {
-        setCalibrationError(intelligenceResult.error || "Could not load recruiter calibration.");
+        setCalibrationError(intelligenceResult.error || "Could not load recruiter archetypes.");
         setIntelligence(null);
         setIsLoading(false);
         return;
@@ -989,25 +1011,20 @@ export default function ReviewPage() {
       if (!calibrationReady && hasCurrentCalibration) {
         setSession(null);
         setActiveCandidate(null);
-        setFinalShortlistedIds([]);
-        setSelectionDebug("");
+        setReviewCandidates([]);
+        setSourcingError("");
         setIsLoading(false);
         return;
       }
 
-      const selectionResult = await getFirstSelectionBatch(jobId);
+      if (calibrationReady) {
+        await loadSourcedCandidates();
+      } else {
+        setReviewCandidates([]);
+        setSourcingError("");
+      }
       if (cancelled) return;
-
-      if (!selectionResult.success || !selectionResult.data) {
-        setError(selectionResult.error || "Could not load candidate selection.");
-        setSelectionDebug("");
-        setIsLoading(false);
-        return;
-      }
-
-      setSession(selectionResult.data);
       setActiveCandidate(null);
-      setFinalShortlistedIds([]);
       setIsLoading(false);
     };
 
@@ -1071,11 +1088,11 @@ export default function ReviewPage() {
     };
   }, [activeCandidate, isSessionReady, jobId, user]);
 
-  const currentBatch = session?.currentBatch ?? [];
-  const completed = Boolean(session?.completed);
-  const progress = session ? Math.min(session.currentBatchIndex + (completed ? 0 : 1), session.totalBatches) : 0;
-  const finalCandidates = session?.finalCandidates ?? session?.topCandidates ?? [];
-  const analysis = session?.analysis ?? null;
+  const currentBatch = reviewCandidates;
+  const completed = reviewCandidates.length > 0;
+  const progress = completed ? 1 : 0;
+  const finalCandidates = reviewCandidates;
+  const analysis = null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
   const calibration = intelligence?.calibration ?? null;
   const calibrationArchetypes = useMemo(() => getCalibrationCurrentArchetypes(calibration), [calibration]);
@@ -1087,80 +1104,22 @@ export default function ReviewPage() {
   const completedInterviewStages = interviewProgression.filter((item: any) => item?.completed).length;
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
-    for (const candidate of finalCandidates) {
+    for (const candidate of reviewCandidates) {
       if (candidate.status === "selected") {
         ids.add(candidate.id);
       }
     }
     return [...ids];
-  }, [finalCandidates, finalShortlistedIds]);
+  }, [finalShortlistedIds, reviewCandidates]);
   const shortlistedCount = useMemo(() => {
-    if (!completed) return session?.selectedCandidateIds?.length ?? 0;
     return completedShortlistedIds.length;
-  }, [completed, completedShortlistedIds, session?.selectedCandidateIds?.length]);
-
-  const markFinalSelectionLocally = (candidateId: string) => {
-    setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
-    setSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
-              candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate
-            ),
-            topCandidates: (prev.topCandidates || []).map((candidate) =>
-              candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate
-            ),
-          }
-        : prev
-    );
-  };
-
-  const revertFinalSelectionLocally = (candidateId: string) => {
-    setFinalShortlistedIds((prev) => prev.filter((id) => id !== candidateId));
-    setSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            finalCandidates: (prev.finalCandidates || prev.topCandidates || []).map((candidate) =>
-              candidate.id === candidateId ? { ...candidate, status: "new" } : candidate
-            ),
-            topCandidates: (prev.topCandidates || []).map((candidate) =>
-              candidate.id === candidateId ? { ...candidate, status: "new" } : candidate
-            ),
-          }
-        : prev
-    );
-  };
-
-  const syncFinalShortlist = async () => {
-    if (!jobId || !completed || completedShortlistedIds.length === 0) {
-      return true;
-    }
-
-    const results = await Promise.all(
-      completedShortlistedIds.map((candidateId) => swipeCandidate({ jobId, candidateId, action: "accept" }))
-    );
-    const failed = results.find((result) => !result.success || !result.data);
-    if (failed) {
-      setError(failed.error || "Could not prepare selected candidates for Ready.");
-      setSelectionDebug(
-        [
-          `jobId=${jobId}`,
-          `selectedIds=${completedShortlistedIds.join(", ")}`,
-          `error=${failed.error || "Unknown error"}`
-        ].join("\n")
-      );
-      return false;
-    }
-
-    return true;
-  };
+  }, [finalShortlistedIds, reviewCandidates]);
 
   const handleCalibrationSelect = async (archetypeId: string) => {
     if (!jobId || !user || isCalibrationLoading) return;
     setIsCalibrationLoading(true);
     setCalibrationError("");
+    setFeedbackMessage("");
     setCalibrationSelectionId(archetypeId);
 
     const result = await chooseRecruiterCalibrationArchetype(user.id, jobId, {
@@ -1171,7 +1130,7 @@ export default function ReviewPage() {
 
     const calibrationResult = result.data ?? null;
     if (!result.success || !calibrationResult) {
-      setCalibrationError(result.error || "Could not save calibration choice.");
+      setCalibrationError(result.error || "Could not save archetype choice.");
       setCalibrationSelectionId("");
       setIsCalibrationLoading(false);
       return;
@@ -1189,15 +1148,7 @@ export default function ReviewPage() {
     const nextCalibration = calibrationResult.calibration ?? calibrationResult.selection ?? null;
     const nextStage = String(nextCalibration?.stage || "").trim();
     if (nextStage === "real_sourcing_ready") {
-      const selectionResult = await getFirstSelectionBatch(jobId);
-      if (!selectionResult.success || !selectionResult.data) {
-        setCalibrationError(selectionResult.error || "Calibration is complete, but candidate sourcing could not load.");
-      } else {
-        setSession(selectionResult.data);
-        setActiveCandidate(null);
-        setFinalShortlistedIds([]);
-        setSelectionDebug("");
-      }
+      await loadSourcedCandidates();
     }
 
     setCalibrationSelectionId("");
@@ -1205,60 +1156,30 @@ export default function ReviewPage() {
   };
 
   const handleSelect = async (candidateId: string) => {
-    if (!jobId || !session || isAdvancing) return;
+    if (!jobId || isAdvancing) return;
     setIsAdvancing(true);
     setError("");
     setSelectedCandidateId(candidateId);
+    const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    setReviewCandidates((prev) =>
+      prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate))
+    );
+    setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
 
-    if (completed) {
-      markFinalSelectionLocally(candidateId);
-      const result = await selectCandidateForEnrichment({ jobId, candidateId });
-      if (!result.success || !result.data) {
-        revertFinalSelectionLocally(candidateId);
-        setError(result.error || "Could not start Apollo enrichment.");
-        setSelectionDebug(`jobId=${jobId}\ncandidateId=${candidateId}\nerror=${result.error || "Unknown error"}`);
-        setIsAdvancing(false);
-        setSelectedCandidateId("");
-        return;
-      }
-
-      setSession(result.data);
-      setFeedbackMessage("Selection saved. Apollo enrichment is now running.");
-      setActiveCandidate(null);
-      setIsAdvancing(false);
-      setSelectedCandidateId("");
-      return;
-    }
-
-    const result = await submitSelectionChoice({ jobId, candidateId });
+    const result = await selectCandidateForEnrichment({ jobId, candidateId });
     if (!result.success || !result.data) {
-      const debugText = [
-        `jobId=${jobId}`,
-        `candidateId=${candidateId}`,
-        `selectedBatch=${(session?.currentBatch || []).map((item) => item.id).join(", ")}`,
-        `error=${result.error || "Unknown error"}`,
-      ].join("\n");
-      console.error("[selection] submit failed", {
-        jobId,
-        candidateId,
-        selectedBatch: session?.currentBatch,
-        response: result,
-      });
-      setError(result.error || "Could not record candidate selection.");
-      setSelectionDebug(debugText);
+      setReviewCandidates((prev) =>
+        prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: nextCandidate?.status || "new" } : candidate))
+      );
+      setFinalShortlistedIds((prev) => prev.filter((id) => id !== candidateId));
+      setError(result.error || "Could not start Apollo enrichment.");
       setIsAdvancing(false);
       setSelectedCandidateId("");
       return;
     }
 
-    setSession(result.data);
     setActiveCandidate(null);
-    if (result.data.warning) {
-      console.warn("[selection] submit warning", result.data.warning);
-      setSelectionDebug(`warning=${result.data.warning}`);
-    } else {
-      setSelectionDebug("");
-    }
+    setFeedbackMessage("Selection saved. Apollo enrichment is now running.");
     setIsAdvancing(false);
     setSelectedCandidateId("");
   };
@@ -1267,25 +1188,23 @@ export default function ReviewPage() {
     if (!jobId || isAdvancing) return;
     setIsAdvancing(true);
     setSelectedCandidateId(candidateId);
+    setReviewCandidates((prev) =>
+      prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "rejected" } : candidate))
+    );
     await swipeCandidate({ jobId, candidateId, action: "reject" });
     setIsAdvancing(false);
     setSelectedCandidateId("");
   };
 
   const handleContinueToReady = async () => {
-    if (!jobId || !session || !completed || shortlistedCount === 0 || isContinuingToReady) return;
+    if (!jobId || shortlistedCount === 0 || isContinuingToReady) return;
     setIsContinuingToReady(true);
     setError("");
 
-    const ok = await syncFinalShortlist();
-    if (ok) {
-      const shortlistedCandidates = (session.finalCandidates || session.topCandidates || []).filter(
-        (candidate) => completedShortlistedIds.includes(candidate.id)
-      );
-      storeShortlistedCandidateIds(jobId, completedShortlistedIds);
-      storeShortlistedCandidates(jobId, shortlistedCandidates);
-      router.push("/ready");
-    }
+    const shortlistedCandidates = reviewCandidates.filter((candidate) => completedShortlistedIds.includes(candidate.id));
+    storeShortlistedCandidateIds(jobId, completedShortlistedIds);
+    storeShortlistedCandidates(jobId, shortlistedCandidates);
+    router.push("/ready");
 
     setIsContinuingToReady(false);
   };
@@ -1329,13 +1248,8 @@ export default function ReviewPage() {
   const refreshFinalResults = async () => {
     if (!jobId) return;
     setIsLoading(true);
-    const result = await getFinalSelectionResults(jobId);
-    if (result.success && result.data) {
-      setSession(result.data);
-      setActiveCandidate(null);
-    } else if (result.error) {
-      setError(result.error);
-    }
+    await loadSourcedCandidates();
+    setActiveCandidate(null);
     setIsLoading(false);
   };
 
@@ -1352,47 +1266,42 @@ export default function ReviewPage() {
 
           {isRefined && (
             <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Voice intake completed. The selection flow is now running on the refined job profile.
+              Voice intake completed. Archetype selection and X-Ray sourcing are now ready.
             </div>
           )}
 
-          <div className="grid h-[72px] grid-cols-3 overflow-hidden rounded-[20px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
-            <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
-              <ShieldCheck className="h-5 w-5 text-[#0F6B3A]" />
-              <span className="font-body text-[15px] font-semibold text-[#111827]">
-                Progress: <span className="text-[#0F6B3A]">{session ? `${progress} / ${session.totalBatches}` : "0 / 3"}</span>
-              </span>
+          {(feedbackMessage || calibrationError || sourcingError || error) && (
+            <div className="space-y-3">
+              {feedbackMessage && <p className="rounded-xl border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">{feedbackMessage}</p>}
+              {calibrationError && <p className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">{calibrationError}</p>}
+              {sourcingError && (
+                <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {sourcingError.includes("409") || sourcingError.toLowerCase().includes("conflict")
+                    ? "Sourcing orchestration conflict. The recruiter state should be refreshed before trying again."
+                    : sourcingError.toLowerCase().includes("no candidates")
+                      ? "X-Ray sourcing completed, but no external candidates were returned."
+                      : sourcingError}
+                </p>
+              )}
+              {error && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
             </div>
-            <div className="flex items-center justify-center gap-3 border-r border-[#ECE7DE] px-4">
-              <Users className="h-5 w-5 text-[#0F6B3A]" />
-              <span className="font-body text-[15px] font-semibold text-[#111827]">
-                Selected: <span className="text-[#0F6B3A]">{shortlistedCount}</span>
-              </span>
-            </div>
-            <div className="flex items-center justify-center gap-3 px-4">
-              <CircleX className="h-5 w-5 text-[#0F6B3A]" />
-              <span className="font-body text-[15px] font-semibold text-[#111827]">
-                Rejected: <span className="text-[#0F6B3A]">{session?.rejectedCandidateIds?.length ?? 0}</span>
-              </span>
-            </div>
-          </div>
+          )}
 
-          {isLoading && <p className="text-sm text-gray-500">Loading selection session...</p>}
-          {error && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>}
+          {isLoading && <p className="text-sm text-gray-500">Loading recruiter archetypes and sourcing candidates...</p>}
 
           {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    Preference calibration {calibrationRoundLabel}
+                    Archetype selection {calibrationRoundLabel}
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Adam generated archetypes from the job details and requirements. Choose the one that best matches your preferred hiring style.
+                    Adam generated archetypes from the job details, voice intake, and recruiter preferences. Choose the one that best matches your hiring intent.
                   </p>
                 </div>
                 <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                  Calibration gate
+                  Archetype selection
                 </Badge>
               </div>
 
@@ -1433,7 +1342,7 @@ export default function ReviewPage() {
                           <div className="space-y-2">
                             <CardTitle className="font-heading text-[24px] font-semibold text-[#111827]">{title}</CardTitle>
                             <CardDescription className="font-body text-sm leading-6 text-[#6B7280]">
-                              {experienceSnapshot || fitNote || "Believable ideal candidate profile for calibration."}
+                              {experienceSnapshot || fitNote || "Believable ideal candidate profile for archetype selection."}
                             </CardDescription>
                           </div>
                           <Badge className="rounded-full bg-[#F5E7B8] px-3 py-1 text-[12px] font-semibold text-[#8A5A00] shadow-none">
@@ -1491,106 +1400,84 @@ export default function ReviewPage() {
 
           {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length === 0 && (
             <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Calibration is being prepared. Adam will show the archetype sets here shortly.
+              Archetypes are being prepared. Adam will show the selection cards here shortly.
             </div>
           )}
 
           {calibrationError && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{calibrationError}</p>}
 
-          {!isLoading && calibrationComplete && !session && (
+          {!isLoading && calibrationComplete && reviewLoading && (
             <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-3 text-sm text-[#6B7280]">
-              Calibration is complete. Adam is now building your personalized shortlist.
+              X-Ray sourcing is running now. Candidate cards will appear as soon as the backend returns ranked results.
             </div>
           )}
 
-          {!isLoading && !completed && currentBatch.length > 0 && (
+          {!isLoading && calibrationComplete && reviewCandidates.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    Candidate set
+                    X-Ray candidate review
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Review the candidates in this set. Expand their profile to see full details and choose the one you want to keep.
+                    Review the externally sourced candidates. Each card is ranked from X-Ray signals and reranked with recruiter memory.
                   </p>
                 </div>
-                <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F5E7B8] px-5 py-2 text-[13px] font-semibold text-[#8A5A00] shadow-none">
-                  Archetype-guided set
+                <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
+                  {reviewCandidates.length} candidates
                 </Badge>
               </div>
 
-              <div className="grid gap-8">
-                {currentBatch.map((candidate) => {
+              <div className="grid gap-5">
+                {reviewCandidates.map((candidate, index) => {
+                  const isSelected = completedShortlistedIds.includes(candidate.id);
                   return (
-                    <CandidateCard
+                    <CandidateListRow
                       key={candidate.id}
                       candidate={candidate}
-                      isSelected={selectedCandidateId === candidate.id}
+                      rankLabel={`${index + 1}`}
+                      isSelected={isSelected}
                       isSelecting={isAdvancing && selectedCandidateId === candidate.id}
                       selectionLocked={isAdvancing && selectedCandidateId !== candidate.id}
                       onOpenDetails={() => setActiveCandidate(candidate)}
                       onSelect={() => void handleSelect(candidate.id)}
-                      showSelectButton
                     />
                   );
                 })}
               </div>
-            </div>
-          )}
 
-          {!isLoading && !completed && currentBatch.length === 0 && (
-            <div className="rounded-[20px] border border-[#E7E0D4] bg-[#EFE6D8] p-4 text-sm text-[#6B7280]">
-              Preparing the candidate set. If this screen just refreshed, the session will resume from the last saved step.
-            </div>
-          )}
-
-          {completed && (
-            <div className="space-y-5">
-              <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#0F6B3A]">
-                <p className="font-semibold">Selection complete</p>
-                <p className="mt-1">The backend has analyzed your choices and reranked the candidate pool using the signals you showed. Select who should be moved forward automatically, then track them in Ready.</p>
+              <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-body text-[15px] font-semibold text-[#111827]">Ready is the next recruiter handoff</p>
+                    <p className="font-body text-sm text-[#6B7280]">Save selected candidates and continue into Ready when you are satisfied with the shortlist.</p>
+                  </div>
+                  <Button
+                    data-testid="continue-to-ready"
+                    className="rounded-[14px] bg-[#0F6B3A] px-5 py-2 text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
+                    onClick={() => void handleContinueToReady()}
+                    disabled={shortlistedCount === 0 || isAdvancing || isContinuingToReady}
+                  >
+                    {isContinuingToReady ? "Opening Ready..." : "Open Ready"}
+                  </Button>
+                </div>
               </div>
+            </div>
+          )}
 
-              {summaryLines.length > 0 && (
-                <Card className="rounded-[24px] border border-[#E7E0D4] bg-[#F8F5EE] shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
-                  <CardHeader>
-                    <CardTitle className="text-base">Preference analysis</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2 text-sm text-gray-700">
-                    {summaryLines.map((line) => (
-                      <p key={line}>{line}</p>
-                    ))}
-                  </CardContent>
-                </Card>
-              )}
-
-              <SwipeDeck
-                candidates={finalCandidates}
-                shortlistedIds={completedShortlistedIds}
-                isAdvancing={isAdvancing}
-                selectedCandidateId={selectedCandidateId}
-                onSelect={(id) => void handleSelect(id)}
-                onReject={(id) => void handleReject(id)}
-                onOpenDetails={(c) => setActiveCandidate(c)}
-              />
-
-              <Separator />
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <Button
-                  data-testid="continue-to-ready"
-                  className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white hover:bg-[#0C5A31]"
-                  onClick={() => void handleContinueToReady()}
-                  disabled={shortlistedCount === 0 || isAdvancing || isContinuingToReady}
-                >
-                  {isContinuingToReady
-                    ? "Opening Ready..."
-                    : shortlistedCount > 0
-                      ? "View Ready Candidates"
-                      : "Select candidates to continue"}
+          {!isLoading && calibrationComplete && reviewCandidates.length === 0 && !reviewLoading && (
+            <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm text-[#6B7280]">
+              <p>
+                {sourcingError
+                  ? "X-Ray sourcing did not return candidates. Check the sourcing error above."
+                  : "X-Ray sourcing finished, but no candidates matched the selected archetypes yet."}
+              </p>
+              <div className="flex flex-wrap gap-3">
+                <Button variant="outline" onClick={() => void refreshFinalResults()}>
+                  Retry X-Ray sourcing
                 </Button>
-                <Button variant="outline" className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white text-[15px] font-semibold text-[#111827]" onClick={() => void refreshFinalResults()}>
-                  Refresh final results
+                <Button variant="outline" onClick={() => router.push("/voice")}>
+                  Back to Voice
                 </Button>
               </div>
             </div>

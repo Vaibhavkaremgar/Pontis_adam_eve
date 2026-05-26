@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   AlertCircle,
   BarChart3,
@@ -9,6 +9,7 @@ import {
   FileText,
   ListOrdered,
   PlayCircle,
+  RectangleEllipsis,
   ShieldCheck,
   Sparkles,
   UserCircle2,
@@ -18,13 +19,21 @@ import {
 import { Navbar } from "@/components/layout/navbar";
 import { ResultsPipelineNav } from "@/components/results/results-pipeline-nav";
 import { InterviewRecordingPlayer } from "@/components/results/interview-recording-player";
+import { SecondRoundSchedulingModal, type SecondRoundSchedulingValues } from "@/components/results/second-round-scheduling-modal";
 import { parseTranscriptSegments, type TranscriptSegment } from "@/components/results/transcript-utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAppContext } from "@/context/AppContext";
 import { logEvent } from "@/lib/logger";
-import { getResultWorkspace, getResultsList, type ResultListItem, type ResultWorkspaceResponse } from "@/lib/api/results";
+import {
+  advanceResultWorkflow,
+  getResultWorkspace,
+  getResultsList,
+  submitResultDecision,
+  type ResultListItem,
+  type ResultWorkspaceResponse,
+} from "@/lib/api/results";
 
 type TabKey = "video" | "analysis" | "transcript" | "resume" | "timeline";
 
@@ -40,6 +49,14 @@ const RESULT_LABELS: Record<string, string> = {
   interview_completed: "Interview Completed",
   evaluation_processing: "Evaluation Processing",
   results_ready: "Results Ready",
+  advanced: "Advanced",
+  second_round_requested: "Second Round Requested",
+  second_round_scheduled: "Second Round Scheduled",
+  final_round: "Final Round",
+  offer_stage: "Offer Stage",
+  offer_sent: "Offer Sent",
+  placed: "Placed",
+  search_closed: "Search Closed",
   interview_in_progress: "Interview In Progress",
   interview_scheduled: "Interview Scheduled",
   rejected: "Rejected",
@@ -118,12 +135,21 @@ function emptyWorkspace(): ResultWorkspaceResponse {
       technicalDepth: "",
     },
     metadata: {},
+    operations: {
+      decisionState: "",
+      availableActions: ["pass", "advance", "hold", "reject"],
+      followUpPrompt: {
+        show: false,
+        message: "Would you like to advance this candidate?",
+      },
+    },
   };
 }
 
 export default function ResultsPage() {
   const router = useRouter();
-  const { user, isSessionReady, jobId } = useAppContext();
+  const searchParams = useSearchParams();
+  const { user, isSessionReady, jobId, setJobId } = useAppContext();
   const [items, setItems] = useState<ResultListItem[]>([]);
   const [selectedWorkflowToken, setSelectedWorkflowToken] = useState("");
   const [workspace, setWorkspace] = useState<ResultWorkspaceResponse>(emptyWorkspace());
@@ -132,17 +158,25 @@ export default function ResultsPage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [listError, setListError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
+  const [actionLoading, setActionLoading] = useState<"pass" | "advance" | "hold" | "reject" | "">("");
+  const [advanceModalOpen, setAdvanceModalOpen] = useState(false);
+  const [actionMessage, setActionMessage] = useState("");
+  const queryJobId = String(searchParams.get("jobId") || "").trim();
+  const effectiveJobId = jobId || queryJobId;
 
   const selectedItem = useMemo(() => items.find((item) => item.workflowToken === selectedWorkflowToken) || items[0] || null, [items, selectedWorkflowToken]);
   const transcriptSegments = useMemo(() => parseTranscriptSegments(workspace.transcript), [workspace.transcript]);
   const timelineRows = useMemo(() => toTimelineRows(workspace.timeline), [workspace.timeline]);
   const candidateCount = items.length;
+  const recruiterEmail = String((workspace.metadata?.recruiterEmail as string) || user?.email || "").trim();
+  const followUpPrompt = workspace.operations?.followUpPrompt?.show ? workspace.operations.followUpPrompt.message || "Would you like to advance this candidate?" : "";
+  const decisionState = String(workspace.operations?.decisionState || "").trim();
 
   const loadResults = async () => {
-    if (!jobId || !user) return;
+    if (!effectiveJobId || !user) return;
     setListLoading(true);
     setListError("");
-    const result = await getResultsList(jobId);
+    const result = await getResultsList(effectiveJobId);
     if (!result.success || !result.data) {
       setListError(result.error || "Could not load interview results.");
       setItems([]);
@@ -159,7 +193,7 @@ export default function ResultsPage() {
         workflow_token: "",
         candidate_id: "",
         recruiter_id: result.data.recruiterId || user.id,
-        job_id: jobId,
+        job_id: effectiveJobId,
         candidate_count: result.data.candidates.length,
       },
     });
@@ -193,11 +227,93 @@ export default function ResultsPage() {
         workflow_token: workflowToken,
         candidate_id: result.data.metadata?.candidateId || result.data.candidate.id || "",
         recruiter_id: result.data.metadata?.recruiterId || user?.id || "",
-        job_id: result.data.metadata?.jobId || jobId || "",
+        job_id: result.data.metadata?.jobId || effectiveJobId || "",
         status: result.data.status,
       },
     });
     setWorkspaceLoading(false);
+  };
+
+  const refreshCurrentWorkspace = async (workflowToken = selectedWorkflowToken) => {
+    await loadResults();
+    if (workflowToken) {
+      await loadWorkspace(workflowToken);
+    }
+  };
+
+  const handleDecision = async (decision: "pass" | "hold" | "reject") => {
+    if (!selectedWorkflowToken) return;
+    setActionLoading(decision);
+    setActionMessage("");
+    logEvent({
+      event: "recruiter_decision_clicked",
+      payload: {
+        workflow_token: selectedWorkflowToken,
+        candidate_id: workspace.metadata?.candidateId || workspace.candidate.id || "",
+        recruiter_id: workspace.metadata?.recruiterId || user?.id || "",
+        decision,
+      },
+    });
+    const result = await submitResultDecision(selectedWorkflowToken, { decision });
+    if (!result.success) {
+      setActionMessage(result.error || "Could not record recruiter decision right now.");
+      setActionLoading("");
+      return;
+    }
+    setActionMessage(result.data?.duplicate ? "Decision was already recorded." : decision === "reject" ? "Candidate rejected and ATS updated." : `Decision recorded: ${decision}.`);
+    await refreshCurrentWorkspace();
+    setActionLoading("");
+  };
+
+  const handleAdvanceSubmit = async (values: SecondRoundSchedulingValues) => {
+    if (!selectedWorkflowToken) return;
+    setActionLoading("advance");
+    setActionMessage("");
+    const payload = {
+      roundType: values.roundType,
+      mode: values.mode,
+      meetUrl: values.meetUrl,
+      officeAddress: values.officeAddress,
+      interviewer: {
+        name: values.interviewerName,
+        email: values.interviewerEmail,
+      },
+      recruiterEmail: values.recruiterEmail,
+      slots: values.slots,
+      notes: values.notes,
+      timezone: values.timezone,
+      duration: values.duration,
+      panelInterviewers: values.panelInterviewers,
+    };
+    logEvent({
+      event: "recruiter_advance_submitted",
+      payload: {
+        workflow_token: selectedWorkflowToken,
+        candidate_id: workspace.metadata?.candidateId || workspace.candidate.id || "",
+        recruiter_id: workspace.metadata?.recruiterId || user?.id || "",
+        mode: values.mode,
+        round_type: values.roundType,
+      },
+    });
+    const result = await advanceResultWorkflow(selectedWorkflowToken, payload);
+    if (!result.success) {
+      setActionMessage(result.error || "Could not send second-round invite.");
+      setActionLoading("");
+      return;
+    }
+    setAdvanceModalOpen(false);
+    setActionMessage(result.data?.duplicate ? "Second-round invite already exists." : "Second-round invite sent.");
+    logEvent({
+      event: "recruiter_advance_completed",
+      payload: {
+        workflow_token: selectedWorkflowToken,
+        candidate_id: workspace.metadata?.candidateId || workspace.candidate.id || "",
+        recruiter_id: workspace.metadata?.recruiterId || user?.id || "",
+        invite_status: result.data?.status || "second_round_requested",
+      },
+    });
+    await refreshCurrentWorkspace();
+    setActionLoading("");
   };
 
   useEffect(() => {
@@ -206,7 +322,7 @@ export default function ResultsPage() {
       router.replace("/login");
       return;
     }
-    if (!jobId) {
+    if (!effectiveJobId) {
       router.replace("/job");
       return;
     }
@@ -214,10 +330,17 @@ export default function ResultsPage() {
     setWorkspace(emptyWorkspace());
     void loadResults();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSessionReady, jobId, router, user]);
+  }, [effectiveJobId, isSessionReady, router, user]);
+
+  useEffect(() => {
+    if (jobId || !queryJobId) return;
+    setJobId(queryJobId);
+  }, [jobId, queryJobId, setJobId]);
 
   useEffect(() => {
     if (!selectedWorkflowToken) return;
+    setActionMessage("");
+    setActionLoading("");
     void loadWorkspace(selectedWorkflowToken);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWorkflowToken]);
@@ -232,7 +355,7 @@ export default function ResultsPage() {
       <Navbar />
       <ResultsPipelineNav active="Results" />
 
-      <main className="mx-auto w-full max-w-[1600px] px-4 py-6 sm:px-6 lg:px-8">
+      <main className="mx-auto w-full max-w-[1600px] px-4 py-6 pb-28 sm:px-6 lg:px-8">
         <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl">
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-700">Recruiter intelligence workspace</p>
@@ -374,6 +497,33 @@ export default function ResultsPage() {
                 </Button>
               </CardContent>
             </Card>
+
+            <Card className="border-slate-200/80 bg-white/90 shadow-[0_12px_40px_rgba(15,23,42,0.08)]">
+              <CardHeader>
+                <CardTitle className="text-lg">Recruiter actions</CardTitle>
+                <CardDescription>Quick decisions and the next-step scheduling handoff.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Button className="w-full justify-center" variant="outline" onClick={() => void handleDecision("pass")} disabled={Boolean(actionLoading)}>
+                  Pass
+                </Button>
+                <Button className="w-full justify-center" variant="default" onClick={() => setAdvanceModalOpen(true)} disabled={Boolean(actionLoading)}>
+                  Advance
+                </Button>
+                <Button className="w-full justify-center" variant="outline" onClick={() => void handleDecision("hold")} disabled={Boolean(actionLoading)}>
+                  Hold
+                </Button>
+                <Button className="w-full justify-center" variant="outline" onClick={() => void handleDecision("reject")} disabled={Boolean(actionLoading)}>
+                  Reject
+                </Button>
+                <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                  <p className="font-medium text-slate-900">Workflow token</p>
+                  <p className="mt-1 break-all">{selectedWorkflowToken || "Select a candidate"}</p>
+                  <p className="mt-3 text-xs uppercase tracking-[0.16em] text-slate-500">Owner</p>
+                  <p className="mt-1">{recruiterEmail || "Recruiter not loaded"}</p>
+                </div>
+              </CardContent>
+            </Card>
           </aside>
 
           <section className="space-y-4">
@@ -390,6 +540,30 @@ export default function ResultsPage() {
                     <Badge variant={scoreTone(workspace.scores.overall)}>{Math.round(workspace.scores.overall)} overall</Badge>
                     <Badge variant="neutral">{formatStatus(workspace.status || activeCandidate?.completionState || "")}</Badge>
                     {workspace.recording.videoAvailable && <Badge variant="high"><PlayCircle className="mr-1 h-3.5 w-3.5" /> Video ready</Badge>}
+                    {decisionState && <Badge variant="info">{decisionState.replace(/_/g, " ")}</Badge>}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-slate-700">
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="font-medium text-slate-900">{followUpPrompt || "Recruiter decision pending"}</p>
+                      {actionMessage && <p className="mt-1 text-slate-600">{actionMessage}</p>}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" size="sm" onClick={() => void handleDecision("pass")} disabled={Boolean(actionLoading)}>
+                        Pass
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => setAdvanceModalOpen(true)} disabled={Boolean(actionLoading)}>
+                        Advance
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => void handleDecision("hold")} disabled={Boolean(actionLoading)}>
+                        Hold
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => void handleDecision("reject")} disabled={Boolean(actionLoading)}>
+                        Reject
+                      </Button>
+                    </div>
                   </div>
                 </div>
 
@@ -652,7 +826,44 @@ export default function ResultsPage() {
             </Card>
           </section>
         </div>
+
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/90 px-4 py-3 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur">
+          <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-3 lg:flex-row lg:items-center lg:justify-between lg:px-4">
+            <div className="flex items-center gap-3 text-sm text-slate-700">
+              <RectangleEllipsis className="h-4 w-4 text-slate-500" />
+              <div>
+                <p className="font-medium text-slate-900">Recruiter decision workspace</p>
+                <p>{actionMessage || followUpPrompt || "Choose a decision, then schedule the next round if needed."}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => void handleDecision("pass")} disabled={Boolean(actionLoading)}>
+                Pass
+              </Button>
+              <Button variant="default" size="sm" onClick={() => setAdvanceModalOpen(true)} disabled={Boolean(actionLoading)}>
+                Advance
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void handleDecision("hold")} disabled={Boolean(actionLoading)}>
+                Hold
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void handleDecision("reject")} disabled={Boolean(actionLoading)}>
+                Reject
+              </Button>
+            </div>
+          </div>
+        </div>
       </main>
+
+      <SecondRoundSchedulingModal
+        open={advanceModalOpen}
+        onOpenChange={setAdvanceModalOpen}
+        candidateName={activeCandidate?.name || workspace.candidate.name || "Candidate"}
+        role={workspace.candidate.role || workspace.candidate.headline || "Candidate"}
+        company={workspace.candidate.company || "Company"}
+        defaultRecruiterEmail={recruiterEmail}
+        submitting={actionLoading === "advance"}
+        onSubmit={(values) => void handleAdvanceSubmit(values)}
+      />
     </div>
   );
 }

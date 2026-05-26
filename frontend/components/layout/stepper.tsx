@@ -1,6 +1,6 @@
 /**
  * What this file does:
- * Displays progress across Company, Job, Voice, Review, and Ready steps.
+ * Displays progress across the pre-results setup wizard: Company, Job, Voice, Review, and Ready.
  */
 import { cn } from "@/lib/utils";
 

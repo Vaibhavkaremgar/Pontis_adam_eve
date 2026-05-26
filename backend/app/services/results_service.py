@@ -31,7 +31,21 @@ from app.utils.observability import emit_trace
 
 logger = logging.getLogger(__name__)
 
-_RESULT_STATUSES = {"interview_completed", "evaluation_processing", "results_ready"}
+_RESULT_STATUSES = {
+    "interview_completed",
+    "evaluation_processing",
+    "results_ready",
+    "advanced",
+    "second_round_requested",
+    "second_round_scheduled",
+    "final_round",
+    "offer_stage",
+    "offer_sent",
+    "placed",
+    "search_closed",
+    "rejected",
+    "hired",
+}
 
 
 def _normalize_text(value: Any) -> str:
@@ -87,6 +101,7 @@ def _build_candidate_snapshot(
     overall_score = float(scores_remote.get("overall") or getattr(profile, "fit_score", 0.0) or 0.0)
     recommendation = _normalize_text(remote.get("decision") or remote.get("recommendation") or getattr(profile, "decision", "")).lower()
     current_status = normalize_ats_status(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", ""))
+    ats_metadata = getattr(profile, "ats_metadata", {}) if isinstance(getattr(profile, "ats_metadata", {}), dict) else {}
     evaluation_ready = (session.evaluation_status or "").strip().lower() == "completed" if session else False
     status = _normalize_text(remote.get("status") or current_status or getattr(session, "status", "") or "interview_completed")
 
@@ -161,6 +176,14 @@ def _build_candidate_snapshot(
                 }
                 for row in evaluations
             ],
+        },
+        "operations": {
+            "decisionState": _normalize_text(ats_metadata.get("recruiterDecision")).lower() or "pending",
+            "availableActions": ["pass", "advance", "hold", "reject"],
+            "followUpPrompt": {
+                "show": status in {"interview_completed", "results_ready"} and not _normalize_text(ats_metadata.get("recruiterDecision")),
+                "message": "Would you like to advance this candidate?",
+            },
         },
     }
 

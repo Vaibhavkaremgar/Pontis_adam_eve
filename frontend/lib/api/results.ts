@@ -78,6 +78,35 @@ export type ResultWorkspaceResponse = {
     [key: string]: unknown;
   };
   metadata: Record<string, unknown>;
+  operations?: {
+    decisionState?: string;
+    availableActions?: string[];
+    followUpPrompt?: {
+      show?: boolean;
+      message?: string;
+    };
+  };
+};
+
+export type AdvanceResultPayload = {
+  roundType: string;
+  mode: string;
+  meetUrl: string;
+  officeAddress: string;
+  interviewer: {
+    name: string;
+    email: string;
+  };
+  recruiterEmail: string;
+  slots: string[];
+  notes: string;
+  timezone?: string;
+  duration?: string;
+  panelInterviewers?: string[];
+};
+
+export type ResultDecisionPayload = {
+  decision: "pass" | "hold" | "reject";
 };
 
 export async function getResultsList(jobId: string): Promise<ApiResponse<ResultListResponse>> {
@@ -98,3 +127,36 @@ export function getResultVideoUrl(workflowToken: string): string {
   return `${API_BASE_URL}/results/video/${encodeURIComponent(workflowToken)}`;
 }
 
+export async function submitResultDecision(workflowToken: string, payload: ResultDecisionPayload): Promise<ApiResponse<{ workflowToken: string; decision: string; duplicate?: boolean }>> {
+  return requestApi({
+    url: `${API_BASE_URL}/results/${encodeURIComponent(workflowToken)}/decision`,
+    method: "POST",
+    payload,
+  });
+}
+
+export async function advanceResultWorkflow(
+  workflowToken: string,
+  payload: AdvanceResultPayload,
+): Promise<ApiResponse<{
+  workflowToken: string;
+  jobId: string;
+  candidateId: string;
+  candidateEmail: string;
+  subject: string;
+  messageId: string;
+  status: string;
+  decisionState: string;
+  roundType: string;
+  mode: string;
+  sentAt: string;
+  recipient: string;
+  cc: string[];
+  duplicate?: boolean;
+}>> {
+  return requestApi({
+    url: `${API_BASE_URL}/results/${encodeURIComponent(workflowToken)}/advance`,
+    method: "POST",
+    payload,
+  });
+}

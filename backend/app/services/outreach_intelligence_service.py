@@ -143,6 +143,9 @@ def outreach_reply_state_to_notification_title(reply_state: str, *, candidate_na
         "not_interested": "Candidate is not interested",
         "negative_response": "Candidate gave a negative response",
         "invalid_contact": "Candidate contact is invalid",
+        "second_round_requested": "Candidate replied about second round",
+        "second_round_scheduled": "Candidate confirmed second round",
+        "second_round_reschedule_requested": "Candidate requested a second-round reschedule",
     }
     base = labels.get(normalized, "Candidate reply received")
     return f"{base}: {candidate_name}".strip()
@@ -209,6 +212,9 @@ def compute_outreach_engagement_snapshot(
         "not_interested": 0.1,
         "negative_response": 0.05,
         "invalid_contact": 0.0,
+        "second_round_requested": 0.38,
+        "second_round_scheduled": 0.62,
+        "second_round_reschedule_requested": 0.28,
     }.get(normalized_reply_state, 0.1 if responded_at else 0.0)
     engagement_score += state_bonus
     if follow_up_count:
@@ -218,9 +224,9 @@ def compute_outreach_engagement_snapshot(
     reply_likelihood_score = 0.1
     reply_likelihood_score += min(0.2, open_count * 0.08)
     reply_likelihood_score += min(0.2, follow_up_count * 0.06)
-    if normalized_reply_state in {"interested", "need_more_info", "asked_to_follow_up_later"}:
+    if normalized_reply_state in {"interested", "need_more_info", "asked_to_follow_up_later", "second_round_requested"}:
         reply_likelihood_score += 0.35
-    elif normalized_reply_state in {"out_of_office"}:
+    elif normalized_reply_state in {"out_of_office", "second_round_reschedule_requested"}:
         reply_likelihood_score += 0.22
     elif normalized_reply_state in {"not_interested", "negative_response"}:
         reply_likelihood_score += 0.08

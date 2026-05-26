@@ -179,7 +179,16 @@ def _selection_candidate_pool(*, db: Session, job: Any) -> list[CandidateResult]
         limit = _selection_limit(job)
         highest_matches = sorted(external_candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
         return highest_matches[:limit]
-    raise APIError("No external candidates available after archetype calibration", status_code=409)
+    if candidates:
+        logger.warning(
+            "selection_external_candidates_missing job_id=%s falling_back_to_ranked_pool count=%s",
+            job.id,
+            len(candidates),
+        )
+        limit = _selection_limit(job)
+        highest_matches = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+        return highest_matches[:limit]
+    raise APIError("No X-Ray candidates available for review", status_code=404)
 
 
 def _sync_selection_session_to_candidate_set(session, candidates: list[CandidateResult]) -> None:
