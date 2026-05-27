@@ -38,15 +38,15 @@ class SerpApiSourcingTests(unittest.TestCase):
             leadership_expectations="technical leadership",
         )
 
-        self.assertGreaterEqual(len(queries), 3)
-        joined = " ".join(queries)
-        self.assertIn("site:linkedin.com/in/", joined)
-        self.assertIn("Senior Backend Engineer", joined)
-        self.assertIn("Python", joined)
-        self.assertIn("AWS", joined)
-        self.assertIn("San Francisco", joined)
-        self.assertIn("Series A", joined)
-        self.assertIn("fintech", joined.lower())
+        self.assertEqual(len(queries), 1)
+        query = queries[0]
+        self.assertIn("site:linkedin.com/in/", query)
+        self.assertIn("Senior Backend Engineer", query)
+        self.assertIn("Python", query)
+        self.assertIn("AWS", query)
+        self.assertIn("San Francisco", query)
+        self.assertTrue("Series A" in query or "Series A".lower() in query.lower())
+        self.assertIn("fintech", query.lower())
 
     @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
     def test_discovery_normalizes_and_dedupes_linkedin_results(self, _mock_disabled: object) -> None:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import hashlib
 import logging
+import os
 import random
 import re
 import threading
@@ -8,19 +11,27 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import requests
+from sqlalchemy.orm import Session
 
 from app.core.config import (
     DAILY_SERPAPI_BUDGET,
     HTTP_TIMEOUT_SECONDS,
     MAX_CALLS_PER_ROLE,
     MAX_TOTAL_PROFILES,
+    LOCAL_DEV_MODE,
+    MOCK_XRAY_MODE,
+    SERPAPI_DEBUG,
+    SERPAPI_DEBUG_LOG_DIR,
     SERPAPI_API_KEY,
     SERPAPI_ENABLED,
     SERPAPI_ENGINE,
     SERPAPI_MAX_PAGES_PER_LAYER,
+    SERPAPI_QUERY_FINGERPRINT_COOLDOWN_SECONDS,
     SERPAPI_MIN_REQUEST_INTERVAL_SECONDS,
     SERPAPI_REQUEST_TIMEOUT_SECONDS,
     SERPAPI_RETRY_ATTEMPTS,
@@ -29,6 +40,7 @@ from app.core.config import (
 )
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
+from app.db.repositories import CandidateProfileRepository
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +48,16 @@ _request_lock = threading.Lock()
 _last_request_epoch = 0.0
 _serpapi_disabled_until: datetime | None = None
 _serpapi_disable_reason = ""
+_request_count_lock = threading.Lock()
+_request_total_hits = 0
 _quota_lock = threading.Lock()
 _quota_day = ""
 _quota_used_calls = 0
 _quota_used_profiles = 0
 _quota_budget = max(0, DAILY_SERPAPI_BUDGET)
+_query_fingerprint_lock = threading.Lock()
+_query_fingerprint_last_seen: dict[str, float] = {}
+_debug_write_lock = threading.Lock()
 
 _TITLE_ROLE_STOPWORDS = {
     "linkedin",
@@ -119,6 +136,59 @@ class SerpQuotaSnapshot:
     budget: int
 
 
+def _serpapi_debug_enabled() -> bool:
+    return bool(SERPAPI_DEBUG and LOCAL_DEV_MODE)
+
+
+def _debug_log_dir() -> Path:
+    return Path(SERPAPI_DEBUG_LOG_DIR or "backend/debug_logs/serpapi")
+
+
+def _write_debug_artifact(filename: str, payload: Any) -> None:
+    if not _serpapi_debug_enabled():
+        return
+    target_dir = _debug_log_dir()
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / filename
+        content = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        with _debug_write_lock:
+            target_path.write_text(content, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("serpapi_debug_write_failed file=%s error=%s", filename, str(exc))
+
+
+def _log_structured(event: str, **fields: Any) -> None:
+    ordered = " ".join(f"{key}={fields[key]}" for key in fields)
+    logger.info("[%s] %s", event, ordered)
+
+
+def _query_fingerprint(*, layer_type: str, query: str, page: int, num_requested: int, search_engine: str) -> str:
+    material = "|".join(
+        [
+            _normalize_lower(layer_type),
+            _normalize_lower(query),
+            str(int(page)),
+            str(int(num_requested)),
+            _normalize_lower(search_engine),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _is_duplicate_query(*, fingerprint: str) -> bool:
+    if not fingerprint:
+        return False
+    now = time.time()
+    cooldown = max(1, int(SERPAPI_QUERY_FINGERPRINT_COOLDOWN_SECONDS))
+    with _query_fingerprint_lock:
+        last_seen = _query_fingerprint_last_seen.get(fingerprint)
+        if last_seen is not None and (now - last_seen) < cooldown:
+            return True
+        _query_fingerprint_last_seen[fingerprint] = now
+    return False
+
+
 def _utc_day_key() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
@@ -142,6 +212,17 @@ def _quota_snapshot() -> SerpQuotaSnapshot:
             used_profiles=_quota_used_profiles,
             budget=_quota_budget,
         )
+
+
+def _serpapi_request_total() -> int:
+    with _request_count_lock:
+        return _request_total_hits
+
+
+def _record_serpapi_request_hit() -> None:
+    global _request_total_hits
+    with _request_count_lock:
+        _request_total_hits += 1
 
 
 def _reserve_serpapi_call(*, role: str, layer_type: str, query: str) -> bool:
@@ -398,6 +479,8 @@ def _is_disabled() -> bool:
 def _disable(reason: str, *, cooldown_seconds: int = 300) -> None:
     global _serpapi_disabled_until, _serpapi_disable_reason
 
+    if LOCAL_DEV_MODE:
+        cooldown_seconds = min(max(1, cooldown_seconds), 30)
     _serpapi_disable_reason = reason
     _serpapi_disabled_until = datetime.now(timezone.utc) + timedelta(seconds=max(1, cooldown_seconds))
     logger.warning("serpapi_disabled reason=%s retry_at=%s", reason, _serpapi_disabled_until.isoformat())
@@ -523,7 +606,7 @@ def _fallback_query_layers(
     leadership_expectations: str,
 ) -> list[XRayQueryLayer]:
     required_role = _sanitize_role_query(role) or _sanitize_role_query(seniority)
-    title_phrase = required_role or role or seniority or ""
+    title_phrase = role or required_role or seniority or ""
     skill_phrase = " ".join(_dedupe_preserve_order(skills[:4]))
     domain_phrase = " ".join(
         _dedupe_preserve_order(
@@ -532,10 +615,23 @@ def _fallback_query_layers(
     )
     layers: list[XRayQueryLayer] = []
     if title_phrase:
+        context_terms = " ".join(
+            _dedupe_preserve_order(
+                [
+                    *([skill_phrase] if skill_phrase else []),
+                    *([location] if location else []),
+                    *([company_stage] if company_stage else []),
+                    *([industry] if industry else []),
+                    *([hiring_preferences] if hiring_preferences else []),
+                    *([leadership_expectations] if leadership_expectations else []),
+                ]
+            )
+        )
+        query_terms = f'site:linkedin.com/in/ "{title_phrase}" {context_terms}'.strip()
         layers.append(
             XRayQueryLayer(
                 layer_type="exact_title",
-                query=f'site:linkedin.com/in/ "{title_phrase}" {location}'.strip(),
+                query=query_terms,
             )
         )
     if role or skill_phrase:
@@ -587,6 +683,18 @@ def _normalize_query_layer(payload: dict[str, Any], *, fallback_index: int) -> X
     if not layer_type:
         layer_type = f"layer_{fallback_index + 1}"
     return XRayQueryLayer(layer_type=layer_type, query=query, enabled=enabled, pages=pages)
+
+
+def _select_primary_query_layer(layers: list[XRayQueryLayer]) -> XRayQueryLayer | None:
+    preferred_order = ("exact_title", "title_variation", "skills_signal", "company_domain")
+    active_layers = [layer for layer in layers if layer.enabled and layer.query]
+    if not active_layers:
+        return None
+    for layer_type in preferred_order:
+        for layer in active_layers:
+            if layer.layer_type == layer_type:
+                return layer
+    return active_layers[0]
 
 
 def build_linkedin_xray_query_layers(
@@ -704,9 +812,8 @@ def build_linkedin_xray_queries(
     leadership_expectations: str,
     recruiter_preferences: dict[str, Any] | None = None,
 ) -> list[str]:
-    return [
-        layer.query
-        for layer in build_linkedin_xray_query_layers(
+    query_layer = _select_primary_query_layer(
+        build_linkedin_xray_query_layers(
             role=role,
             seniority=seniority,
             skills=skills,
@@ -717,8 +824,8 @@ def build_linkedin_xray_queries(
             leadership_expectations=leadership_expectations,
             recruiter_preferences=recruiter_preferences,
         )
-        if layer.enabled and layer.query
-    ]
+    )
+    return [query_layer.query] if query_layer and query_layer.query else []
 
 
 class SerpApiClient:
@@ -738,7 +845,7 @@ class SerpApiClient:
                 time.sleep(wait_seconds)
             _last_request_epoch = time.monotonic()
 
-    def _request(self, *, query: str, start: int = 0) -> dict[str, Any]:
+    def _request(self, *, query: str, start: int = 0, context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not SERPAPI_ENABLED:
             return {}
         if _is_disabled():
@@ -749,6 +856,7 @@ class SerpApiClient:
             _disable("SERPAPI_API_KEY missing", cooldown_seconds=300)
             return {}
 
+        meta = dict(context or {})
         params = {
             "engine": SERPAPI_ENGINE or "google",
             "q": query,
@@ -761,7 +869,25 @@ class SerpApiClient:
         last_error: Exception | None = None
         for attempt in range(1, max(1, SERPAPI_RETRY_ATTEMPTS) + 1):
             self._respect_rate_limit()
+            _log_structured(
+                "serpapi_call",
+                role_search_id=meta.get("role_search_id", ""),
+                recruiter_id=meta.get("recruiter_id", ""),
+                company_id=meta.get("company_id", ""),
+                job_id=meta.get("job_id", ""),
+                workflow_token=meta.get("workflow_token", ""),
+                layer_index=meta.get("layer_index", ""),
+                layer_type=meta.get("layer_type", ""),
+                query=query,
+                page=meta.get("page", 1),
+                num_requested=meta.get("num_requested", max(1, SERPAPI_RESULTS_PER_PAGE)),
+                search_engine=SERPAPI_ENGINE or "google",
+                attempt=attempt,
+                start=start,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+            )
             try:
+                _record_serpapi_request_hit()
                 response = self._session.get(url, params=params, timeout=SERPAPI_REQUEST_TIMEOUT_SECONDS or HTTP_TIMEOUT_SECONDS)
             except requests.RequestException as exc:
                 last_error = exc
@@ -836,7 +962,7 @@ class SerpApiClient:
             logger.warning("serpapi_request_exhausted query=%s start=%s error=%s", query, start, str(last_error))
         return {}
 
-    def search(self, *, query: str, pages: int = 1) -> list[dict[str, Any]]:
+    def search(self, *, query: str, pages: int = 1, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         query = _normalize_text(query)
         if not query:
@@ -844,7 +970,7 @@ class SerpApiClient:
         page_count = max(1, min(int(pages), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
-            payload = self._request(query=query, start=start)
+            payload = self._request(query=query, start=start, context={**(context or {}), "page": page + 1, "num_requested": SERPAPI_RESULTS_PER_PAGE})
             organic_results = payload.get("organic_results", []) if isinstance(payload, dict) else []
             if not isinstance(organic_results, list) or not organic_results:
                 continue
@@ -853,10 +979,10 @@ class SerpApiClient:
                     results.append(item)
         return results
 
-    def search_many(self, queries: list[str], *, pages: int = 1) -> list[dict[str, Any]]:
+    def search_many(self, queries: list[str], *, pages: int = 1, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         for query in _dedupe_preserve_order(queries):
-            results.extend(self.search(query=query, pages=pages))
+            results.extend(self.search(query=query, pages=pages, context=context))
         return results
 
 
@@ -1034,6 +1160,34 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     return normalized
 
 
+def _fixture_path_for_role(*, role: str) -> Path:
+    slug = re.sub(r"[^a-z0-9]+", "_", _normalize_lower(role)).strip("_") or "default"
+    base_dir = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "xray"
+    preferred = base_dir / f"{slug}.json"
+    if preferred.exists():
+        return preferred
+    return base_dir / "default.json"
+
+
+def _load_mock_xray_raw_results(*, role: str) -> list[dict[str, Any]]:
+    fixture_path = _fixture_path_for_role(role=role)
+    if not fixture_path.exists():
+        return []
+    try:
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("xray_mock_fixture_failed path=%s error=%s", fixture_path, str(exc))
+        return []
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        if isinstance(payload.get("organic_results"), list):
+            return [item for item in payload["organic_results"] if isinstance(item, dict)]
+        if isinstance(payload.get("candidates"), list):
+            return [item for item in payload["candidates"] if isinstance(item, dict)]
+    return []
+
+
 def discover_linkedin_xray_candidates(
     *,
     job: Any,
@@ -1041,20 +1195,35 @@ def discover_linkedin_xray_candidates(
     limit: int = 10,
     pages_per_query: int = 1,
     recruiter_preferences: dict[str, Any] | None = None,
+    db: Session | None = None,
+    role_search_id: str = "",
+    recruiter_id: str = "",
+    company_id: str = "",
+    workflow_token: str = "",
+    archetype_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    if not SERPAPI_ENABLED:
+    mock_mode_active = bool(MOCK_XRAY_MODE and LOCAL_DEV_MODE)
+    if not SERPAPI_ENABLED and not mock_mode_active:
         logger.info("serpapi_discovery_skipped reason=feature_disabled")
         return []
     client = SerpApiClient()
-    if is_serpapi_disabled():
+    if is_serpapi_disabled() and not mock_mode_active:
         logger.info("serpapi_discovery_skipped reason=service_disabled")
         return []
-    if not SERPAPI_API_KEY.strip():
+    if not SERPAPI_API_KEY.strip() and not mock_mode_active:
         logger.info("serpapi_discovery_skipped reason=missing_api_key")
         return []
 
     resolved_intake = _normalize_intake(job, intake)
-    search_pages = max(1, min(int(pages_per_query or 1), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
+    search_pages = 1
+    resolved_job_id = _normalize_text(getattr(job, "id", ""))
+    resolved_company_id = _normalize_text(company_id or getattr(job, "company_id", ""))
+    resolved_recruiter_id = _normalize_text(recruiter_id)
+    resolved_workflow_token = _normalize_text(workflow_token)
+    resolved_role_search_id = _normalize_text(role_search_id) or resolved_job_id or f"{resolved_company_id or 'company'}:{_normalize_lower(resolved_intake['role_title'])}"
+    resolved_archetype_ids = _dedupe_preserve_order([str(item).strip() for item in (archetype_ids or []) if str(item).strip()])
+
+    query_generation_started = perf_counter()
     query_layers = build_linkedin_xray_query_layers(
         role=resolved_intake["role_title"],
         seniority=resolved_intake["seniority"],
@@ -1066,9 +1235,10 @@ def discover_linkedin_xray_candidates(
         leadership_expectations=resolved_intake["leadership_expectations"],
         recruiter_preferences=recruiter_preferences,
     )
+    query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
-    active_layers = [layer for layer in query_layers if layer.enabled and layer.query]
-    limited_layers = active_layers[: max(1, min(MAX_CALLS_PER_ROLE, 5))]
+    primary_layer = _select_primary_query_layer(query_layers)
+    limited_layers = [primary_layer] if primary_layer else []
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
     quota_before = _quota_snapshot()
@@ -1109,6 +1279,32 @@ def discover_linkedin_xray_candidates(
         title_tokens=diversity_report["title_token_count"],
         seniority_tokens=diversity_report["seniority_token_count"],
     )
+
+    if not limited_layers:
+        logger.info("serpapi_discovery_completed role=%s count=0 reason=no_active_layers", job_role)
+        return []
+
+    generated_queries_payload = {
+        "job_id": resolved_job_id,
+        "company_id": resolved_company_id,
+        "recruiter_id": resolved_recruiter_id,
+        "workflow_token": resolved_workflow_token,
+        "role_search_id": resolved_role_search_id,
+        "archetype_ids": resolved_archetype_ids,
+        "total_layer_count": len(query_layers),
+        "active_layer_count": len(limited_layers),
+        "generated_queries": [
+            {
+                "layer_index": index,
+                "layer_type": layer.layer_type,
+                "query": layer.query,
+                "pages": min(search_pages, layer.pages),
+                "enabled": layer.enabled,
+            }
+            for index, layer in enumerate(limited_layers, start=1)
+        ],
+    }
+    _write_debug_artifact("generated_queries.json", generated_queries_payload)
     log_metric(
         "serpapi_query_layers",
         role=job_role,
@@ -1118,104 +1314,266 @@ def discover_linkedin_xray_candidates(
         limit=limit,
     )
 
-    if not limited_layers:
-        logger.info("serpapi_discovery_completed role=%s count=0 reason=no_active_layers", job_role)
-        return []
+    for index, layer in enumerate(limited_layers, start=1):
+        _log_structured(
+            "xray_query_layer",
+            layer_index=index,
+            layer_type=layer.layer_type,
+            query=layer.query,
+            page=min(search_pages, layer.pages),
+            num_requested=SERPAPI_RESULTS_PER_PAGE,
+            search_engine=SERPAPI_ENGINE or "google",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
 
-    layer_results: list[tuple[XRayQueryLayer, list[dict[str, Any]]]] = []
-    with ThreadPoolExecutor(max_workers=len(limited_layers)) as executor:
-        future_map = {}
-        for layer in limited_layers:
-            if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
-                continue
-            future = executor.submit(client.search, query=layer.query, pages=min(search_pages, layer.pages))
-            future_map[future] = layer
+    existing_memory_keys: set[str] = set()
+    if db is not None:
+        try:
+            for row in CandidateProfileRepository(db).list_for_job(resolved_job_id):
+                raw = row.raw_data if isinstance(row.raw_data, dict) else {}
+                linkedin_url = _normalize_lower(raw.get("linkedin_url") or raw.get("linkedinUrl") or row.linkedin_url)
+                candidate_id = _normalize_lower(row.candidate_id)
+                name_company = _normalize_lower(f"{row.name}|{row.current_company or row.company}")
+                for key in [linkedin_url, candidate_id, name_company]:
+                    if key:
+                        existing_memory_keys.add(key)
+        except Exception as exc:
+            logger.warning("xray_existing_candidate_scan_failed job_id=%s error=%s", resolved_job_id, str(exc))
 
-        for future in as_completed(future_map):
-            layer = future_map[future]
-            try:
-                raw = future.result()
-            except Exception as exc:
-                logger.warning(
-                    "serpapi_layer_failed role=%s layer_type=%s error=%s",
-                    job_role,
-                    layer.layer_type,
-                    str(exc),
-                )
-                log_metric(
-                    "serpapi_layer_error",
-                    role=job_role,
-                    layer_type=layer.layer_type,
-                    error_type=type(exc).__name__,
-                )
-                raw = []
-            logger.info(
-                "serpapi_layer_results role=%s layer_type=%s raw_count=%s pages=%s",
-                job_role,
-                layer.layer_type,
-                len(raw),
-                min(search_pages, layer.pages),
-            )
-            log_metric(
-                "serpapi_layer_results",
-                role=job_role,
+    layer_results: list[tuple[XRayQueryLayer, list[dict[str, Any]], int]] = []
+    serpapi_calls_before = _serpapi_request_total()
+    serpapi_latency_started = perf_counter()
+    duplicate_query_count = 0
+    effective_workers = 1 if LOCAL_DEV_MODE else max(1, len(limited_layers))
+    if mock_mode_active:
+        mock_raw_results = _load_mock_xray_raw_results(role=job_role)
+        for index, layer in enumerate(limited_layers, start=1):
+            fingerprint = _query_fingerprint(
                 layer_type=layer.layer_type,
-                raw_count=len(raw),
-                pages=min(search_pages, layer.pages),
+                query=layer.query,
+                page=min(search_pages, layer.pages),
+                num_requested=SERPAPI_RESULTS_PER_PAGE,
+                search_engine=SERPAPI_ENGINE or "google",
             )
-            layer_results.append((layer, raw))
+            if _is_duplicate_query(fingerprint=fingerprint):
+                duplicate_query_count += 1
+                logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
+                continue
+            layer_results.append((layer, mock_raw_results, min(search_pages, layer.pages)))
+        serpapi_calls_executed = 0
+    else:
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_map: dict[Any, tuple[XRayQueryLayer, int]] = {}
+            for index, layer in enumerate(limited_layers, start=1):
+                pages_to_fetch = min(search_pages, layer.pages)
+                if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
+                    continue
+                fingerprint = _query_fingerprint(
+                    layer_type=layer.layer_type,
+                    query=layer.query,
+                    page=pages_to_fetch,
+                    num_requested=SERPAPI_RESULTS_PER_PAGE,
+                    search_engine=SERPAPI_ENGINE or "google",
+                )
+                if _is_duplicate_query(fingerprint=fingerprint):
+                    duplicate_query_count += 1
+                    logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
+                    continue
+                future = executor.submit(
+                    client.search,
+                    query=layer.query,
+                    pages=pages_to_fetch,
+                    context={
+                        "role_search_id": resolved_role_search_id,
+                        "recruiter_id": resolved_recruiter_id,
+                        "company_id": resolved_company_id,
+                        "job_id": resolved_job_id,
+                        "workflow_token": resolved_workflow_token,
+                        "layer_index": index,
+                        "layer_type": layer.layer_type,
+                        "num_requested": SERPAPI_RESULTS_PER_PAGE,
+                    },
+                )
+                future_map[future] = (layer, pages_to_fetch)
 
-    normalized_results: list[dict[str, Any]] = []
-    seen_identities: set[str] = set()
+            for future in as_completed(future_map):
+                layer, pages_to_fetch = future_map[future]
+                try:
+                    raw = future.result()
+                except Exception as exc:
+                    logger.warning("serpapi_layer_failed role=%s layer_type=%s error=%s", job_role, layer.layer_type, str(exc))
+                    log_metric("serpapi_layer_error", role=job_role, layer_type=layer.layer_type, error_type=type(exc).__name__)
+                    raw = []
+                layer_results.append((layer, raw, pages_to_fetch))
 
-    for layer, raw_results in layer_results:
-        layer_count = 0
-        for position, result in enumerate(raw_results, start=1):
-            if len(normalized_results) >= max(1, min(MAX_TOTAL_PROFILES, int(limit))):
-                break
+            serpapi_calls_executed = _serpapi_request_total() - serpapi_calls_before
+
+    serpapi_latency_ms = round((perf_counter() - serpapi_latency_started) * 1000.0, 2)
+
+    prefilter_started = perf_counter()
+    prefiltered_results: list[dict[str, Any]] = []
+    rejected_count = 0
+    for layer, raw_results, pages_to_fetch in layer_results:
+        logger.info(
+            "serpapi_layer_results role=%s layer_type=%s raw_count=%s pages=%s",
+            job_role,
+            layer.layer_type,
+            len(raw_results),
+            pages_to_fetch,
+        )
+        log_metric("serpapi_layer_results", role=job_role, layer_type=layer.layer_type, raw_count=len(raw_results), pages=pages_to_fetch)
+        page_index = 1
+        position_index = 1
+        for result in raw_results:
             normalized = _normalize_candidate_result(
                 result=result,
                 query=layer.query,
-                page=((position - 1) // max(1, SERPAPI_RESULTS_PER_PAGE)) + 1,
-                position=((position - 1) % max(1, SERPAPI_RESULTS_PER_PAGE)) + 1,
+                page=page_index,
+                position=position_index,
                 intake=resolved_intake,
                 source="serpapi",
             )
+            position_index += 1
+            if position_index > max(1, SERPAPI_RESULTS_PER_PAGE):
+                page_index += 1
+                position_index = 1
             if not normalized:
+                rejected_count += 1
                 continue
-            identity = _normalize_lower(normalized.get("linkedin_url") or normalized.get("full_name") or normalized.get("name") or "")
-            if not identity or identity in seen_identities:
-                continue
-            seen_identities.add(identity)
-            normalized_results.append(normalized)
-            layer_count += 1
-            if len(normalized_results) >= max(1, min(MAX_TOTAL_PROFILES, int(limit))):
-                break
-        logger.info(
-            "serpapi_layer_dedup role=%s layer_type=%s kept=%s dedup_total=%s",
-            job_role,
-            layer.layer_type,
-            layer_count,
-            len(normalized_results),
-        )
-        log_metric(
-            "serpapi_layer_dedup",
-            role=job_role,
-            layer_type=layer.layer_type,
-            kept=layer_count,
-            dedup_total=len(normalized_results),
-        )
+            prefiltered_results.append(normalized)
 
-    normalized_results = normalized_results[: max(1, min(MAX_TOTAL_PROFILES, int(limit)))]
+    prefilter_ms = round((perf_counter() - prefilter_started) * 1000.0, 2)
+
+    dedupe_started = perf_counter()
+    normalized_results: list[dict[str, Any]] = []
+    seen_linkedin_urls: set[str] = set()
+    seen_candidate_ids: set[str] = set()
+    seen_name_company: set[str] = set()
+    duplicate_linkedin_urls = 0
+    duplicate_candidate_names = 0
+    duplicate_companies = 0
+    duplicate_candidate_ids = 0
+    duplicate_memory_candidates = 0
+
+    for candidate in prefiltered_results:
+        linkedin_url = _normalize_lower(candidate.get("linkedin_url") or "")
+        candidate_id = _normalize_lower(candidate.get("candidate_id") or candidate.get("id") or "")
+        name_company = _normalize_lower(f"{candidate.get('full_name') or candidate.get('name') or ''}|{candidate.get('current_company') or candidate.get('company') or ''}")
+        company = _normalize_lower(candidate.get("current_company") or candidate.get("company") or "")
+
+        duplicate_reason = ""
+        if linkedin_url and linkedin_url in seen_linkedin_urls:
+            duplicate_linkedin_urls += 1
+            duplicate_reason = "linkedin_url"
+        elif candidate_id and candidate_id in seen_candidate_ids:
+            duplicate_candidate_ids += 1
+            duplicate_reason = "candidate_id"
+        elif name_company and name_company in seen_name_company:
+            duplicate_candidate_names += 1
+            duplicate_reason = "name_company"
+        elif linkedin_url and linkedin_url in existing_memory_keys:
+            duplicate_memory_candidates += 1
+            duplicate_reason = "recruiter_memory"
+        elif candidate_id and candidate_id in existing_memory_keys:
+            duplicate_memory_candidates += 1
+            duplicate_reason = "recruiter_memory"
+        elif name_company and name_company in existing_memory_keys:
+            duplicate_memory_candidates += 1
+            duplicate_reason = "recruiter_memory"
+        if duplicate_reason:
+            continue
+
+        if linkedin_url:
+            seen_linkedin_urls.add(linkedin_url)
+        if candidate_id:
+            seen_candidate_ids.add(candidate_id)
+        if name_company:
+            seen_name_company.add(name_company)
+        if company:
+            # Company-level repetition is allowed, but we still count it for observability.
+            duplicate_companies += 1 if any(_normalize_lower(item.get("current_company") or item.get("company") or "") == company for item in normalized_results) else 0
+        normalized_results.append(candidate)
+
+    dedupe_ms = round((perf_counter() - dedupe_started) * 1000.0, 2)
+    total_pipeline_ms = round(query_generation_ms + serpapi_latency_ms + prefilter_ms + dedupe_ms, 2)
+    raw_candidates = len(prefiltered_results)
+    duplicate_candidates = raw_candidates - len(normalized_results)
+    duplicate_rate = round((duplicate_candidates / raw_candidates) if raw_candidates else 0.0, 4)
+
+    dedupe_report = {
+        "job_id": resolved_job_id,
+        "company_id": resolved_company_id,
+        "recruiter_id": resolved_recruiter_id,
+        "workflow_token": resolved_workflow_token,
+        "role_search_id": resolved_role_search_id,
+        "raw_candidates": raw_candidates,
+        "duplicate_candidates": duplicate_candidates,
+        "deduped_candidates": len(normalized_results),
+        "duplicate_rate": duplicate_rate,
+        "duplicate_linkedin_urls": duplicate_linkedin_urls,
+        "duplicate_companies": duplicate_companies,
+        "duplicate_candidate_names": duplicate_candidate_names,
+        "duplicate_canonical_ids": duplicate_candidate_ids,
+        "duplicate_recruiter_memory_candidates": duplicate_memory_candidates,
+        "calls_executed": serpapi_calls_executed,
+        "pages_requested": sum(pages for _, _, pages in layer_results),
+        "query_layers": [
+            {"layer_type": layer.layer_type, "query": layer.query, "pages": pages_to_fetch}
+            for layer, _, pages_to_fetch in layer_results
+        ],
+    }
+
+    _write_debug_artifact("serpapi_raw_results.json", {
+        "role_search_id": resolved_role_search_id,
+        "job_id": resolved_job_id,
+        "raw_results": [
+            {
+                "layer_type": layer.layer_type,
+                "query": layer.query,
+                "pages": pages_to_fetch,
+                "results": raw_results,
+            }
+            for layer, raw_results, pages_to_fetch in layer_results
+        ],
+    })
+    _write_debug_artifact("dedupe_report.json", dedupe_report)
+    _write_debug_artifact("final_review_deck.json", normalized_results)
+
     _register_profiles_found(count=len(normalized_results))
     quota_after = _quota_snapshot()
+
+    _log_structured(
+        "serpapi_call_count",
+        role_search_id=resolved_role_search_id,
+        calls_executed=serpapi_calls_executed,
+        quota_remaining=quota_after.budget,
+        daily_budget=DAILY_SERPAPI_BUDGET,
+        max_calls_per_role=MAX_CALLS_PER_ROLE,
+    )
+    _log_structured(
+        "xray_dedup",
+        raw_candidates=raw_candidates,
+        duplicate_candidates=duplicate_candidates,
+        deduped_candidates=len(normalized_results),
+        duplicate_rate=duplicate_rate,
+    )
+    _log_structured(
+        "xray_timing",
+        query_generation_ms=query_generation_ms,
+        serpapi_latency_ms=serpapi_latency_ms,
+        dedupe_ms=dedupe_ms,
+        prefilter_ms=prefilter_ms,
+        rerank_ms=0.0,
+        total_pipeline_ms=total_pipeline_ms,
+    )
     logger.info(
-        "serpapi_discovery_completed role=%s count=%s quota_calls=%s quota_profiles=%s budget_remaining=%s",
+        "serpapi_discovery_completed role=%s count=%s quota_calls=%s quota_profiles=%s budget_remaining=%s duplicate_rate=%.4f",
         job_role,
         len(normalized_results),
         quota_after.used_calls,
         quota_after.used_profiles,
         quota_after.budget,
+        duplicate_rate,
     )
     log_metric(
         "serpapi_candidates_found",
@@ -1229,6 +1587,8 @@ def discover_linkedin_xray_candidates(
 
 
 def serpapi_health_snapshot() -> dict[str, str]:
+    if MOCK_XRAY_MODE and LOCAL_DEV_MODE:
+        return {"status": "ok", "reason": "mock_xray_mode"}
     if not SERPAPI_ENABLED:
         return {"status": "disabled", "reason": "SERPAPI_ENABLED=false"}
     if not SERPAPI_API_KEY.strip():

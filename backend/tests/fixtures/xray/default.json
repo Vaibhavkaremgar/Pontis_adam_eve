@@ -1,0 +1,34 @@
+{
+  "organic_results": [
+    {
+      "title": "Jane Doe - LinkedIn",
+      "link": "https://www.linkedin.com/in/janedoe/",
+      "snippet": "Senior Backend Engineer at Acme. San Francisco. Python, FastAPI, AWS, Kubernetes.",
+      "displayed_link": "linkedin.com/in/janedoe"
+    },
+    {
+      "title": "Jane Doe - LinkedIn",
+      "link": "https://www.linkedin.com/in/janedoe/",
+      "snippet": "Duplicate profile for Jane Doe at Acme.",
+      "displayed_link": "linkedin.com/in/janedoe"
+    },
+    {
+      "title": "John Smith - LinkedIn",
+      "link": "https://www.linkedin.com/in/johnsmith/",
+      "snippet": "Staff Platform Engineer at Beacon. Remote. Go, Kubernetes, Terraform, AWS.",
+      "displayed_link": "linkedin.com/in/johnsmith"
+    },
+    {
+      "title": "Sarah Lee - LinkedIn",
+      "link": "https://www.linkedin.com/jobs/search/?keywords=backend%20engineer",
+      "snippet": "LinkedIn jobs search result that should be rejected.",
+      "displayed_link": "linkedin.com/jobs/search"
+    },
+    {
+      "title": "Priya Patel - LinkedIn",
+      "link": "https://www.linkedin.com/in/priyapatel/",
+      "snippet": "Principal Software Engineer at Nova. Bengaluru. Python, React, GCP, PostgreSQL.",
+      "displayed_link": "linkedin.com/in/priyapatel"
+    }
+  ]
+}

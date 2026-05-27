@@ -61,6 +61,30 @@ type SelectionPayload = {
   candidateId: string;
 };
 
+type SelectionFinalData = {
+  sessionId: string;
+  jobId: string;
+  status: string;
+  currentBatchIndex: number;
+  totalBatches: number;
+  batchSize: number;
+  selectedCandidateIds: string[];
+  rejectedCandidateIds: string[];
+  currentBatch: Candidate[];
+  analysis?: Record<string, unknown> | null;
+  completed: boolean;
+  finalCandidates: Candidate[];
+  topCandidates?: Candidate[];
+  stage?: string;
+  recommendedQuestions?: string[];
+  gapAnalysis?: Record<string, unknown>;
+  intentProfile?: Record<string, unknown>;
+  currentPair?: Record<string, unknown>;
+  telemetry?: Record<string, unknown>;
+  voiceSummary?: string;
+  pairExplanation?: Record<string, unknown>;
+};
+
 /** This function calls backend API and returns structured response. */
 export async function getCandidates({ jobId, refined }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
   const params = new URLSearchParams({ jobId });
@@ -89,6 +113,13 @@ export async function getCandidatesWithMode({
 export async function getShortlistedCandidates(jobId: string): Promise<ApiResponse<Candidate[]>> {
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates/shortlisted?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET"
+  });
+}
+
+export async function getFinalSelectionResults(jobId: string): Promise<ApiResponse<SelectionFinalData>> {
+  return requestApi<SelectionFinalData>({
+    url: `${API_BASE_URL}/candidates/selection/final?jobId=${encodeURIComponent(jobId)}`,
     method: "GET"
   });
 }

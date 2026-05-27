@@ -1368,6 +1368,9 @@ export default function ReviewPage() {
   const [candidateNotifications, setCandidateNotifications] = useState<any[]>([]);
   const [isTimelineLoading, setIsTimelineLoading] = useState(false);
   const [timelineError, setTimelineError] = useState("");
+  const sourcingLoadKeyRef = useRef("");
+  const sourcingRefreshCycleRef = useRef(0);
+  const sourcingInFlightRef = useRef(false);
 
   useEffect(() => {
     if (!isSessionReady) return;
@@ -1380,32 +1383,42 @@ export default function ReviewPage() {
     }
   }, [isSessionReady, jobId, router, user]);
 
-  const loadSourcedCandidates = async () => {
+  const loadSourcedCandidates = async (options?: { source?: string; forceRefresh?: boolean }) => {
     if (!isSessionReady || !user || !jobId) return;
+    const source = options?.source || "auto";
+    const forceRefresh = Boolean(options?.forceRefresh);
+    const loadKey = `${jobId}:${user.id}:${source}:${forceRefresh ? "refresh" : "steady"}:${sourcingRefreshCycleRef.current}`;
+    if (sourcingInFlightRef.current) return;
+    if (!forceRefresh && sourcingLoadKeyRef.current === loadKey) return;
+    sourcingInFlightRef.current = true;
+    sourcingLoadKeyRef.current = loadKey;
     setReviewLoading(true);
     setSourcingError("");
 
-    const result = await getCandidates({
-      jobId,
-      refined: true,
-    });
+    try {
+      const result = await getCandidates({
+        jobId,
+        refined: true,
+      });
 
-    if (!result.success || !result.data) {
-      const message = result.error || "Could not load sourced candidates.";
-      setSourcingError(message);
-      setReviewCandidates([]);
+      if (!result.success || !result.data) {
+        const message = result.error || "Could not load sourced candidates.";
+        setSourcingError(message);
+        setReviewCandidates([]);
+        return;
+      }
+
+      const rankedCandidates = result.data.slice(0, 30);
+      setReviewCandidates(rankedCandidates);
+      setFeedbackMessage(
+        rankedCandidates.length > 0
+          ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
+          : "X-Ray sourcing completed, but no candidates were returned."
+      );
+    } finally {
       setReviewLoading(false);
-      return;
+      sourcingInFlightRef.current = false;
     }
-
-    const rankedCandidates = result.data.slice(0, 30);
-    setReviewCandidates(rankedCandidates);
-    setFeedbackMessage(
-      rankedCandidates.length > 0
-        ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
-        : "X-Ray sourcing completed, but no candidates were returned."
-    );
-    setReviewLoading(false);
   };
 
   useEffect(() => {
@@ -1443,7 +1456,7 @@ export default function ReviewPage() {
       }
 
       if (calibrationReady) {
-        await loadSourcedCandidates();
+        await loadSourcedCandidates({ source: "auto", forceRefresh: false });
       } else {
         setReviewCandidates([]);
         setSourcingError("");
@@ -1457,7 +1470,7 @@ export default function ReviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [isSessionReady, jobId, user]);
+  }, [isSessionReady, jobId, user?.id]);
 
   useEffect(() => {
     if (!isSessionReady || !user || !jobId || !activeCandidate) {
@@ -1570,9 +1583,9 @@ export default function ReviewPage() {
 
     const nextCalibration = calibrationResult.calibration ?? calibrationResult.selection ?? null;
     const nextStage = String(nextCalibration?.stage || "").trim();
-    if (nextStage === "real_sourcing_ready") {
-      await loadSourcedCandidates();
-    }
+      if (nextStage === "real_sourcing_ready") {
+        await loadSourcedCandidates({ source: "calibration", forceRefresh: false });
+      }
 
     setCalibrationSelectionId("");
     setIsCalibrationLoading(false);
@@ -1671,7 +1684,9 @@ export default function ReviewPage() {
   const refreshFinalResults = async () => {
     if (!jobId) return;
     setIsLoading(true);
-    await loadSourcedCandidates();
+    sourcingRefreshCycleRef.current += 1;
+    sourcingLoadKeyRef.current = "";
+    await loadSourcedCandidates({ source: "manual_refresh", forceRefresh: true });
     setActiveCandidate(null);
     setIsLoading(false);
   };

@@ -413,7 +413,14 @@ def _run_orchestration_action_event(
 def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, recruiter_id: str) -> None:
     try:
         with SessionLocal() as db:
-            candidates = fetch_ranked_candidates(db=db, job_id=job_id, mode="volume", refresh=True, recruiter_id=recruiter_id)
+            candidates = fetch_ranked_candidates(
+                db=db,
+                job_id=job_id,
+                mode="volume",
+                refresh=True,
+                recruiter_id=recruiter_id,
+                request_source="slack",
+            )
             reachable_candidates = []
             for candidate in candidates:
                 email = str(getattr(candidate, "email", "") or "").strip()

@@ -370,6 +370,15 @@ def _sync_workflow_token_enrichment(
 ) -> None:
     token_row = None
     normalized_source_type = source_type or "adam"
+    logger.debug(
+        "apollo_workflow_token_sync job_id=%s candidate_id=%s source_type=%s workflow_token_present=%s status=%s confidence=%.4f",
+        job_id,
+        candidate_id,
+        normalized_source_type,
+        bool(workflow_token),
+        status,
+        float(confidence or 0.0),
+    )
     if workflow_token:
         token_row = NotificationWorkflowTokenRepository(db).get_by_token(workflow_token, source_app=normalized_source_type)
     if not token_row:
@@ -425,6 +434,17 @@ def _route_enrichment_notification(
     title = "Candidate enriched" if should_outreach else "Candidate enrichment updated"
     if status in {"failed", "no_match_found", "ambiguous_match"}:
         title = "Candidate enrichment needs review"
+    logger.info(
+        "apollo_notification_route job_id=%s candidate_id=%s source_type=%s status=%s should_outreach=%s match_reason=%s automation_job_id=%s selection_session_id=%s",
+        job_id,
+        candidate_id,
+        normalized_source_type,
+        status,
+        should_outreach,
+        match_reason,
+        automation_job_id,
+        selection_session_id,
+    )
     body = (
         f"Apollo enriched {candidate_id} with contact details."
         if should_outreach
@@ -454,9 +474,13 @@ def _route_enrichment_notification(
     )
 
 
-def _apollo_request(*, candidate: dict[str, str]) -> dict[str, Any]:
+def _apollo_request(*, job_id: str, candidate_id: str, candidate: dict[str, str]) -> dict[str, Any]:
     if not APOLLO_API_KEY:
+        logger.warning("apollo_request_blocked_missing_key job_id=%s candidate_id=%s", job_id, candidate_id)
         raise APIError("APOLLO_API_KEY is missing", status_code=503)
+    if not APOLLO_URL.strip():
+        logger.warning("apollo_request_blocked_missing_url job_id=%s candidate_id=%s", job_id, candidate_id)
+        raise APIError("APOLLO_URL is missing", status_code=503)
 
     params: dict[str, Any] = {}
     if candidate["linkedin_url"]:
@@ -473,6 +497,17 @@ def _apollo_request(*, candidate: dict[str, str]) -> dict[str, Any]:
     if candidate["domain"]:
         params["domain"] = candidate["domain"]
 
+    logger.info(
+        "apollo_request_start job_id=%s candidate_id=%s has_linkedin=%s has_email=%s has_name=%s has_domain=%s endpoint=%s",
+        job_id,
+        candidate_id,
+        bool(candidate["linkedin_url"]),
+        bool(candidate["email"]),
+        bool(candidate["name"]),
+        bool(candidate["domain"]),
+        APOLLO_URL,
+    )
+
     headers = {
         "X-Api-Key": APOLLO_API_KEY,
         "Content-Type": "application/json",
@@ -483,33 +518,83 @@ def _apollo_request(*, candidate: dict[str, str]) -> dict[str, Any]:
     last_error: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
+            logger.debug(
+                "apollo_request_attempt job_id=%s candidate_id=%s attempt=%s params=%s",
+                job_id,
+                candidate_id,
+                attempt + 1,
+                sorted(params.keys()),
+            )
             response: Response = requests.post(APOLLO_URL, params=params, headers=headers, timeout=HTTP_TIMEOUT_SECONDS)
             if response.status_code in _RETRYABLE_STATUS_CODES:
                 last_error = RuntimeError(f"apollo_retryable_http_{response.status_code}")
+                logger.warning(
+                    "apollo_request_retryable_status job_id=%s candidate_id=%s attempt=%s status_code=%s",
+                    job_id,
+                    candidate_id,
+                    attempt + 1,
+                    response.status_code,
+                )
                 time.sleep(min(3.0, 0.35 * (attempt + 1)))
                 continue
             if response.status_code in {401, 403, 404, 422}:
+                logger.warning(
+                    "apollo_request_rejected job_id=%s candidate_id=%s status_code=%s body=%s",
+                    job_id,
+                    candidate_id,
+                    response.status_code,
+                    response.text[:500],
+                )
                 raise APIError(f"Apollo enrichment rejected with status {response.status_code}", status_code=502)
             response.raise_for_status()
             try:
                 data = response.json()
             except Exception as exc:
                 raise APIError(f"Apollo enrichment returned invalid JSON: {exc}", status_code=502) from exc
+            logger.info(
+                "apollo_request_success job_id=%s candidate_id=%s status_code=%s keys=%s",
+                job_id,
+                candidate_id,
+                response.status_code,
+                sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
+            )
             if not isinstance(data, dict):
                 return {"raw": data}
             return data
         except requests.Timeout as exc:
             last_error = exc
+            logger.warning(
+                "apollo_request_timeout job_id=%s candidate_id=%s attempt=%s timeout_seconds=%s",
+                job_id,
+                candidate_id,
+                attempt + 1,
+                HTTP_TIMEOUT_SECONDS,
+            )
             time.sleep(min(3.0, 0.35 * (attempt + 1)))
         except requests.RequestException as exc:
             message = str(exc).lower()
             if any(token in message for token in ("429", "timeout", "temporarily", "connection", "server error")):
                 last_error = exc
+                logger.warning(
+                    "apollo_request_retryable_exception job_id=%s candidate_id=%s attempt=%s error=%s",
+                    job_id,
+                    candidate_id,
+                    attempt + 1,
+                    str(exc),
+                )
                 time.sleep(min(3.0, 0.35 * (attempt + 1)))
                 continue
+            logger.exception("apollo_request_failed job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc))
             raise APIError(f"Apollo enrichment failed: {exc}", status_code=502) from exc
 
     if last_error:
+        logger.error(
+            "apollo_request_exhausted job_id=%s candidate_id=%s attempts=%s last_error=%s",
+            job_id,
+            candidate_id,
+            _MAX_RETRIES,
+            str(last_error),
+        )
         raise APIError(f"Apollo enrichment failed after retries: {last_error}", status_code=502) from last_error
     raise APIError("Apollo enrichment failed", status_code=502)
 
@@ -670,7 +755,26 @@ def enrich_candidate_with_apollo(
     existing_status = _normalize_lower(enrichment_state.get("status"))
 
     candidate = _candidate_identity_payload(profile)
+    logger.info(
+        "apollo_candidate_identity job_id=%s candidate_id=%s name=%s linkedin=%s email=%s company=%s title=%s selection_session_id=%s automation_job_id=%s",
+        job_id,
+        candidate_id,
+        candidate.get("name", ""),
+        bool(candidate.get("linkedin_url")),
+        bool(candidate.get("email")),
+        candidate.get("company", ""),
+        candidate.get("title", ""),
+        selection_session_id,
+        automation_job_id,
+    )
     if not candidate["name"] and not candidate["linkedin_url"] and not candidate["email"]:
+        logger.warning(
+            "apollo_enrichment_insufficient_identity job_id=%s candidate_id=%s selection_session_id=%s automation_job_id=%s",
+            job_id,
+            candidate_id,
+            selection_session_id,
+            automation_job_id,
+        )
         _sync_workflow_token_enrichment(
             db=db,
             job_id=job_id,
@@ -712,6 +816,13 @@ def enrich_candidate_with_apollo(
     selection_repo = CandidateSelectionSessionRepository(db)
     selection_session = selection_repo.get_by_job(job_id)
     if not selection_session:
+        logger.warning(
+            "apollo_enrichment_selection_missing job_id=%s candidate_id=%s selection_session_id=%s automation_job_id=%s",
+            job_id,
+            candidate_id,
+            selection_session_id,
+            automation_job_id,
+        )
         profile.raw_data = {
             **raw_data,
             "enrichment": {
@@ -761,6 +872,14 @@ def enrich_candidate_with_apollo(
 
     selected_ids = {str(candidate).strip() for candidate in (selection_session.selected_candidate_ids or []) if str(candidate).strip()}
     if candidate_id not in selected_ids:
+        logger.warning(
+            "apollo_enrichment_candidate_not_selected job_id=%s candidate_id=%s selection_session_id=%s automation_job_id=%s selected_count=%s",
+            job_id,
+            candidate_id,
+            selection_session_id,
+            automation_job_id,
+            len(selected_ids),
+        )
         profile.raw_data = {
             **raw_data,
             "enrichment": {
@@ -847,6 +966,12 @@ def enrich_candidate_with_apollo(
 
     cached = _load_cached_enrichment(job_id=job_id, candidate_id=candidate_id, identity_fingerprint=identity_fingerprint)
     if cached:
+        logger.info(
+            "apollo_enrichment_cache_hit job_id=%s candidate_id=%s status=%s",
+            job_id,
+            candidate_id,
+            str(cached.get("status") or "").strip().lower(),
+        )
         status = str(cached.get("status") or "").strip().lower() or "failed"
         payload = _metadata_map(cached.get("result"))
         payload.setdefault("jobId", job_id)
@@ -875,6 +1000,7 @@ def enrich_candidate_with_apollo(
         return payload
 
     if not APOLLO_API_KEY:
+        logger.warning("apollo_enrichment_missing_api_key job_id=%s candidate_id=%s", job_id, candidate_id)
         raw_data = _merge_enrichment_payload(
             profile,
             job,
@@ -955,7 +1081,7 @@ def enrich_candidate_with_apollo(
     db.flush()
 
     try:
-        person_payload = _apollo_request(candidate=candidate)
+        person_payload = _apollo_request(job_id=job_id, candidate_id=candidate_id, candidate=candidate)
     except Exception as exc:
         raw_data = _merge_enrichment_payload(
             profile,

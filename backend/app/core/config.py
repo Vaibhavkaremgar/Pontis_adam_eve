@@ -85,9 +85,9 @@ SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
 SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip()
 SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
 SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "10"))
+SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "20"))
 # LinkedIn X-Ray uses this page budget to pull a larger raw candidate pool.
-# With the default 10 results/page, 6 pages yields up to 60 raw results.
+# The production sourcing flow now stays on a single page for one-hit retrieval.
 SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "6"))
 SERPAPI_MAX_PAGES_PER_LAYER = int(os.getenv("SERPAPI_MAX_PAGES_PER_LAYER", "2"))
 MAX_CALLS_PER_ROLE = int(os.getenv("MAX_CALLS_PER_ROLE", "5"))
@@ -96,6 +96,11 @@ DAILY_SERPAPI_BUDGET = int(os.getenv("DAILY_SERPAPI_BUDGET", "100"))
 SERPAPI_RETRY_ATTEMPTS = int(os.getenv("SERPAPI_RETRY_ATTEMPTS", "3"))
 SERPAPI_MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("SERPAPI_MIN_REQUEST_INTERVAL_SECONDS", "0.35"))
 SERPAPI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("SERPAPI_REQUEST_TIMEOUT_SECONDS", "15"))
+LOCAL_DEV_MODE = os.getenv("LOCAL_DEV_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+SERPAPI_DEBUG = os.getenv("SERPAPI_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
+MOCK_XRAY_MODE = os.getenv("MOCK_XRAY_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+SERPAPI_QUERY_FINGERPRINT_COOLDOWN_SECONDS = int(os.getenv("SERPAPI_QUERY_FINGERPRINT_COOLDOWN_SECONDS", "300"))
+SERPAPI_DEBUG_LOG_DIR = os.getenv("SERPAPI_DEBUG_LOG_DIR", "backend/debug_logs/serpapi").strip()
 USE_INTERNAL_CANDIDATE_DB = os.getenv("USE_INTERNAL_CANDIDATE_DB", "false").strip().lower() in {"1", "true", "yes", "on"}
 PROXYCURL_URL = os.getenv("PROXYCURL_URL", "https://api.ninjapear.com/v1/person/search")
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.repositories import (
     CandidateFeedbackRepository,
     CandidateSelectionSessionRepository,
+    CandidateProfileRepository,
     InterviewRepository,
     JobRepository,
     ScoringProfileRepository,
@@ -57,6 +58,33 @@ def _final_shortlist_limit(job: Any) -> int:
 
 def _selection_limit(job: Any) -> int:
     return _final_shortlist_limit(job)
+
+
+def _candidate_display_name(candidate: Any | None) -> str:
+    if candidate is None:
+        return ""
+    for key in ("name", "full_name", "fullName", "candidate_name", "candidateName"):
+        value = getattr(candidate, key, None)
+        if isinstance(value, str) and _normalize_text(value):
+            return _normalize_text(value)
+        if isinstance(candidate, dict):
+            value = candidate.get(key)
+            if isinstance(value, str) and _normalize_text(value):
+                return _normalize_text(value)
+    profile_data = getattr(candidate, "profileData", None)
+    if isinstance(profile_data, dict):
+        for key in ("full_name", "fullName", "name", "candidate_name", "candidateName"):
+            value = profile_data.get(key)
+            if isinstance(value, str) and _normalize_text(value):
+                return _normalize_text(value)
+    raw_data = getattr(candidate, "raw_data", None)
+    if isinstance(raw_data, dict):
+        for key in ("full_name", "fullName", "name", "candidate_name", "candidateName"):
+            value = raw_data.get(key)
+            if isinstance(value, str) and _normalize_text(value):
+                return _normalize_text(value)
+    candidate_id = _normalize_text(getattr(candidate, "id", "") or getattr(candidate, "candidate_id", "") or "")
+    return candidate_id or "Unnamed candidate"
 
 
 def _tokenize(value: str) -> list[str]:
@@ -624,6 +652,32 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         selected_candidate = lookup.get(candidate_id)
         rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
         feedback_error = None
+        if selected_candidate:
+            profile_repo = CandidateProfileRepository(db)
+            profile = profile_repo.get(job_id=job_id, candidate_id=candidate_id) or profile_repo.ensure_candidate_profile(job_id=job_id, candidate_id=candidate_id)
+            selected_name = _candidate_display_name(selected_candidate)
+            selected_role = _normalize_text(getattr(selected_candidate, "role", "") or getattr(selected_candidate, "headline", "") or "")
+            selected_company = _normalize_text(getattr(selected_candidate, "company", "") or getattr(selected_candidate, "currentCompany", "") or "")
+            selected_summary = _normalize_text(getattr(selected_candidate, "summary", "") or "")
+            selected_skills = list(getattr(selected_candidate, "skills", []) or [])
+            selected_profile_data = dict(profile.raw_data or {}) if isinstance(profile.raw_data, dict) else {}
+            if selected_name:
+                profile.name = selected_name
+                selected_profile_data["full_name"] = selected_name
+                selected_profile_data["name"] = selected_name
+            if selected_role:
+                profile.role = selected_role
+                selected_profile_data["role"] = selected_role
+            if selected_company:
+                profile.company = selected_company
+                selected_profile_data["company"] = selected_company
+                selected_profile_data["current_company"] = selected_company
+            if selected_summary and not _normalize_text(getattr(profile, "summary", "") or ""):
+                profile.summary = selected_summary
+            if selected_skills and not list(getattr(profile, "skills", []) or []):
+                profile.skills = selected_skills
+            profile.raw_data = selected_profile_data
+            db.flush()
         try:
             _store_selection_feedback(
                 db,

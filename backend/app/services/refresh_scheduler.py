@@ -105,6 +105,7 @@ def _run_candidate_refresh_cycle_inner() -> None:
                         job_id=job.id,
                         mode=(job.vetting_mode or "volume").strip().lower(),
                         refresh=(job_status == "no_candidates"),
+                        request_source="scheduler",
                     )
                     with _status_lock:
                         _last_cycle_jobs_refreshed += 1

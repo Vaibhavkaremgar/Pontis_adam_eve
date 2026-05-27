@@ -11,6 +11,22 @@ from app.utils.exceptions import APIError
 logger = logging.getLogger(__name__)
 
 
+def _candidate_display_name(profile) -> str:
+    if not profile:
+        return ""
+    name = str(getattr(profile, "name", "") or "").strip()
+    if name:
+        return name
+    raw_data = getattr(profile, "raw_data", None)
+    if isinstance(raw_data, dict):
+        for key in ("full_name", "fullName", "name", "candidate_name", "candidateName"):
+            value = str(raw_data.get(key) or "").strip()
+            if value:
+                return value
+    candidate_id = str(getattr(profile, "candidate_id", "") or "").strip()
+    return candidate_id or ""
+
+
 def list_interviews(*, db: Session, job_id: str) -> list[InterviewItem]:
     jobs = JobRepository(db)
     if not jobs.get(job_id):
@@ -31,7 +47,7 @@ def list_interviews(*, db: Session, job_id: str) -> list[InterviewItem]:
         items.append(
             InterviewItem(
                 candidateId=candidate_id,
-                name=profile.name if profile else "",
+                name=_candidate_display_name(profile),
                 status=row.status,
             )
         )

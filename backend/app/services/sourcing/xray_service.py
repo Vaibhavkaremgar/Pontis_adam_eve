@@ -306,6 +306,7 @@ def discover_xray_candidates(
     limit: int = 10,
     pages_per_query: int = 1,
     recruiter_preferences: dict[str, Any] | None = None,
+    db: Any | None = None,
 ) -> list[dict[str, Any]]:
     if SOURCE_PROVIDER != "xray_apollo":
         logger.info("[xray] skipped source_provider=%s", SOURCE_PROVIDER)
@@ -353,6 +354,12 @@ def discover_xray_candidates(
         limit=XRAY_TARGET_COUNT,
         pages_per_query=max_pages,
         recruiter_preferences=recruiter_preferences,
+        db=db,
+        role_search_id=f"{job_id}:xray_preview",
+        recruiter_id="",
+        company_id="",
+        workflow_token="",
+        archetype_ids=[],
     )
 
     if not raw_candidates:
@@ -362,15 +369,31 @@ def discover_xray_candidates(
 
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
+    duplicate_linkedin_urls = 0
+    duplicate_candidate_ids = 0
+    duplicate_name_company = 0
     for candidate in raw_candidates:
         identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
         candidate_id = build_candidate_id(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
         linkedin_url = identity.canonical_linkedin_url
-        key = identity.identity_fingerprint or linkedin_url.lower() or identity.normalized_name.lower()
+        name_company = f"{identity.normalized_name}|{identity.normalized_company}".strip("|").lower()
+        key = candidate_id or identity.identity_fingerprint or linkedin_url.lower() or name_company
         if key and key in seen:
+            if linkedin_url and linkedin_url.lower() in seen:
+                duplicate_linkedin_urls += 1
+            elif candidate_id and candidate_id.lower() in seen:
+                duplicate_candidate_ids += 1
+            else:
+                duplicate_name_company += 1
             continue
         if key:
             seen.add(key)
+        if linkedin_url:
+            seen.add(linkedin_url.lower())
+        if candidate_id:
+            seen.add(candidate_id.lower())
+        if name_company:
+            seen.add(name_company)
         logger.info(
             "xray_candidate_id_normalized job_id=%s candidate_id=%s linkedin_url=%s source_url=%s",
             job_id,
@@ -402,6 +425,17 @@ def discover_xray_candidates(
 
     logger.info("[xray_candidate_count] job_id=%s raw=%s deduped=%s", job_id, len(raw_candidates), len(normalized))
     logger.info("[xray_deduped] job_id=%s count=%s", job_id, len(normalized))
+    logger.info(
+        "[xray_dedup] job_id=%s raw_candidates=%s duplicate_candidates=%s deduped_candidates=%s duplicate_rate=%.4f duplicate_linkedin_urls=%s duplicate_candidate_ids=%s duplicate_candidate_names=%s",
+        job_id,
+        len(raw_candidates),
+        len(raw_candidates) - len(normalized),
+        len(normalized),
+        (len(raw_candidates) - len(normalized)) / len(raw_candidates) if raw_candidates else 0.0,
+        duplicate_linkedin_urls,
+        duplicate_candidate_ids,
+        duplicate_name_company,
+    )
     log_metric("xray_candidates_found", job_id=job_id, count=len(normalized))
     return normalized
 

@@ -1,0 +1,19 @@
+{
+  "job_id": "smoke-one-hit",
+  "company_id": "",
+  "recruiter_id": "",
+  "workflow_token": "",
+  "role_search_id": "smoke-one-hit:xray_preview",
+  "archetype_ids": [],
+  "total_layer_count": 5,
+  "active_layer_count": 1,
+  "generated_queries": [
+    {
+      "layer_index": 1,
+      "layer_type": "exact_title",
+      "query": "site:linkedin.com/in/ \"Senior Backend Engineer\" Python FastAPI AWS San Francisco Series A developer tools high ownership technical leadership",
+      "pages": 1,
+      "enabled": true
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import logging
 import math
 import random
 import re
+from time import perf_counter
 from collections import defaultdict
 from statistics import mean, pstdev
 from dataclasses import dataclass
@@ -550,6 +551,21 @@ def _candidate_profile_details(*, profile: Any | None = None, raw_data: Any | No
         "resumeText": _string_value("raw_resume_text", "rawResumeText"),
         "profileData": parsed_data,
     }
+
+
+def _candidate_profile_display_name(profile: Any | None) -> str:
+    if profile is None:
+        return ""
+    name = str(getattr(profile, "name", "") or "").strip()
+    if name:
+        return name
+    raw_data = getattr(profile, "raw_data", None)
+    if isinstance(raw_data, dict):
+        for key in ("full_name", "fullName", "name", "candidate_name", "candidateName"):
+            value = str(raw_data.get(key) or "").strip()
+            if value:
+                return value
+    return str(getattr(profile, "candidate_id", "") or "").strip()
 
 
 def _candidate_experience(candidate: dict) -> str:
@@ -2840,6 +2856,7 @@ def fetch_ranked_candidates(
     refresh: bool = False,
     debug: bool = False,
     recruiter_id: str | None = None,
+    request_source: str = "api",
 ) -> list[CandidateResult]:
     jobs = JobRepository(db)
     job = jobs.get(job_id)
@@ -2870,12 +2887,33 @@ def fetch_ranked_candidates(
     recruiter_preferences = load_recruiter_preference_profile(db, recruiter_id) if recruiter_id else {}
     recruiter_feedback_count = _recruiter_feedback_count(db, recruiter_id)
     selection_session = CandidateSelectionSessionRepository(db).get_by_job(job.id)
+    workflow_token = str(getattr(selection_session, "id", "") or "").strip()
+    archetype_ids: list[str] = []
+    if selection_session and isinstance(getattr(selection_session, "batch_plan", None), list):
+        for batch in list(selection_session.batch_plan or []):
+            if not isinstance(batch, dict):
+                continue
+            for candidate_id in batch.get("candidate_ids") or []:
+                candidate_text = str(candidate_id or "").strip()
+                if candidate_text:
+                    archetype_ids.append(candidate_text)
+    archetype_ids = list(dict.fromkeys(archetype_ids))
     run_type = _infer_ranking_run_type(refresh=refresh, selection_session=selection_session)
     local_run_metrics: dict[str, dict[str, float | bool]] = {}
     pdl_run_metrics: dict[str, dict[str, float | bool]] = {}
+    request_source = (request_source or "api").strip().lower() or "api"
 
     if SOURCE_PROVIDER == "xray_apollo":
+        if request_source not in {"api", "selection"}:
+            logger.info(
+                "xray_retrieval_skipped job_id=%s request_source=%s reason=non_interactive",
+                job.id,
+                request_source,
+            )
+            log_metric("candidate_retrieval_skipped", job_id=job.id, source="xray", request_source=request_source)
+            return []
         try:
+            pipeline_started = perf_counter()
             xray_target_limit = min(MAX_TOTAL_PROFILES, max(30, mode_config.top_k))
             xray_candidates = discover_xray_candidates(
                 job=job,
@@ -2883,12 +2921,20 @@ def fetch_ranked_candidates(
                 limit=xray_target_limit,
                 pages_per_query=1,
                 recruiter_preferences=recruiter_preferences,
+                db=db,
+                role_search_id=f"{job.id}:{recruiter_id or 'recruiter'}:{workflow_token or 'no_workflow'}:{'refresh' if refresh else 'initial'}",
+                recruiter_id=recruiter_id,
+                company_id=getattr(job, "company_id", ""),
+                workflow_token=workflow_token,
+                archetype_ids=archetype_ids,
             )
             xray_results = build_xray_candidate_results(
                 job=job,
                 candidates=xray_candidates,
                 limit=xray_target_limit,
             )
+            pre_rerank_count = len(xray_results)
+            rerank_started = perf_counter()
             try:
                 xray_results = rerank_xray_candidates(
                     db=db,
@@ -2912,6 +2958,32 @@ def fetch_ranked_candidates(
                     len(xray_results),
                     str(rerank_exc),
                 )
+            rerank_ms = round((perf_counter() - rerank_started) * 1000.0, 2)
+            total_pipeline_ms = round((perf_counter() - pipeline_started) * 1000.0, 2)
+            logger.info(
+                "[xray_timing] job_id=%s recruiter_id=%s query_generation_ms=%s serpapi_latency_ms=%s dedupe_ms=%s prefilter_ms=%s rerank_ms=%s total_pipeline_ms=%s",
+                job.id,
+                recruiter_id or "",
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                rerank_ms,
+                total_pipeline_ms,
+            )
+            log_metric(
+                "xray_timing",
+                job_id=job.id,
+                recruiter_id=recruiter_id or "",
+                query_generation_ms=0.0,
+                serpapi_latency_ms=0.0,
+                dedupe_ms=0.0,
+                prefilter_ms=0.0,
+                rerank_ms=rerank_ms,
+                total_pipeline_ms=total_pipeline_ms,
+                pre_rerank_count=pre_rerank_count,
+                post_rerank_count=len(xray_results),
+            )
             profile_repo = CandidateProfileRepository(db)
             for candidate in xray_results:
                 profile_repo.upsert(
@@ -3297,6 +3369,12 @@ def fetch_ranked_candidates(
                 limit=min(MAX_TOTAL_PROFILES, max(size, 30)),
                 pages_per_query=1,
                 recruiter_preferences=recruiter_preferences,
+                db=db,
+                role_search_id=f"{job.id}:{recruiter_id or 'recruiter'}:{workflow_token or 'no_workflow'}:serpapi_fallback",
+                recruiter_id=recruiter_id,
+                company_id=getattr(job, "company_id", ""),
+                workflow_token=workflow_token,
+                archetype_ids=archetype_ids,
             )
             if serpapi_candidates:
                 serpapi_results = _build_ranked_candidates_from_pdl(
@@ -3793,12 +3871,28 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
     if not job:
         raise APIError("Job not found", status_code=404)
 
-    interview_rows = InterviewRepository(db).list_for_job(job_id)
-    shortlisted_ids = [
-        row.candidate_id
-        for row in interview_rows
-        if (row.status or "").strip().lower() == "selected"
-    ]
+    selection_session = CandidateSelectionSessionRepository(db).get_by_job(job_id)
+    final_snapshot_lookup: dict[str, CandidateResult] = {}
+    if selection_session and (selection_session.final_candidate_snapshot or []):
+        for row in selection_session.final_candidate_snapshot or []:
+            try:
+                candidate = CandidateResult.model_validate(row)
+            except Exception:
+                continue
+            final_snapshot_lookup[candidate.id] = candidate
+
+    if selection_session and (selection_session.status or "").strip().lower() == "completed" and final_snapshot_lookup:
+        shortlisted_ids = [
+            candidate_id
+            for candidate_id in final_snapshot_lookup.keys()
+        ]
+    else:
+        interview_rows = InterviewRepository(db).list_for_job(job_id)
+        shortlisted_ids = [
+            row.candidate_id
+            for row in interview_rows
+            if (row.status or "").strip().lower() == "selected"
+        ]
 
     logger.info(
         "outreach_shortlisted_fetch job_id=%s shortlisted_count=%s",
@@ -3831,22 +3925,26 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
     updated_workflow_tokens = False
     for candidate_id in shortlisted_ids:
         profile = profiles.get(candidate_id)
-        if not profile:
+        snapshot_candidate = final_snapshot_lookup.get(candidate_id)
+        if not profile and not snapshot_candidate:
             logger.warning(
                 "invalid_candidate_reference_detected table=interviews job_id=%s candidate_id=%s",
                 job_id,
                 candidate_id,
             )
             continue
-        profile_details = _candidate_profile_details(profile=profile)
-        enrichment_state = dict(getattr(profile, "raw_data", {}) or {}).get("enrichment") or {}
+        profile_details = _candidate_profile_details(
+            profile=profile,
+            raw_data=dict(snapshot_candidate.profileData or {}) if snapshot_candidate else None,
+        )
+        enrichment_state = dict(getattr(profile, "raw_data", {}) or {}).get("enrichment") or dict(getattr(snapshot_candidate, "profileData", {}) or {}).get("enrichment") or {}
         enrichment_status = str(enrichment_state.get("status") or "pending").strip().lower() or "pending"
-        email = profile_details["email"] or ensure_candidate_email(profile)
+        email = profile_details["email"] or (ensure_candidate_email(profile) if profile else "") or str((snapshot_candidate.email if snapshot_candidate else "") or "")
         if not email or email.endswith("@test.local"):
             logger.info("outreach_review_candidate_skipped_missing_email job_id=%s candidate_id=%s", job_id, candidate_id)
             continue
         slot_payload = build_slot_booking_payload(
-            candidate=profile,
+            candidate=profile or snapshot_candidate or {"id": candidate_id, "name": candidate_id},
             job={"title": job.title, "company_name": company.name if company else ""},
         )
         slot_payload.update(
@@ -3858,17 +3956,17 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
         )
         shortlisted_rows.append(
             {
-                "candidate_id": profile.candidate_id,
-                "name": profile.name,
-                "role": profile.role,
-                "company": profile.company,
+                "candidate_id": candidate_id,
+                "name": _candidate_profile_display_name(profile) or (snapshot_candidate.name if snapshot_candidate else "") or candidate_id,
+                "role": (getattr(profile, "role", "") or (snapshot_candidate.role if snapshot_candidate else "") or "").strip(),
+                "company": (getattr(profile, "company", "") or (snapshot_candidate.company if snapshot_candidate else "") or "").strip(),
                 "email": email,
                 "is_mock_email": bool(profile_details["isMockEmail"]) or email.endswith("@test.local"),
                 "headline": profile_details["headline"],
                 "location": profile_details["location"],
                 "years_experience": float(profile_details["yearsExperience"] or 0.0),
-                "skills": profile.skills or [],
-                "summary": profile.summary,
+                "skills": list(getattr(profile, "skills", []) or (snapshot_candidate.skills if snapshot_candidate else []) or []),
+                "summary": getattr(profile, "summary", "") or (snapshot_candidate.summary if snapshot_candidate else ""),
                 "education": list(profile_details["education"] or []),
                 "projects": list(profile_details["projects"] or []),
                 "certifications": list(profile_details["certifications"] or []),
@@ -3876,14 +3974,14 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
                 "domain_experience": list(profile_details["domainExperience"] or []),
                 "resume_text": profile_details["resumeText"],
                 "profile_data": dict(profile_details["profileData"] or {}),
-                "fit_score": round(profile.fit_score, 2),
-                "decision": profile.decision,
-                "strategy": profile.strategy,
+                "fit_score": round(float(getattr(profile, "fit_score", 0.0) or getattr(snapshot_candidate, "fitScore", 0.0) or 0.0), 2),
+                "decision": getattr(profile, "decision", "") or (snapshot_candidate.decision if snapshot_candidate else ""),
+                "strategy": getattr(profile, "strategy", "") or (snapshot_candidate.strategy if snapshot_candidate else ""),
                 "enrichment_status": enrichment_status,
                 "enrichment_source": str(enrichment_state_map.get(candidate_id, {}).get("source") or ""),
                 "enrichment_confidence": float(enrichment_state_map.get(candidate_id, {}).get("confidence") or 0.0),
                 "contact_email": email,
-                "contact_phone": str(getattr(profile, "phone", "") or ""),
+                "contact_phone": str(getattr(profile, "phone", "") or (snapshot_candidate.contactPhone if snapshot_candidate else "") or ""),
                 "selection_signal": _selection_session_signal(selection_session, candidate_id),
                 "voice_score": 1.0 if getattr(job, "structured_data", None) else 0.0,
                 "slot_payload": slot_payload,
@@ -4002,7 +4100,7 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
         results.append(
             CandidateResult(
                 id=row.candidate_id,
-                name=row.name,
+                name=_candidate_profile_display_name(row),
                 role=row.role,
                 company=row.company,
                 email=profile_details["email"] or ensure_candidate_email(row),
@@ -4042,8 +4140,8 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
     return _attach_candidate_workflow_state(db, job_id=job_id, candidates=results)
 
 
-def refresh_candidates_for_job(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False) -> int:
-    refreshed = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh)
+def refresh_candidates_for_job(*, db: Session, job_id: str, mode: str | None = None, refresh: bool = False, request_source: str = "api") -> int:
+    refreshed = fetch_ranked_candidates(db=db, job_id=job_id, mode=mode, refresh=refresh, request_source=request_source)
     return len(refreshed)
 
 

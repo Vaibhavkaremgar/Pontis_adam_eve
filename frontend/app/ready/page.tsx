@@ -22,7 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppContext } from "@/context/AppContext";
-import { exportCandidates } from "@/lib/api/candidates";
+import { exportCandidates, getFinalSelectionResults, getShortlistedCandidates } from "@/lib/api/candidates";
 import {
   getInterviewInsights,
   getInterviewStatuses,
@@ -31,8 +31,13 @@ import {
   type InterviewInsights,
 } from "@/lib/api/interviews";
 import { getMetrics } from "@/lib/api/metrics";
-import { getOutreachStatuses, type OutreachStatusItem } from "@/lib/api/outreach";
-import type { InterviewStatus } from "@/types";
+import { getOutreachStatuses, sendOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
+import type { Candidate, InterviewStatus } from "@/types";
+
+type ReadyCandidate = Candidate & {
+  candidateId: string;
+  status: InterviewStatus["status"];
+};
 
 const STATUS_LABELS: Record<string, string> = {
   reviewed: "Reviewed",
@@ -56,6 +61,46 @@ function formatStatus(status: InterviewStatus["status"] | string | null | undefi
   return STATUS_LABELS[normalized] || normalized.replace(/_/g, " ");
 }
 
+function resolveCandidateName(candidate: Pick<Candidate, "id" | "name" | "profileData"> | null | undefined): string {
+  if (!candidate) return "Unnamed candidate";
+  const profileData = candidate.profileData || {};
+  const rawName =
+    candidate.name ||
+    String(profileData.full_name || profileData.fullName || profileData.name || profileData.candidate_name || profileData.candidateName || "").trim();
+  return rawName || candidate.id || "Unnamed candidate";
+}
+
+function normalizeReadyStatus(status: string | null | undefined): ReadyCandidate["status"] {
+  const normalized = (status || "selected").toString().trim().toLowerCase();
+  const allowed: ReadonlySet<string> = new Set([
+    "selected",
+    "outreach_pending",
+    "outreach_sent",
+    "interview_requested",
+    "interview_scheduled",
+    "interview_in_progress",
+    "rejected",
+    "advanced",
+    "second_round_requested",
+    "second_round_scheduled",
+    "second_round_reschedule_requested",
+    "final_round",
+    "offer_stage",
+    "offer_sent",
+    "placed",
+    "hired",
+    "search_closed",
+    "archived",
+    "interview_completed",
+    "interview_no_show",
+    "new",
+    "reviewed",
+    "evaluation_processing",
+    "results_ready",
+  ]);
+  return (allowed.has(normalized) ? normalized : "selected") as ReadyCandidate["status"];
+}
+
 function statusVariant(status: InterviewStatus["status"]) {
   if (["interview_scheduled", "advanced", "final_round", "hired"].includes(status)) return "high";
   if (["interview_requested", "offer_sent"].includes(status)) return "info";
@@ -70,11 +115,13 @@ function ReadyPageContent() {
   const { user, isSessionReady, jobId, setJobId } = useAppContext();
   const queryJobId = String(searchParams.get("jobId") || "").trim();
   const effectiveJobId = jobId || queryJobId;
-  const [items, setItems] = useState<InterviewStatus[]>([]);
+  const [items, setItems] = useState<ReadyCandidate[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [exportMessage, setExportMessage] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [outreachMessage, setOutreachMessage] = useState("");
+  const [isOutreachSending, setIsOutreachSending] = useState(false);
   const [outreachStatuses, setOutreachStatuses] = useState<OutreachStatusItem[]>([]);
   const [metrics, setMetrics] = useState<{
     emails_sent: number;
@@ -83,7 +130,7 @@ function ReadyPageContent() {
     conversion_rate: number;
   } | null>(null);
 
-  const [activeCandidate, setActiveCandidate] = useState<InterviewStatus | null>(null);
+  const [activeCandidate, setActiveCandidate] = useState<ReadyCandidate | null>(null);
   const [activeInsights, setActiveInsights] = useState<InterviewInsights | null>(null);
   const [workflowLoading, setWorkflowLoading] = useState(false);
   const [workflowMessage, setWorkflowMessage] = useState("");
@@ -124,7 +171,7 @@ function ReadyPageContent() {
     [orderedItems],
   );
   const completedResultCount = useMemo(
-    () => orderedItems.filter((item) => item.status === "results_ready").length,
+    () => orderedItems.filter((item) => String(item.status) === "results_ready").length,
     [orderedItems],
   );
 
@@ -137,12 +184,48 @@ function ReadyPageContent() {
     const canViewOperationalMetrics = user.role === "admin" || user.role === "internal_ops";
     setIsLoading(true);
     setError("");
-    const [result, outreachResult] = await Promise.all([getInterviewStatuses(effectiveJobId), getOutreachStatuses(effectiveJobId)]);
+    const [shortlistResult, finalSelectionResult, interviewResult, outreachResult] = await Promise.all([
+      getShortlistedCandidates(effectiveJobId),
+      getFinalSelectionResults(effectiveJobId),
+      getInterviewStatuses(effectiveJobId),
+      getOutreachStatuses(effectiveJobId),
+    ]);
     const metricsResult = canViewOperationalMetrics ? await getMetrics() : null;
-    if (!result.success || !result.data) {
-      setError(result.error || "Could not load candidate statuses.");
+    const shortlistedCandidates = shortlistResult.success && shortlistResult.data ? shortlistResult.data : [];
+    const finalSelectionCandidates =
+      finalSelectionResult.success && finalSelectionResult.data
+        ? (finalSelectionResult.data.topCandidates?.length ? finalSelectionResult.data.topCandidates : finalSelectionResult.data.finalCandidates || [])
+        : [];
+    const candidateSource = finalSelectionCandidates.length > 0 ? finalSelectionCandidates : shortlistedCandidates;
+    if (candidateSource.length === 0) {
+      setError(shortlistResult.error || finalSelectionResult.error || "Could not load shortlisted candidates.");
     } else {
-      setItems(result.data);
+      const statusMap = new Map(
+        (interviewResult.success && interviewResult.data ? interviewResult.data : []).map((row) => [row.candidateId, row.status] as const)
+      );
+      const outreachStatusMap = new Map(
+        (outreachResult.success && outreachResult.data ? outreachResult.data : []).map((row) => [row.candidateId, row.status] as const)
+      );
+      setItems(
+        candidateSource
+          .map((candidate) => {
+            const candidateId = candidate.id;
+            const interviewStatus = normalizeReadyStatus(statusMap.get(candidateId) || candidate.status || "selected");
+            const outreachStatus = outreachStatusMap.get(candidateId);
+            return {
+              ...candidate,
+              name: resolveCandidateName(candidate),
+              candidateId,
+              status:
+                outreachStatus === "sent"
+                  ? "outreach_sent"
+                  : outreachStatus === "failed"
+                    ? "rejected"
+                    : normalizeReadyStatus(interviewStatus),
+            };
+          })
+          .filter((candidate, index, array) => array.findIndex((item) => item.candidateId === candidate.candidateId) === index)
+      );
     }
     if (outreachResult.success && outreachResult.data) {
       setOutreachStatuses(outreachResult.data);
@@ -177,7 +260,7 @@ function ReadyPageContent() {
     setJobId(queryJobId);
   }, [jobId, queryJobId, setJobId]);
 
-  const refreshWorkflow = async (candidate: InterviewStatus) => {
+  const refreshWorkflow = async (candidate: ReadyCandidate) => {
     if (!effectiveJobId) return;
     setWorkflowLoading(true);
     setWorkflowError("");
@@ -191,7 +274,7 @@ function ReadyPageContent() {
     setWorkflowLoading(false);
   };
 
-  const openWorkflow = (candidate: InterviewStatus) => {
+  const openWorkflow = (candidate: ReadyCandidate) => {
     setActiveCandidate(candidate);
     setWorkflowMessage("");
     setWorkflowError("");
@@ -214,6 +297,33 @@ function ReadyPageContent() {
     }
     setExportMessage(`Export ${result.data.status}: ${result.data.exportedCount} candidate${result.data.exportedCount !== 1 ? "s" : ""} (ref: ${result.data.reference})`);
     setIsExporting(false);
+  };
+
+  const handleSendOutreach = async () => {
+    if (!effectiveJobId || isOutreachSending) return;
+    setIsOutreachSending(true);
+    setOutreachMessage("");
+    const candidateIds = orderedItems
+      .filter((item) => !["rejected", "archived"].includes(item.status))
+      .map((item) => item.candidateId);
+    if (candidateIds.length === 0) {
+      setOutreachMessage("No shortlisted candidates are available to send outreach.");
+      setIsOutreachSending(false);
+      return;
+    }
+
+    const result = await sendOutreach({ jobId: effectiveJobId, selectedCandidates: candidateIds });
+    if (!result.success || !result.data) {
+      setOutreachMessage(result.error || "Failed to send outreach.");
+      setIsOutreachSending(false);
+      return;
+    }
+
+    setOutreachMessage(
+      `Outreach ${result.data.success ? "queued" : "processed"}: ${result.data.sent} sent, ${result.data.skipped} skipped.`
+    );
+    await loadReady();
+    setIsOutreachSending(false);
   };
 
   const runDecision = async (action: string, targetStage = "") => {
@@ -298,16 +408,16 @@ function ReadyPageContent() {
     <AppShell activeStep={5}>
       <Card className="mx-auto w-full max-w-[760px]">
         <CardHeader className="space-y-2 text-center">
-          <CardTitle>Candidates ready for interview</CardTitle>
-          <CardDescription>Adam tracks selected candidates here and keeps the status view moving after resume replies.</CardDescription>
+          <CardTitle>Shortlisted candidates ready for outreach</CardTitle>
+          <CardDescription>Adam tracks shortlisted candidates here, keeps names attached, and lets you send outreach from one place.</CardDescription>
         </CardHeader>
 
         <CardContent className="space-y-4">
-          {isLoading && <p className="text-sm text-gray-600">Loading interview statuses...</p>}
+          {isLoading && <p className="text-sm text-gray-600">Loading shortlisted candidates...</p>}
 
           {!isLoading && !error && items.length === 0 && (
             <div className="rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4 text-sm text-gray-600">
-              No replies yet. Adam is still processing selections or no candidate has scheduled an interview.
+              No shortlisted candidates yet. Adam is still processing selections or the shortlist has not been saved yet.
             </div>
           )}
 
@@ -315,7 +425,7 @@ function ReadyPageContent() {
             <div key={item.candidateId} className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="font-semibold text-gray-900">{item.name || "Unnamed candidate"}</p>
+                  <p className="font-semibold text-gray-900">{resolveCandidateName(item)}</p>
                 </div>
                 <Badge variant={statusVariant(item.status)}>{formatStatus(item.status)}</Badge>
               </div>
@@ -342,7 +452,7 @@ function ReadyPageContent() {
                 return (
                   <div key={item.candidateId} className="flex items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2">
                     <div>
-                      <p className="text-sm font-medium text-gray-900">{readyItem?.name || "Unnamed candidate"}</p>
+                      <p className="text-sm font-medium text-gray-900">{resolveCandidateName(readyItem)}</p>
                       {readyItem?.status && <p className="text-xs text-gray-500">Candidate status: {formatStatus(readyItem.status)}</p>}
                       <p className="text-xs text-gray-500">{item.toEmail || "No email on file"}</p>
                       {item.replyState && <p className="text-xs text-slate-700">Reply state: {item.replyState.replace(/_/g, " ")}</p>}
@@ -390,6 +500,11 @@ function ReadyPageContent() {
           </Button>
           {exportMessage && <p className="text-sm text-gray-700">{exportMessage}</p>}
 
+          <Button className="w-full justify-center" variant="outline" onClick={handleSendOutreach} disabled={isLoading || isOutreachSending || orderedItems.length === 0}>
+            {isOutreachSending ? "Sending outreach..." : "Send outreach"}
+          </Button>
+          {outreachMessage && <p className="text-sm text-gray-700">{outreachMessage}</p>}
+
           <div className="grid gap-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F8F5EE] p-4 text-sm text-gray-700">
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl bg-white/80 p-3">
@@ -427,7 +542,7 @@ function ReadyPageContent() {
             setActiveInsights(null);
           }
         }}
-        title={activeCandidate ? `${activeCandidate.name || "Unnamed candidate"} status` : "Candidate status"}
+        title={activeCandidate ? `${resolveCandidateName(activeCandidate)} status` : "Candidate status"}
         description="Current ATS, outreach, and interview status for this candidate."
         className="max-w-4xl"
       >
@@ -445,14 +560,14 @@ function ReadyPageContent() {
                   {String(activeCandidateDetail?.ats_status_reason || "Current status tracked across outreach and interview progression.")}
                 </p>
               </div>
-              <Badge variant="neutral">{activeCandidate?.name || "Unnamed candidate"}</Badge>
+              <Badge variant="neutral">{resolveCandidateName(activeCandidate)}</Badge>
             </div>
 
             <div className="mt-4 grid gap-3 md:grid-cols-2">
               <div className="rounded-xl border border-[#ECE7DE] bg-[#F8F5EE] p-4 text-sm text-gray-700">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Profile</p>
                 <div className="mt-2 space-y-1">
-                  <p>Name: {activeCandidate?.name || "Unnamed candidate"}</p>
+                  <p>Name: {resolveCandidateName(activeCandidate)}</p>
                   <p>Source: {activeCandidateDetail?.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : String(activeCandidateDetail?.sourceProvider || activeCandidateDetail?.ats_status_source || "system")}</p>
                   <p>Updated: {String(activeCandidateDetail?.ats_status_updated_at || "n/a")}</p>
                 </div>
