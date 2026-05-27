@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from app.api.routes import api_router
 from app.api.routes.slack import router as slack_router
 from app.core.auth_middleware import auth_middleware
-from app.core.config import APP_ENV, APOLLO_ENRICHMENT_ENABLED, CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, SOURCE_PROVIDER, XRAY_ENABLED, config_diagnostics, missing_secret_warnings, validate_runtime_config
+from app.core.config import APP_ENV, APIFY_TOKEN, CORS_ALLOW_ORIGINS, INTERNAL_API_KEY, SOURCE_PROVIDER, XRAY_ENABLED, config_diagnostics, missing_secret_warnings, validate_runtime_config
 from app.core.rate_limit_middleware import rate_limit_middleware
 from app.core.security import verify_access_token
 from app.db.session import db_health_snapshot, init_db
@@ -28,7 +28,7 @@ from app.core.config import RECRUITER_MEMORY_COLLECTION_NAME, RECRUITER_PREFEREN
 from app.services.qdrant_service import close_qdrant_client
 from app.services.pdl_service import pdl_health_snapshot
 from app.services.serpapi_sourcing_service import serpapi_health_snapshot
-from app.services.apollo_enrichment_service import apollo_health_snapshot
+from app.services.apify_enrichment_service import apify_health_snapshot
 from app.services.redis_service import close_redis_client, get_redis
 from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
 from app.utils.exceptions import APIError
@@ -178,10 +178,10 @@ def on_startup() -> None:
     if critical_issues:
         raise RuntimeError(f"Invalid runtime config: {critical_issues}")
     logger.info(
-        "startup_sourcing_provider source_provider=%s xray_enabled=%s apollo_enrichment_enabled=%s embedding_model=%s",
+        "startup_sourcing_provider source_provider=%s xray_enabled=%s apify_token_configured=%s embedding_model=%s",
         SOURCE_PROVIDER,
         XRAY_ENABLED,
-        APOLLO_ENRICHMENT_ENABLED,
+        bool(APIFY_TOKEN),
         embedding_health_snapshot().get("model") or "",
     )
 
@@ -226,9 +226,9 @@ def on_startup() -> None:
             serpapi_status = serpapi_health_snapshot()
             if serpapi_status.get("status") != "ok":
                 raise RuntimeError(f"SerpAPI unavailable at startup: {serpapi_status}")
-            apollo_status = apollo_health_snapshot()
-            if apollo_status.get("status") != "ok":
-                raise RuntimeError(f"Apollo unavailable at startup: {apollo_status}")
+            apify_status = apify_health_snapshot()
+            if apify_status.get("status") == "down":
+                raise RuntimeError(f"Apify unavailable at startup: {apify_status}")
             embedding_status = embedding_health_snapshot()
             if embedding_status.get("status") != "ok":
                 raise RuntimeError(f"Embedding model unavailable at startup: {embedding_status}")
@@ -236,9 +236,9 @@ def on_startup() -> None:
             if qdrant_status.get("status") != "ok":
                 raise RuntimeError(f"Qdrant unavailable at startup: {qdrant_status}")
             logger.info(
-                "startup_runtime_dependencies_ok redis=ok serpapi=%s apollo=%s embedding=%s qdrant=%s",
+                "startup_runtime_dependencies_ok redis=ok serpapi=%s apify=%s embedding=%s qdrant=%s",
                 serpapi_status.get("status", ""),
-                apollo_status.get("status", ""),
+                apify_status.get("status", ""),
                 embedding_status.get("status", ""),
                 qdrant_status.get("status", ""),
             )

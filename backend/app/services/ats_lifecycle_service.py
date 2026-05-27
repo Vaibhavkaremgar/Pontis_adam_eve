@@ -223,9 +223,15 @@ def transition_candidate_ats_state(
         }
 
     profile.ats_status = target_status
+    profile.candidate_status = target_status
     profile.ats_status_source = (source or "system").strip().lower() or "system"
     profile.ats_status_reason = reason.strip()
     profile.ats_status_updated_at = now
+    profile.raw_data = {
+        **dict(profile.raw_data or {}),
+        "candidate_status": target_status,
+        "ats_status": target_status,
+    }
     profile.ats_metadata = {
         **dict(profile.ats_metadata or {}),
         **payload,

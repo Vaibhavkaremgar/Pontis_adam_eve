@@ -753,7 +753,7 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 exc_info=exc,
             )
             try:
-                from app.services.sourcing.apollo_enrichment_service import enrich_selected_candidate
+                from app.services.sourcing.apify_enrichment_service import enrich_selected_candidate
                 from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
 
                 enrichment = enrich_selected_candidate(

@@ -72,15 +72,13 @@ JOB_COLLECTION_NAME = os.getenv("JOB_COLLECTION_NAME", "job_chunks")
 CANDIDATE_COLLECTION_NAME = os.getenv("CANDIDATE_COLLECTION_NAME", "candidate_chunks")
 INTERNAL_CANDIDATE_COLLECTION_NAME = os.getenv("INTERNAL_CANDIDATE_COLLECTION_NAME", "internal_candidate_chunks")
 XRAY_ENABLED = os.getenv("XRAY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-APOLLO_ENRICHMENT_ENABLED = os.getenv("APOLLO_ENRICHMENT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 RECRUITER_PREFERENCES_COLLECTION_NAME = os.getenv("RECRUITER_PREFERENCES_COLLECTION_NAME", "recruiter_preferences")
 RECRUITER_MEMORY_COLLECTION_NAME = os.getenv("RECRUITER_MEMORY_COLLECTION_NAME", "recruiter_memory")
 PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")
 PDL_ENABLED = os.getenv("PDL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-APOLLO_API_KEY = os.getenv("APOLLO_API_KEY", "").strip()
-APOLLO_URL = os.getenv("APOLLO_URL", "https://api.apollo.io/api/v1/people/match").strip()
+APIFY_TOKEN = os.getenv("APIFY_TOKEN", "").strip()
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
 SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip()
 SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
@@ -263,12 +261,10 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("GEMINI_API_KEY is missing; LLM features will use local fallback.")
     if SOURCE_PROVIDER == "xray_apollo" and XRAY_ENABLED and not SERPAPI_API_KEY:
         warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will be unavailable.")
-    if SOURCE_PROVIDER == "xray_apollo" and APOLLO_ENRICHMENT_ENABLED and not APOLLO_API_KEY:
-        warnings.append("APOLLO_API_KEY is missing; Apollo enrichment will be unavailable.")
     if PDL_ENABLED and not PDL_API_KEY:
         warnings.append("PDL_API_KEY is missing; candidate enrichment will skip PDL.")
-    if not APOLLO_API_KEY:
-        warnings.append("APOLLO_API_KEY is missing; selective candidate enrichment will skip Apollo.")
+    if not APIFY_TOKEN:
+        warnings.append("APIFY_TOKEN is missing; LinkedIn profile enrichment will be unavailable.")
     if SERPAPI_ENABLED and not SERPAPI_API_KEY:
         warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will skip SerpApi.")
     if not REDIS_URL:
@@ -362,8 +358,6 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
         if SOURCE_PROVIDER == "xray_apollo":
             if XRAY_ENABLED and _is_placeholder_value(SERPAPI_API_KEY):
                 issues.append(ConfigIssue(key="SERPAPI_API_KEY", severity="critical", message="SERPAPI_API_KEY is required when SOURCE_PROVIDER=xray_apollo"))
-            if APOLLO_ENRICHMENT_ENABLED and _is_placeholder_value(APOLLO_API_KEY):
-                issues.append(ConfigIssue(key="APOLLO_API_KEY", severity="critical", message="APOLLO_API_KEY is required when SOURCE_PROVIDER=xray_apollo"))
         if PDL_ENABLED:
             issues.append(ConfigIssue(key="PDL_ENABLED", severity="critical", message="PDL discovery is not allowed in production"))
         if USE_INTERNAL_CANDIDATE_DB:
@@ -416,7 +410,7 @@ def config_diagnostics() -> dict[str, Any]:
         "enabled_providers": {
             "source_provider": SOURCE_PROVIDER,
             "xray_enabled": XRAY_ENABLED,
-            "apollo_enrichment_enabled": APOLLO_ENRICHMENT_ENABLED,
+            "apify_token_configured": bool(APIFY_TOKEN),
             "pdl_enabled": PDL_ENABLED,
             "internal_candidate_db": USE_INTERNAL_CANDIDATE_DB,
             "serpapi_enabled": SERPAPI_ENABLED,

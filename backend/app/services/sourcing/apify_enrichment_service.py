@@ -1,10 +1,5 @@
 from __future__ import annotations
 
-"""Backward-compatible shim for the old sourcing import path.
-
-The implementation now lives in `app.services.apify_enrichment_service`.
-"""
-
 from app.services.apify_enrichment_service import enrich_selected_candidate
 
 __all__ = ["enrich_selected_candidate"]

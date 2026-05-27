@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.config import APOLLO_ENRICHMENT_ENABLED, SERPAPI_ENABLED, SERPAPI_MAX_PAGES, SOURCE_PROVIDER, XRAY_ENABLED
+from app.core.config import APIFY_TOKEN, SERPAPI_ENABLED, SERPAPI_MAX_PAGES, SOURCE_PROVIDER, XRAY_ENABLED
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.identity.candidate_identity_service import build_candidate_id, build_candidate_identity, normalize_linkedin_url
 from app.services.metrics_service import log_metric
@@ -337,12 +337,12 @@ def discover_xray_candidates(
     job_id = getattr(job, "id", "")
     role = _normalize_text((intake or {}).get("role") or getattr(job, "title", "") or "")
     logger.info(
-        "[xray] discovery_started job_id=%s role=%s limit=%s pages_per_query=%s apollo_enrichment_enabled=%s",
+        "[xray] discovery_started job_id=%s role=%s limit=%s pages_per_query=%s apify_token_configured=%s",
         job_id,
         role,
         effective_limit,
         max_pages,
-        APOLLO_ENRICHMENT_ENABLED,
+        bool(APIFY_TOKEN),
     )
     log_metric(
         "xray_discovery_started",

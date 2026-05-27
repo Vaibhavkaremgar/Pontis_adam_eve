@@ -24,7 +24,7 @@ from app.services.outreach_service import run_followup_cycle
 from app.services.audit_service import record_audit_event
 from app.services.metrics_service import log_metric
 from app.services.notification_intelligence_service import route_recruiter_notification
-from app.services.sourcing.apollo_enrichment_service import enrich_selected_candidate
+from app.services.sourcing.apify_enrichment_service import enrich_selected_candidate
 from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
 
 logger = logging.getLogger(__name__)
@@ -292,7 +292,7 @@ def _handle_candidate_enrichment(db: Session, row) -> dict[str, Any]:
         candidate_id=row.candidate_id or "",
         to_status="enriching",
         source="candidate_enrichment",
-        reason="apollo_enrichment_started",
+        reason="apify_enrichment_started",
         metadata={
             "selectionSessionId": str((row.automation_payload or {}).get("selectionSessionId") or ""),
             "automationJobId": str(row.id),

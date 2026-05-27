@@ -39,8 +39,8 @@ def trigger_outreach_after_enrichment(
         job_id=job_id,
         candidate_id=candidate_id,
         to_status="outreach_pending",
-        source="apollo_enrichment",
-        reason="apollo_enrichment_complete",
+        source="apify_enrichment",
+        reason="apify_enrichment_complete",
         metadata={
             "selectionSessionId": selection_session_id,
             "automationJobId": automation_job_id,

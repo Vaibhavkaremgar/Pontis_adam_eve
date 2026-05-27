@@ -1588,7 +1588,7 @@ def process_outreach(
             valid_candidates[0],
             enrichment_status or "missing",
         )
-        raise APIError("Outreach is only allowed after verified or high-confidence Apollo enrichment.", status_code=409)
+        raise APIError("Outreach is only allowed after verified or high-confidence candidate enrichment.", status_code=409)
 
     logger.info(
         "outreach_candidates job_id=%s selected=%s rejected_non_selected=%s",

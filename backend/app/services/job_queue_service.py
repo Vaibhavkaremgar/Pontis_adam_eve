@@ -290,7 +290,7 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
 
     if queue_type == "candidate_enrichment":
         from app.db.session import SessionLocal
-        from app.services.sourcing.apollo_enrichment_service import enrich_selected_candidate
+        from app.services.sourcing.apify_enrichment_service import enrich_selected_candidate
         from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
 
         def _handler(payload: dict[str, Any]) -> Any:

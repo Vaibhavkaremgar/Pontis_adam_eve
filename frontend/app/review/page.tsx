@@ -40,20 +40,32 @@ import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
 import { getCandidates, selectCandidateForEnrichment, swipeCandidate } from "@/lib/api/candidates";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
-import { getStoredReviewCandidates, storeReviewCandidates, storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
+import {
+  getStoredReviewCandidates,
+  getStoredShortlistedCandidateIds,
+  storeReviewCandidates,
+  storeShortlistedCandidateIds,
+  storeShortlistedCandidates,
+} from "@/lib/session";
 import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession } from "@/types";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
 function statusLabel(candidate: Candidate): string {
-  if (candidate.status === "sourced") return "LinkedIn sourced";
-  if (candidate.status === "reviewed") return "Reviewed";
-  if (candidate.status === "selected") return "Selected";
-  if (candidate.status === "enriching") return "Enriching";
-  if (candidate.status === "enriched") return "Enriched";
-  if (candidate.status === "outreach_pending") return "Outreach pending";
-  if (candidate.status === "outreach_sent") return "Outreach sent";
-  if (candidate.status === "rejected") return "Rejected";
+  const normalizedStatus = String(candidate.status || "").trim().toLowerCase();
+  if (normalizedStatus === "sourced") return "LinkedIn sourced";
+  if (normalizedStatus === "reviewed") return "Reviewed";
+  if (normalizedStatus === "selected" || normalizedStatus === "shortlisted") return "Shortlisted";
+  if (normalizedStatus === "enriching") return "Enriching";
+  if (normalizedStatus === "enriched") return "Enriched";
+  if (normalizedStatus === "outreach_pending") return "Outreach pending";
+  if (normalizedStatus === "outreach_sent") return "Outreach sent";
+  if (normalizedStatus === "rejected") return "Rejected";
   return "Awaiting choice";
+}
+
+function isShortlistedStatus(value: unknown): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  return ["selected", "shortlisted", "accepted"].includes(normalized);
 }
 
 function atsStatusLabel(candidate: Candidate): string {
@@ -861,7 +873,7 @@ function SwipeDeck({
         <div className="space-y-0.5">
           <p className="font-heading text-[22px] font-semibold text-[#111827]">Here are your top candidates</p>
           <p className="font-body text-sm text-[#8A6F55]">
-            {pending.length} remaining · {shortlistedIds.length} selected
+            {pending.length} remaining · {shortlistedIds.length} shortlisted
           </p>
         </div>
         <Badge variant="high">{candidates.length} candidates</Badge>
@@ -1002,9 +1014,9 @@ function SwipeDeck({
               )}
 
               {/* Already selected badge */}
-              {(shortlistedIds.includes(current.id) || current.status === "selected") && (
+              {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
-                  ✓ Already selected
+                  ✓ Already shortlisted
                 </div>
               )}
 
@@ -1038,7 +1050,7 @@ function SwipeDeck({
           <div
             key={c.id}
             className={`h-2 w-2 rounded-full transition-colors ${
-              shortlistedIds.includes(c.id) || c.status === "selected"
+              shortlistedIds.includes(c.id) || isShortlistedStatus(c.status) || isShortlistedStatus(c.ats_status)
                 ? "bg-[#0F6B3A]"
                 : actedIds.has(c.id)
                   ? "bg-[#D1D5DB]"
@@ -1262,7 +1274,7 @@ function RecruiterSwipeDeck({
                 </p>
               </div>
 
-              {(shortlistedIds.includes(current.id) || current.status === "selected") && (
+              {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
                   Already shortlisted
                 </div>
@@ -1302,7 +1314,7 @@ function RecruiterSwipeDeck({
           <div
             key={candidate.id}
             className={`h-2 w-2 rounded-full transition-colors ${
-              shortlistedIds.includes(candidate.id) || candidate.status === "selected"
+              shortlistedIds.includes(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
                 ? "bg-[#0F6B3A]"
                 : actedIds.has(candidate.id)
                   ? "bg-[#D1D5DB]"
@@ -1365,10 +1377,14 @@ function RecruiterCandidateModal({
                 event.stopPropagation();
                 onShortlist();
               }}
-              disabled={isAdvancing || selectedCandidateId !== "" || candidate.status === "selected"}
-            >
-              {isAdvancing && selectedCandidateId === candidate.id ? "Shortlisting..." : candidate.status === "selected" ? "Shortlisted" : "Shortlist"}
-            </Button>
+                  disabled={isAdvancing || selectedCandidateId !== "" || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)}
+                >
+                  {isAdvancing && selectedCandidateId === candidate.id
+                    ? "Shortlisting..."
+                    : isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
+                      ? "Shortlisted"
+                      : "Shortlist"}
+                </Button>
             <Button
               variant="outline"
               className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white md:w-auto"
@@ -1415,6 +1431,11 @@ export default function ReviewPage() {
   const sourcingInFlightRef = useRef(false);
 
   useEffect(() => {
+    if (!jobId) return;
+    setFinalShortlistedIds(getStoredShortlistedCandidateIds(jobId));
+  }, [jobId]);
+
+  useEffect(() => {
     if (!isSessionReady) return;
     if (!user) {
       router.replace("/login");
@@ -1436,10 +1457,19 @@ export default function ReviewPage() {
     sourcingLoadKeyRef.current = loadKey;
     setReviewLoading(true);
     setSourcingError("");
+    const persistedShortlistedIds = new Set<string>([
+      ...getStoredShortlistedCandidateIds(jobId),
+      ...finalShortlistedIds,
+    ]);
 
     const cachedCandidates = getStoredReviewCandidates(jobId);
     if (cachedCandidates.length > 0) {
-      setReviewCandidates(cachedCandidates.slice(0, 30));
+      const normalizedCachedCandidates = cachedCandidates.slice(0, 30).map((candidate) =>
+        persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status)
+          ? { ...candidate, status: "selected" as const }
+          : candidate
+      );
+      setReviewCandidates(normalizedCachedCandidates);
       if (!forceRefresh) {
         setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
       }
@@ -1461,8 +1491,19 @@ export default function ReviewPage() {
       }
 
       const rankedCandidates = result.data.slice(0, 30);
-      setReviewCandidates(rankedCandidates);
-      storeReviewCandidates(jobId, rankedCandidates);
+      const normalizedRankedCandidates = rankedCandidates.map((candidate) =>
+        persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
+          ? { ...candidate, status: "selected" as const }
+          : candidate
+      );
+      const shortlistedIdsFromRanked = normalizedRankedCandidates
+        .filter((candidate) => isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status))
+        .map((candidate) => candidate.id);
+      const mergedShortlistedIds = Array.from(new Set([...persistedShortlistedIds, ...shortlistedIdsFromRanked]));
+      setFinalShortlistedIds(mergedShortlistedIds);
+      setReviewCandidates(normalizedRankedCandidates);
+      storeReviewCandidates(jobId, normalizedRankedCandidates);
+      storeShortlistedCandidateIds(jobId, mergedShortlistedIds);
       setFeedbackMessage(
         rankedCandidates.length > 0
           ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
@@ -1599,12 +1640,15 @@ export default function ReviewPage() {
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of reviewCandidates) {
-      if (candidate.status === "selected") {
+      if (isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)) {
         ids.add(candidate.id);
       }
     }
+    for (const candidateId of getStoredShortlistedCandidateIds(jobId || "")) {
+      if (candidateId) ids.add(candidateId);
+    }
     return [...ids];
-  }, [finalShortlistedIds, reviewCandidates]);
+  }, [finalShortlistedIds, reviewCandidates, jobId]);
   const shortlistedCount = useMemo(() => {
     return completedShortlistedIds.length;
   }, [completedShortlistedIds]);
@@ -1655,6 +1699,7 @@ export default function ReviewPage() {
     setError("");
     setSelectedCandidateId(candidateId);
     const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    const nextShortlistedIds = Array.from(new Set([...finalShortlistedIds, candidateId]));
     const updatedCandidates = reviewCandidates.map((candidate) =>
       candidate.id === candidateId ? { ...candidate, status: "selected" as const } : candidate
     );
@@ -1662,7 +1707,8 @@ export default function ReviewPage() {
       prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate))
     );
     storeReviewCandidates(jobId, updatedCandidates);
-    setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
+    setFinalShortlistedIds(nextShortlistedIds);
+    storeShortlistedCandidateIds(jobId, nextShortlistedIds);
 
     const result = await selectCandidateForEnrichment({ jobId, candidateId });
     if (!result.success || !result.data) {
@@ -1673,15 +1719,17 @@ export default function ReviewPage() {
         prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: nextCandidate?.status || "new" } : candidate))
       );
       storeReviewCandidates(jobId, revertedCandidates);
-      setFinalShortlistedIds((prev) => prev.filter((id) => id !== candidateId));
-      setError(result.error || "Could not start Apollo enrichment.");
+      const revertedShortlistedIds = nextShortlistedIds.filter((id) => id !== candidateId);
+      setFinalShortlistedIds(revertedShortlistedIds);
+      storeShortlistedCandidateIds(jobId, revertedShortlistedIds);
+      setError(result.error || "Could not start candidate enrichment.");
       setIsAdvancing(false);
       setSelectedCandidateId("");
       return;
     }
 
     setActiveCandidate(null);
-    setFeedbackMessage("Selection saved. Apollo enrichment is now running.");
+    setFeedbackMessage("Selection saved. Candidate enrichment is now running.");
     setIsAdvancing(false);
     setSelectedCandidateId("");
   };
@@ -1690,6 +1738,7 @@ export default function ReviewPage() {
     if (!jobId || isAdvancing) return;
     setIsAdvancing(true);
     setSelectedCandidateId(candidateId);
+    const nextShortlistedIds = finalShortlistedIds.filter((id) => id !== candidateId);
     const updatedCandidates = reviewCandidates.map((candidate) =>
       candidate.id === candidateId ? { ...candidate, status: "rejected" as const } : candidate
     );
@@ -1697,6 +1746,8 @@ export default function ReviewPage() {
       prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "rejected" } : candidate))
     );
     storeReviewCandidates(jobId, updatedCandidates);
+    setFinalShortlistedIds(nextShortlistedIds);
+    storeShortlistedCandidateIds(jobId, nextShortlistedIds);
     await swipeCandidate({ jobId, candidateId, action: "reject" });
     setIsAdvancing(false);
     setSelectedCandidateId("");
@@ -2166,12 +2217,12 @@ export default function ReviewPage() {
                     data-testid={`final-select-${activeCandidate.id}`}
                     className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
                     onClick={() => void handleSelect(activeCandidate.id)}
-                    disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "selected"}
+                    disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || isShortlistedStatus(activeCandidate.status) || isShortlistedStatus(activeCandidate.ats_status)}
                   >
                     {isAdvancing && selectedCandidateId === activeCandidate.id
                       ? "Starting enrichment..."
-                      : finalShortlistedIds.includes(activeCandidate.id) || activeCandidate.status === "selected"
-                        ? "Selected"
+                      : finalShortlistedIds.includes(activeCandidate.id) || isShortlistedStatus(activeCandidate.status) || isShortlistedStatus(activeCandidate.ats_status)
+                        ? "Shortlisted"
                         : "Select this candidate"}
                   </Button>
                   <Button

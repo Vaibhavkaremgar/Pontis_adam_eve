@@ -130,7 +130,7 @@ export default function AdminPageClient() {
           <Card>
             <CardHeader>
               <CardTitle>Enrichment</CardTitle>
-              <CardDescription>Apollo resolution and contact discovery</CardDescription>
+              <CardDescription>Profile resolution and contact discovery</CardDescription>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-gray-700">
               <p>Total profiles: {diagnostics?.enrichment?.total ?? 0}</p>
