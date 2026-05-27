@@ -307,6 +307,11 @@ def discover_xray_candidates(
     pages_per_query: int = 1,
     recruiter_preferences: dict[str, Any] | None = None,
     db: Any | None = None,
+    role_search_id: str = "",
+    recruiter_id: str = "",
+    company_id: str = "",
+    workflow_token: str = "",
+    archetype_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     if SOURCE_PROVIDER != "xray_apollo":
         logger.info("[xray] skipped source_provider=%s", SOURCE_PROVIDER)
@@ -355,11 +360,11 @@ def discover_xray_candidates(
         pages_per_query=max_pages,
         recruiter_preferences=recruiter_preferences,
         db=db,
-        role_search_id=f"{job_id}:xray_preview",
-        recruiter_id="",
-        company_id="",
-        workflow_token="",
-        archetype_ids=[],
+        role_search_id=role_search_id or f"{job_id}:xray_preview",
+        recruiter_id=recruiter_id,
+        company_id=company_id,
+        workflow_token=workflow_token,
+        archetype_ids=archetype_ids or [],
     )
 
     if not raw_candidates:
