@@ -296,6 +296,19 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         currentCompany=company,
         inferredExperience=experience,
         snippetQuality=snippet_quality if snippet_quality in {"rich", "partial", "thin"} else "partial",
+        rawDiscovery={
+            "query": source_query,
+            "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
+            "displayed_link": _normalize_text(candidate.get("displayed_link") or ""),
+            "snippet": summary,
+            "title": _normalize_text(candidate.get("name") or candidate.get("full_name") or title or ""),
+            "current_company": company,
+            "location": location,
+            "linkedin_url": linkedin_url,
+            "source_provider": source_provider,
+            "source_timestamp": source_timestamp,
+            "snippet_quality": snippet_quality,
+        },
     )
 
 

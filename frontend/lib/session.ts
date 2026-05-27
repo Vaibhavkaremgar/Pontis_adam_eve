@@ -19,6 +19,8 @@ const IS_REFINED_KEY = "pontis_is_refined";
 const SHORTLIST_JOB_ID_KEY = "pontis_shortlist_job_id";
 const SHORTLIST_IDS_KEY = "pontis_shortlist_ids";
 const SHORTLIST_CANDIDATES_KEY = "pontis_shortlist_candidates";
+const REVIEW_JOB_ID_KEY = "pontis_review_job_id";
+const REVIEW_CANDIDATES_KEY = "pontis_review_candidates";
 
 export function getStoredUser(): User | null {
   if (typeof window === "undefined") return null;
@@ -151,4 +153,39 @@ export function getStoredShortlistedCandidates(jobId: string): Candidate[] {
   } catch {
     return [];
   }
+}
+
+export function storeReviewCandidates(jobId: string, candidates: Candidate[]) {
+  if (typeof window === "undefined") return;
+  const normalizedCandidates = Array.from(
+    new Map(
+      (candidates || [])
+        .filter((candidate): candidate is Candidate => Boolean(candidate?.id))
+        .map((candidate) => [String(candidate.id), candidate] as const)
+    ).values()
+  );
+  sessionStorage.setItem(REVIEW_JOB_ID_KEY, jobId);
+  sessionStorage.setItem(REVIEW_CANDIDATES_KEY, JSON.stringify(normalizedCandidates));
+}
+
+export function getStoredReviewCandidates(jobId: string): Candidate[] {
+  if (typeof window === "undefined") return [];
+  const storedJobId = sessionStorage.getItem(REVIEW_JOB_ID_KEY) || "";
+  if (!storedJobId || storedJobId !== jobId) return [];
+
+  try {
+    const raw = sessionStorage.getItem(REVIEW_CANDIDATES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((candidate): candidate is Candidate => Boolean(candidate && typeof candidate === "object" && "id" in candidate));
+  } catch {
+    return [];
+  }
+}
+
+export function clearReviewCandidates() {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(REVIEW_JOB_ID_KEY);
+  sessionStorage.removeItem(REVIEW_CANDIDATES_KEY);
 }

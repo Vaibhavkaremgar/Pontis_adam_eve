@@ -85,11 +85,11 @@ SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "").strip()
 SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip()
 SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
 SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "20"))
+SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "10"))
 # LinkedIn X-Ray uses this page budget to pull a larger raw candidate pool.
 # The production sourcing flow now stays on a single page for one-hit retrieval.
 SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "6"))
-SERPAPI_MAX_PAGES_PER_LAYER = int(os.getenv("SERPAPI_MAX_PAGES_PER_LAYER", "2"))
+SERPAPI_MAX_PAGES_PER_LAYER = int(os.getenv("SERPAPI_MAX_PAGES_PER_LAYER", "3"))
 MAX_CALLS_PER_ROLE = int(os.getenv("MAX_CALLS_PER_ROLE", "5"))
 MAX_TOTAL_PROFILES = int(os.getenv("MAX_TOTAL_PROFILES", "30"))
 DAILY_SERPAPI_BUDGET = int(os.getenv("DAILY_SERPAPI_BUDGET", "100"))

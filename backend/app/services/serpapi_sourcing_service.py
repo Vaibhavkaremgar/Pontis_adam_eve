@@ -8,6 +8,7 @@ import random
 import re
 import threading
 import time
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -673,7 +674,7 @@ def _normalize_query_layer(payload: dict[str, Any], *, fallback_index: int) -> X
         enabled = bool(enabled_value)
     pages_value = payload.get("pages", 1)
     try:
-        pages = max(1, min(int(pages_value), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
+        pages = max(1, min(int(pages_value), max(1, min(3, SERPAPI_MAX_PAGES_PER_LAYER))))
     except (TypeError, ValueError):
         pages = 1
     if not query and not enabled:
@@ -967,16 +968,18 @@ class SerpApiClient:
         query = _normalize_text(query)
         if not query:
             return results
-        page_count = max(1, min(int(pages), max(1, min(2, SERPAPI_MAX_PAGES_PER_LAYER))))
+        page_count = max(1, min(int(pages), max(1, min(3, SERPAPI_MAX_PAGES_PER_LAYER))))
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
             payload = self._request(query=query, start=start, context={**(context or {}), "page": page + 1, "num_requested": SERPAPI_RESULTS_PER_PAGE})
             organic_results = payload.get("organic_results", []) if isinstance(payload, dict) else []
             if not isinstance(organic_results, list) or not organic_results:
-                continue
+                break
             for item in organic_results:
                 if isinstance(item, dict):
                     results.append(item)
+            if len(organic_results) < max(1, SERPAPI_RESULTS_PER_PAGE):
+                break
         return results
 
     def search_many(self, queries: list[str], *, pages: int = 1, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1215,7 +1218,8 @@ def discover_linkedin_xray_candidates(
         return []
 
     resolved_intake = _normalize_intake(job, intake)
-    search_pages = 1
+    target_page_count = max(1, min(3, int(SERPAPI_MAX_PAGES_PER_LAYER or 1)))
+    search_pages = min(target_page_count, max(1, math.ceil(max(1, limit) / max(1, SERPAPI_RESULTS_PER_PAGE))))
     resolved_job_id = _normalize_text(getattr(job, "id", ""))
     resolved_company_id = _normalize_text(company_id or getattr(job, "company_id", ""))
     resolved_recruiter_id = _normalize_text(recruiter_id)

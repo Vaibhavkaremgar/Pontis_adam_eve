@@ -40,7 +40,7 @@ import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
 import { getCandidates, selectCandidateForEnrichment, swipeCandidate } from "@/lib/api/candidates";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
-import { storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
+import { getStoredReviewCandidates, storeReviewCandidates, storeShortlistedCandidateIds, storeShortlistedCandidates } from "@/lib/session";
 import type { Candidate, CandidateSelectionAnalysis, CandidateSelectionSession } from "@/types";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 
@@ -89,6 +89,13 @@ function getCandidateCurrentRole(candidate: Candidate): string {
 
 function getCandidateProfileData(candidate: Candidate): Record<string, unknown> {
   return candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
+}
+
+function getCandidateRawDiscovery(candidate: Candidate): Record<string, unknown> {
+  if (candidate.rawDiscovery && typeof candidate.rawDiscovery === "object") return candidate.rawDiscovery;
+  const profileData = getCandidateProfileData(candidate);
+  const rawDiscovery = profileData.raw_discovery || profileData.rawDiscovery;
+  return rawDiscovery && typeof rawDiscovery === "object" ? rawDiscovery as Record<string, unknown> : {};
 }
 
 function splitCandidateTextList(value: unknown): string[] {
@@ -367,9 +374,19 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
   const role = getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided";
   const linkedInUrl = getCandidateLinkedInUrl(candidate);
   const safeLocation = getCandidateLocation(candidate);
+  const rawDiscovery = getCandidateRawDiscovery(candidate);
+  const sourceUrl = String(candidate.sourceUrl || candidate.source_url || rawDiscovery.source_url || "").trim();
+  const sourceQuery = String(candidate.sourceQuery || rawDiscovery.query || "").trim();
+  const sourceTitle = String(rawDiscovery.title || candidate.name || "").trim();
+  const sourceSnippet = String(rawDiscovery.snippet || candidate.summary || "").trim();
+  const displayLink = String(rawDiscovery.displayed_link || "").trim();
+  const sourceProvider = String(candidate.sourceProvider || rawDiscovery.source_provider || "").trim();
+  const currentCompany = String(candidate.currentCompany || candidate.company || rawDiscovery.current_company || "").trim();
+  const experienceLabel = candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : String(candidate.inferredExperience || rawDiscovery.inferred_experience || "").trim();
+  const profileSummary = sourceSnippet || candidate.summary || candidate.headline || "";
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {linkedInUrl && (
         <div className="flex justify-end">
           <a
@@ -386,35 +403,54 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         </div>
       )}
 
-      <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
-        <div className="space-y-3">
-          <DetailRow label="Name" value={candidate.name || "Not provided"} />
-          <DetailRow label="Current role" value={getCandidateCurrentRole(candidate) || role} />
-          <DetailRow label="Current company" value={candidate.currentCompany || candidate.company || "Not provided"} />
-          <DetailRow label="Location" value={safeLocation || "Not provided"} />
-          <DetailRow label="Experience" value={candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : "Not provided"} />
-        </div>
-      </div>
-
-      <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-5">
-        <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Top skills</p>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {topSkills.map((item) => (
-            <span key={`skill-${candidate.id}-${item}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-xs font-semibold text-[#0F6B3A]">
-              {item}
-            </span>
+      <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-4 md:grid-cols-2">
+        {[
+          candidate.name ? ["Name", candidate.name] : null,
+          role ? ["Current role", role] : null,
+          currentCompany ? ["Current company", currentCompany] : null,
+          safeLocation ? ["Location", safeLocation] : null,
+          experienceLabel ? ["Experience", experienceLabel] : null,
+          candidate.sourceProvider ? ["Source", candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider] : null,
+        ]
+          .filter((item): item is [string, string] => Boolean(item))
+          .map(([label, value]) => (
+            <DetailRow key={`${candidate.id}-${label}`} label={label} value={value} />
           ))}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-4">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Top skills</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {topSkills.map((item) => (
+              <span key={`skill-${candidate.id}-${item}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-xs font-semibold text-[#0F6B3A]">
+                {item}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-4">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Source details</p>
+          <div className="mt-3 space-y-2 text-sm text-[#4B5563]">
+            {sourceTitle && <p><span className="font-semibold text-[#111827]">Title:</span> {sourceTitle}</p>}
+            {displayLink && <p><span className="font-semibold text-[#111827]">Display:</span> {displayLink}</p>}
+            {sourceUrl && <p className="break-all"><span className="font-semibold text-[#111827]">URL:</span> {sourceUrl}</p>}
+            {sourceQuery && <p><span className="font-semibold text-[#111827]">Query:</span> {trimText(sourceQuery, 180)}</p>}
+            {rawDiscovery.page != null && <p><span className="font-semibold text-[#111827]">Page:</span> {String(rawDiscovery.page)}</p>}
+            {rawDiscovery.position != null && <p><span className="font-semibold text-[#111827]">Position:</span> {String(rawDiscovery.position)}</p>}
+          </div>
         </div>
       </div>
 
-      {candidate.summary && (
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-5">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Notes</p>
-          <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(candidate.summary, 420)}</p>
+      {profileSummary && (
+        <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-4">
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
+          <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(profileSummary, 420)}</p>
         </div>
       )}
 
-      <div className="rounded-[18px] border border-[#E5E7EB] bg-white p-5">
+      <div className="rounded-[18px] border border-[#E5E7EB] bg-white p-4">
         <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why ranked here</p>
         <p className="mt-3 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 420)}</p>
         <div className="mt-3 inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 text-[11px] font-semibold text-[#1D4ED8]">
@@ -1306,7 +1342,7 @@ function RecruiterCandidateModal({
       }}
       title={candidate?.name || "Candidate profile"}
       description={candidate ? `${getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided"}${candidate.company ? ` @ ${candidate.company}` : ""}` : ""}
-      className="max-w-3xl"
+      className="max-w-4xl max-h-[90vh] overflow-y-auto"
     >
       {candidate && (
         <div className="space-y-5">
@@ -1315,14 +1351,20 @@ function RecruiterCandidateModal({
             <Button
               variant="outline"
               className="w-full justify-center rounded-[14px] border-[#FCA5A5] bg-white text-red-700 hover:bg-red-50 md:w-auto md:flex-1"
-              onClick={onReject}
+              onClick={(event) => {
+                event.stopPropagation();
+                onReject();
+              }}
               disabled={isAdvancing || (selectedCandidateId !== "" && selectedCandidateId !== candidate.id)}
             >
               Reject
             </Button>
             <Button
               className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
-              onClick={onShortlist}
+              onClick={(event) => {
+                event.stopPropagation();
+                onShortlist();
+              }}
               disabled={isAdvancing || selectedCandidateId !== "" || candidate.status === "selected"}
             >
               {isAdvancing && selectedCandidateId === candidate.id ? "Shortlisting..." : candidate.status === "selected" ? "Shortlisted" : "Shortlist"}
@@ -1395,6 +1437,14 @@ export default function ReviewPage() {
     setReviewLoading(true);
     setSourcingError("");
 
+    const cachedCandidates = getStoredReviewCandidates(jobId);
+    if (cachedCandidates.length > 0) {
+      setReviewCandidates(cachedCandidates.slice(0, 30));
+      if (!forceRefresh) {
+        setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
+      }
+    }
+
     try {
       const result = await getCandidates({
         jobId,
@@ -1404,12 +1454,15 @@ export default function ReviewPage() {
       if (!result.success || !result.data) {
         const message = result.error || "Could not load sourced candidates.";
         setSourcingError(message);
-        setReviewCandidates([]);
+        if (cachedCandidates.length === 0) {
+          setReviewCandidates([]);
+        }
         return;
       }
 
       const rankedCandidates = result.data.slice(0, 30);
       setReviewCandidates(rankedCandidates);
+      storeReviewCandidates(jobId, rankedCandidates);
       setFeedbackMessage(
         rankedCandidates.length > 0
           ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
@@ -1456,6 +1509,11 @@ export default function ReviewPage() {
       }
 
       if (calibrationReady) {
+        const cachedCandidates = getStoredReviewCandidates(jobId);
+        if (cachedCandidates.length > 0) {
+          setReviewCandidates(cachedCandidates.slice(0, 30));
+          setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
+        }
         await loadSourcedCandidates({ source: "auto", forceRefresh: false });
       } else {
         setReviewCandidates([]);
@@ -1549,7 +1607,7 @@ export default function ReviewPage() {
   }, [finalShortlistedIds, reviewCandidates]);
   const shortlistedCount = useMemo(() => {
     return completedShortlistedIds.length;
-  }, [finalShortlistedIds, reviewCandidates]);
+  }, [completedShortlistedIds]);
 
   const handleCalibrationSelect = async (archetypeId: string) => {
     if (!jobId || !user || isCalibrationLoading) return;
@@ -1597,16 +1655,24 @@ export default function ReviewPage() {
     setError("");
     setSelectedCandidateId(candidateId);
     const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    const updatedCandidates = reviewCandidates.map((candidate) =>
+      candidate.id === candidateId ? { ...candidate, status: "selected" as const } : candidate
+    );
     setReviewCandidates((prev) =>
       prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate))
     );
+    storeReviewCandidates(jobId, updatedCandidates);
     setFinalShortlistedIds((prev) => (prev.includes(candidateId) ? prev : [...prev, candidateId]));
 
     const result = await selectCandidateForEnrichment({ jobId, candidateId });
     if (!result.success || !result.data) {
+      const revertedCandidates = reviewCandidates.map((candidate) =>
+        candidate.id === candidateId ? { ...candidate, status: nextCandidate?.status || "new" } : candidate
+      );
       setReviewCandidates((prev) =>
         prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: nextCandidate?.status || "new" } : candidate))
       );
+      storeReviewCandidates(jobId, revertedCandidates);
       setFinalShortlistedIds((prev) => prev.filter((id) => id !== candidateId));
       setError(result.error || "Could not start Apollo enrichment.");
       setIsAdvancing(false);
@@ -1624,9 +1690,13 @@ export default function ReviewPage() {
     if (!jobId || isAdvancing) return;
     setIsAdvancing(true);
     setSelectedCandidateId(candidateId);
+    const updatedCandidates = reviewCandidates.map((candidate) =>
+      candidate.id === candidateId ? { ...candidate, status: "rejected" as const } : candidate
+    );
     setReviewCandidates((prev) =>
       prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "rejected" } : candidate))
     );
+    storeReviewCandidates(jobId, updatedCandidates);
     await swipeCandidate({ jobId, candidateId, action: "reject" });
     setIsAdvancing(false);
     setSelectedCandidateId("");
@@ -1864,7 +1934,7 @@ export default function ReviewPage() {
                     Ranked candidates
                   </Badge>
                   <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F4FBF7] px-5 py-2 text-[13px] font-semibold text-[#0F6B3A] shadow-none">
-                    Top 30 ranked
+                    {shortlistedCount} shortlisted
                   </Badge>
                   <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#FFF7ED] px-5 py-2 text-[13px] font-semibold text-[#B45309] shadow-none">
                     {swipeCandidates.length} candidates

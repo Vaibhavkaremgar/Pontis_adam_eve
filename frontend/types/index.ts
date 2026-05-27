@@ -163,6 +163,7 @@ export type Candidate = {
   currentCompany?: string;
   inferredExperience?: string;
   snippetQuality?: "rich" | "partial" | "thin";
+  rawDiscovery?: Record<string, unknown>;
 };
 
 /** Interview stage record shown in final ready step. */

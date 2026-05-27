@@ -83,6 +83,7 @@ class CandidateResult(BaseModel):
     currentCompany: str = ""
     inferredExperience: str = ""
     snippetQuality: Literal["rich", "partial", "thin"] = "partial"
+    rawDiscovery: dict = Field(default_factory=dict)
 
 
 class OutreachRequest(BaseModel):
