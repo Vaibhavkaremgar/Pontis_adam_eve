@@ -48,9 +48,6 @@ def _job_skills(job: Any) -> list[str]:
     return []
 
 
-XRAY_TARGET_COUNT = 30
-
-
 def _candidate_identity_key(candidate: dict[str, Any]) -> str:
     identity = build_candidate_identity(
         candidate=candidate,
@@ -261,6 +258,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         resumeText="",
         profileData={
             "linkedin_url": linkedin_url,
+            "linkedinUrl": linkedin_url,
                 "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
                 "identity": identity.to_dict(),
                 "id": candidate_id,
@@ -300,6 +298,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
             "query": source_query,
             "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
             "displayed_link": _normalize_text(candidate.get("displayed_link") or ""),
+            "linkedin_url": linkedin_url,
             "snippet": summary,
             "title": _normalize_text(candidate.get("name") or candidate.get("full_name") or title or ""),
             "current_company": company,
@@ -366,10 +365,11 @@ def discover_xray_candidates(
     primary_query = queries[0] if queries else ""
     logger.info("[xray_query] job_id=%s query=%s pages=%s", job_id, primary_query, max_pages)
 
+    effective_limit = max(1, int(limit))
     raw_candidates = discover_linkedin_xray_candidates(
         job=job,
         intake=intake,
-        limit=XRAY_TARGET_COUNT,
+        limit=effective_limit,
         pages_per_query=max_pages,
         recruiter_preferences=recruiter_preferences,
         db=db,
@@ -441,7 +441,13 @@ def discover_xray_candidates(
             }
         )
 
-    logger.info("[xray_candidate_count] job_id=%s raw=%s deduped=%s", job_id, len(raw_candidates), len(normalized))
+    logger.info(
+        "[xray_candidate_count] job_id=%s raw=%s deduped=%s requested_limit=%s",
+        job_id,
+        len(raw_candidates),
+        len(normalized),
+        effective_limit,
+    )
     logger.info("[xray_deduped] job_id=%s count=%s", job_id, len(normalized))
     logger.info(
         "[xray_dedup] job_id=%s raw_candidates=%s duplicate_candidates=%s deduped_candidates=%s duplicate_rate=%.4f duplicate_linkedin_urls=%s duplicate_candidate_ids=%s duplicate_candidate_names=%s",

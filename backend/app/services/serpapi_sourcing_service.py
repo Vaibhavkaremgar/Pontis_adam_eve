@@ -543,7 +543,12 @@ def _candidate_role_from_text(*values: str) -> str:
 
 def _extract_linkedin_url(link: str) -> str:
     url = _normalize_text(link)
-    if "linkedin.com/" not in url.lower():
+    lowered = url.lower()
+    if "linkedin.com/" not in lowered:
+        return ""
+    if "/in/" not in lowered:
+        return ""
+    if "/jobs/" in lowered:
         return ""
     return url.rstrip("/")
 
@@ -696,6 +701,35 @@ def _select_primary_query_layer(layers: list[XRayQueryLayer]) -> XRayQueryLayer 
             if layer.layer_type == layer_type:
                 return layer
     return active_layers[0]
+
+
+def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: int = 3) -> list[XRayQueryLayer]:
+    preferred_order = ("exact_title", "title_variation", "skills_signal", "company_domain")
+    active_layers = [layer for layer in layers if layer.enabled and layer.query]
+    if not active_layers:
+        return []
+
+    selected: list[XRayQueryLayer] = []
+    seen_queries: set[str] = set()
+    for layer_type in preferred_order:
+        for layer in active_layers:
+            normalized_query = _normalize_lower(layer.query)
+            if layer.layer_type != layer_type or not normalized_query or normalized_query in seen_queries:
+                continue
+            selected.append(layer)
+            seen_queries.add(normalized_query)
+            if len(selected) >= max(1, max_layers):
+                return selected
+
+    for layer in active_layers:
+        normalized_query = _normalize_lower(layer.query)
+        if not normalized_query or normalized_query in seen_queries:
+            continue
+        selected.append(layer)
+        seen_queries.add(normalized_query)
+        if len(selected) >= max(1, max_layers):
+            break
+    return selected
 
 
 def build_linkedin_xray_query_layers(
@@ -865,6 +899,7 @@ class SerpApiClient:
             "hl": "en",
             "gl": "us",
             "start": max(0, int(start)),
+            "num": max(1, int(SERPAPI_RESULTS_PER_PAGE)),
         }
         url = SERPAPI_URL or "https://serpapi.com/search.json"
         last_error: Exception | None = None
@@ -968,7 +1003,7 @@ class SerpApiClient:
         query = _normalize_text(query)
         if not query:
             return results
-        page_count = max(1, min(int(pages), max(1, min(3, SERPAPI_MAX_PAGES_PER_LAYER))))
+        page_count = 1 if pages else 1
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
             payload = self._request(query=query, start=start, context={**(context or {}), "page": page + 1, "num_requested": SERPAPI_RESULTS_PER_PAGE})
@@ -1218,8 +1253,7 @@ def discover_linkedin_xray_candidates(
         return []
 
     resolved_intake = _normalize_intake(job, intake)
-    target_page_count = max(1, min(3, int(SERPAPI_MAX_PAGES_PER_LAYER or 1)))
-    search_pages = min(target_page_count, max(1, math.ceil(max(1, limit) / max(1, SERPAPI_RESULTS_PER_PAGE))))
+    search_pages = 1
     resolved_job_id = _normalize_text(getattr(job, "id", ""))
     resolved_company_id = _normalize_text(company_id or getattr(job, "company_id", ""))
     resolved_recruiter_id = _normalize_text(recruiter_id)
@@ -1241,8 +1275,7 @@ def discover_linkedin_xray_candidates(
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
-    primary_layer = _select_primary_query_layer(query_layers)
-    limited_layers = [primary_layer] if primary_layer else []
+    limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
     quota_before = _quota_snapshot()
@@ -1302,7 +1335,7 @@ def discover_linkedin_xray_candidates(
                 "layer_index": index,
                 "layer_type": layer.layer_type,
                 "query": layer.query,
-                "pages": min(search_pages, layer.pages),
+                "pages": 1,
                 "enabled": layer.enabled,
             }
             for index, layer in enumerate(limited_layers, start=1)
@@ -1324,7 +1357,7 @@ def discover_linkedin_xray_candidates(
             layer_index=index,
             layer_type=layer.layer_type,
             query=layer.query,
-            page=min(search_pages, layer.pages),
+            page=1,
             num_requested=SERPAPI_RESULTS_PER_PAGE,
             search_engine=SERPAPI_ENGINE or "google",
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1355,7 +1388,7 @@ def discover_linkedin_xray_candidates(
             fingerprint = _query_fingerprint(
                 layer_type=layer.layer_type,
                 query=layer.query,
-                page=min(search_pages, layer.pages),
+                page=1,
                 num_requested=SERPAPI_RESULTS_PER_PAGE,
                 search_engine=SERPAPI_ENGINE or "google",
             )
@@ -1363,19 +1396,19 @@ def discover_linkedin_xray_candidates(
                 duplicate_query_count += 1
                 logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
                 continue
-            layer_results.append((layer, mock_raw_results, min(search_pages, layer.pages)))
+            layer_results.append((layer, mock_raw_results, 1))
         serpapi_calls_executed = 0
     else:
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_map: dict[Any, tuple[XRayQueryLayer, int]] = {}
             for index, layer in enumerate(limited_layers, start=1):
-                pages_to_fetch = min(search_pages, layer.pages)
+                pages_to_fetch = 1
                 if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
                     continue
                 fingerprint = _query_fingerprint(
                     layer_type=layer.layer_type,
                     query=layer.query,
-                    page=pages_to_fetch,
+                    page=1,
                     num_requested=SERPAPI_RESULTS_PER_PAGE,
                     search_engine=SERPAPI_ENGINE or "google",
                 )

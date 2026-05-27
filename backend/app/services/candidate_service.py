@@ -29,7 +29,6 @@ from app.core.config import (
     RANKING_WEIGHTS,
     SCORING_DEFAULT_MODE,
     SERPAPI_ENABLED,
-    MAX_TOTAL_PROFILES,
 )
 from app.db.repositories import (
     ATSExportRepository,
@@ -340,30 +339,100 @@ def _candidate_url_identity(candidate: dict, *keys: str) -> str:
     return ""
 
 
+def _candidate_profile_block(candidate: Any) -> dict[str, Any]:
+    blocks: dict[str, Any] = {}
+    if isinstance(candidate, dict):
+        for key in ("profileData", "rawDiscovery", "profile_data", "raw_discovery"):
+            value = candidate.get(key)
+            if isinstance(value, dict):
+                blocks.update(value)
+        return blocks
+
+    for key in ("profileData", "rawDiscovery", "profile_data", "raw_discovery"):
+        value = getattr(candidate, key, None)
+        if isinstance(value, dict):
+            blocks.update(value)
+    return blocks
+
+
+def _candidate_profile_url(candidate: Any) -> str:
+    profile = _candidate_profile_block(candidate)
+    if isinstance(candidate, dict):
+        direct_url = _candidate_url_identity(
+            candidate,
+            "linkedin_url",
+            "linkedinUrl",
+            "linkedin",
+            "source_url",
+            "sourceUrl",
+        )
+    else:
+        direct_url = _candidate_url_identity(
+            candidate.model_dump() if hasattr(candidate, "model_dump") else {},
+            "linkedin_url",
+            "linkedinUrl",
+            "linkedin",
+            "source_url",
+            "sourceUrl",
+        )
+    nested_url = _candidate_url_identity(
+        profile,
+        "linkedin_url",
+        "linkedinUrl",
+        "linkedin",
+        "profile_url",
+        "profileUrl",
+        "source_url",
+        "sourceUrl",
+    )
+    url = direct_url or nested_url
+    if not url:
+        return ""
+    if "/in/" not in url.lower() or "/jobs/" in url.lower():
+        return ""
+    return url
+
+
+def _candidate_display_name(candidate: Any) -> str:
+    if isinstance(candidate, dict):
+        raw = candidate.get("name") or candidate.get("full_name") or candidate.get("fullName") or candidate.get("title") or candidate.get("headline") or ""
+    else:
+        raw = getattr(candidate, "name", "") or getattr(candidate, "full_name", "") or getattr(candidate, "fullName", "") or getattr(candidate, "title", "") or getattr(candidate, "headline", "") or ""
+    if raw:
+        return _normalize_text(raw)
+    profile = _candidate_profile_block(candidate)
+    for key in ("candidateHeadline", "candidate_headline", "title", "headline"):
+        value = profile.get(key)
+        if isinstance(value, str) and value.strip():
+            return _normalize_text(value)
+    return ""
+
+
 def _is_reviewable_candidate(candidate: Any) -> bool:
     email = ""
     is_mock_email = False
     source_provider = ""
     source_type = ""
     linkedin_url = ""
+    display_name = _candidate_display_name(candidate)
     if isinstance(candidate, dict):
         email = _extract_candidate_email(candidate)
         is_mock_email = bool(candidate.get("isMockEmail"))
         source_provider = _normalize_text(candidate.get("sourceProvider") or candidate.get("source_provider") or "").lower()
         source_type = _normalize_text(candidate.get("sourceType") or candidate.get("source_type") or "").lower()
-        linkedin_url = _candidate_url_identity(candidate, "linkedin_url", "linkedinUrl", "linkedin")
+        linkedin_url = _candidate_profile_url(candidate)
     else:
         email = str(getattr(candidate, "email", "") or "").strip().lower()
         is_mock_email = bool(getattr(candidate, "isMockEmail", False))
         source_provider = str(getattr(candidate, "sourceProvider", "") or getattr(candidate, "source_provider", "") or "").strip().lower()
         source_type = str(getattr(candidate, "sourceType", "") or getattr(candidate, "source_type", "") or "").strip().lower()
-        linkedin_url = _candidate_url_identity(candidate.model_dump() if hasattr(candidate, "model_dump") else {}, "linkedin_url", "linkedinUrl", "linkedin")
+        linkedin_url = _candidate_profile_url(candidate)
     if is_mock_email:
         return False
     if email.endswith("@test.local"):
         return False
     if source_provider == "xray_apollo" or source_type == "linkedin_xray":
-        return bool(email or linkedin_url or _normalize_text(getattr(candidate, "name", "") if not isinstance(candidate, dict) else candidate.get("name", "")))
+        return bool(linkedin_url and display_name)
     if not email:
         return False
     return True
@@ -2914,7 +2983,7 @@ def fetch_ranked_candidates(
             return []
         try:
             pipeline_started = perf_counter()
-            xray_target_limit = min(MAX_TOTAL_PROFILES, max(30, mode_config.top_k))
+            xray_target_limit = max(90, mode_config.top_k)
             xray_candidates = discover_xray_candidates(
                 job=job,
                 intake=getattr(job, "structured_data", None) or {},
@@ -2960,6 +3029,7 @@ def fetch_ranked_candidates(
                 )
             rerank_ms = round((perf_counter() - rerank_started) * 1000.0, 2)
             total_pipeline_ms = round((perf_counter() - pipeline_started) * 1000.0, 2)
+            xray_results = sorted(xray_results, key=ranked_candidate_sort_key)
             logger.info(
                 "[xray_timing] job_id=%s recruiter_id=%s query_generation_ms=%s serpapi_latency_ms=%s dedupe_ms=%s prefilter_ms=%s rerank_ms=%s total_pipeline_ms=%s",
                 job.id,
@@ -2984,6 +3054,20 @@ def fetch_ranked_candidates(
                 pre_rerank_count=pre_rerank_count,
                 post_rerank_count=len(xray_results),
             )
+            for rank, candidate in enumerate(xray_results[:5], start=1):
+                explanation = coerce_candidate_explanation(getattr(candidate, "explanation", None))
+                logger.info(
+                    "[xray_top_candidate] job_id=%s recruiter_id=%s rank=%s candidate_id=%s name=%s role=%s company=%s fit_score=%.2f final_score=%.4f",
+                    job.id,
+                    recruiter_id or "",
+                    rank,
+                    candidate.id,
+                    candidate.name,
+                    candidate.role,
+                    candidate.company,
+                    float(candidate.fitScore or 0.0),
+                    float(explanation.finalScore or 0.0),
+                )
             profile_repo = CandidateProfileRepository(db)
             for candidate in xray_results:
                 profile_repo.upsert(
@@ -3001,8 +3085,9 @@ def fetch_ranked_candidates(
                 )
             raw_xray_count = len(xray_results)
             reviewable_seed_candidates = list(xray_results)
+            display_limit = 20  # Recruiter view always gets the top 20 from the ranked X-Ray pool.
             xray_results = _filter_unswiped_candidates(
-                _attach_candidate_workflow_state(db, job_id=job.id, candidates=xray_results),
+                _attach_candidate_workflow_state(db, job_id=job.id, candidates=reviewable_seed_candidates[:display_limit]),
                 swiped_ids,
                 job_id=job.id,
             )
@@ -3010,7 +3095,7 @@ def fetch_ranked_candidates(
             xray_results = [candidate for candidate in xray_results if _is_reviewable_candidate(candidate)]
             if not xray_results:
                 logger.warning("xray_reviewable_candidates_missing job_id=%s returning_raw_xray_pool", job.id)
-                return reviewable_seed_candidates
+                return reviewable_seed_candidates[:display_limit]
             logger.info(
                 "candidate_filter_counts job_id=%s source=xray raw_count=%s unswiped_count=%s reviewable_count=%s",
                 job.id,
@@ -3052,7 +3137,7 @@ def fetch_ranked_candidates(
                 len(xray_results),
                 "applied" if xray_results else "empty",
             )
-            return xray_results
+            return xray_results[:display_limit]
         except Exception as exc:
             logger.warning("xray_candidate_retrieval_failed job_id=%s error=%s", job.id, str(exc))
             log_metric("candidate_retrieval_error", job_id=job.id, mode=resolved_mode, source="xray", error_type=type(exc).__name__)
@@ -3366,7 +3451,7 @@ def fetch_ranked_candidates(
             serpapi_candidates = discover_linkedin_xray_candidates(
                 job=job,
                 intake=getattr(job, "structured_data", None) or {},
-                limit=min(MAX_TOTAL_PROFILES, max(size, 30)),
+                limit=max(90, size),
                 pages_per_query=1,
                 recruiter_preferences=recruiter_preferences,
                 db=db,

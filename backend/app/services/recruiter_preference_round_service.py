@@ -1240,6 +1240,17 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
     primary_skills = job_skills[:4] or ["the core stack"]
     secondary_skills = job_skills[4:8] or primary_skills
     responsibility_phrase = ", ".join(job_responsibilities[:3]) if job_responsibilities else "owning the core work"
+    stage_phrase = job_stage or "a growth-stage team"
+    location_phrase = job_location or "the target market"
+    depth_phrase = job_description[:140] or "the job's hardest technical problems"
+    title_tokens = [token for token in re.split(r"[^a-zA-Z0-9+.#-]+", job_title) if token]
+    key_title_token = _compact_archetype_label(" ".join(title_tokens[:2]) or job_title, "Role")
+    primary_skill = _compact_archetype_label(primary_skills[0], key_title_token) if primary_skills else key_title_token
+    secondary_skill = _compact_archetype_label(primary_skills[1], key_title_token) if len(primary_skills) > 1 else primary_skill
+    third_skill = _compact_archetype_label(primary_skills[2], key_title_token) if len(primary_skills) > 2 else secondary_skill
+    fourth_skill = _compact_archetype_label(primary_skills[3], key_title_token) if len(primary_skills) > 3 else third_skill
+    core_role_label = _compact_archetype_label(job_title, "Candidate")
+    responsibilities_phrase = responsibility_phrase or depth_phrase
 
     def _skills_text(items: list[str], fallback: str) -> list[str]:
         values = [item for item in items if item]
@@ -1271,100 +1282,100 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
             "fit_note": fit_note,
         }
 
-    templates = [
+    persona_specs = [
         (
-            f"{job_title} Builder vs Systems Owner",
-            f"Contrast a hands-on builder with a reliability-first owner for {job_title}.",
+            f"{primary_skill} Builder",
+            f"{job_title} execution profile centered on {primary_skill.lower()} and fast delivery.",
             [
                 _persona(
-                    headline=f"{_compact_archetype_label(job_title, 'Builder')} Builder",
-                    experience_snapshot=f"{job_experience or 'Experienced'} builder focused on {responsibility_phrase} in a {job_stage or 'growth'} setting.",
-                    career_pattern="Fast-moving builder with broad product ownership and quick iteration loops.",
+                    headline=f"{primary_skill} Builder",
+                    experience_snapshot=f"{job_experience or 'Experienced'} operator who can take {responsibilities_phrase} from vague brief to shipped work.",
+                    career_pattern="Fast-moving practitioner who turns product intent into working output.",
                     strengths=_skills_text(primary_skills, job_title.lower()),
-                    ownership_style="Turns vague requirements into shipped work with minimal hand-holding.",
-                    leadership_profile=["aligns stakeholders", "moves quickly", "handles ambiguity well"],
-                    ideal_environment=f"Fast-moving team in {job_stage or 'a growth stage'} that values speed and direct ownership.",
-                    execution_style="Bias toward shipping small, useful increments quickly.",
-                    hiring_tradeoffs=["speed over ceremony", "breadth over narrow specialization", "iteration over perfection"],
-                    fit_note=f"Best when {job_title} needs rapid delivery from someone close to the product surface.",
+                    ownership_style=f"Turns ambiguity in {job_title} into scoped deliverables and gets the first version shipped.",
+                    leadership_profile=[f"keeps {primary_skill.lower()} practical", "aligns stakeholders", "moves quickly"],
+                    ideal_environment=f"Lean team in {stage_phrase} where {primary_skill.lower()} delivery matters and decisions move fast.",
+                    execution_style="Short cycles, direct communication, and frequent course correction.",
+                    hiring_tradeoffs=[f"speed over ceremony in {primary_skill.lower()}", "iteration over perfection", "breadth over narrow specialization"],
+                    fit_note=f"Best when the role needs a candidate who can deliver {primary_skill.lower()} work fast without a lot of process overhead.",
                 ),
                 _persona(
-                    headline=f"{_compact_archetype_label(job_title, 'Systems')} Owner",
-                    experience_snapshot=f"{job_experience or 'Experienced'} operator who has scaled the stack around {responsibility_phrase}.",
-                    career_pattern="Long-horizon scaler with a track record of stabilizing systems as they grow.",
+                    headline=f"{secondary_skill} Owner",
+                    experience_snapshot=f"{job_experience or 'Experienced'} operator who has scaled the stack around {responsibilities_phrase}.",
+                    career_pattern=f"Steady scaler who builds for maintainability around {secondary_skill.lower()}.",
                     strengths=_skills_text(secondary_skills, "reliability and scaling"),
-                    ownership_style="Careful, process-aware, and strong on repeatable execution.",
-                    leadership_profile=["sets technical standards", "reduces operational risk", "mentors through structure"],
-                    ideal_environment=f"Operationally serious team shipping in {job_location or 'the target market'} with clear reliability expectations.",
-                    execution_style="Measured delivery with clear plans, guardrails, and low-regret decisions.",
-                    hiring_tradeoffs=["stability over flash", "discipline over improvisation", "scale depth over breadth"],
-                    fit_note=f"Best when {job_title} needs someone who can keep quality high while the team scales.",
+                    ownership_style=f"Careful, structured, and strong on keeping {job_title.lower()} dependable as the team grows.",
+                    leadership_profile=[f"sets guardrails for {secondary_skill.lower()}", "reduces risk", "raises quality standards"],
+                    ideal_environment=f"Operationally serious team shipping in {location_phrase} with clear reliability expectations.",
+                    execution_style="Measured delivery with thoughtful planning and low-regret decisions.",
+                    hiring_tradeoffs=[f"stability over flash in {secondary_skill.lower()}", "discipline over improvisation", "scale depth over breadth"],
+                    fit_note=f"Best when the role needs someone who can keep quality high while the org scales.",
                 ),
             ],
         ),
         (
-            f"{job_title} Product vs Platform",
-            f"Contrast a product-sensitive builder with a platform-minded specialist for {job_title}.",
+            f"{job_title}: {primary_skill} vs {fourth_skill}",
+            f"Contrast a product-sensitive collaborator with a platform-minded specialist for {job_title}.",
             [
                 _persona(
-                    headline=f"Product { _compact_archetype_label(job_title, 'Engineer') }".replace("  ", " ").strip(),
-                    experience_snapshot=f"Builder who works well with product and design around {responsibility_phrase}.",
-                    career_pattern="Promoted by becoming the go-to person for ambiguous product work.",
-                    strengths=_skills_text(primary_skills, "product execution"),
+                    headline=f"{primary_skill} Partner",
+                    experience_snapshot=f"Builder who works comfortably with product and design around {responsibilities_phrase}.",
+                    career_pattern=f"Earned trust by turning fuzzy {job_title.lower()} intent into clear, shipped work.",
+                    strengths=_skills_text(primary_skills, f"{primary_skill.lower()} execution"),
                     ownership_style="Outcome-oriented and comfortable shaping scope with non-engineering partners.",
-                    leadership_profile=["bridges functions", "keeps priorities aligned", "communicates tradeoffs clearly"],
-                    ideal_environment=f"Product-heavy team building for {job_stage or 'a fast-moving business'}.",
+                    leadership_profile=[f"bridges {primary_skill.lower()} and product", "keeps priorities aligned", "communicates tradeoffs clearly"],
+                    ideal_environment=f"Product-heavy team building for {stage_phrase} where the role is close to the customer surface.",
                     execution_style="Fast iteration with tight feedback loops and pragmatic scope control.",
-                    hiring_tradeoffs=["product judgment over raw specialization", "adaptability over narrow depth", "outcome over optics"],
-                    fit_note=f"Best when {job_title} needs customer empathy and tight collaboration around the JD priorities.",
+                    hiring_tradeoffs=[f"product judgment over raw {primary_skill.lower()} specialization", "adaptability over narrow depth", "outcome over optics"],
+                    fit_note=f"Best when the role needs customer empathy and crisp cross-functional execution.",
                 ),
                 _persona(
-                    headline=f"Platform {_compact_archetype_label(job_title, 'Specialist')}",
-                    experience_snapshot=f"Specialist who has built the platform muscle needed to support {responsibility_phrase}.",
-                    career_pattern="Deep specialist with strong production instincts and strong operational follow-through.",
-                    strengths=_skills_text(secondary_skills or primary_skills, "platform engineering"),
-                    ownership_style="Structured, durable, and careful about maintainability.",
-                    leadership_profile=["documents failure modes", "improves reliability", "supports other engineers"],
-                    ideal_environment=f"Team that needs dependable infrastructure in {job_location or 'the target environment'}.",
+                    headline=f"{fourth_skill} Specialist",
+                    experience_snapshot=f"Specialist who has built the platform muscle needed to support {responsibilities_phrase}.",
+                    career_pattern=f"Deep specialist with strong production instincts around {fourth_skill.lower()}.",
+                    strengths=_skills_text(secondary_skills or primary_skills, f"{fourth_skill.lower()} engineering"),
+                    ownership_style=f"Structured, durable, and careful about maintainability in {job_title.lower()}.",
+                    leadership_profile=[f"documents failure modes for {fourth_skill.lower()}", "improves reliability", "supports other engineers"],
+                    ideal_environment=f"Team that needs dependable infrastructure in {location_phrase}.",
                     execution_style="Methodical delivery with attention to resilience and long-term maintainability.",
-                    hiring_tradeoffs=["reliability over novelty", "platform depth over generalism", "guardrails over speed at all costs"],
-                    fit_note=f"Best when {job_title} needs a specialist who can make the system easier to scale.",
+                    hiring_tradeoffs=[f"reliability over novelty in {fourth_skill.lower()}", "platform depth over generalism", "guardrails over speed at all costs"],
+                    fit_note=f"Best when the role needs a specialist who can make the system easier to scale.",
                 ),
             ],
         ),
         (
-            f"{job_title} Generalist vs Specialist",
+            f"{job_title}: {primary_skill} Generalist vs {secondary_skill} Specialist",
             f"Contrast a broad operator with a deep specialist tuned to the JD signals.",
             [
                 _persona(
-                    headline=f"Generalist {_compact_archetype_label(job_title, 'Engineer')}",
-                    experience_snapshot=f"Broad engineer who can cover {responsibility_phrase} across product and delivery boundaries.",
-                    career_pattern="Adaptable generalist with repeated moves across adjacent domains.",
-                    strengths=_skills_text(primary_skills + secondary_skills, "cross-functional execution"),
+                    headline=f"{primary_skill} Generalist",
+                    experience_snapshot=f"Broad engineer who can cover {responsibilities_phrase} across product and delivery boundaries.",
+                    career_pattern=f"Adaptable generalist with repeated wins across {job_title.lower()}-adjacent domains.",
+                    strengths=_skills_text(primary_skills + secondary_skills, f"{primary_skill.lower()} and cross-functional execution"),
                     ownership_style="Flexible and effective when the scope shifts midstream.",
                     leadership_profile=["handles ambiguity well", "connects teams", "keeps momentum high"],
-                    ideal_environment=f"Lean team in {job_stage or 'an early growth stage'} where every hire needs wide utility.",
+                    ideal_environment=f"Lean team in {stage_phrase} where every hire needs wide utility.",
                     execution_style="Pragmatic and versatile, with a strong bias toward unblocking work quickly.",
-                    hiring_tradeoffs=["flexibility over narrow expertise", "breadth over depth", "momentum over polish"],
-                    fit_note=f"Best when {job_title} needs coverage across multiple related responsibilities.",
+                    hiring_tradeoffs=[f"flexibility over narrow {primary_skill.lower()} expertise", "breadth over depth", "momentum over polish"],
+                    fit_note=f"Best when the role needs coverage across multiple related responsibilities.",
                 ),
                 _persona(
-                    headline=f"Specialist {_compact_archetype_label(job_title, 'Engineer')}",
+                    headline=f"{secondary_skill} Specialist",
                     experience_snapshot=f"Deep specialist aligned to the core technical shape of {job_title} and its top skills.",
-                    career_pattern="Narrower but deeper profile with repeated wins in the same problem space.",
-                    strengths=_skills_text(secondary_skills, job_title.lower()),
-                    ownership_style="Precise and deliberate, with strong attention to quality and edge cases.",
-                    leadership_profile=["sets technical direction", "raises quality bars", "shares domain expertise"],
-                    ideal_environment=f"Role with clear technical focus and strong expectations around {job_description[:120] or 'the core stack'}.",
+                    career_pattern=f"Narrower but deeper profile with repeated wins in {secondary_skill.lower()} problem spaces.",
+                    strengths=_skills_text(secondary_skills, depth_phrase),
+                    ownership_style=f"Precise and deliberate, with strong attention to quality and edge cases in {secondary_skill.lower()}.",
+                    leadership_profile=[f"sets technical direction for {secondary_skill.lower()}", "raises quality bars", "shares domain expertise"],
+                    ideal_environment=f"Role with clear technical focus and strong expectations around {depth_phrase}.",
                     execution_style="Deliberate delivery with a strong understanding of the technical trade space.",
-                    hiring_tradeoffs=["depth over breadth", "specialization over flexibility", "precision over speed"],
-                    fit_note=f"Best when {job_title} needs a focused expert who matches the JD's hardest requirements.",
+                    hiring_tradeoffs=[f"depth over breadth in {secondary_skill.lower()}", "specialization over flexibility", "precision over speed"],
+                    fit_note=f"Best when the role needs a focused expert who matches the JD's hardest requirements.",
                 ),
             ],
         ),
     ]
     sets: list[dict[str, Any]] = []
-    for index, (title, theme, archetypes) in enumerate(templates[:_CALIBRATION_SET_COUNT]):
+    for index, (title, theme, archetypes) in enumerate(persona_specs[:_CALIBRATION_SET_COUNT]):
         calibration_set_id = _stable_calibration_set_id(index + 1)
         sets.append(
             {
