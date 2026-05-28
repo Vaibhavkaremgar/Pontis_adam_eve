@@ -659,7 +659,7 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     )
     try:
         # Re-embed the enriched job and upsert to Qdrant.
-        # Do NOT call fetch_ranked_candidates here — frontend triggers that separately with refresh=true.
+        # Do NOT call fetch_ranked_candidates here — frontend triggers candidate loading separately.
         vector_source = build_job_text(updated, structured_data=updated.structured_data, transcript=cleaned_text)
         chunks = chunk_text(vector_source)
         vectors = [get_embedding(chunk) for chunk in chunks]

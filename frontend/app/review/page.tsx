@@ -7,7 +7,7 @@
  * What API it connects to:
  * GET /recruiters/:recruiterId/intelligence/jobs/:jobId
  * POST /recruiters/:recruiterId/intelligence/jobs/:jobId/choice
- * GET /candidates?jobId=...&refresh=true
+ * GET /candidates?jobId=...
  *
  * How it fits in the pipeline:
  * Voice intake -> ideal candidate profile generation -> X-Ray sourcing -> recruiter review

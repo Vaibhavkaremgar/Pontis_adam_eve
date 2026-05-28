@@ -89,7 +89,6 @@ type SelectionFinalData = {
 export async function getCandidates({ jobId, refined }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
   const params = new URLSearchParams({ jobId });
   if (refined) params.set("refined", "true");
-  if (refined) params.set("refresh", "true");
 
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates?${params.toString()}`,

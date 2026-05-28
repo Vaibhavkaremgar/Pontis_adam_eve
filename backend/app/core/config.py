@@ -51,13 +51,6 @@ def _is_placeholder_value(value: str | None) -> bool:
     )
 
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_BASE_URL = os.getenv(
-    "GEMINI_BASE_URL",
-    "https://generativelanguage.googleapis.com/v1beta/openai/",
-).strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip()
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_BASE_URL = os.getenv(
     "GROQ_BASE_URL",
@@ -259,12 +252,8 @@ FEEDBACK_WEIGHTS = {
 
 def missing_secret_warnings() -> list[str]:
     warnings: list[str] = []
-    if not GEMINI_API_KEY and not GROQ_API_KEY:
-        warnings.append("GEMINI_API_KEY and GROQ_API_KEY are missing; LLM features will use local fallback.")
-    elif not GEMINI_API_KEY:
-        warnings.append("GEMINI_API_KEY is missing; LLM features will fall back to GROQ when available.")
-    elif not GROQ_API_KEY:
-        warnings.append("GROQ_API_KEY is missing; Gemini fallback will not have a secondary provider.")
+    if not GROQ_API_KEY:
+        warnings.append("GROQ_API_KEY is missing; LLM features will use local fallback.")
     if SOURCE_PROVIDER == "xray_apollo" and XRAY_ENABLED and not SERPAPI_API_KEY:
         warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will be unavailable.")
     if PDL_ENABLED and not PDL_API_KEY:
@@ -350,8 +339,8 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             "INTERNAL_API_KEY": INTERNAL_API_KEY,
             "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_OAUTH_CLIENT_ID,
         }
-        if not GEMINI_API_KEY and not GROQ_API_KEY:
-            issues.append(ConfigIssue(key="LLM_PROVIDER", severity="critical", message="At least one of GEMINI_API_KEY or GROQ_API_KEY is required in production"))
+        if not GROQ_API_KEY:
+            issues.append(ConfigIssue(key="GROQ_API_KEY", severity="critical", message="GROQ_API_KEY is required in production"))
         for key, value in production_required.items():
             if _is_placeholder_value(str(value or "")):
                 issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required in production and must not be empty or placeholder"))
