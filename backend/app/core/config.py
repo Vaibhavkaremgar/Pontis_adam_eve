@@ -88,7 +88,7 @@ SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "30"))
 # The production sourcing flow now stays on a single page for one-hit retrieval.
 SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "6"))
 SERPAPI_MAX_PAGES_PER_LAYER = int(os.getenv("SERPAPI_MAX_PAGES_PER_LAYER", "3"))
-MAX_CALLS_PER_ROLE = int(os.getenv("MAX_CALLS_PER_ROLE", "5"))
+MAX_CALLS_PER_ROLE = int(os.getenv("MAX_CALLS_PER_ROLE", "3"))
 # X-Ray sourcing can expand to 3 layers x 30 profiles per layer.
 MAX_TOTAL_PROFILES = int(os.getenv("MAX_TOTAL_PROFILES", "90"))
 DAILY_SERPAPI_BUDGET = int(os.getenv("DAILY_SERPAPI_BUDGET", "100"))

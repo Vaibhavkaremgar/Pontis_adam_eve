@@ -267,7 +267,7 @@ def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], cu
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*Preference calibration {current_index}/{total_sets}*\n*{set_title}*\n{set_theme}" if set_theme else f"*Preference calibration {current_index}/{total_sets}*\n*{set_title}*",
+                "text": f"*Ideal candidate profile set {current_index}/{total_sets}*\n*{set_title}*\n{set_theme}" if set_theme else f"*Ideal candidate profile set {current_index}/{total_sets}*\n*{set_title}*",
             },
         }
     ]
@@ -277,43 +277,47 @@ def build_calibration_blocks(*, job_id: str, calibration_set: dict[str, Any], cu
         if not archetype_id:
             archetype_id = f"{calibration_set_id}-archetype-{index + 1}"
         profile = archetype.get("profileData") or {}
-        archetype_title = _text_value(profile, "candidateHeadline", "candidate_headline", "title") or str(archetype.get("name") or archetype.get("role") or "Archetype").strip()
-        experience_snapshot = _text_value(profile, "experienceSnapshot", "experience_snapshot") or str(archetype.get("headline") or "").strip()
-        career_pattern = _text_value(profile, "careerPattern", "career_pattern")
-        summary = str(archetype.get("summary") or "").strip()
+        archetype_title = _text_value(
+            profile,
+            "profileTitle",
+            "profile_title",
+            "candidateHeadline",
+            "candidate_headline",
+            "title",
+        ) or str(archetype.get("name") or archetype.get("role") or "Ideal candidate profile").strip()
+        resume_summary = _text_value(profile, "resumeSummary", "resume_summary", "experienceSnapshot", "experience_snapshot") or str(archetype.get("headline") or "").strip()
+        typical_background = _text_value(profile, "typicalBackground", "typical_background", "careerPattern", "career_pattern")
         profile = archetype.get("profileData") or {}
-        strengths = _list_value(profile, "technicalStrengths", "technical_strengths", "strengths", "skills")
-        work_style = _text_value(profile, "workStyle", "work_style")
-        ownership_level = _text_value(profile, "ownershipStyle", "ownership_style", "ownershipLevel", "ownership_level")
-        ideal_environment = _text_value(profile, "idealEnvironment", "ideal_environment")
-        execution_style = _text_value(profile, "executionStyle", "execution_style")
-        risk_tolerance = _text_value(profile, "riskTolerance", "risk_tolerance")
-        leadership_signals = _list_value(profile, "leadershipProfile", "leadership_profile", "leadershipSignals", "leadership_signals")
-        hiring_tradeoffs = _list_value(profile, "hiringTradeoffs", "hiring_tradeoffs")
+        strengths = _list_value(profile, "strongestSkills", "strongest_skills", "technicalStrengths", "technical_strengths", "strengths", "skills")
+        typical_companies = _list_value(profile, "typicalCompanies", "typical_companies", "currentCompany", "current_company")
+        engineering_style = _text_value(profile, "engineeringStyle", "engineering_style", "workStyle", "work_style", "executionStyle", "execution_style")
+        ownership_pattern = _text_value(profile, "ownershipPattern", "ownership_pattern", "ownershipStyle", "ownership_style", "ownershipLevel", "ownership_level")
+        tradeoff = _text_value(profile, "tradeoff", "tradeOff")
+        why_recruiter_would_prefer_them = _text_value(
+            profile,
+            "whyRecruiterWouldPreferThem",
+            "why_recruiter_would_prefer_them",
+            "fitNote",
+            "fit_note",
+        )
 
         description_lines = [f"*{archetype_title}*"]
-        if experience_snapshot:
-            description_lines.append(experience_snapshot)
-        if career_pattern:
-            description_lines.append(f"*Career pattern:* {career_pattern}")
-        if summary and summary != experience_snapshot:
-            description_lines.append(summary)
+        if resume_summary:
+            description_lines.append(f"*Resume summary:* {resume_summary}")
+        if typical_background:
+            description_lines.append(f"*Typical background:* {typical_background}")
         if strengths:
-            description_lines.append(f"*Technical strengths:* {', '.join(str(item) for item in strengths[:5] if str(item).strip())}")
-        if work_style:
-            description_lines.append(f"*Work style:* {work_style}")
-        if ownership_level:
-            description_lines.append(f"*Ownership:* {ownership_level}")
-        if ideal_environment:
-            description_lines.append(f"*Ideal environment:* {ideal_environment}")
-        if execution_style:
-            description_lines.append(f"*Execution:* {execution_style}")
-        if risk_tolerance:
-            description_lines.append(f"*Risk tolerance:* {risk_tolerance}")
-        if leadership_signals:
-            description_lines.append(f"*Leadership profile:* {', '.join(str(item) for item in leadership_signals[:5] if str(item).strip())}")
-        if hiring_tradeoffs:
-            description_lines.append(f"*Hiring tradeoffs:* {', '.join(str(item) for item in hiring_tradeoffs[:4] if str(item).strip())}")
+            description_lines.append(f"*Strongest skills:* {', '.join(str(item) for item in strengths[:5] if str(item).strip())}")
+        if typical_companies:
+            description_lines.append(f"*Typical companies:* {', '.join(str(item) for item in typical_companies[:5] if str(item).strip())}")
+        if engineering_style:
+            description_lines.append(f"*Engineering style:* {engineering_style}")
+        if ownership_pattern:
+            description_lines.append(f"*Ownership pattern:* {ownership_pattern}")
+        if tradeoff:
+            description_lines.append(f"*Tradeoff:* {tradeoff}")
+        if why_recruiter_would_prefer_them:
+            description_lines.append(f"*Why recruiter would prefer them:* {why_recruiter_would_prefer_them}")
 
         blocks.append(
             {

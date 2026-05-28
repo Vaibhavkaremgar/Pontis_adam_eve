@@ -70,11 +70,14 @@ export type RecruiterIntelligenceSession = {
       pair_explanation?: Record<string, unknown>;
     }>;
     current_pair?: Record<string, unknown>;
+    current_profile_set?: Record<string, unknown>;
     intent_profile?: Record<string, unknown>;
     recommended_questions?: string[];
     telemetry?: Record<string, number>;
     voice_summary?: string;
     archetype_sets?: Array<Record<string, unknown>>;
+    profile_sets?: Array<Record<string, unknown>>;
+    candidate_profile_sets?: Array<Record<string, unknown>>;
   };
 };
 

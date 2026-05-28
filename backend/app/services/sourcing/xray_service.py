@@ -333,7 +333,7 @@ def discover_xray_candidates(
         return []
 
     effective_limit = max(1, int(limit))
-    max_pages = max(1, min(3, SERPAPI_MAX_PAGES))
+    max_pages = 1
     job_id = getattr(job, "id", "")
     role = _normalize_text((intake or {}).get("role") or getattr(job, "title", "") or "")
     logger.info(

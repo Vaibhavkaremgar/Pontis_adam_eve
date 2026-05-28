@@ -131,15 +131,15 @@ def _compact_archetype_label(value: str, fallback: str) -> str:
 def _candidate_headline_from_option(option: dict[str, Any], *, fallback: str) -> str:
     return _compact_archetype_label(
         _text_field(
-        option,
-        "candidate_headline",
-        "candidateHeadline",
-        "headline",
-        "title",
-        "name",
-        "role",
-        "label",
-    ),
+            option,
+            "candidate_headline",
+            "candidateHeadline",
+            "headline",
+            "title",
+            "name",
+            "role",
+            "label",
+        ),
         fallback,
     )
 
@@ -1006,27 +1006,28 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
     role_seniority = _text_field(job, "experience_level", "experienceRequired", "seniority") or "unknown"
 
     return (
-        "You are generating recruiter archetypes for X-Ray sourcing.\n"
-        "Do not create personality cards or abstract summaries.\n"
-        "Every archetype should be a concise, recruiter-actionable candidate persona.\n"
+        "You are generating ideal candidate resume profiles for recruiter calibration and X-Ray sourcing.\n"
+        "Do not create personality personas, abstract archetypes, or vague dimensions.\n"
+        "Every profile should feel like a believable resume a recruiter would actually source.\n"
         "Generate exactly 3 sets with 2 archetypes in each set.\n"
-        "Each archetype must be short, distinct, and ready to drive sourcing queries.\n"
+        "Each profile must be short, distinct, and ready to drive sourcing queries.\n"
         "Rules:\n"
         "- Return ONLY valid JSON.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
         "- Each set must contain exactly 2 archetypes.\n"
-        "- Each archetype must include: candidate_headline, experience_snapshot, career_pattern, technical_strengths, ownership_style, leadership_profile, ideal_environment, execution_style, hiring_tradeoffs, fit_note.\n"
-        "- Keep the candidate headline to 2 to 4 words max.\n"
-        "- Keep the candidate headline role-like and specific, e.g. 'Founding AI Engineer' or 'Backend AI Systems Engineer'.\n"
-        "- Make the experience snapshot short, concrete, and resume-like.\n"
+        "- Each profile must include: profile_title, resume_summary, typical_background, strongest_skills, typical_companies, engineering_style, ownership_pattern, tradeoff, why_recruiter_would_prefer_them.\n"
+        "- Keep the profile title to 2 to 6 words max.\n"
+        "- Keep the profile title role-like, sourcing-oriented, and specific, e.g. 'Scale-Stage Backend Engineer' or 'Startup Generalist Engineer'.\n"
+        "- Make the resume summary short, concrete, and resume-like.\n"
         "- If the recruiter gave explicit years of experience in the voice intake or job requirements, stay close to that band while varying the profile shape.\n"
-        "- Keep the career pattern short and recruiter-facing.\n"
-        "- Technical_strengths must include the requested stack or close equivalents from the job and voice intake.\n"
-        "- ownership_style, leadership_profile, ideal_environment, execution_style, and hiring_tradeoffs should be concise notes, not paragraphs.\n"
-        "- Use the job title, voice summary, company stage, hiring intent, and technical stack to shape the archetypes.\n"
-        "- Prefer two clearly differentiated personas per set, such as builder versus systems owner or product engineer versus infrastructure specialist.\n"
+        "- Keep the typical background short and recruiter-facing.\n"
+        "- Strongest_skills must include the requested stack or close equivalents from the job and voice intake.\n"
+        "- engineering_style, ownership_pattern, tradeoff, and why_recruiter_would_prefer_them should be concise notes, not paragraphs.\n"
+        "- Use the job title, voice summary, company stage, hiring intent, and technical stack to shape the profiles.\n"
+        "- Prefer two clearly differentiated profiles per set, such as scale-stage systems owner versus startup generalist or platform reliability engineer versus product-minded engineer.\n"
         "- Keep the set theme grounded in the real hiring decision being made.\n"
-        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n\n"
+        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n"
+        "- Preserve compatibility fields when possible, but the core content must read like resume profiles rather than archetypes.\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
         f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
         f"{sanitize_prompt_block('Location', _job_text_field(job, 'location'), max_length=160)}\n"
@@ -1060,18 +1061,30 @@ def _normalize_archetype_option(
 ) -> dict[str, Any]:
     set_suffix = f"r{set_index + 1}-{chr(ord('a') + option_index)}"
     fallback_headline = f"{_job_text_field(job, 'title') or 'Candidate'} {set_suffix}".strip()
-    candidate_headline = _candidate_headline_from_option(option, fallback=fallback_headline)
-    experience_snapshot = _text_field(
+    profile_title = _normalize_archetype_field(
+        option.get("profile_title")
+        or option.get("profileTitle")
+        or option.get("candidate_headline")
+        or option.get("candidateHeadline")
+        or option.get("headline")
+        or option.get("title")
+        or option.get("name")
+        or option.get("role")
+    ) or _candidate_headline_from_option(option, fallback=fallback_headline)
+    resume_summary = _text_field(
         option,
+        "resume_summary",
+        "resumeSummary",
         "experience_snapshot",
         "experienceSnapshot",
+        "summary",
         "experience",
         "background",
-        "experience_summary",
-        "experienceSummary",
     )
-    career_pattern = _text_field(
+    typical_background = _text_field(
         option,
+        "typical_background",
+        "typicalBackground",
         "career_pattern",
         "careerPattern",
         "career_arc",
@@ -1079,39 +1092,82 @@ def _normalize_archetype_option(
         "pattern",
         "trajectory",
     )
-    technical_strengths = _list_field(
+    strongest_skills = _list_field(
         option,
+        "strongest_skills",
+        "strongestSkills",
         "technical_strengths",
         "technicalStrengths",
         "strengths",
         "skills",
     )
-    ownership_style = _text_field(option, "ownership_style", "ownershipStyle", "ownership_level", "ownershipLevel")
+    typical_companies = _list_field(
+        option,
+        "typical_companies",
+        "typicalCompanies",
+        "current_company",
+        "currentCompany",
+        "company",
+        "companies",
+    )
+    engineering_style = _text_field(
+        option,
+        "engineering_style",
+        "engineeringStyle",
+        "work_style",
+        "workStyle",
+        "execution_style",
+        "executionStyle",
+    )
+    ownership_pattern = _text_field(
+        option,
+        "ownership_pattern",
+        "ownershipPattern",
+        "ownership_style",
+        "ownershipStyle",
+        "ownership_level",
+        "ownershipLevel",
+    )
+    tradeoff = _text_field(option, "tradeoff", "tradeOff", "hiring_tradeoffs", "hiringTradeoffs", "tradeoffs", "trade_offs")
+    why_recruiter_would_prefer_them = _text_field(
+        option,
+        "why_recruiter_would_prefer_them",
+        "whyRecruiterWouldPreferThem",
+        "fit_note",
+        "fitNote",
+    )
     leadership_profile = _list_field(option, "leadership_profile", "leadershipProfile", "leadership_signals", "leadershipSignals")
     ideal_environment = _text_field(option, "ideal_environment", "idealEnvironment")
-    execution_style = _text_field(option, "execution_style", "executionStyle")
-    hiring_tradeoffs = _list_field(option, "hiring_tradeoffs", "hiringTradeoffs", "tradeoffs", "trade_offs")
-    fit_note = _normalize_archetype_field(option.get("fit_note") or option.get("fitNote") or "")
-    title = candidate_headline
-    strengths = _ordered_unique([*technical_strengths, *leadership_profile])
-    work_style = _normalize_archetype_field(option.get("work_style") or option.get("workStyle"))
-    if not work_style:
-        work_style = ownership_style
-    ownership_level = ownership_style or _normalize_archetype_field(option.get("ownership_level") or option.get("ownershipLevel"))
     communication_style = _normalize_archetype_field(option.get("communication_style") or option.get("communicationStyle"))
     risk_tolerance = _normalize_archetype_field(option.get("risk_tolerance") or option.get("riskTolerance"))
-
+    headline_role = _normalize_archetype_field(option.get("headline_role") or option.get("headlineRole") or option.get("role") or option.get("title") or _job_text_field(job, "title") or "the role")
     job_title = _job_text_field(job, "title") or "the role"
-    role = title
-    skills = _ordered_unique([*technical_strengths, *strengths, *leadership_profile, *hiring_tradeoffs])
+
+    if not resume_summary:
+        resume_summary = (
+            f"{profile_title} with experience across {', '.join(strongest_skills[:4]) or 'the core stack'}."
+        )
+    if not typical_background:
+        typical_background = f"Resume patterns shaped by {', '.join(strongest_skills[:4]) or job_title.lower()} and the hiring context."
+    if not engineering_style:
+        engineering_style = ownership_pattern or "Practical, delivery-minded engineering."
+    if not ownership_pattern:
+        ownership_pattern = "End-to-end ownership with a bias toward shipping."
+    if not tradeoff:
+        tradeoff = "Broader ownership over narrow specialization."
+    if not why_recruiter_would_prefer_them:
+        why_recruiter_would_prefer_them = f"Can own the {job_title.lower()} work with the right balance of speed and reliability."
+
+    strengths = _ordered_unique([*strongest_skills, *leadership_profile, *[tradeoff]])
+    skills = _ordered_unique([*strongest_skills, *strengths, *leadership_profile])
     archetype_id = _stable_archetype_id(calibration_set_id, option_index)
     summary = (
-        f"{candidate_headline} is a believable ideal candidate for {job_title}. "
-        f"Experience snapshot: {experience_snapshot or 'not specified'}. "
-        f"Career pattern: {career_pattern or 'not specified'}."
+        f"{profile_title} is a believable ideal candidate resume profile for {job_title}. "
+        f"Resume summary: {resume_summary or 'not specified'}. "
+        f"Typical background: {typical_background or 'not specified'}."
     )
-    if fit_note:
-        summary = f"{summary} {fit_note}"
+    if why_recruiter_would_prefer_them:
+        summary = f"{summary} {why_recruiter_would_prefer_them}"
 
     fit_score = max(3.2, min(4.8, 4.6 - (set_index * 0.08) - (option_index * 0.05)))
     explanation = CandidateExplanation(
@@ -1126,11 +1182,11 @@ def _normalize_archetype_option(
             "missingSkillsPenalty": 0.0,
             "selectionPreferenceBonus": 0.0,
         },
-        skillsMatched=technical_strengths[:4] or strengths[:4],
-        experienceMatch="Preference calibration archetype",
-        candidateExperience="Preference calibration archetype",
+        skillsMatched=strongest_skills[:4] or strengths[:4],
+        experienceMatch="Preference calibration profile",
+        candidateExperience="Preference calibration profile",
         jobExperience=_job_text_field(job, "experience_level", "experienceRequired", "seniority"),
-        aiReasoning="Groq-generated ideal candidate snapshot used to calibrate recruiter taste before real sourcing begins.",
+        aiReasoning="Groq-generated ideal candidate resume profile used to calibrate recruiter taste before real sourcing begins.",
         sourceBreakdown={
             "vector": 0.0,
             "lexical": 0.0,
@@ -1146,14 +1202,15 @@ def _normalize_archetype_option(
         "archetype_id": archetype_id,
         "calibration_set_id": calibration_set_id,
         "calibrationSetId": calibration_set_id,
-        "name": candidate_headline,
-        "role": candidate_headline,
-        "company": "Preference Calibration",
+        "name": profile_title,
+        "role": headline_role or profile_title,
+        "company": _normalize_archetype_field(", ".join(typical_companies[:2]) if typical_companies else ""),
+        "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
         "email": "",
         "isMockEmail": True,
-        "headline": experience_snapshot or option.get("set_title") or f"Calibration archetype for {job_title}",
-        "location": _job_text_field(job, "location") or "Remote",
-        "yearsExperience": 0.0,
+        "headline": resume_summary or typical_background or option.get("set_title") or f"Profile for {job_title}",
+        "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
+        "yearsExperience": round(float(option.get("years_experience") or option.get("yearsExperience") or 0.0), 1) if str(option.get("years_experience") or option.get("yearsExperience") or "").strip() else 0.0,
         "skills": skills,
         "summary": summary,
         "education": [],
@@ -1163,21 +1220,25 @@ def _normalize_archetype_option(
         "domainExperience": [],
         "resumeText": "\n".join(
             [
-                f"Title: {title}",
-                f"Strengths: {', '.join(strengths)}",
-                f"Work style: {work_style}",
-                f"Ownership level: {ownership_level}",
+                f"Profile title: {profile_title}",
+                f"Resume summary: {resume_summary}",
+                f"Typical background: {typical_background}",
+                f"Strongest skills: {', '.join(strongest_skills)}",
+                f"Typical companies: {', '.join(typical_companies)}",
+                f"Engineering style: {engineering_style}",
+                f"Ownership pattern: {ownership_pattern}",
+                f"Tradeoff: {tradeoff}",
+                f"Why recruiter would prefer them: {why_recruiter_would_prefer_them}",
                 f"Ideal environment: {ideal_environment}",
                 f"Communication style: {communication_style}",
-                f"Execution style: {execution_style}",
                 f"Risk tolerance: {risk_tolerance}",
                 f"Leadership signals: {', '.join(leadership_profile)}",
-                f"Fit note: {fit_note}",
             ]
         ).strip(),
         "profileData": {
-            "source": "groq_archetype_calibration",
+            "source": "groq_candidate_profile_calibration",
             "isArchetype": True,
+            "isCandidateProfile": True,
             "calibrationSetId": calibration_set_id,
             "calibration_set_id": calibration_set_id,
             "archetypeId": archetype_id,
@@ -1186,36 +1247,60 @@ def _normalize_archetype_option(
             "optionIndex": option_index + 1,
             "setTitle": _normalize_archetype_field(option.get("set_title") or option.get("setTitle") or ""),
             "setTheme": _normalize_archetype_field(option.get("set_theme") or option.get("setTheme") or ""),
-            "candidateHeadline": candidate_headline,
-            "candidate_headline": candidate_headline,
-            "title": candidate_headline,
-            "experienceSnapshot": experience_snapshot,
-            "experience_snapshot": experience_snapshot,
-            "careerPattern": career_pattern,
-            "career_pattern": career_pattern,
-            "technicalStrengths": technical_strengths,
-            "technical_strengths": technical_strengths,
+            "profileTitle": profile_title,
+            "profile_title": profile_title,
+            "candidateHeadline": profile_title,
+            "candidate_headline": profile_title,
+            "title": profile_title,
+            "headlineRole": headline_role,
+            "headline_role": headline_role,
+            "currentCompany": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
+            "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
+            "typicalCompanies": typical_companies,
+            "typical_companies": typical_companies,
+            "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
+            "yearsExperience": round(float(option.get("years_experience") or option.get("yearsExperience") or 0.0), 1) if str(option.get("years_experience") or option.get("yearsExperience") or "").strip() else 0.0,
+            "resumeSummary": resume_summary,
+            "resume_summary": resume_summary,
+            "experienceSnapshot": resume_summary,
+            "experience_snapshot": resume_summary,
+            "typicalBackground": typical_background,
+            "typical_background": typical_background,
+            "careerPattern": typical_background,
+            "career_pattern": typical_background,
+            "strongestSkills": strongest_skills,
+            "strongest_skills": strongest_skills,
+            "technicalStrengths": strongest_skills,
+            "technical_strengths": strongest_skills,
             "strengths": strengths,
-            "workStyle": work_style,
-            "work_style": work_style,
-            "ownershipStyle": ownership_level,
-            "ownership_style": ownership_level,
-            "ownershipLevel": ownership_level,
+            "engineeringStyle": engineering_style,
+            "engineering_style": engineering_style,
+            "workStyle": engineering_style,
+            "work_style": engineering_style,
+            "ownershipPattern": ownership_pattern,
+            "ownership_pattern": ownership_pattern,
+            "ownershipStyle": ownership_pattern,
+            "ownership_style": ownership_pattern,
+            "ownershipLevel": ownership_pattern,
             "idealEnvironment": ideal_environment,
             "ideal_environment": ideal_environment,
-            "executionStyle": execution_style,
-            "execution_style": execution_style,
+            "executionStyle": engineering_style,
+            "execution_style": engineering_style,
             "leadershipProfile": leadership_profile,
             "leadership_profile": leadership_profile,
             "leadershipSignals": leadership_profile,
             "leadership_signals": leadership_profile,
-            "hiringTradeoffs": hiring_tradeoffs,
-            "hiring_tradeoffs": hiring_tradeoffs,
+            "hiringTradeoffs": [tradeoff] if tradeoff else [],
+            "hiring_tradeoffs": [tradeoff] if tradeoff else [],
+            "tradeoff": tradeoff,
             "communicationStyle": communication_style,
             "communication_style": communication_style,
             "riskTolerance": risk_tolerance,
             "risk_tolerance": risk_tolerance,
-            "fitNote": fit_note,
+            "fitNote": why_recruiter_would_prefer_them,
+            "fit_note": why_recruiter_would_prefer_them,
+            "whyRecruiterWouldPreferThem": why_recruiter_would_prefer_them,
+            "why_recruiter_would_prefer_them": why_recruiter_would_prefer_them,
         },
         "fitScore": round(fit_score, 2),
         "decision": "strong_match" if fit_score >= 4.1 else "potential",
@@ -1235,153 +1320,152 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
     job_experience = _job_text_field(job, "experience_level", "experienceRequired", "seniority")
     job_stage = _job_text_field(job, "company_stage", "companyStage", "stage", "company_type")
     job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
-    job_responsibilities = _ordered_unique(_job_list_values(job, "responsibilities"))
-
-    primary_skills = job_skills[:4] or ["the core stack"]
-    secondary_skills = job_skills[4:8] or primary_skills
-    responsibility_phrase = ", ".join(job_responsibilities[:3]) if job_responsibilities else "owning the core work"
+    skill_phrase = ", ".join(job_skills[:6]) if job_skills else job_title.lower()
     stage_phrase = job_stage or "a growth-stage team"
     location_phrase = job_location or "the target market"
-    depth_phrase = job_description[:140] or "the job's hardest technical problems"
-    title_tokens = [token for token in re.split(r"[^a-zA-Z0-9+.#-]+", job_title) if token]
-    key_title_token = _compact_archetype_label(" ".join(title_tokens[:2]) or job_title, "Role")
-    primary_skill = _compact_archetype_label(primary_skills[0], key_title_token) if primary_skills else key_title_token
-    secondary_skill = _compact_archetype_label(primary_skills[1], key_title_token) if len(primary_skills) > 1 else primary_skill
-    third_skill = _compact_archetype_label(primary_skills[2], key_title_token) if len(primary_skills) > 2 else secondary_skill
-    fourth_skill = _compact_archetype_label(primary_skills[3], key_title_token) if len(primary_skills) > 3 else third_skill
-    core_role_label = _compact_archetype_label(job_title, "Candidate")
-    responsibilities_phrase = responsibility_phrase or depth_phrase
-
-    def _skills_text(items: list[str], fallback: str) -> list[str]:
-        values = [item for item in items if item]
-        return values[:4] if values else [fallback]
-
-    def _persona(
-        *,
-        headline: str,
-        experience_snapshot: str,
-        career_pattern: str,
-        strengths: list[str],
-        ownership_style: str,
-        leadership_profile: list[str],
-        ideal_environment: str,
-        execution_style: str,
-        hiring_tradeoffs: list[str],
-        fit_note: str,
-    ) -> dict[str, Any]:
-        return {
-            "candidate_headline": headline,
-            "experience_snapshot": experience_snapshot,
-            "career_pattern": career_pattern,
-            "technical_strengths": strengths,
-            "ownership_style": ownership_style,
-            "leadership_profile": leadership_profile,
-            "ideal_environment": ideal_environment,
-            "execution_style": execution_style,
-            "hiring_tradeoffs": hiring_tradeoffs,
-            "fit_note": fit_note,
-        }
-
-    all_skills = job_skills[:8] or primary_skills
-    skill_stack = _skills_text(all_skills, job_title.lower())
-    skill_stack_phrase = ", ".join(skill_stack[:6]) if skill_stack else job_title.lower()
-    skill_axis_phrase = ", ".join([primary_skill, secondary_skill, third_skill, fourth_skill][:4]) if any([primary_skill, secondary_skill, third_skill, fourth_skill]) else job_title.lower()
-
-    persona_specs = [
-        (
-            f"{primary_skill} breadth",
-            f"Broad delivery profile across {skill_axis_phrase} with an emphasis on steady execution.",
-            [
-                _persona(
-                    headline=f"{primary_skill} breadth",
-                    experience_snapshot=f"{job_experience or 'Experienced'} candidate who can cover {responsibility_phrase} across the full skill stack.",
-                    career_pattern="Handles broad implementation work without losing momentum.",
-                    strengths=skill_stack,
-                    ownership_style=f"Turns the full skill set of {skill_stack_phrase} into shipped output.",
-                    leadership_profile=[f"keeps {primary_skill.lower()} practical", "aligns stakeholders", "moves quickly"],
-                    ideal_environment=f"Lean team in {stage_phrase} where breadth matters and decisions move fast.",
-                    execution_style="Short cycles, direct communication, and frequent course correction.",
-                    hiring_tradeoffs=["speed over ceremony", "breadth over narrow specialization", "iteration over perfection"],
-                    fit_note=f"Best when the role needs reliable delivery across {skill_stack_phrase}.",
-                ),
-                _persona(
-                    headline=f"{primary_skill} depth",
-                    experience_snapshot=f"{job_experience or 'Experienced'} candidate with deeper focus on the core stack behind {skill_stack_phrase}.",
-                    career_pattern="Moves with more precision and depth when the work gets technical.",
-                    strengths=skill_stack,
-                    ownership_style=f"Prefers durable solutions and careful technical choices across {skill_stack_phrase}.",
-                    leadership_profile=[f"sets guardrails for {primary_skill.lower()}", "reduces risk", "raises quality standards"],
-                    ideal_environment=f"Team that wants depth in {skill_stack_phrase} and strong technical standards.",
-                    execution_style="Measured delivery with thoughtful planning and low-regret decisions.",
-                    hiring_tradeoffs=["stability over flash", "discipline over improvisation", "depth over breadth"],
-                    fit_note=f"Best when the work needs deeper attention to {skill_stack_phrase}.",
-                ),
-            ],
-        ),
-        (
-            f"{secondary_skill} collaboration",
-            f"Cross-functional profile that keeps {skill_axis_phrase} aligned with product and delivery.",
-            [
-                _persona(
-                    headline=f"{secondary_skill} collaboration",
-                    experience_snapshot=f"Candidate who works comfortably with product and design while covering {skill_stack_phrase}.",
-                    career_pattern="Earns trust by keeping the work aligned across teams.",
-                    strengths=skill_stack,
-                    ownership_style="Outcome-oriented and comfortable shaping scope with non-engineering partners.",
-                    leadership_profile=[f"bridges {secondary_skill.lower()} and product", "keeps priorities aligned", "communicates tradeoffs clearly"],
-                    ideal_environment=f"Product-heavy team building in {location_phrase} where collaboration matters.",
-                    execution_style="Fast iteration with tight feedback loops and pragmatic scope control.",
-                    hiring_tradeoffs=["product judgment over siloed execution", "adaptability over narrow depth", "outcome over optics"],
-                    fit_note=f"Best when the role needs customer empathy across {skill_stack_phrase}.",
-                ),
-                _persona(
-                    headline=f"{fourth_skill} reliability",
-                    experience_snapshot=f"Candidate who keeps {skill_stack_phrase} dependable under load and change.",
-                    career_pattern="Brings a steady hand when the work needs resilience.",
-                    strengths=skill_stack,
-                    ownership_style=f"Careful, structured, and strong on keeping {skill_stack_phrase} dependable as the team grows.",
-                    leadership_profile=[f"documents failure modes for {fourth_skill.lower()}", "improves reliability", "supports other engineers"],
-                    ideal_environment=f"Operationally serious team shipping in {location_phrase} with clear reliability expectations.",
-                    execution_style="Methodical delivery with attention to resilience and maintainability.",
-                    hiring_tradeoffs=["reliability over novelty", "guardrails over speed at all costs", "scale depth over breadth"],
-                    fit_note=f"Best when the role needs someone who can keep {skill_stack_phrase} stable.",
-                ),
-            ],
-        ),
-        (
-            f"{third_skill} velocity",
-            f"High-iteration profile that keeps the full stack moving with momentum.",
-            [
-                _persona(
-                    headline=f"{third_skill} velocity",
-                    experience_snapshot=f"Candidate who can move quickly across {skill_stack_phrase} while keeping delivery moving.",
-                    career_pattern="Fast-moving practitioner who ships in short cycles.",
-                    strengths=skill_stack,
-                    ownership_style=f"Turns ambiguity in {skill_stack_phrase} into scoped deliverables and gets the first version shipped.",
-                    leadership_profile=[f"keeps {third_skill.lower()} practical", "aligns stakeholders", "moves quickly"],
-                    ideal_environment=f"Lean team in {stage_phrase} where speed and learning matter.",
-                    execution_style="Short cycles, direct communication, and rapid adjustment.",
-                    hiring_tradeoffs=["speed over ceremony", "iteration over perfection", "momentum over polish"],
-                    fit_note=f"Best when the role needs fast delivery across {skill_stack_phrase}.",
-                ),
-                _persona(
-                    headline=f"{secondary_skill} systems",
-                    experience_snapshot=f"Candidate with a more structured approach to the same {skill_stack_phrase} surface area.",
-                    career_pattern="Builds for maintainability and repeatable delivery.",
-                    strengths=skill_stack,
-                    ownership_style=f"Prefers systems that make {skill_stack_phrase} easier to operate over time.",
-                    leadership_profile=[f"sets technical direction for {secondary_skill.lower()}", "raises quality bars", "shares domain expertise"],
-                    ideal_environment=f"Role with clear technical focus and expectations around {skill_stack_phrase}.",
-                    execution_style="Deliberate delivery with a strong understanding of tradeoffs.",
-                    hiring_tradeoffs=["specialization over flexibility", "precision over speed", "depth over breadth"],
-                    fit_note=f"Best when the work needs a more systematic take on {skill_stack_phrase}.",
-                ),
-            ],
-        ),
+    role_tokens = [
+        token
+        for token in re.split(r"[^a-zA-Z0-9+.#-]+", job_title)
+        if token and token.lower() not in {"senior", "sr", "staff", "principal", "lead", "junior", "jr", "mid", "level"}
     ]
+    base_role = _compact_archetype_label(" ".join(role_tokens[:3]) or job_title, "Engineer")
+    profile_titles = [
+        f"Scale-Stage {base_role}",
+        f"Startup Generalist {base_role}",
+        f"Platform & Reliability {base_role}",
+        f"Product-Minded {base_role}",
+        f"Domain Specialist {base_role}",
+        f"Staff Systems {base_role}",
+    ]
+    summaries = [
+        f"{job_experience or '5-7 years'} building production backend systems at high-growth companies, with a strong bias toward scaling and operational stability.",
+        f"{job_experience or '4-7 years'} in early-stage teams where the engineer owned APIs, deployments, debugging, and product iteration without much hand-holding.",
+        f"{job_experience or '6-9 years'} focused on reliability, observability, queues, CI/CD, and platform work that keeps systems stable under load.",
+        f"{job_experience or '4-8 years'} building customer-facing product features while staying close to product decisions and rapid delivery cycles.",
+        f"{job_experience or '6-10 years'} in domains where the engineer had to learn a business area deeply and turn that context into technical decisions.",
+        f"{job_experience or '8+ years'} leading technical direction across services, architecture, and cross-team execution for a larger product surface.",
+    ]
+    backgrounds = [
+        f"Scaled APIs, async jobs, PostgreSQL, Redis, and AWS while working through performance bottlenecks in a high-growth product team.",
+        "Early-stage startup background with broad ownership across feature work, deployment issues, infra debugging, and product changes.",
+        "Infrastructure-heavy background across monitoring, alerting, build pipelines, queues, service health, and reliability work.",
+        "Product-led backend background with frequent collaboration with product, design, and customer-facing teams.",
+        "Deep domain background in one business area, using that context to shape systems and product decisions.",
+        "Staff-level background across system design, architecture reviews, and multi-team technical alignment.",
+    ]
+    strongest_skills_pool = [
+        _ordered_unique([*(job_skills[:4] or [base_role]), "PostgreSQL", "Redis", "AWS"]),
+        _ordered_unique([*(job_skills[:4] or [base_role]), "Rapid shipping", "Deployment debugging", "API ownership"]),
+        _ordered_unique([*(job_skills[:4] or [base_role]), "Observability", "CI/CD", "Queue reliability"]),
+        _ordered_unique([*(job_skills[:4] or [base_role]), "Product judgment", "Feature delivery", "Cross-functional execution"]),
+        _ordered_unique([*(job_skills[:4] or [base_role]), "Domain modeling", "Workflow design", "Technical tradeoffs"]),
+        _ordered_unique([*(job_skills[:4] or [base_role]), "Architecture", "System design", "Multi-team coordination"]),
+    ]
+    typical_companies_pool = [
+        ["Razorpay", "Meesho", "Swiggy", "PhonePe", "Groww"],
+        ["YC-backed startups", "seed-stage SaaS teams", "lean product startups"],
+        ["Platform engineering orgs", "infra teams", "DevOps-heavy product companies"],
+        ["Product-led SaaS teams", "consumer internet companies", "feature-heavy product orgs"],
+        ["Domain-heavy fintech teams", "logistics platforms", "workflow SaaS companies"],
+        ["Large product orgs", "multi-team platform groups", "complex service environments"],
+    ]
+    engineering_styles = [
+        "Production-minded and systems-aware.",
+        "Fast-moving, adaptable, and execution-heavy.",
+        "Reliability-first with a strong platform mindset.",
+        "Pragmatic, product-aware, and delivery-focused.",
+        "Context-rich and thoughtful about the business domain.",
+        "Architectural, deliberate, and cross-team oriented.",
+    ]
+    ownership_patterns = [
+        "Owns services end to end and cares about scaling them safely.",
+        "Takes broad ownership and keeps momentum high even when ambiguity is heavy.",
+        "Owns operational stability, tooling, and the plumbing that keeps teams shipping.",
+        "Stays close to the product surface and turns product decisions into shipped code.",
+        "Owns a domain deeply and turns that into clean technical decisions.",
+        "Owns technical direction across services and keeps alignment high across teams.",
+    ]
+    tradeoffs = [
+        "Less experimentation, stronger systems reliability.",
+        "Broader ownership over deep specialization.",
+        "Less product proximity, stronger infrastructure maturity.",
+        "Less infrastructure depth, stronger product judgment.",
+        "Less breadth across unrelated domains, stronger context inside one business area.",
+        "Less hands-on feature throughput, stronger architectural leverage.",
+    ]
+    recruiter_reasons = [
+        "Can immediately own and scale backend systems.",
+        "Can move quickly and handle ambiguity well.",
+        "Great fit when the team needs stability and operational maturity.",
+        "Great when the role needs someone close to product decisions and execution.",
+        "Useful when the team wants a deep specialist in one business domain.",
+        "Ideal when the team needs technical leadership across multiple engineers and services.",
+    ]
+    locations = [
+        job_location or "Remote",
+        "Remote",
+        "Bengaluru, India",
+        "Hyderabad, India",
+        "Pune, India",
+        "Chennai, India",
+    ]
+    years_pool = [7.0, 5.5, 8.5, 6.0, 9.0, 10.0]
     sets: list[dict[str, Any]] = []
-    for index, (title, theme, archetypes) in enumerate(persona_specs[:_CALIBRATION_SET_COUNT]):
+    for index in range(_CALIBRATION_SET_COUNT):
         calibration_set_id = _stable_calibration_set_id(index + 1)
+        option_indices = [index * 2, index * 2 + 1]
+        set_titles = [
+            "Scale vs startup breadth",
+            "Platform reliability vs product closeness",
+            "Domain depth vs staff-level systems leadership",
+        ]
+        set_themes = [
+            f"Choose between a scale-stage operator and a startup generalist for {skill_phrase}.",
+            f"Choose between operational maturity and product proximity in {skill_phrase}.",
+            f"Choose between deep domain expertise and broader architectural leverage for {skill_phrase}.",
+        ]
+        archetypes: list[dict[str, Any]] = []
+        for option_index, pool_index in enumerate(option_indices):
+            profile_title = profile_titles[pool_index]
+            strongest_skills = strongest_skills_pool[pool_index]
+            typical_companies = typical_companies_pool[pool_index]
+            profile_option = {
+                "profile_title": profile_title,
+                "resume_summary": summaries[pool_index],
+                "typical_background": backgrounds[pool_index],
+                "strongest_skills": strongest_skills,
+                "typical_companies": typical_companies,
+                "engineering_style": engineering_styles[pool_index],
+                "ownership_pattern": ownership_patterns[pool_index],
+                "tradeoff": tradeoffs[pool_index],
+                "why_recruiter_would_prefer_them": recruiter_reasons[pool_index],
+                "leadership_profile": [
+                    "handles ownership well",
+                    "communicates tradeoffs clearly",
+                ]
+                if pool_index in {0, 3}
+                else [
+                    "moves quickly",
+                    "works well with ambiguity",
+                ]
+                if pool_index in {1, 4}
+                else [
+                    "keeps systems stable",
+                    "aligns teams",
+                ],
+                "location": locations[pool_index],
+                "years_experience": years_pool[pool_index],
+            }
+            profile_option.update(
+                {
+                    "headline_role": base_role,
+                    "current_location": locations[pool_index],
+                }
+            )
+            archetypes.append(profile_option)
+
+        title = set_titles[index]
+        theme = set_themes[index]
         sets.append(
             {
                 "round_index": index + 1,
@@ -1409,12 +1493,12 @@ def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict
     try:
         payload = generate(prompt, expect_json=True)
     except Exception as exc:
-        logger.warning("recruiter_archetype_generation_failed error=%s", str(exc))
+        logger.warning("recruiter_candidate_profile_generation_failed error=%s", str(exc))
         payload = {}
 
     raw_sets: list[Any] = []
     if isinstance(payload, dict):
-        raw_sets = list(payload.get("sets") or payload.get("archetypeSets") or [])
+        raw_sets = list(payload.get("sets") or payload.get("profile_sets") or payload.get("profileSets") or payload.get("archetypeSets") or [])
     elif isinstance(payload, list):
         raw_sets = payload
 
@@ -1422,7 +1506,7 @@ def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict
     for set_index, raw_set in enumerate(raw_sets[:_CALIBRATION_SET_COUNT]):
         if not isinstance(raw_set, dict):
             continue
-        archetypes = raw_set.get("archetypes") or raw_set.get("items") or []
+        archetypes = raw_set.get("archetypes") or raw_set.get("profiles") or raw_set.get("candidate_profiles") or raw_set.get("items") or []
         if not isinstance(archetypes, list):
             continue
         calibration_set_id = _stable_calibration_set_id(int(raw_set.get("round_index") or set_index + 1))
@@ -1458,7 +1542,7 @@ def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict
                 normalized_sets.append(fallback_sets[index])
 
     logger.info(
-        "recruiter_archetype_sets_generated source=%s count=%s",
+        "recruiter_candidate_profile_sets_generated source=%s count=%s",
         "groq" if normalized_sets and raw_sets else "fallback",
         len(normalized_sets),
     )
@@ -1493,7 +1577,7 @@ def _persist_calibration_snapshot(*, db: Session, job_id: str, state: dict[str, 
     structured = dict(job.structured_data or {})
     archetype_pool = list(state.get("archetype_pool") or [])
     structured["recruiterCalibration"] = {
-        "source": state.get("candidate_source", "groq_archetypes"),
+        "source": state.get("candidate_source", "groq_candidate_profiles"),
         "archetypeCount": len(archetype_pool),
         "calibrationSetIds": [str(item.get("calibration_set_id") or "").strip() for item in list(state.get("archetype_sets") or []) if str(item.get("calibration_set_id") or "").strip()],
         "currentCalibrationSetId": str((state.get("current_pair") or {}).get("calibration_set_id") or "").strip(),
@@ -1569,7 +1653,7 @@ def bootstrap_preference_calibration_session(
                 "candidates": [dict(archetype) for archetype in item.get("archetypes", [])],
                 "signal_quality": round(0.75 - (index * 0.05), 4),
                 "contrast_axes": ["work_style", "ownership_level", "risk_tolerance"],
-                "rationale": item.get("set_theme") or item.get("set_title") or "Contrast recruiter taste across archetype sets.",
+                "rationale": item.get("set_theme") or item.get("set_title") or "Contrast recruiter taste across candidate profile sets.",
                 "pair_explanation": {
                     "why_selected": item.get("set_theme") or item.get("set_title") or "",
                     "contrast_axes": ["work_style", "ownership_level", "risk_tolerance"],
@@ -1587,7 +1671,7 @@ def bootstrap_preference_calibration_session(
         "gap_analysis": gap_analysis,
         "recommended_questions": list(gap_analysis.get("recommended_questions") or []),
         "vetting_mode": _job_mode(job),
-        "candidate_source": "groq_archetypes",
+        "candidate_source": "groq_candidate_profiles",
         "intent_profile": summarize_intent_profile(intent_profile),
         "voice_summary": _normalize_text(voice_summary),
         "session_id": "",
@@ -1792,23 +1876,37 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
             "stage": "archetype_calibration",
             "rounds": [],
             "current_pair": {},
+            "current_profile_set": {},
             "current_calibration_set_id": "",
             "history": [],
             "intent_profile": {},
             "recommended_questions": [],
             "telemetry": {},
             "archetype_sets": [],
+            "profile_sets": [],
             "orchestration_session_id": "",
         }
 
+    current_pair = dict(state.get("current_pair") or {})
+    if current_pair and "profile_sets" not in current_pair:
+        current_pair["profile_sets"] = list(current_pair.get("archetypes") or [])
+    if current_pair and "profileSets" not in current_pair:
+        current_pair["profileSets"] = list(current_pair.get("archetypes") or [])
+    if current_pair and "candidate_profiles" not in current_pair:
+        current_pair["candidate_profiles"] = list(current_pair.get("archetypes") or [])
+    if current_pair and "candidateProfiles" not in current_pair:
+        current_pair["candidateProfiles"] = list(current_pair.get("archetypes") or [])
+
+    profile_sets = list(state.get("archetype_sets") or [])
     return {
         "status": state.get("status", "active"),
         "stage": state.get("stage", "archetype_calibration"),
         "vetting_mode": state.get("vetting_mode", "volume"),
-        "candidate_source": state.get("candidate_source", "groq_archetypes"),
+        "candidate_source": state.get("candidate_source", "groq_candidate_profiles"),
         "rounds": list(state.get("rounds") or []),
         "current_round_index": int(state.get("current_round_index") or 1),
-        "current_pair": state.get("current_pair") or {},
+        "current_pair": current_pair,
+        "current_profile_set": current_pair,
         "current_calibration_set_id": str(state.get("current_calibration_set_id") or (state.get("current_pair") or {}).get("calibration_set_id") or (state.get("current_pair") or {}).get("calibrationSetId") or "").strip(),
         "history": list(state.get("history") or []),
         "gap_analysis": state.get("gap_analysis") or {},
@@ -1816,6 +1914,8 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
         "intent_profile": state.get("intent_profile") or {},
         "telemetry": state.get("telemetry") or {},
         "voice_summary": state.get("voice_summary", ""),
-        "archetype_sets": list(state.get("archetype_sets") or []),
+        "archetype_sets": profile_sets,
+        "profile_sets": profile_sets,
+        "candidate_profile_sets": profile_sets,
         "orchestration_session_id": str(state.get("orchestration_session_id") or "").strip(),
     }

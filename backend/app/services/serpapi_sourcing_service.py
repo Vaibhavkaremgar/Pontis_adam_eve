@@ -8,7 +8,6 @@ import random
 import re
 import threading
 import time
-import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -39,6 +38,7 @@ from app.core.config import (
     SERPAPI_RESULTS_PER_PAGE,
     SERPAPI_URL,
 )
+from app.services.persistent_cache_service import get_json as cache_get_json, set_json as cache_set_json
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 from app.db.repositories import CandidateProfileRepository
@@ -59,6 +59,8 @@ _quota_budget = max(0, DAILY_SERPAPI_BUDGET)
 _query_fingerprint_lock = threading.Lock()
 _query_fingerprint_last_seen: dict[str, float] = {}
 _debug_write_lock = threading.Lock()
+_XRAY_ROLE_CACHE_NAMESPACE = "serpapi_xray_role_results"
+_XRAY_ROLE_CACHE_VERSION = "v1"
 
 _TITLE_ROLE_STOPWORDS = {
     "linkedin",
@@ -732,6 +734,21 @@ def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: in
     return selected
 
 
+def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: list[str], layers: list[XRayQueryLayer], limit: int) -> str:
+    payload = {
+        "role_search_id": _normalize_text(role_search_id),
+        "role": _normalize_lower(role),
+        "location": _normalize_lower(location),
+        "skills": _dedupe_preserve_order([_normalize_lower(skill) for skill in skills if skill]),
+        "queries": [_normalize_lower(layer.query) for layer in layers if layer.enabled and layer.query],
+        "limit": int(limit),
+        "pages_per_layer": 1,
+        "engine": SERPAPI_ENGINE or "google",
+        "page_size": SERPAPI_RESULTS_PER_PAGE,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def build_linkedin_xray_query_layers(
     *,
     role: str,
@@ -1226,6 +1243,45 @@ def _load_mock_xray_raw_results(*, role: str) -> list[dict[str, Any]]:
     return []
 
 
+def _xray_role_cache_key(
+    *,
+    job_id: str,
+    company_id: str,
+    intake: dict[str, str],
+    limited_layers: list[XRayQueryLayer],
+    recruiter_preferences: dict[str, Any] | None,
+    archetype_ids: list[str],
+) -> str:
+    payload = {
+        "cache_version": _XRAY_ROLE_CACHE_VERSION,
+        "job_id": _normalize_text(job_id),
+        "company_id": _normalize_text(company_id),
+        "role_title": _normalize_text(intake.get("role_title") or ""),
+        "seniority": _normalize_text(intake.get("seniority") or ""),
+        "location": _normalize_text(intake.get("location") or ""),
+        "company_stage": _normalize_text(intake.get("company_stage") or ""),
+        "hiring_preferences": _normalize_text(intake.get("hiring_preferences") or ""),
+        "industry": _normalize_text(intake.get("industry") or ""),
+        "leadership_expectations": _normalize_text(intake.get("leadership_expectations") or ""),
+        "skills": [token.strip() for token in (intake.get("skills") or "").split(",") if token.strip()],
+        "archetype_ids": _dedupe_preserve_order(archetype_ids),
+        "recruiter_preferences": recruiter_preferences or {},
+        "layers": [
+            {
+                "layer_type": layer.layer_type,
+                "query": layer.query,
+                "enabled": layer.enabled,
+                "pages": 1,
+            }
+            for layer in limited_layers
+        ],
+        "search_engine": SERPAPI_ENGINE or "google",
+        "results_per_page": int(SERPAPI_RESULTS_PER_PAGE),
+    }
+    material = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def discover_linkedin_xray_candidates(
     *,
     job: Any,
@@ -1316,6 +1372,54 @@ def discover_linkedin_xray_candidates(
         title_tokens=diversity_report["title_token_count"],
         seniority_tokens=diversity_report["seniority_token_count"],
     )
+
+    role_cache_key = _xray_role_cache_key(
+        job_id=resolved_job_id,
+        company_id=resolved_company_id,
+        intake=resolved_intake,
+        limited_layers=limited_layers,
+        recruiter_preferences=recruiter_preferences,
+        archetype_ids=resolved_archetype_ids,
+    )
+    cached_role_payload = cache_get_json(_XRAY_ROLE_CACHE_NAMESPACE, role_cache_key)
+    if isinstance(cached_role_payload, dict):
+        cached_results = cached_role_payload.get("results")
+        if isinstance(cached_results, list):
+            cached_dedupe = cached_role_payload.get("dedupe_report") if isinstance(cached_role_payload.get("dedupe_report"), dict) else {}
+            logger.info(
+                "serpapi_role_cache_hit role=%s role_search_id=%s count=%s cache_key=%s",
+                job_role,
+                resolved_role_search_id,
+                len(cached_results),
+                role_cache_key[:12],
+            )
+            if isinstance(cached_dedupe, dict):
+                _log_structured(
+                    "xray_dedup",
+                    raw_candidates=cached_dedupe.get("raw_candidates", 0),
+                    duplicate_candidates=cached_dedupe.get("duplicate_candidates", 0),
+                    deduped_candidates=cached_dedupe.get("deduped_candidates", len(cached_results)),
+                    duplicate_rate=cached_dedupe.get("duplicate_rate", 0.0),
+                )
+            _log_structured(
+                "serpapi_call_count",
+                role_search_id=resolved_role_search_id,
+                calls_executed=0,
+                quota_remaining=_quota_snapshot().budget,
+                daily_budget=DAILY_SERPAPI_BUDGET,
+                max_calls_per_role=MAX_CALLS_PER_ROLE,
+            )
+            _log_structured(
+                "xray_timing",
+                query_generation_ms=query_generation_ms,
+                serpapi_latency_ms=0.0,
+                dedupe_ms=0.0,
+                prefilter_ms=0.0,
+                rerank_ms=0.0,
+                total_pipeline_ms=query_generation_ms,
+            )
+            _register_profiles_found(count=len(cached_results))
+            return cached_results
 
     if not limited_layers:
         logger.info("serpapi_discovery_completed role=%s count=0 reason=no_active_layers", job_role)
@@ -1575,6 +1679,21 @@ def discover_linkedin_xray_candidates(
     })
     _write_debug_artifact("dedupe_report.json", dedupe_report)
     _write_debug_artifact("final_review_deck.json", normalized_results)
+    cache_set_json(
+        _XRAY_ROLE_CACHE_NAMESPACE,
+        role_cache_key,
+        {
+            "role_search_id": resolved_role_search_id,
+            "job_id": resolved_job_id,
+            "company_id": resolved_company_id,
+            "recruiter_id": resolved_recruiter_id,
+            "workflow_token": resolved_workflow_token,
+            "limit": int(limit),
+            "query_generation_ms": query_generation_ms,
+            "results": normalized_results,
+            "dedupe_report": dedupe_report,
+        },
+    )
 
     _register_profiles_found(count=len(normalized_results))
     quota_after = _quota_snapshot()

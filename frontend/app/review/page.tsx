@@ -1,8 +1,8 @@
-"use client";
+﻿"use client";
 
 /**
  * What this file does:
- * Runs archetype selection and the post-selection X-Ray review flow.
+ * Runs ideal candidate profile selection and the post-selection X-Ray review flow.
  *
  * What API it connects to:
  * GET /recruiters/:recruiterId/intelligence/jobs/:jobId
@@ -10,7 +10,7 @@
  * GET /candidates?jobId=...&refresh=true
  *
  * How it fits in the pipeline:
- * Voice intake -> archetype generation -> X-Ray sourcing -> recruiter review
+ * Voice intake -> ideal candidate profile generation -> X-Ray sourcing -> recruiter review
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -116,7 +116,7 @@ function splitCandidateTextList(value: unknown): string[] {
   }
   if (typeof value !== "string") return [];
   return value
-    .replace(/[•·]/g, ",")
+    .replace(/[â€¢Â·]/g, ",")
     .split(/[,/|;]/)
     .map((item) => item.trim())
     .filter(Boolean);
@@ -149,7 +149,7 @@ function looksLikeSkillList(value: string, skills: string[]): boolean {
   if (!normalized) return false;
   const skillTokens = skills.map((skill) => skill.trim().toLowerCase()).filter(Boolean);
   if (skillTokens.length > 0 && skillTokens.every((skill) => normalized.includes(skill))) return true;
-  const parts = normalized.split(/[,/|·•]/).map((part) => part.trim()).filter(Boolean);
+  const parts = normalized.split(/[,/|Â·â€¢]/).map((part) => part.trim()).filter(Boolean);
   if (parts.length >= 3 && parts.every((part) => part.length <= 24)) return true;
   const techMarkers = ["javascript", "typescript", "python", "react", "node", "html", "css", "sql", "aws", "docker", "kubernetes"];
   return techMarkers.some((marker) => normalized.includes(marker)) && parts.length >= 2;
@@ -305,10 +305,14 @@ function calibrationText(value: unknown, fallback = ""): string {
   return fallback;
 }
 
-function getCalibrationCurrentArchetypes(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): Array<Record<string, unknown>> {
+function getCalibrationCurrentProfiles(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): Array<Record<string, unknown>> {
   const currentPair = (calibration?.current_pair ?? {}) as Record<string, unknown>;
-  const archetypes = currentPair.archetypes;
-  return Array.isArray(archetypes) ? archetypes.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
+  const profiles = currentPair.profile_sets || currentPair.profileSets || currentPair.candidate_profiles || currentPair.candidateProfiles || currentPair.profiles || currentPair.archetypes;
+  return Array.isArray(profiles) ? profiles.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
+}
+
+function getCalibrationCurrentArchetypes(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): Array<Record<string, unknown>> {
+  return getCalibrationCurrentProfiles(calibration);
 }
 
 function getCalibrationCurrentSetId(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
@@ -325,7 +329,8 @@ function getCalibrationCurrentSetId(calibration: RecruiterIntelligenceSession["c
 function getCalibrationRoundLabel(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
   if (!calibration) return "1 / 3";
   const current = Number(calibration.current_round_index || 1);
-  const total = Array.isArray(calibration.archetype_sets) ? calibration.archetype_sets.length || 3 : 3;
+  const totalSets = calibration.profile_sets || calibration.candidate_profile_sets || calibration.archetype_sets;
+  const total = Array.isArray(totalSets) ? totalSets.length || 3 : 3;
   return `${current} / ${total}`;
 }
 
@@ -537,6 +542,7 @@ function CandidateCard({
                 href={getCandidateLinkedInUrl(candidate)}
                 target="_blank"
                 rel="noreferrer"
+                onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
                 aria-label="Open LinkedIn profile"
                 className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
@@ -678,7 +684,7 @@ function CandidateListRow({
             <h3 className="font-heading text-[20px] font-semibold leading-tight text-[#111827]">
               {candidate.name || "Unnamed candidate"}
             </h3>
-            <span className="text-[#A18E7C] transition-opacity group-hover:text-[#7D6A57]">↗</span>
+            <span className="text-[#A18E7C] transition-opacity group-hover:text-[#7D6A57]">â†—</span>
           </div>
           <p className="font-body text-[14px] text-[#8A6F55]">{candidateSubtitle(candidate)}</p>
           <p style={clampLines(3)} className="max-w-4xl overflow-hidden font-body text-[15px] leading-6 text-[#5F564D]">
@@ -765,11 +771,12 @@ function TimelineList({ items }: { items: any[] }) {
   );
 }
 
-// ── Tinder-style swipe deck for final candidates ────────────────────────────
+// â”€â”€ Tinder-style swipe deck for final candidates â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function SwipeDeck({
   candidates,
   shortlistedIds,
+  shortlistedCandidates,
   isAdvancing,
   selectedCandidateId,
   onSelect,
@@ -779,6 +786,7 @@ function SwipeDeck({
 }: {
   candidates: Candidate[];
   shortlistedIds: string[];
+  shortlistedCandidates: Candidate[];
   isAdvancing: boolean;
   selectedCandidateId: string;
   onSelect: (id: string) => void;
@@ -786,8 +794,6 @@ function SwipeDeck({
   onOpenDetails: (c: Candidate) => void;
   onContinueToReady: () => void;
 }) {
-  // Track which candidates have been acted on in this session
-  const [actedIds, setActedIds] = useState<Set<string>>(new Set());
   const [swipeDir, setSwipeDir] = useState<"left" | "right" | null>(null);
   const [swipingId, setSwipingId] = useState("");
 
@@ -797,19 +803,16 @@ function SwipeDeck({
   const isDragging = useRef(false);
   const [dragOffset, setDragOffset] = useState(0);
 
-  // Pending candidates = not yet acted on in this session
-  const pending = candidates.filter((c) => !actedIds.has(c.id));
-  const current = pending[0] ?? null;
-  const next = pending[1] ?? null;
+  const current = candidates[0] ?? null;
+  const next = candidates[1] ?? null;
 
-  const done = pending.length === 0;
+  const done = candidates.length === 0;
 
   const triggerSwipe = (id: string, dir: "left" | "right") => {
     if (isAdvancing || swipingId) return;
     setSwipingId(id);
     setSwipeDir(dir);
     setTimeout(() => {
-      setActedIds((prev) => new Set([...prev, id]));
       setSwipeDir(null);
       setSwipingId("");
       setDragOffset(0);
@@ -873,7 +876,7 @@ function SwipeDeck({
         <div className="space-y-0.5">
           <p className="font-heading text-[22px] font-semibold text-[#111827]">Here are your top candidates</p>
           <p className="font-body text-sm text-[#8A6F55]">
-            {pending.length} remaining · {shortlistedIds.length} shortlisted
+            {candidates.length} remaining · {shortlistedCandidates.length} shortlisted
           </p>
         </div>
         <Badge variant="high">{candidates.length} candidates</Badge>
@@ -966,6 +969,8 @@ function SwipeDeck({
                       href={getCandidateLinkedInUrl(current)}
                       target="_blank"
                       rel="noreferrer"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => event.stopPropagation()}
                       aria-label="Open LinkedIn profile"
                       className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
@@ -1016,7 +1021,7 @@ function SwipeDeck({
               {/* Already selected badge */}
               {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
-                  ✓ Already shortlisted
+                  âœ“ Already shortlisted
                 </div>
               )}
 
@@ -1024,7 +1029,9 @@ function SwipeDeck({
               <div className="mt-auto flex gap-3">
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); triggerSwipe(current.id, "left"); }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); triggerSwipe(current.id, "left"); }}
                   disabled={isAdvancing || Boolean(swipingId) || (selectedCandidateId !== "" && selectedCandidateId !== current.id)}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
                 >
@@ -1032,7 +1039,9 @@ function SwipeDeck({
                 </button>
                 <button
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); triggerSwipe(current.id, "right"); }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); triggerSwipe(current.id, "right"); }}
                   disabled={isAdvancing || Boolean(swipingId) || (selectedCandidateId !== "" && selectedCandidateId !== current.id)}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] bg-[#0F6B3A] font-body text-[15px] font-semibold text-white shadow-[0_6px_16px_rgba(15,107,58,0.22)] transition hover:bg-[#0C5A31] disabled:opacity-50"
                 >
@@ -1050,13 +1059,11 @@ function SwipeDeck({
           <div
             key={c.id}
             className={`h-2 w-2 rounded-full transition-colors ${
-              shortlistedIds.includes(c.id) || isShortlistedStatus(c.status) || isShortlistedStatus(c.ats_status)
+              shortlistedCandidates.some((item) => item.id === c.id) || shortlistedIds.includes(c.id) || isShortlistedStatus(c.status) || isShortlistedStatus(c.ats_status)
                 ? "bg-[#0F6B3A]"
-                : actedIds.has(c.id)
-                  ? "bg-[#D1D5DB]"
-                  : c.id === current?.id
-                    ? "bg-[#111827]"
-                    : "bg-[#E5E7EB]"
+                : c.id === current?.id
+                  ? "bg-[#111827]"
+                  : "bg-[#E5E7EB]"
             }`}
           />
         ))}
@@ -1068,6 +1075,7 @@ function SwipeDeck({
 function RecruiterSwipeDeck({
   candidates,
   shortlistedIds,
+  shortlistedCandidates,
   isAdvancing,
   selectedCandidateId,
   onSelect,
@@ -1077,6 +1085,7 @@ function RecruiterSwipeDeck({
 }: {
   candidates: Candidate[];
   shortlistedIds: string[];
+  shortlistedCandidates: Candidate[];
   isAdvancing: boolean;
   selectedCandidateId: string;
   onSelect: (id: string) => void;
@@ -1084,7 +1093,6 @@ function RecruiterSwipeDeck({
   onOpenDetails: (c: Candidate) => void;
   onContinueToReady: () => void;
 }) {
-  const [actedIds, setActedIds] = useState<Set<string>>(new Set());
   const [swipeDir, setSwipeDir] = useState<"left" | "right" | null>(null);
   const [swipingId, setSwipingId] = useState("");
   const dragStartX = useRef(0);
@@ -1092,16 +1100,14 @@ function RecruiterSwipeDeck({
   const isDragging = useRef(false);
   const [dragOffset, setDragOffset] = useState(0);
 
-  const pending = candidates.filter((candidate) => !actedIds.has(candidate.id));
-  const current = pending[0] ?? null;
-  const next = pending[1] ?? null;
+  const current = candidates[0] ?? null;
+  const next = candidates[1] ?? null;
 
   const triggerSwipe = (id: string, dir: "left" | "right") => {
     if (isAdvancing || swipingId) return;
     setSwipingId(id);
     setSwipeDir(dir);
     setTimeout(() => {
-      setActedIds((prev) => new Set([...prev, id]));
       setSwipeDir(null);
       setSwipingId("");
       setDragOffset(0);
@@ -1133,7 +1139,7 @@ function RecruiterSwipeDeck({
     else setDragOffset(0);
   };
 
-  if (pending.length === 0) {
+  if (candidates.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-4 rounded-[24px] border border-[#E7E0D4] bg-white py-16 text-center shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
         <p className="font-heading text-[22px] font-semibold text-[#111827]">All candidates reviewed</p>
@@ -1144,7 +1150,7 @@ function RecruiterSwipeDeck({
             event.stopPropagation();
             onContinueToReady();
           }}
-          disabled={shortlistedIds.length === 0 || isAdvancing}
+          disabled={shortlistedCandidates.length === 0 || isAdvancing}
         >
           Move to Ready
         </Button>
@@ -1170,7 +1176,7 @@ function RecruiterSwipeDeck({
         <div className="space-y-1">
           <p className="font-heading text-[22px] font-semibold text-[#111827]">Swipe to shortlist</p>
           <p className="font-body text-sm text-[#8A6F55]">
-            {pending.length} remaining · {shortlistedIds.length} shortlisted
+            {candidates.length} remaining · {shortlistedCandidates.length} shortlisted
           </p>
         </div>
         <Badge variant="high">{candidates.length} ranked candidates</Badge>
@@ -1237,6 +1243,8 @@ function RecruiterSwipeDeck({
                       href={getCandidateLinkedInUrl(current)}
                       target="_blank"
                       rel="noreferrer"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
                       onClick={(event) => event.stopPropagation()}
                       aria-label="Open LinkedIn profile"
                       className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
@@ -1283,7 +1291,10 @@ function RecruiterSwipeDeck({
               <div className="mt-auto flex gap-3">
                 <button
                   type="button"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     triggerSwipe(current.id, "left");
                   }}
@@ -1294,7 +1305,10 @@ function RecruiterSwipeDeck({
                 </button>
                 <button
                   type="button"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onMouseDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
+                    event.preventDefault();
                     event.stopPropagation();
                     triggerSwipe(current.id, "right");
                   }}
@@ -1314,13 +1328,11 @@ function RecruiterSwipeDeck({
           <div
             key={candidate.id}
             className={`h-2 w-2 rounded-full transition-colors ${
-              shortlistedIds.includes(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
+              shortlistedCandidates.some((item) => item.id === candidate.id) || shortlistedIds.includes(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
                 ? "bg-[#0F6B3A]"
-                : actedIds.has(candidate.id)
-                  ? "bg-[#D1D5DB]"
-                  : candidate.id === current?.id
-                    ? "bg-[#111827]"
-                    : "bg-[#E5E7EB]"
+                : candidate.id === current?.id
+                  ? "bg-[#111827]"
+                  : "bg-[#E5E7EB]"
             }`}
           />
         ))}
@@ -1406,6 +1418,8 @@ export default function ReviewPage() {
   const [session, setSession] = useState<CandidateSelectionSession | null>(null);
   const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
   const [reviewCandidates, setReviewCandidates] = useState<Candidate[]>([]);
+  const [remainingCandidates, setRemainingCandidates] = useState<Candidate[]>([]);
+  const [shortlistedCandidates, setShortlistedCandidates] = useState<Candidate[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [isCalibrationLoading, setIsCalibrationLoading] = useState(false);
@@ -1429,6 +1443,7 @@ export default function ReviewPage() {
   const sourcingLoadKeyRef = useRef("");
   const sourcingRefreshCycleRef = useRef(0);
   const sourcingInFlightRef = useRef(false);
+  const candidateStateVersionRef = useRef(0);
 
   useEffect(() => {
     if (!jobId) return;
@@ -1451,6 +1466,7 @@ export default function ReviewPage() {
     const source = options?.source || "auto";
     const forceRefresh = Boolean(options?.forceRefresh);
     const loadKey = `${jobId}:${user.id}:${source}:${forceRefresh ? "refresh" : "steady"}:${sourcingRefreshCycleRef.current}`;
+    const loadVersion = candidateStateVersionRef.current;
     if (sourcingInFlightRef.current) return;
     if (!forceRefresh && sourcingLoadKeyRef.current === loadKey) return;
     sourcingInFlightRef.current = true;
@@ -1463,16 +1479,42 @@ export default function ReviewPage() {
     ]);
 
     const cachedCandidates = getStoredReviewCandidates(jobId);
+    const persistedRejectedIds = new Set<string>(
+      cachedCandidates
+        .filter((candidate) => String(candidate.status || "").trim().toLowerCase() === "rejected" || String(candidate.ats_status || "").trim().toLowerCase() === "rejected")
+        .map((candidate) => candidate.id)
+    );
+    let shouldAbortLoad = false;
     if (cachedCandidates.length > 0) {
-      const normalizedCachedCandidates = cachedCandidates.slice(0, 30).map((candidate) =>
-        persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status)
-          ? { ...candidate, status: "selected" as const }
-          : candidate
-      );
-      setReviewCandidates(normalizedCachedCandidates);
-      if (!forceRefresh) {
-        setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
+      if (candidateStateVersionRef.current === loadVersion) {
+        const normalizedCachedCandidates = cachedCandidates.slice(0, 30).map((candidate) =>
+          persistedRejectedIds.has(candidate.id)
+            ? { ...candidate, status: "rejected" as const }
+            : persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status)
+            ? { ...candidate, status: "selected" as const }
+            : candidate
+        );
+        setReviewCandidates(normalizedCachedCandidates);
+        setRemainingCandidates(
+          normalizedCachedCandidates.filter(
+            (candidate) => !persistedShortlistedIds.has(candidate.id) && !persistedRejectedIds.has(candidate.id) && candidate.status !== "rejected"
+          )
+        );
+        setShortlistedCandidates(
+          normalizedCachedCandidates.filter((candidate) => persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status))
+        );
+        if (!forceRefresh) {
+          setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
+        }
+      } else {
+        shouldAbortLoad = true;
       }
+    }
+
+    if (shouldAbortLoad) {
+      setReviewLoading(false);
+      sourcingInFlightRef.current = false;
+      return;
     }
 
     try {
@@ -1490,9 +1532,15 @@ export default function ReviewPage() {
         return;
       }
 
+      if (candidateStateVersionRef.current !== loadVersion) {
+        return;
+      }
+
       const rankedCandidates = result.data.slice(0, 30);
       const normalizedRankedCandidates = rankedCandidates.map((candidate) =>
-        persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
+        persistedRejectedIds.has(candidate.id) || String(candidate.status || "").trim().toLowerCase() === "rejected" || String(candidate.ats_status || "").trim().toLowerCase() === "rejected"
+          ? { ...candidate, status: "rejected" as const }
+          : persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
           ? { ...candidate, status: "selected" as const }
           : candidate
       );
@@ -1502,6 +1550,20 @@ export default function ReviewPage() {
       const mergedShortlistedIds = Array.from(new Set([...persistedShortlistedIds, ...shortlistedIdsFromRanked]));
       setFinalShortlistedIds(mergedShortlistedIds);
       setReviewCandidates(normalizedRankedCandidates);
+      setRemainingCandidates(
+        normalizedRankedCandidates.filter(
+          (candidate) =>
+            !mergedShortlistedIds.includes(candidate.id) &&
+            !persistedRejectedIds.has(candidate.id) &&
+            String(candidate.status || "").trim().toLowerCase() !== "rejected" &&
+            String(candidate.ats_status || "").trim().toLowerCase() !== "rejected" &&
+            !isShortlistedStatus(candidate.status) &&
+            !isShortlistedStatus(candidate.ats_status)
+        )
+      );
+      setShortlistedCandidates(
+        normalizedRankedCandidates.filter((candidate) => mergedShortlistedIds.includes(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status))
+      );
       storeReviewCandidates(jobId, normalizedRankedCandidates);
       storeShortlistedCandidateIds(jobId, mergedShortlistedIds);
       setFeedbackMessage(
@@ -1528,7 +1590,7 @@ export default function ReviewPage() {
       if (cancelled) return;
 
       if (!intelligenceResult.success || !intelligenceResult.data) {
-        setCalibrationError(intelligenceResult.error || "Could not load recruiter archetypes.");
+        setCalibrationError(intelligenceResult.error || "Could not load candidate profiles.");
         setIntelligence(null);
         setIsLoading(false);
         return;
@@ -1544,6 +1606,8 @@ export default function ReviewPage() {
         setSession(null);
         setActiveCandidate(null);
         setReviewCandidates([]);
+        setRemainingCandidates([]);
+        setShortlistedCandidates([]);
         setSourcingError("");
         setIsLoading(false);
         return;
@@ -1558,6 +1622,8 @@ export default function ReviewPage() {
         await loadSourcedCandidates({ source: "auto", forceRefresh: false });
       } else {
         setReviewCandidates([]);
+        setRemainingCandidates([]);
+        setShortlistedCandidates([]);
         setSourcingError("");
       }
       if (cancelled) return;
@@ -1629,14 +1695,35 @@ export default function ReviewPage() {
   const analysis = null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
   const calibration = intelligence?.calibration ?? null;
-  const calibrationArchetypes = useMemo(() => getCalibrationCurrentArchetypes(calibration), [calibration]);
+  const calibrationArchetypes = useMemo(() => getCalibrationCurrentProfiles(calibration), [calibration]);
   const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
   const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const calibrationComplete = calibration?.stage === "real_sourcing_ready";
   const interviewProgression = activeInterviewInsights?.progression || [];
   const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
   const completedInterviewStages = interviewProgression.filter((item: any) => item?.completed).length;
-  const swipeCandidates = useMemo(() => reviewCandidates, [reviewCandidates]);
+  const swipeCandidates = useMemo(
+    () =>
+      reviewCandidates.filter(
+        (candidate) =>
+          candidate.status !== "rejected" &&
+          candidate.ats_status !== "rejected" &&
+          !isShortlistedStatus(candidate.status) &&
+          !isShortlistedStatus(candidate.ats_status) &&
+          !finalShortlistedIds.includes(candidate.id)
+      ),
+    [finalShortlistedIds, reviewCandidates]
+  );
+  const visibleShortlistedCandidates = useMemo(
+    () =>
+      reviewCandidates.filter(
+        (candidate) =>
+          finalShortlistedIds.includes(candidate.id) ||
+          isShortlistedStatus(candidate.status) ||
+          isShortlistedStatus(candidate.ats_status)
+      ),
+    [finalShortlistedIds, reviewCandidates]
+  );
   const completedShortlistedIds = useMemo(() => {
     const ids = new Set<string>(finalShortlistedIds);
     for (const candidate of reviewCandidates) {
@@ -1650,8 +1737,8 @@ export default function ReviewPage() {
     return [...ids];
   }, [finalShortlistedIds, reviewCandidates, jobId]);
   const shortlistedCount = useMemo(() => {
-    return completedShortlistedIds.length;
-  }, [completedShortlistedIds]);
+    return visibleShortlistedCandidates.length || completedShortlistedIds.length;
+  }, [completedShortlistedIds.length, visibleShortlistedCandidates.length]);
 
   const handleCalibrationSelect = async (archetypeId: string) => {
     if (!jobId || !user || isCalibrationLoading) return;
@@ -1668,7 +1755,7 @@ export default function ReviewPage() {
 
     const calibrationResult = result.data ?? null;
     if (!result.success || !calibrationResult) {
-      setCalibrationError(result.error || "Could not save archetype choice.");
+      setCalibrationError(result.error || "Could not save candidate profile choice.");
       setCalibrationSelectionId("");
       setIsCalibrationLoading(false);
       return;
@@ -1698,13 +1785,19 @@ export default function ReviewPage() {
     setIsAdvancing(true);
     setError("");
     setSelectedCandidateId(candidateId);
+    candidateStateVersionRef.current += 1;
     const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
     const nextShortlistedIds = Array.from(new Set([...finalShortlistedIds, candidateId]));
     const updatedCandidates = reviewCandidates.map((candidate) =>
       candidate.id === candidateId ? { ...candidate, status: "selected" as const } : candidate
     );
+    const shortlistedCandidate = nextCandidate ? { ...nextCandidate, status: "selected" as const } : null;
     setReviewCandidates((prev) =>
       prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "selected" } : candidate))
+    );
+    setRemainingCandidates((prev) => prev.filter((candidate) => candidate.id !== candidateId));
+    setShortlistedCandidates((prev) =>
+      shortlistedCandidate ? [...prev.filter((candidate) => candidate.id !== candidateId), shortlistedCandidate] : prev
     );
     storeReviewCandidates(jobId, updatedCandidates);
     setFinalShortlistedIds(nextShortlistedIds);
@@ -1718,6 +1811,11 @@ export default function ReviewPage() {
       setReviewCandidates((prev) =>
         prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: nextCandidate?.status || "new" } : candidate))
       );
+      setRemainingCandidates((prev) => {
+        if (prev.some((candidate) => candidate.id === candidateId)) return prev;
+        return nextCandidate ? [nextCandidate, ...prev] : prev;
+      });
+      setShortlistedCandidates((prev) => prev.filter((candidate) => candidate.id !== candidateId));
       storeReviewCandidates(jobId, revertedCandidates);
       const revertedShortlistedIds = nextShortlistedIds.filter((id) => id !== candidateId);
       setFinalShortlistedIds(revertedShortlistedIds);
@@ -1738,6 +1836,7 @@ export default function ReviewPage() {
     if (!jobId || isAdvancing) return;
     setIsAdvancing(true);
     setSelectedCandidateId(candidateId);
+    candidateStateVersionRef.current += 1;
     const nextShortlistedIds = finalShortlistedIds.filter((id) => id !== candidateId);
     const updatedCandidates = reviewCandidates.map((candidate) =>
       candidate.id === candidateId ? { ...candidate, status: "rejected" as const } : candidate
@@ -1745,6 +1844,8 @@ export default function ReviewPage() {
     setReviewCandidates((prev) =>
       prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, status: "rejected" } : candidate))
     );
+    setRemainingCandidates((prev) => prev.filter((candidate) => candidate.id !== candidateId));
+    setShortlistedCandidates((prev) => prev.filter((candidate) => candidate.id !== candidateId));
     storeReviewCandidates(jobId, updatedCandidates);
     setFinalShortlistedIds(nextShortlistedIds);
     storeShortlistedCandidateIds(jobId, nextShortlistedIds);
@@ -1825,7 +1926,7 @@ export default function ReviewPage() {
 
           {isRefined && (
             <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Voice intake completed. Archetypes and X-Ray sourcing are now ready.
+              Voice intake completed. Candidate profiles and X-Ray sourcing are now ready.
             </div>
           )}
 
@@ -1846,106 +1947,105 @@ export default function ReviewPage() {
             </div>
           )}
 
-          {isLoading && <p className="text-sm text-gray-500">Loading recruiter archetypes and sourcing candidates...</p>}
+          {isLoading && <p className="text-sm text-gray-500">Loading candidate profiles and sourcing candidates...</p>}
 
           {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    Archetype set {calibrationRoundLabel}
+                    Ideal candidate profile set {calibrationRoundLabel}
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Pick the closer candidate style. Each set has 2 short archetypes, and Adam uses your choice to guide X-Ray sourcing.
+                    Pick the closer resume profile. Each set has 2 profiles, and Adam uses your choice to guide X-Ray sourcing.
                   </p>
                 </div>
                 <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                  2 archetypes
+                  2 profiles
                 </Badge>
               </div>
 
               <div className="grid gap-6 md:grid-cols-2">
                 {calibrationArchetypes.map((archetype) => {
-                  const archetypeId = String(archetype.id || archetype.archetype_id || "").trim();
+                  const profileId = String(archetype.id || archetype.archetype_id || "").trim();
                   const profileData = (archetype.profileData && typeof archetype.profileData === "object" ? archetype.profileData : {}) as Record<string, unknown>;
                   const title = calibrationText(
+                    profileData.profileTitle ||
+                      profileData.profile_title ||
                     profileData.candidateHeadline ||
                       profileData.candidate_headline ||
                       archetype.title ||
                       archetype.name ||
                       archetype.role ||
-                      "Archetype"
+                      "Ideal candidate profile"
                   );
-                  const experienceSnapshot = calibrationText(profileData.experienceSnapshot || profileData.experience_snapshot || archetype.headline);
-                  const careerPattern = calibrationText(profileData.careerPattern || profileData.career_pattern);
+                  const roleLabel = calibrationText(profileData.headlineRole || profileData.headline_role || archetype.role || archetype.headline);
+                  const locationLabel = calibrationText(profileData.location || profileData.currentLocation || profileData.current_location || archetype.location);
+                  const companyLabel = calibrationText(profileData.typicalCompanies || profileData.typical_companies || profileData.currentCompany || profileData.current_company || archetype.company);
+                  const yearsLabel = calibrationText(profileData.yearsExperience || profileData.years_experience || archetype.yearsExperience);
+                  const experienceSnapshot = calibrationText(profileData.resumeSummary || profileData.resume_summary || profileData.experienceSnapshot || profileData.experience_snapshot || archetype.headline);
+                  const careerPattern = calibrationText(profileData.typicalBackground || profileData.typical_background || profileData.careerPattern || profileData.career_pattern);
                   const strengths = calibrationValueList(
-                    profileData.technicalStrengths ||
+                    profileData.strongestSkills ||
+                      profileData.strongest_skills ||
+                      profileData.technicalStrengths ||
                       profileData.technical_strengths ||
                       profileData.strengths ||
                       archetype.strengths ||
                       archetype.skills
                   );
-                  const isChoosing = calibrationSelectionId === archetypeId;
-                  const ownership = calibrationText(profileData.ownershipStyle || profileData.ownership_style || profileData.ownershipLevel || profileData.ownership_level);
-                  const environment = calibrationText(profileData.idealEnvironment || profileData.ideal_environment || archetype.ideal_environment || archetype.idealEnvironment);
-                  const execution = calibrationText(profileData.executionStyle || profileData.execution_style || archetype.execution_style || archetype.executionStyle);
-                  const risk = calibrationText(profileData.riskTolerance || profileData.risk_tolerance || archetype.risk_tolerance || archetype.riskTolerance);
-                  const leadership = calibrationText(profileData.leadershipProfile || profileData.leadership_profile || profileData.leadershipSignals || profileData.leadership_signals || archetype.leadership_signals || archetype.leadershipSignals);
-                  const tradeoffs = calibrationText(profileData.hiringTradeoffs || profileData.hiring_tradeoffs || archetype.hiring_tradeoffs || archetype.hiringTradeoffs);
-                  const fitNote = calibrationText(profileData.fitNote || profileData.fit_note || archetype.fit_note || archetype.fitNote);
+                  const isChoosing = calibrationSelectionId === profileId;
+                  const ownership = calibrationText(
+                    profileData.ownershipPattern ||
+                      profileData.ownership_pattern ||
+                      profileData.ownershipStyle ||
+                      profileData.ownership_style ||
+                      profileData.ownershipLevel ||
+                      profileData.ownership_level
+                  );
+                  const engineeringStyle = calibrationText(profileData.engineeringStyle || profileData.engineering_style || profileData.workStyle || profileData.work_style || profileData.executionStyle || profileData.execution_style);
+                  const tradeoffs = calibrationText(profileData.tradeoff || profileData.tradeOff || profileData.hiringTradeoffs || profileData.hiring_tradeoffs || archetype.hiring_tradeoffs || archetype.hiringTradeoffs);
+                  const fitNote = calibrationText(profileData.whyRecruiterWouldPreferThem || profileData.why_recruiter_would_prefer_them || profileData.fitNote || profileData.fit_note || archetype.fit_note || archetype.fitNote);
+                  const profileSummary = experienceSnapshot || fitNote || "Believable candidate profile grounded in the job details.";
 
                   return (
-                    <Card key={archetypeId || title} className="rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+                    <Card key={profileId || title} className="rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
                       <CardHeader className="space-y-3">
                         <div className="flex items-start justify-between gap-4">
                           <div className="space-y-2">
                             <CardTitle className="font-heading text-[24px] font-semibold text-[#111827]">{title}</CardTitle>
+                            <p className="font-body text-[13px] text-[#6B7280]">
+                              {[roleLabel, companyLabel, locationLabel, yearsLabel ? `${yearsLabel} experience` : ""].filter(Boolean).join(" Â· ")}
+                            </p>
                             <CardDescription className="font-body text-sm leading-6 text-[#6B7280]">
-                              {experienceSnapshot || fitNote || "Believable ideal candidate profile for archetype selection."}
+                              {profileSummary}
                             </CardDescription>
                           </div>
-                          <Badge className="rounded-full bg-[#F5E7B8] px-3 py-1 text-[12px] font-semibold text-[#8A5A00] shadow-none">
-                            Archetype
-                          </Badge>
                         </div>
-                        {careerPattern && (
-                          <p className="font-body text-[12px] leading-6 text-[#0F6B3A]">
-                            <span className="font-semibold text-[#111827]">Career pattern:</span> {careerPattern}
-                          </p>
-                        )}
+                        {careerPattern && <p className="font-body text-[13px] leading-6 text-[#0F6B3A]">{careerPattern}</p>}
+                        {engineeringStyle && <p className="font-body text-[13px] leading-6 text-[#374151]">{engineeringStyle}</p>}
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        <div className="grid gap-3 rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 md:grid-cols-[0.9fr_1.1fr]">
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Experience match</p>
-                            <p className="mt-2 text-sm font-semibold leading-6 text-[#111827]">
-                              {experienceSnapshot || "Experience band based on the intake requirements."}
-                            </p>
+                        <div className="rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#4B5563]">
+                          <div className="flex flex-wrap gap-2">
+                            {(strengths.length > 0 ? strengths : ["Skills from intake"]).slice(0, 5).map((strength) => (
+                              <span key={`${profileId}-highlight-${strength}`} className="rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm">
+                                {strength}
+                              </span>
+                            ))}
                           </div>
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Skill variation</p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {(strengths.length > 0 ? strengths : ["Skills from intake"]).slice(0, 5).map((strength) => (
-                                <span key={`${archetypeId}-highlight-${strength}`} className="rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm">
-                                  {strength}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
-                          {ownership && <p><span className="font-semibold text-[#111827]">Work style:</span> {ownership}</p>}
-                          {leadership && <p><span className="font-semibold text-[#111827]">Leadership:</span> {leadership}</p>}
-                          <p><span className="font-semibold text-[#111827]">Best fit:</span> {environment || execution || risk || fitNote || "Fast-moving teams with clear ownership."}</p>
-                          {tradeoffs && <p><span className="font-semibold text-[#111827]">Tradeoff:</span> {tradeoffs}</p>}
+                          <p className="mt-4 leading-6 text-[#374151]">
+                            {ownership || fitNote || "Candidate profile grounded in the intake details."}
+                          </p>
+                          {tradeoffs && <p className="mt-3 leading-6 text-[#6B7280]">{tradeoffs}</p>}
                         </div>
                         <Button
-                          data-testid={`archetype-select-${archetypeId}`}
+                          data-testid={`archetype-select-${profileId}`}
                           className="h-12 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
-                          onClick={() => void handleCalibrationSelect(archetypeId)}
-                          disabled={isCalibrationLoading || !archetypeId}
+                          onClick={() => void handleCalibrationSelect(profileId)}
+                          disabled={isCalibrationLoading || !profileId}
                         >
-                          {isChoosing ? "Saving selection..." : "Use archetype"}
+                          {isChoosing ? "Saving selection..." : "Select profile"}
                         </Button>
                       </CardContent>
                     </Card>
@@ -1957,7 +2057,7 @@ export default function ReviewPage() {
 
           {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length === 0 && (
             <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Archetypes are being prepared. Adam will show the selection cards here shortly.
+              Ideal candidate profiles are being prepared. Adam will show the selection cards here shortly.
             </div>
           )}
 
@@ -1996,6 +2096,7 @@ export default function ReviewPage() {
               <RecruiterSwipeDeck
                 candidates={swipeCandidates}
                 shortlistedIds={completedShortlistedIds}
+                shortlistedCandidates={visibleShortlistedCandidates}
                 isAdvancing={isAdvancing}
                 selectedCandidateId={selectedCandidateId}
                 onOpenDetails={(candidate) => setActiveCandidate(candidate)}
@@ -2092,11 +2193,11 @@ export default function ReviewPage() {
                       <div className="mt-3 space-y-2 text-sm text-[#4B5563]">
                         <p>Recommendation: {String(activeInterviewInsights?.intelligence?.recommendationSignal || "n/a")}</p>
                         <p>Confidence: {String(activeInterviewInsights?.intelligence?.interviewQualityScore ?? 0)}</p>
-                        <p>Workflow token: {String(activeInterviewInsights?.workflowToken || activeCandidate.id).slice(0, 12)}…</p>
+                        <p>Workflow token: {String(activeInterviewInsights?.workflowToken || activeCandidate.id).slice(0, 12)}â€¦</p>
                         <p>Evaluations: {String(activeInterviewInsights?.evaluationCount ?? 0)}</p>
                         <p>
                           Contact: {activeCandidate.contactEmail || "pending"}
-                          {activeCandidate.contactPhone ? ` · ${activeCandidate.contactPhone}` : ""}
+                          {activeCandidate.contactPhone ? ` Â· ${activeCandidate.contactPhone}` : ""}
                         </p>
                       </div>
                       <div className="mt-4 flex flex-wrap gap-2">
@@ -2258,3 +2359,7 @@ export default function ReviewPage() {
     </AppShell>
   );
 }
+
+
+
+

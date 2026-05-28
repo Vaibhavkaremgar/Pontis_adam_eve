@@ -373,11 +373,11 @@ def _run_orchestration_action_event(
                         job_id=str(result.get("jobId") or ""),
                         calibration_set=current_pair if isinstance(current_pair, dict) else {},
                         current_index=int(calibration.get("current_round_index") or 1),
-                        total_sets=len(calibration.get("archetype_sets") or []),
+                        total_sets=len(calibration.get("profile_sets") or calibration.get("archetype_sets") or []),
                     )
                     _send_orchestration_message_sync(
                         channel_id=channel_id,
-                        text="Calibration is ready. Pick your preferred archetypes before sourcing starts.",
+                        text="Calibration is ready. Pick your preferred candidate profiles before sourcing starts.",
                         blocks=blocks,
                         thread_ts=thread_ts,
                     )
@@ -669,11 +669,11 @@ async def complete_orchestration_voice_route(token: str, request: Request):
                     job_id=job_id,
                     calibration_set=calibration.get("current_pair") if isinstance(calibration.get("current_pair"), dict) else {},
                     current_index=int(calibration.get("current_round_index") or 1),
-                    total_sets=len(calibration.get("archetype_sets") or []),
+                    total_sets=len(calibration.get("profile_sets") or calibration.get("archetype_sets") or []),
                 )
                 await post_slack_message(
                     channel_id=channel_id,
-                    text="Calibration is ready. Pick the archetype that best matches your hiring style.",
+                    text="Calibration is ready. Pick the candidate profile that best matches your hiring style.",
                     blocks=blocks,
                     thread_ts=thread_ts,
                 )
@@ -715,7 +715,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         action = action.strip().lower()
         if action == "calibration_select":
             logger.info(
-                "slack_calibration_action action=%s calibration_set_id=%s archetype_id=%s job_id=%s channel_id=%s",
+                "slack_calibration_action action=%s calibration_set_id=%s profile_id=%s job_id=%s channel_id=%s",
                 action,
                 calibration_set_id,
                 candidate_id,
@@ -753,7 +753,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             )
             if not update_ok:
                 logger.warning(
-                    "slack_calibration_message_update_failed channel_id=%s message_ts=%s job_id=%s calibration_set_id=%s archetype_id=%s",
+                    "slack_calibration_message_update_failed channel_id=%s message_ts=%s job_id=%s calibration_set_id=%s profile_id=%s",
                     channel_id,
                     message_ts,
                     job_id,
@@ -780,16 +780,16 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     job_id=job_id,
                     calibration_set=current_pair if isinstance(current_pair, dict) else {},
                     current_index=int(calibration_result.get("current_round_index") or 1),
-                    total_sets=len(calibration_result.get("archetype_sets") or []),
+                    total_sets=len(calibration_result.get("profile_sets") or calibration_result.get("archetype_sets") or []),
                 )
                 await post_slack_message(
                     channel_id=channel_id,
-                    text="🧭 Preference calibrated. Pick the next archetype that best matches your hiring style.",
+                    text="🧭 Preference calibrated. Pick the next candidate profile that best matches your hiring style.",
                     blocks=next_blocks,
                     thread_ts=message_ts or None,
                 )
             logger.info(
-                "slack_calibration_processed job_id=%s archetype_id=%s stage=%s",
+                "slack_calibration_processed job_id=%s profile_id=%s stage=%s",
                 job_id,
                 candidate_id,
                 calibration_stage,
