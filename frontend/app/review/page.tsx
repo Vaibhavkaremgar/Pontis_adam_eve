@@ -1979,34 +1979,24 @@ export default function ReviewPage() {
                       archetype.role ||
                       "Ideal candidate profile"
                   );
-                  const roleLabel = calibrationText(profileData.headlineRole || profileData.headline_role || archetype.role || archetype.headline);
                   const locationLabel = calibrationText(profileData.location || profileData.currentLocation || profileData.current_location || archetype.location);
-                  const companyLabel = calibrationText(profileData.typicalCompanies || profileData.typical_companies || profileData.currentCompany || profileData.current_company || archetype.company);
-                  const yearsLabel = calibrationText(profileData.yearsExperience || profileData.years_experience || archetype.yearsExperience);
-                  const experienceSnapshot = calibrationText(profileData.resumeSummary || profileData.resume_summary || profileData.experienceSnapshot || profileData.experience_snapshot || archetype.headline);
-                  const careerPattern = calibrationText(profileData.typicalBackground || profileData.typical_background || profileData.careerPattern || profileData.career_pattern);
-                  const strengths = calibrationValueList(
-                    profileData.strongestSkills ||
+                  const experienceRange = calibrationText(profileData.experienceRange || profileData.experience_range || (archetype.yearsExperience ? `${archetype.yearsExperience} years` : ""));
+                  const coreSkills = calibrationValueList(
+                    profileData.coreSkills ||
+                      profileData.core_skills ||
+                      profileData.strongestSkills ||
                       profileData.strongest_skills ||
                       profileData.technicalStrengths ||
                       profileData.technical_strengths ||
-                      profileData.strengths ||
-                      archetype.strengths ||
                       archetype.skills
                   );
+                  const certifications = calibrationValueList(profileData.certifications || profileData.certification || archetype.certifications);
+                  const typicalBackground = calibrationText(profileData.typicalBackground || profileData.typical_background || archetype.summary || archetype.headline);
+                  const preferredProjectType = calibrationText(profileData.preferredProjectType || profileData.preferred_project_type);
+                  const optionalTools = calibrationValueList(profileData.optionalToolsFrameworks || profileData.optional_tools_frameworks);
                   const isChoosing = calibrationSelectionId === profileId;
-                  const ownership = calibrationText(
-                    profileData.ownershipPattern ||
-                      profileData.ownership_pattern ||
-                      profileData.ownershipStyle ||
-                      profileData.ownership_style ||
-                      profileData.ownershipLevel ||
-                      profileData.ownership_level
-                  );
-                  const engineeringStyle = calibrationText(profileData.engineeringStyle || profileData.engineering_style || profileData.workStyle || profileData.work_style || profileData.executionStyle || profileData.execution_style);
-                  const tradeoffs = calibrationText(profileData.tradeoff || profileData.tradeOff || profileData.hiringTradeoffs || profileData.hiring_tradeoffs || archetype.hiring_tradeoffs || archetype.hiringTradeoffs);
-                  const fitNote = calibrationText(profileData.whyRecruiterWouldPreferThem || profileData.why_recruiter_would_prefer_them || profileData.fitNote || profileData.fit_note || archetype.fit_note || archetype.fitNote);
-                  const profileSummary = experienceSnapshot || fitNote || "Believable candidate profile grounded in the job details.";
+                  const companyLabel = calibrationText(profileData.typicalCompanies || profileData.typical_companies || profileData.currentCompany || profileData.current_company || archetype.company);
+                  const profileSummary = typicalBackground || "Believable resume pattern grounded in the job details.";
 
                   return (
                     <Card key={profileId || title} className="rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
@@ -2015,29 +2005,46 @@ export default function ReviewPage() {
                           <div className="space-y-2">
                             <CardTitle className="font-heading text-[24px] font-semibold text-[#111827]">{title}</CardTitle>
                             <p className="font-body text-[13px] text-[#6B7280]">
-                              {[roleLabel, companyLabel, locationLabel, yearsLabel ? `${yearsLabel} experience` : ""].filter(Boolean).join(" Â· ")}
+                              {[experienceRange, companyLabel, locationLabel].filter(Boolean).join(" Â· ")}
                             </p>
                             <CardDescription className="font-body text-sm leading-6 text-[#6B7280]">
                               {profileSummary}
                             </CardDescription>
                           </div>
                         </div>
-                        {careerPattern && <p className="font-body text-[13px] leading-6 text-[#0F6B3A]">{careerPattern}</p>}
-                        {engineeringStyle && <p className="font-body text-[13px] leading-6 text-[#374151]">{engineeringStyle}</p>}
                       </CardHeader>
                       <CardContent className="space-y-4">
-                        <div className="rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#4B5563]">
-                          <div className="flex flex-wrap gap-2">
-                            {(strengths.length > 0 ? strengths : ["Skills from intake"]).slice(0, 5).map((strength) => (
-                              <span key={`${profileId}-highlight-${strength}`} className="rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm">
-                                {strength}
-                              </span>
-                            ))}
+                        <div className="grid gap-3 rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#4B5563]">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Core skills</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {(coreSkills.length > 0 ? coreSkills : ["Skills from intake"]).slice(0, 6).map((skill) => (
+                                <span key={`${profileId}-skill-${skill}`} className="rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm">
+                                  {skill}
+                                </span>
+                              ))}
+                            </div>
                           </div>
-                          <p className="mt-4 leading-6 text-[#374151]">
-                            {ownership || fitNote || "Candidate profile grounded in the intake details."}
-                          </p>
-                          {tradeoffs && <p className="mt-3 leading-6 text-[#6B7280]">{tradeoffs}</p>}
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="rounded-2xl bg-white p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Typical background</p>
+                              <p className="mt-1 leading-6 text-[#374151]">{typicalBackground || "Grounded resume pattern tied to the intake."}</p>
+                            </div>
+                            <div className="rounded-2xl bg-white p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Preferred project type</p>
+                              <p className="mt-1 leading-6 text-[#374151]">{preferredProjectType || "CRUD apps, dashboards, API integrations."}</p>
+                            </div>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="rounded-2xl bg-white p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Certifications</p>
+                              <p className="mt-1 leading-6 text-[#374151]">{certifications.length > 0 ? certifications.join(", ") : "None required"}</p>
+                            </div>
+                            <div className="rounded-2xl bg-white p-3">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Optional tools/frameworks</p>
+                              <p className="mt-1 leading-6 text-[#374151]">{optionalTools.length > 0 ? optionalTools.join(", ") : "Same stack as intake"}</p>
+                            </div>
+                          </div>
                         </div>
                         <Button
                           data-testid={`archetype-select-${profileId}`}

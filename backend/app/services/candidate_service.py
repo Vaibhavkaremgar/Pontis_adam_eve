@@ -432,7 +432,10 @@ def _is_reviewable_candidate(candidate: Any) -> bool:
     if email.endswith("@test.local"):
         return False
     if source_provider == "xray_apollo" or source_type == "linkedin_xray":
-        return bool(linkedin_url and display_name)
+        # X-Ray candidates are reviewable as long as we have a valid LinkedIn profile URL.
+        # Some valid search hits do not carry a stable display name in the upstream payload,
+        # and we do not want to drop the full deck because of that.
+        return bool(linkedin_url)
     if not email:
         return False
     return True
@@ -3094,7 +3097,12 @@ def fetch_ranked_candidates(
             unswiped_xray_count = len(xray_results)
             xray_results = [candidate for candidate in xray_results if _is_reviewable_candidate(candidate)]
             if not xray_results:
-                logger.warning("xray_reviewable_candidates_missing job_id=%s returning_raw_xray_pool", job.id)
+                logger.info(
+                    "xray_reviewable_candidates_missing job_id=%s raw_count=%s unswiped_count=%s reason=using_raw_xray_pool",
+                    job.id,
+                    raw_xray_count,
+                    unswiped_xray_count,
+                )
                 return reviewable_seed_candidates[:display_limit]
             logger.info(
                 "candidate_filter_counts job_id=%s source=xray raw_count=%s unswiped_count=%s reviewable_count=%s",

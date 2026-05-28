@@ -21,6 +21,7 @@ from app.services.recruiter_intent_service import (
     summarize_intent_profile,
 )
 from app.services.recruiter_preference_service import update_recruiter_preferences
+from app.services.skill_normalizer import parse_experience
 from app.services.metrics_service import log_metric
 from app.services.redis_service import get_redis
 from app.services.recruiter_question_service import generate_recruiter_questions
@@ -126,6 +127,118 @@ def _compact_archetype_label(value: str, fallback: str) -> str:
     if len(words) <= 4:
         return normalized
     return " ".join(words[:4]).strip()
+
+
+def _experience_band_from_text(value: str) -> tuple[str, float]:
+    text = _normalize_text(value)
+    if not text:
+        return "1-3 years", 2.0
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s+years?", text, flags=re.IGNORECASE)
+    if range_match:
+        low = max(0.0, float(range_match.group(1)))
+        high = max(low, float(range_match.group(2)))
+        midpoint = round((low + high) / 2.0, 1)
+        return f"{int(low)}-{int(high)} years", midpoint
+    plus_match = re.search(r"(\d+(?:\.\d+)?)\+?\s+years?", text, flags=re.IGNORECASE)
+    if plus_match:
+        years = max(0.0, float(plus_match.group(1)))
+        low = max(0.0, years - 1.0)
+        high = years + 1.0
+        midpoint = round(years, 1)
+        return f"{int(low)}-{int(high)} years", midpoint
+    years = max(0, parse_experience(text))
+    if years <= 0:
+        return "1-3 years", 2.0
+    if years <= 1:
+        return "0-2 years", 1.0
+    if years <= 2:
+        return "1-3 years", 2.0
+    if years <= 3:
+        return "2-4 years", 3.0
+    if years <= 5:
+        return "4-6 years", float(years)
+    if years <= 7:
+        return "6-8 years", float(years)
+    return f"{max(0, years - 1)}-{years + 1} years", float(years)
+
+
+def _job_role_focus(job: Any, job_skills: list[str]) -> str:
+    text = " ".join(
+        [
+            _job_text_field(job, "title"),
+            _job_text_field(job, "description"),
+            ", ".join(job_skills),
+        ]
+    ).lower()
+    if any(token in text for token in ("react", "frontend", "ui", "css", "html", "javascript", "typescript")):
+        return "frontend"
+    if any(token in text for token in ("full stack", "fullstack", "frontend", "backend")):
+        return "fullstack"
+    if any(token in text for token in ("python", "django", "flask", "fastapi", "api", "postgres", "sql")):
+        return "backend"
+    return "general"
+
+
+def _build_role_title_variants(*, job: Any, job_skills: list[str], experience_band: str) -> list[str]:
+    job_title = _compact_archetype_label(_job_text_field(job, "title") or "Developer", "Developer")
+    focus = _job_role_focus(job, job_skills)
+    experience_years = parse_experience(experience_band)
+    junior = experience_years <= 3
+    if focus == "frontend":
+        titles = [
+            "React Frontend Developer",
+            "HTML/CSS/JS Developer",
+            "Frontend UI Developer",
+            "Frontend + API Developer",
+            "Junior Frontend Developer" if junior else "Web Application Developer",
+            f"{job_title}",
+        ]
+    elif focus == "backend":
+        titles = [
+            "Python Backend Developer",
+            "Python API Developer",
+            "Django Backend Developer",
+            "FastAPI Developer",
+            "Junior Python Developer" if junior else "Backend Developer",
+            f"{job_title}",
+        ]
+    elif focus == "fullstack":
+        titles = [
+            "Junior Python Fullstack Developer" if junior else "Python Fullstack Developer",
+            "Python + Frontend Developer",
+            "Django Fullstack Developer",
+            "API + UI Developer",
+            "Web Application Developer",
+            f"{job_title}",
+        ]
+    else:
+        titles = [
+            f"Junior {job_title}" if junior else f"{job_title}",
+            f"{job_title} with API Experience",
+            f"{job_title} with Frontend Experience",
+            f"{job_title} with Python Focus",
+            f"{job_title} with Web Delivery Experience",
+            f"{job_title} for Product Teams",
+        ]
+    return _ordered_unique([title for title in titles if title])
+
+
+def _normalize_banned_title(value: str, fallback: str) -> str:
+    banned = {
+        "strategist",
+        "journalist",
+        "evangelist",
+        "visionary",
+        "architect",
+        "ninja",
+        "wizard",
+        "growth hacker",
+    }
+    normalized = _normalize_text(value)
+    lowered = normalized.lower()
+    if not normalized or any(word in lowered for word in banned):
+        return fallback
+    return normalized
 
 
 def _candidate_headline_from_option(option: dict[str, Any], *, fallback: str) -> str:
@@ -1005,28 +1118,29 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
     company_stage = _text_field(job, "company_stage", "companyStage", "stage", "company_type") or "unknown"
     role_seniority = _text_field(job, "experience_level", "experienceRequired", "seniority") or "unknown"
 
+    experience_band, experience_midpoint = _experience_band_from_text(_text_field(job, "experience_level", "experienceRequired", "seniority"))
     return (
-        "You are generating ideal candidate resume profiles for recruiter calibration and X-Ray sourcing.\n"
-        "Do not create personality personas, abstract archetypes, or vague dimensions.\n"
-        "Every profile should feel like a believable resume a recruiter would actually source.\n"
-        "Generate exactly 3 sets with 2 archetypes in each set.\n"
-        "Each profile must be short, distinct, and ready to drive sourcing queries.\n"
+        "You are generating realistic recruiter calibration profile cards and sourcing targets.\n"
+        "These are NOT personas. They must read like grounded resume patterns a recruiter would actually source.\n"
+        "Do not use abstract headings or fantasy labels.\n"
+        "BANNED title words: strategist, journalist, evangelist, visionary, architect, ninja, wizard, growth hacker.\n"
+        "Generate exactly 3 sets with exactly 2 profile cards in each set.\n"
+        "Every profile must stay strictly aligned to the job title, skills, certifications, technologies, and experience band in the intake.\n"
         "Rules:\n"
         "- Return ONLY valid JSON.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
-        "- Each set must contain exactly 2 archetypes.\n"
-        "- Each profile must include: profile_title, resume_summary, typical_background, strongest_skills, typical_companies, engineering_style, ownership_pattern, tradeoff, why_recruiter_would_prefer_them.\n"
-        "- Keep the profile title to 2 to 6 words max.\n"
-        "- Keep the profile title role-like, sourcing-oriented, and specific, e.g. 'Scale-Stage Backend Engineer' or 'Startup Generalist Engineer'.\n"
-        "- Make the resume summary short, concrete, and resume-like.\n"
-        "- If the recruiter gave explicit years of experience in the voice intake or job requirements, stay close to that band while varying the profile shape.\n"
-        "- Keep the typical background short and recruiter-facing.\n"
-        "- Strongest_skills must include the requested stack or close equivalents from the job and voice intake.\n"
-        "- engineering_style, ownership_pattern, tradeoff, and why_recruiter_would_prefer_them should be concise notes, not paragraphs.\n"
-        "- Use the job title, voice summary, company stage, hiring intent, and technical stack to shape the profiles.\n"
-        "- Prefer two clearly differentiated profiles per set, such as scale-stage systems owner versus startup generalist or platform reliability engineer versus product-minded engineer.\n"
-        "- Keep the set theme grounded in the real hiring decision being made.\n"
+        "- Keep titles role-like and resume-like, for example Python Backend Developer, Junior Python Fullstack Developer, React Frontend Developer, Django Backend Developer, Python API Developer.\n"
+        "- Each profile must include these core fields: profile_title, experience_range, core_skills, certifications, typical_background, preferred_project_type, optional_tools_frameworks.\n"
+        "- You may include compatibility fields, but they must not dominate the content.\n"
+        "- Do not upscale seniority. If the intake says 2 years, keep the profile in the 1-3 year band or similar.\n"
+        "- Keep the experience range within the intake band.\n"
+        "- Core skills must heavily reflect the entered skills and should only add close, relevant equivalents.\n"
+        "- Typical background must be short and realistic, like actual resume summary language.\n"
+        "- Preferred project type should be concrete: CRUD apps, dashboards, internal tools, API integrations, admin panels, responsive web apps, etc.\n"
+        "- Optional tools/frameworks should only include relevant tools from the stack.\n"
+        "- Avoid unrelated backgrounds, staff-level claims, or inflated years of experience.\n"
         "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n"
+        "- Keep set themes grounded in the actual hiring decision, such as frontend-heavy vs backend-heavy or framework-light vs framework-specific.\n"
         "- Preserve compatibility fields when possible, but the core content must read like resume profiles rather than archetypes.\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
         f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
@@ -1044,6 +1158,8 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         f"{sanitize_prompt_block('Preferred skills', preferred_skills, max_length=800)}\n"
         f"{sanitize_prompt_block('Required skills', required_skills, max_length=800)}\n"
         f"{sanitize_prompt_block('Culture preferences', culture_preferences, max_length=800)}\n"
+        f"{sanitize_prompt_block('Experience band', experience_band, max_length=160)}\n"
+        f"{sanitize_prompt_block('Experience midpoint', f'{experience_midpoint:.1f}', max_length=64)}\n"
     )
 
 
@@ -1061,6 +1177,9 @@ def _normalize_archetype_option(
 ) -> dict[str, Any]:
     set_suffix = f"r{set_index + 1}-{chr(ord('a') + option_index)}"
     fallback_headline = f"{_job_text_field(job, 'title') or 'Candidate'} {set_suffix}".strip()
+    job_title = _job_text_field(job, "title") or "the role"
+    job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
+    experience_band, experience_midpoint = _experience_band_from_text(_text_field(job, "experience_level", "experienceRequired", "seniority"))
     profile_title = _normalize_archetype_field(
         option.get("profile_title")
         or option.get("profileTitle")
@@ -1070,7 +1189,8 @@ def _normalize_archetype_option(
         or option.get("title")
         or option.get("name")
         or option.get("role")
-    ) or _candidate_headline_from_option(option, fallback=fallback_headline)
+    )
+    profile_title = _normalize_banned_title(profile_title or _candidate_headline_from_option(option, fallback=fallback_headline), fallback=fallback_headline)
     resume_summary = _text_field(
         option,
         "resume_summary",
@@ -1101,6 +1221,18 @@ def _normalize_archetype_option(
         "strengths",
         "skills",
     )
+    core_skills = _list_field(
+        option,
+        "core_skills",
+        "coreSkills",
+        "strongest_skills",
+        "strongestSkills",
+        "technical_strengths",
+        "technicalStrengths",
+        "skills",
+        "strengths",
+    )
+    certifications = _list_field(option, "certifications", "certification", "certs")
     typical_companies = _list_field(
         option,
         "typical_companies",
@@ -1110,83 +1242,53 @@ def _normalize_archetype_option(
         "company",
         "companies",
     )
-    engineering_style = _text_field(
+    preferred_project_type = _text_field(option, "preferred_project_type", "preferredProjectType", "project_type", "projectType")
+    optional_tools_frameworks = _list_field(
         option,
-        "engineering_style",
-        "engineeringStyle",
-        "work_style",
-        "workStyle",
-        "execution_style",
-        "executionStyle",
+        "optional_tools_frameworks",
+        "optionalToolsFrameworks",
+        "tools",
+        "frameworks",
+        "tooling",
     )
-    ownership_pattern = _text_field(
-        option,
-        "ownership_pattern",
-        "ownershipPattern",
-        "ownership_style",
-        "ownershipStyle",
-        "ownership_level",
-        "ownershipLevel",
-    )
-    tradeoff = _text_field(option, "tradeoff", "tradeOff", "hiring_tradeoffs", "hiringTradeoffs", "tradeoffs", "trade_offs")
-    why_recruiter_would_prefer_them = _text_field(
-        option,
-        "why_recruiter_would_prefer_them",
-        "whyRecruiterWouldPreferThem",
-        "fit_note",
-        "fitNote",
-    )
-    leadership_profile = _list_field(option, "leadership_profile", "leadershipProfile", "leadership_signals", "leadershipSignals")
-    ideal_environment = _text_field(option, "ideal_environment", "idealEnvironment")
-    communication_style = _normalize_archetype_field(option.get("communication_style") or option.get("communicationStyle"))
-    risk_tolerance = _normalize_archetype_field(option.get("risk_tolerance") or option.get("riskTolerance"))
-    headline_role = _normalize_archetype_field(option.get("headline_role") or option.get("headlineRole") or option.get("role") or option.get("title") or _job_text_field(job, "title") or "the role")
-    job_title = _job_text_field(job, "title") or "the role"
+    headline_role = _normalize_archetype_field(option.get("headline_role") or option.get("headlineRole") or option.get("role") or option.get("title") or job_title or "the role")
+    headline_role = _normalize_banned_title(headline_role, fallback=job_title)
 
     if not resume_summary:
-        resume_summary = (
-            f"{profile_title} with experience across {', '.join(strongest_skills[:4]) or 'the core stack'}."
-        )
+        resume_summary = f"{profile_title} aligned to {', '.join(core_skills[:4]) or job_title.lower()}."
     if not typical_background:
-        typical_background = f"Resume patterns shaped by {', '.join(strongest_skills[:4]) or job_title.lower()} and the hiring context."
-    if not engineering_style:
-        engineering_style = ownership_pattern or "Practical, delivery-minded engineering."
-    if not ownership_pattern:
-        ownership_pattern = "End-to-end ownership with a bias toward shipping."
-    if not tradeoff:
-        tradeoff = "Broader ownership over narrow specialization."
-    if not why_recruiter_would_prefer_them:
-        why_recruiter_would_prefer_them = f"Can own the {job_title.lower()} work with the right balance of speed and reliability."
-
-    strengths = _ordered_unique([*strongest_skills, *leadership_profile, *[tradeoff]])
-    skills = _ordered_unique([*strongest_skills, *strengths, *leadership_profile])
+        typical_background = f"Worked on {preferred_project_type or 'small web apps and API work'} using {', '.join(core_skills[:4]) or job_title.lower()}."
+    if not core_skills:
+        core_skills = _ordered_unique([*(job_skills[:6]), job_title])
+    if not strongest_skills:
+        strongest_skills = _ordered_unique([*core_skills[:6]])
+    if not certifications:
+        certifications = []
+    if not preferred_project_type:
+        preferred_project_type = "CRUD apps and API integrations"
+    if not optional_tools_frameworks:
+        optional_tools_frameworks = _ordered_unique([skill for skill in core_skills[:4] if skill.lower() not in {job_title.lower()}])
+    skills = _ordered_unique([*core_skills, *strongest_skills, *optional_tools_frameworks, *job_skills[:4]])
     archetype_id = _stable_archetype_id(calibration_set_id, option_index)
-    summary = (
-        f"{profile_title} is a believable ideal candidate resume profile for {job_title}. "
-        f"Resume summary: {resume_summary or 'not specified'}. "
-        f"Typical background: {typical_background or 'not specified'}."
-    )
-    if why_recruiter_would_prefer_them:
-        summary = f"{summary} {why_recruiter_would_prefer_them}"
-
-    fit_score = max(3.2, min(4.8, 4.6 - (set_index * 0.08) - (option_index * 0.05)))
+    summary = f"{profile_title} is a grounded sourcing profile for {job_title}. {resume_summary} {typical_background}".strip()
+    fit_score = max(3.2, min(4.8, 4.5 - (set_index * 0.05) - (option_index * 0.04)))
     explanation = CandidateExplanation(
         semanticScore=round(fit_score / 5.0, 3),
-        skillOverlap=min(1.0, len(strengths) / max(1, 6)),
+        skillOverlap=min(1.0, len(core_skills) / max(1, 6)),
         finalScore=round(fit_score / 5.0, 3),
         pdlRelevance=0.0,
         recencyScore=0.5,
-        engineeringScore=min(1.0, len(strengths) / max(1, 8)),
+        engineeringScore=min(1.0, len(core_skills) / max(1, 8)),
         penalties={
             "semanticPenalty": 0.0,
             "missingSkillsPenalty": 0.0,
             "selectionPreferenceBonus": 0.0,
         },
-        skillsMatched=strongest_skills[:4] or strengths[:4],
-        experienceMatch="Preference calibration profile",
-        candidateExperience="Preference calibration profile",
+        skillsMatched=core_skills[:4],
+        experienceMatch=experience_band,
+        candidateExperience=experience_band,
         jobExperience=_job_text_field(job, "experience_level", "experienceRequired", "seniority"),
-        aiReasoning="Groq-generated ideal candidate resume profile used to calibrate recruiter taste before real sourcing begins.",
+        aiReasoning="Grounded calibration profile derived from the intake details and constrained to the requested experience band.",
         sourceBreakdown={
             "vector": 0.0,
             "lexical": 0.0,
@@ -1210,12 +1312,12 @@ def _normalize_archetype_option(
         "isMockEmail": True,
         "headline": resume_summary or typical_background or option.get("set_title") or f"Profile for {job_title}",
         "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
-        "yearsExperience": round(float(option.get("years_experience") or option.get("yearsExperience") or 0.0), 1) if str(option.get("years_experience") or option.get("yearsExperience") or "").strip() else 0.0,
+        "yearsExperience": round(float(experience_midpoint), 1),
         "skills": skills,
         "summary": summary,
         "education": [],
         "projects": [],
-        "certifications": [],
+        "certifications": certifications,
         "companiesHistory": [],
         "domainExperience": [],
         "resumeText": "\n".join(
@@ -1223,20 +1325,15 @@ def _normalize_archetype_option(
                 f"Profile title: {profile_title}",
                 f"Resume summary: {resume_summary}",
                 f"Typical background: {typical_background}",
-                f"Strongest skills: {', '.join(strongest_skills)}",
+                f"Core skills: {', '.join(core_skills)}",
                 f"Typical companies: {', '.join(typical_companies)}",
-                f"Engineering style: {engineering_style}",
-                f"Ownership pattern: {ownership_pattern}",
-                f"Tradeoff: {tradeoff}",
-                f"Why recruiter would prefer them: {why_recruiter_would_prefer_them}",
-                f"Ideal environment: {ideal_environment}",
-                f"Communication style: {communication_style}",
-                f"Risk tolerance: {risk_tolerance}",
-                f"Leadership signals: {', '.join(leadership_profile)}",
+                f"Experience range: {experience_band}",
+                f"Preferred project type: {preferred_project_type}",
+                f"Optional tools/frameworks: {', '.join(optional_tools_frameworks)}",
             ]
         ).strip(),
         "profileData": {
-            "source": "groq_candidate_profile_calibration",
+            "source": "candidate_profile_calibration",
             "isArchetype": True,
             "isCandidateProfile": True,
             "calibrationSetId": calibration_set_id,
@@ -1259,7 +1356,9 @@ def _normalize_archetype_option(
             "typicalCompanies": typical_companies,
             "typical_companies": typical_companies,
             "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
-            "yearsExperience": round(float(option.get("years_experience") or option.get("yearsExperience") or 0.0), 1) if str(option.get("years_experience") or option.get("yearsExperience") or "").strip() else 0.0,
+            "yearsExperience": round(float(experience_midpoint), 1),
+            "experienceRange": experience_band,
+            "experience_range": experience_band,
             "resumeSummary": resume_summary,
             "resume_summary": resume_summary,
             "experienceSnapshot": resume_summary,
@@ -1268,39 +1367,18 @@ def _normalize_archetype_option(
             "typical_background": typical_background,
             "careerPattern": typical_background,
             "career_pattern": typical_background,
-            "strongestSkills": strongest_skills,
-            "strongest_skills": strongest_skills,
-            "technicalStrengths": strongest_skills,
-            "technical_strengths": strongest_skills,
-            "strengths": strengths,
-            "engineeringStyle": engineering_style,
-            "engineering_style": engineering_style,
-            "workStyle": engineering_style,
-            "work_style": engineering_style,
-            "ownershipPattern": ownership_pattern,
-            "ownership_pattern": ownership_pattern,
-            "ownershipStyle": ownership_pattern,
-            "ownership_style": ownership_pattern,
-            "ownershipLevel": ownership_pattern,
-            "idealEnvironment": ideal_environment,
-            "ideal_environment": ideal_environment,
-            "executionStyle": engineering_style,
-            "execution_style": engineering_style,
-            "leadershipProfile": leadership_profile,
-            "leadership_profile": leadership_profile,
-            "leadershipSignals": leadership_profile,
-            "leadership_signals": leadership_profile,
-            "hiringTradeoffs": [tradeoff] if tradeoff else [],
-            "hiring_tradeoffs": [tradeoff] if tradeoff else [],
-            "tradeoff": tradeoff,
-            "communicationStyle": communication_style,
-            "communication_style": communication_style,
-            "riskTolerance": risk_tolerance,
-            "risk_tolerance": risk_tolerance,
-            "fitNote": why_recruiter_would_prefer_them,
-            "fit_note": why_recruiter_would_prefer_them,
-            "whyRecruiterWouldPreferThem": why_recruiter_would_prefer_them,
-            "why_recruiter_would_prefer_them": why_recruiter_would_prefer_them,
+            "coreSkills": core_skills,
+            "core_skills": core_skills,
+            "strongestSkills": core_skills,
+            "strongest_skills": core_skills,
+            "technicalStrengths": core_skills,
+            "technical_strengths": core_skills,
+            "certifications": certifications,
+            "certification": certifications,
+            "preferredProjectType": preferred_project_type,
+            "preferred_project_type": preferred_project_type,
+            "optionalToolsFrameworks": optional_tools_frameworks,
+            "optional_tools_frameworks": optional_tools_frameworks,
         },
         "fitScore": round(fit_score, 2),
         "decision": "strong_match" if fit_score >= 4.1 else "potential",
@@ -1317,90 +1395,14 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
     job_title = _job_text_field(job, "title") or "the role"
     job_description = _job_text_field(job, "description")
     job_location = _job_text_field(job, "location")
-    job_experience = _job_text_field(job, "experience_level", "experienceRequired", "seniority")
-    job_stage = _job_text_field(job, "company_stage", "companyStage", "stage", "company_type")
     job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
-    skill_phrase = ", ".join(job_skills[:6]) if job_skills else job_title.lower()
-    stage_phrase = job_stage or "a growth-stage team"
-    location_phrase = job_location or "the target market"
-    role_tokens = [
-        token
-        for token in re.split(r"[^a-zA-Z0-9+.#-]+", job_title)
-        if token and token.lower() not in {"senior", "sr", "staff", "principal", "lead", "junior", "jr", "mid", "level"}
-    ]
-    base_role = _compact_archetype_label(" ".join(role_tokens[:3]) or job_title, "Engineer")
-    profile_titles = [
-        f"Scale-Stage {base_role}",
-        f"Startup Generalist {base_role}",
-        f"Platform & Reliability {base_role}",
-        f"Product-Minded {base_role}",
-        f"Domain Specialist {base_role}",
-        f"Staff Systems {base_role}",
-    ]
-    summaries = [
-        f"{job_experience or '5-7 years'} building production backend systems at high-growth companies, with a strong bias toward scaling and operational stability.",
-        f"{job_experience or '4-7 years'} in early-stage teams where the engineer owned APIs, deployments, debugging, and product iteration without much hand-holding.",
-        f"{job_experience or '6-9 years'} focused on reliability, observability, queues, CI/CD, and platform work that keeps systems stable under load.",
-        f"{job_experience or '4-8 years'} building customer-facing product features while staying close to product decisions and rapid delivery cycles.",
-        f"{job_experience or '6-10 years'} in domains where the engineer had to learn a business area deeply and turn that context into technical decisions.",
-        f"{job_experience or '8+ years'} leading technical direction across services, architecture, and cross-team execution for a larger product surface.",
-    ]
-    backgrounds = [
-        f"Scaled APIs, async jobs, PostgreSQL, Redis, and AWS while working through performance bottlenecks in a high-growth product team.",
-        "Early-stage startup background with broad ownership across feature work, deployment issues, infra debugging, and product changes.",
-        "Infrastructure-heavy background across monitoring, alerting, build pipelines, queues, service health, and reliability work.",
-        "Product-led backend background with frequent collaboration with product, design, and customer-facing teams.",
-        "Deep domain background in one business area, using that context to shape systems and product decisions.",
-        "Staff-level background across system design, architecture reviews, and multi-team technical alignment.",
-    ]
-    strongest_skills_pool = [
-        _ordered_unique([*(job_skills[:4] or [base_role]), "PostgreSQL", "Redis", "AWS"]),
-        _ordered_unique([*(job_skills[:4] or [base_role]), "Rapid shipping", "Deployment debugging", "API ownership"]),
-        _ordered_unique([*(job_skills[:4] or [base_role]), "Observability", "CI/CD", "Queue reliability"]),
-        _ordered_unique([*(job_skills[:4] or [base_role]), "Product judgment", "Feature delivery", "Cross-functional execution"]),
-        _ordered_unique([*(job_skills[:4] or [base_role]), "Domain modeling", "Workflow design", "Technical tradeoffs"]),
-        _ordered_unique([*(job_skills[:4] or [base_role]), "Architecture", "System design", "Multi-team coordination"]),
-    ]
-    typical_companies_pool = [
-        ["Razorpay", "Meesho", "Swiggy", "PhonePe", "Groww"],
-        ["YC-backed startups", "seed-stage SaaS teams", "lean product startups"],
-        ["Platform engineering orgs", "infra teams", "DevOps-heavy product companies"],
-        ["Product-led SaaS teams", "consumer internet companies", "feature-heavy product orgs"],
-        ["Domain-heavy fintech teams", "logistics platforms", "workflow SaaS companies"],
-        ["Large product orgs", "multi-team platform groups", "complex service environments"],
-    ]
-    engineering_styles = [
-        "Production-minded and systems-aware.",
-        "Fast-moving, adaptable, and execution-heavy.",
-        "Reliability-first with a strong platform mindset.",
-        "Pragmatic, product-aware, and delivery-focused.",
-        "Context-rich and thoughtful about the business domain.",
-        "Architectural, deliberate, and cross-team oriented.",
-    ]
-    ownership_patterns = [
-        "Owns services end to end and cares about scaling them safely.",
-        "Takes broad ownership and keeps momentum high even when ambiguity is heavy.",
-        "Owns operational stability, tooling, and the plumbing that keeps teams shipping.",
-        "Stays close to the product surface and turns product decisions into shipped code.",
-        "Owns a domain deeply and turns that into clean technical decisions.",
-        "Owns technical direction across services and keeps alignment high across teams.",
-    ]
-    tradeoffs = [
-        "Less experimentation, stronger systems reliability.",
-        "Broader ownership over deep specialization.",
-        "Less product proximity, stronger infrastructure maturity.",
-        "Less infrastructure depth, stronger product judgment.",
-        "Less breadth across unrelated domains, stronger context inside one business area.",
-        "Less hands-on feature throughput, stronger architectural leverage.",
-    ]
-    recruiter_reasons = [
-        "Can immediately own and scale backend systems.",
-        "Can move quickly and handle ambiguity well.",
-        "Great fit when the team needs stability and operational maturity.",
-        "Great when the role needs someone close to product decisions and execution.",
-        "Useful when the team wants a deep specialist in one business domain.",
-        "Ideal when the team needs technical leadership across multiple engineers and services.",
-    ]
+    experience_band, experience_midpoint = _experience_band_from_text(_job_text_field(job, "experience_level", "experienceRequired", "seniority"))
+    focus = _job_role_focus(job, job_skills)
+    role_titles = _build_role_title_variants(job=job, job_skills=job_skills, experience_band=experience_band)
+    if len(role_titles) < 6:
+        role_titles = _ordered_unique([*role_titles, job_title] * 2)[:6]
+
+    base_skills = _ordered_unique([*(job_skills[:6]), *re.split(r"[^a-zA-Z0-9+.#-]+", job_title)])
     locations = [
         job_location or "Remote",
         "Remote",
@@ -1409,56 +1411,160 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
         "Pune, India",
         "Chennai, India",
     ]
-    years_pool = [7.0, 5.5, 8.5, 6.0, 9.0, 10.0]
+    if focus == "frontend":
+        extra_skill_sets = [
+            ["React", "JavaScript", "HTML", "CSS", "Responsive UI"],
+            ["HTML", "CSS", "JavaScript", "TypeScript", "API integration"],
+            ["React", "UI components", "REST APIs", "Accessibility", "Tailwind CSS"],
+            ["JavaScript", "TypeScript", "Frontend testing", "State management", "Responsive design"],
+            ["Frontend architecture", "Design systems", "Component reuse", "CSS", "JavaScript"],
+            ["Web performance", "HTML", "CSS", "JavaScript", "Frontend tooling"],
+        ]
+        project_types = [
+            "Responsive marketing sites and dashboards",
+            "UI builds for internal tools",
+            "Frontend + API integration work",
+            "Design-system-driven product pages",
+            "Component libraries and admin panels",
+            "User-facing web applications",
+        ]
+        optional_tools = [
+            ["React", "Next.js", "TypeScript", "Tailwind CSS"],
+            ["Vue", "JavaScript", "API clients"],
+            ["React", "Redux", "REST APIs"],
+            ["TypeScript", "Jest", "Playwright"],
+            ["Figma handoff", "Storybook", "CSS modules"],
+            ["Vite", "Webpack", "browser debugging"],
+        ]
+    elif focus == "backend":
+        extra_skill_sets = [
+            ["Python", "REST APIs", "PostgreSQL", "FastAPI", "Django"],
+            ["Python", "Flask", "API design", "PostgreSQL", "Authentication"],
+            ["Python", "Django", "REST APIs", "Background jobs", "PostgreSQL"],
+            ["Python", "FastAPI", "SQL", "Testing", "Integration work"],
+            ["Python", "API development", "Database design", "Caching", "Webhooks"],
+            ["Backend integration", "Python", "PostgreSQL", "Redis", "JavaScript"],
+        ]
+        project_types = [
+            "REST API services and backend features",
+            "Authentication and workflow services",
+            "Internal tools and business APIs",
+            "API integrations and webhooks",
+            "Data-backed application services",
+            "Backend services for product teams",
+        ]
+        optional_tools = [
+            ["FastAPI", "PostgreSQL", "Redis", "AWS"],
+            ["Django", "PostgreSQL", "Docker"],
+            ["Flask", "Celery", "Redis"],
+            ["Pytest", "SQLAlchemy", "Git"],
+            ["Docker", "AWS", "Queue jobs"],
+            ["Postman", "GitHub Actions", "CI/CD"],
+        ]
+    elif focus == "fullstack":
+        extra_skill_sets = [
+            ["Python", "HTML", "CSS", "JavaScript", "Django"],
+            ["Python", "React", "REST APIs", "PostgreSQL", "Frontend integration"],
+            ["Python", "Django", "React", "CRUD apps", "Full-stack delivery"],
+            ["JavaScript", "HTML", "CSS", "Python", "API integration"],
+            ["Python", "Frontend UI", "Admin panels", "PostgreSQL", "Responsive design"],
+            ["Python", "React", "FastAPI", "Web apps", "Testing"],
+        ]
+        project_types = [
+            "CRUD apps and dashboards",
+            "Admin panels and internal tools",
+            "API + UI product features",
+            "Customer-facing web apps",
+            "Full-stack MVPs and prototypes",
+            "Backend + frontend integration work",
+        ]
+        optional_tools = [
+            ["Django", "React", "PostgreSQL", "Git"],
+            ["FastAPI", "TypeScript", "Tailwind CSS"],
+            ["Flask", "React", "Docker"],
+            ["Next.js", "REST APIs", "GitHub Actions"],
+            ["Storybook", "PostgreSQL", "AWS"],
+            ["Playwright", "Pytest", "CI/CD"],
+        ]
+    else:
+        extra_skill_sets = [
+            [*job_skills[:4], "Execution", "Ownership"],
+            [*job_skills[:4], "Product delivery", "Communication"],
+            [*job_skills[:4], "API integration", "Debugging"],
+            [*job_skills[:4], "Web delivery", "Testing"],
+            [*job_skills[:4], "Team collaboration", "Problem solving"],
+            [*job_skills[:4], "Build quality", "Shipping"],
+        ]
+        project_types = [
+            "Small-to-medium web applications",
+            "Internal tools and dashboards",
+            "API integrations",
+            "Frontend + backend feature work",
+            "Admin workflows",
+            "Customer-facing product features",
+        ]
+        optional_tools = [
+            ["Git", "SQL", "CI/CD"],
+            ["Docker", "REST APIs", "Debugging"],
+            ["PostgreSQL", "Redis", "Testing"],
+            ["React", "Python", "Postman"],
+            ["HTML", "CSS", "JavaScript"],
+            ["AWS", "GitHub Actions", "Developer tooling"],
+        ]
+    typical_companies_pool = [
+        ["Product startups", "SaaS teams", "internal product orgs"],
+        ["Growth-stage companies", "startup teams", "engineering-led product teams"],
+        ["Small product teams", "agency teams", "in-house startup teams"],
+        ["Product companies", "web product teams", "operations tools teams"],
+        ["Mid-stage startups", "platform teams", "business software teams"],
+        ["B2B SaaS teams", "product engineering teams", "internal tooling teams"],
+    ]
+    years_pool = [experience_midpoint] * 6
     sets: list[dict[str, Any]] = []
     for index in range(_CALIBRATION_SET_COUNT):
         calibration_set_id = _stable_calibration_set_id(index + 1)
         option_indices = [index * 2, index * 2 + 1]
         set_titles = [
-            "Scale vs startup breadth",
-            "Platform reliability vs product closeness",
-            "Domain depth vs staff-level systems leadership",
+            "Frontend vs backend emphasis",
+            "Framework-specific vs broader delivery",
+            "Junior-to-midfit vs adjacent-skill fit",
         ]
         set_themes = [
-            f"Choose between a scale-stage operator and a startup generalist for {skill_phrase}.",
-            f"Choose between operational maturity and product proximity in {skill_phrase}.",
-            f"Choose between deep domain expertise and broader architectural leverage for {skill_phrase}.",
+            f"Choose between a frontend-heavy and backend-heavy profile for {job_title}.",
+            f"Choose between a framework-specific profile and a broader delivery profile for {job_title}.",
+            f"Choose between two realistic resume patterns that stay within the requested experience band of {experience_band}.",
         ]
         archetypes: list[dict[str, Any]] = []
         for option_index, pool_index in enumerate(option_indices):
-            profile_title = profile_titles[pool_index]
-            strongest_skills = strongest_skills_pool[pool_index]
+            profile_title = role_titles[pool_index] if pool_index < len(role_titles) else (role_titles[0] if role_titles else job_title)
+            strongest_skills = _ordered_unique([*base_skills[:4], *extra_skill_sets[pool_index], *job_skills[:4]])
             typical_companies = typical_companies_pool[pool_index]
+            certifications = []
+            skill_text = " ".join(strongest_skills).lower()
+            if any(token in skill_text for token in ("aws", "cloud")):
+                certifications.append("AWS Certified Cloud Practitioner")
+            if any(token in skill_text for token in ("gcp", "google cloud")):
+                certifications.append("Google Cloud Digital Leader")
+            if any(token in skill_text for token in ("azure",)):
+                certifications.append("Microsoft Azure Fundamentals")
+            if any(token in skill_text for token in ("html", "css", "javascript", "react", "frontend")):
+                certifications.append("Frontend Web Foundations")
             profile_option = {
                 "profile_title": profile_title,
-                "resume_summary": summaries[pool_index],
-                "typical_background": backgrounds[pool_index],
+                "resume_summary": f"{experience_band} developer profile focused on {', '.join(strongest_skills[:4]) or job_title.lower()}.",
+                "typical_background": f"Worked on {project_types[pool_index]} with {', '.join(strongest_skills[:4]) or job_title.lower()} in small-to-medium product teams.",
                 "strongest_skills": strongest_skills,
                 "typical_companies": typical_companies,
-                "engineering_style": engineering_styles[pool_index],
-                "ownership_pattern": ownership_patterns[pool_index],
-                "tradeoff": tradeoffs[pool_index],
-                "why_recruiter_would_prefer_them": recruiter_reasons[pool_index],
-                "leadership_profile": [
-                    "handles ownership well",
-                    "communicates tradeoffs clearly",
-                ]
-                if pool_index in {0, 3}
-                else [
-                    "moves quickly",
-                    "works well with ambiguity",
-                ]
-                if pool_index in {1, 4}
-                else [
-                    "keeps systems stable",
-                    "aligns teams",
-                ],
+                "core_skills": strongest_skills,
+                "certifications": certifications,
+                "preferred_project_type": project_types[pool_index],
+                "optional_tools_frameworks": optional_tools[pool_index],
                 "location": locations[pool_index],
                 "years_experience": years_pool[pool_index],
             }
             profile_option.update(
                 {
-                    "headline_role": base_role,
+                    "headline_role": profile_title,
                     "current_location": locations[pool_index],
                 }
             )
