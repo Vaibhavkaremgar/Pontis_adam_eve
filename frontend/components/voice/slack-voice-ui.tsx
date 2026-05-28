@@ -13,7 +13,6 @@ import {
   getEffectiveVapiOrigin,
   getVapiRuntimeSnapshot,
   suggestVapiOriginHint,
-  setVapiRuntimeConfig,
 } from "@/lib/vapi-runtime";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { completeOrchestrationVoice, startOrchestrationVoice, type OrchestrationVoiceStartData } from "@/lib/api/orchestration";
@@ -88,26 +87,8 @@ async function loadVapiConfig(): Promise<{ assistantId: string; publicKey: strin
   const response = await fetch("/api/vapi/config", { method: "GET" });
   const json = (await response.json()) as {
     success?: boolean;
-    data?: { assistantId?: string; publicKey?: string; publicAppUrl?: string; hasPublicKey?: boolean; hasAssistantId?: boolean; hasPublicAppUrl?: boolean };
-    error?: string;
+    data?: { assistantId?: string; publicKey?: string; publicAppUrl?: string };
   };
-  if (json.success === false) {
-    console.error("[vapi] slack runtime config failed", {
-      error: json.error,
-      hasAssistantId: json.data?.hasAssistantId,
-      hasPublicKey: json.data?.hasPublicKey,
-      hasPublicAppUrl: json.data?.hasPublicAppUrl,
-      publicAppUrl: json.data?.publicAppUrl || "",
-    });
-    throw new Error(json.error || "Unable to load Slack Vapi runtime config.");
-  }
-  console.info("[vapi] slack runtime config payload", {
-    hasAssistantId: Boolean(json.data?.assistantId?.trim()),
-    hasPublicKey: Boolean(json.data?.publicKey?.trim()),
-    hasPublicAppUrl: Boolean(json.data?.publicAppUrl?.trim()),
-    publicAppUrl: json.data?.publicAppUrl?.trim() || "",
-  });
-  setVapiRuntimeConfig({ publicAppUrl: json.data?.publicAppUrl?.trim() || "" });
   return {
     assistantId: String(json.data?.assistantId || "").trim(),
     publicKey: String(json.data?.publicKey || "").trim(),
@@ -171,28 +152,6 @@ export function SlackVoiceUi({ token }: { token: string }) {
 
         vapi.on("call-start", () => {
           if (!cancelled) setStatus("listening");
-          console.info("[vapi] slack call-start", {
-            currentOrigin: getCurrentOrigin(),
-            publicAppUrl: getConfiguredPublicAppUrl(),
-            effectiveOrigin: getEffectiveVapiOrigin(),
-            assistantId,
-          });
-        });
-        vapi.on("call-start-progress", (event) => {
-          console.info("[vapi] slack call-start-progress", {
-            stage: event.stage,
-            status: event.status,
-            duration: event.duration,
-            timestamp: event.timestamp,
-            metadata: event.metadata,
-          });
-        });
-        vapi.on("call-start-success", (event) => {
-          console.info("[vapi] slack call-start-success", {
-            totalDuration: event.totalDuration,
-            callId: event.callId,
-            timestamp: event.timestamp,
-          });
         });
         vapi.on("speech-start", () => {
           if (!cancelled) setStatus("speaking");
