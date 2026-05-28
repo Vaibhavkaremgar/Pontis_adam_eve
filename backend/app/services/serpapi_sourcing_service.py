@@ -40,7 +40,6 @@ from app.core.config import (
 )
 from app.services.redis_service import distributed_lock
 from app.services.persistent_cache_service import get_json as cache_get_json, set_json as cache_set_json
-from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
 from app.db.repositories import CandidateProfileRepository
 
@@ -605,6 +604,374 @@ def _sanitize_role_query(value: str) -> str:
     return cleaned
 
 
+_GOOGLE_XRAY_NEGATIVE_FILTERS = [
+    "-jobs",
+    "-hiring",
+]
+
+_FRONTEND_MARKERS = ("frontend", "ui", "ux", "html", "css", "javascript", "typescript", "react", "next.js", "vue", "angular", "svelte")
+_BACKEND_MARKERS = ("backend", "api", "fastapi", "django", "flask", "node", "express", "rest", "microservice", "microservices", "python", "go", "java")
+_DATA_MARKERS = ("data", "analytics", "etl", "pipeline", "pipelines", "warehouse", "snowflake", "dbt", "databricks")
+_FULLSTACK_MARKERS = ("full stack", "fullstack", "full-stack")
+
+
+def _quote_query_term(value: str) -> str:
+    cleaned = _normalize_text(value)
+    if not cleaned:
+        return ""
+    return f'"{cleaned}"' if " " in cleaned else cleaned.lower()
+
+
+def _or_group(values: list[str]) -> str:
+    items = [_quote_query_term(value) for value in values if _normalize_text(value)]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return "(" + " OR ".join(items) + ")"
+
+
+def _space_group(values: list[str]) -> str:
+    items = [_normalize_text(value) for value in values if _normalize_text(value)]
+    return " ".join(items).strip()
+
+
+def _negative_filters_clause() -> str:
+    return " ".join(_GOOGLE_XRAY_NEGATIVE_FILTERS)
+
+
+def _experience_hints_for_query(seniority: str) -> list[str]:
+    text = _normalize_lower(seniority)
+    if not text:
+        return []
+    match = re.search(r"(\d+)\s*\+?\s*(?:years?|yrs?|yr)", text)
+    if match:
+        years = match.group(1)
+        return [f"{years} years", f"{years}+ years"]
+    if any(token in text for token in ("junior", "entry", "associate", "graduate", "trainee", "intern")):
+        return ["junior", "associate", "2 years", "2+ years"]
+    if any(token in text for token in ("mid", "intermediate", "regular")):
+        return ["mid-level", "3 years", "3+ years"]
+    if any(token in text for token in ("senior", "sr", "lead", "principal", "staff")):
+        return ["senior", "5 years", "5+ years"]
+    return []
+
+
+def _role_family_for_query(role: str, skills: list[str]) -> str:
+    text = " ".join([role, " ".join(skills)]).lower()
+    has_frontend = any(marker in text for marker in _FRONTEND_MARKERS)
+    has_backend = any(marker in text for marker in _BACKEND_MARKERS)
+    has_data = any(marker in text for marker in _DATA_MARKERS)
+    if any(marker in text for marker in _FULLSTACK_MARKERS):
+        return "fullstack"
+    if has_data:
+        return "data"
+    if has_frontend and has_backend:
+        if any(token in text for token in ("python", "django", "fastapi", "flask", "api", "backend")):
+            return "backend"
+        return "fullstack"
+    if has_backend or any(token in text for token in ("python", "django", "fastapi", "flask", "api")):
+        return "backend"
+    if has_frontend:
+        return "frontend"
+    return "generic"
+
+
+def _role_variants_for_query(*, role: str, seniority: str, skills: list[str]) -> list[str]:
+    role_text = _normalize_lower(role)
+    skill_text = " ".join(skills).lower()
+    family = _role_family_for_query(role=role, skills=skills)
+
+    variants: list[str] = []
+    if family == "frontend":
+        variants = [
+            "frontend developer",
+            "ui developer",
+            "frontend ui developer",
+            "react frontend developer",
+            "ui engineer",
+        ]
+    elif family == "fullstack":
+        variants = [
+            "full stack developer",
+            "full stack engineer",
+            "software engineer",
+            "web developer",
+            "frontend backend developer",
+        ]
+    elif family == "data":
+        variants = [
+            "data engineer",
+            "analytics engineer",
+            "data platform engineer",
+            "software engineer",
+            "python developer",
+        ]
+    elif family == "backend":
+        if "python" in role_text or "python" in skill_text:
+            variants = [
+                "python developer",
+                "python backend developer",
+                "backend engineer",
+                "software engineer",
+                "django developer",
+                "fastapi developer",
+            ]
+        elif any(token in role_text or token in skill_text for token in ("node", "javascript", "typescript")):
+            variants = [
+                "backend engineer",
+                "node backend developer",
+                "software engineer",
+                "api developer",
+                "express developer",
+            ]
+        else:
+            variants = [
+                "backend engineer",
+                "software engineer",
+                "api developer",
+                "platform engineer",
+                "developer",
+            ]
+    else:
+        base_role = _sanitize_role_query(role) or _sanitize_role_query(seniority) or "software engineer"
+        variants = [
+            base_role,
+            f"{base_role} developer",
+            f"{base_role} engineer",
+            "software engineer",
+        ]
+
+    cleaned_variants: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        normalized = _sanitize_role_query(variant) or _normalize_text(variant)
+        key = _normalize_lower(normalized)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cleaned_variants.append(normalized)
+    return cleaned_variants[:6]
+
+
+def _core_skills_for_query(skills: list[str], *, family: str) -> list[str]:
+    core = _dedupe_preserve_order([_normalize_text(skill) for skill in skills if _normalize_text(skill)])
+    lowered = {_normalize_lower(skill) for skill in core}
+
+    def add(*items: str) -> None:
+        for item in items:
+            normalized = _normalize_text(item)
+            key = _normalize_lower(normalized)
+            if normalized and key not in lowered:
+                core.append(normalized)
+                lowered.add(key)
+
+    if family in {"backend", "fullstack"}:
+        if any(token in lowered for token in {"python", "django", "fastapi", "flask", "api"}):
+            add("REST API", "backend", "microservices", "authentication")
+        if any(token in lowered for token in {"mongodb", "postgres", "mysql", "sql"}):
+            add("database", "api integration")
+    if family in {"frontend", "fullstack"}:
+        if any(token in lowered for token in {"html", "css", "javascript", "typescript", "react"}):
+            add("responsive UI", "web app", "dashboards", "component development")
+    if family == "data":
+        add("data pipelines", "dashboards", "analytics", "ETL")
+
+    return core[:8]
+
+
+def _project_terms_for_query(*, family: str, skills: list[str]) -> list[str]:
+    lowered = {_normalize_lower(skill) for skill in skills}
+    project_terms: list[str] = []
+
+    if family in {"backend", "fullstack"} or any(token in lowered for token in {"python", "django", "fastapi", "flask", "api", "node", "express"}):
+        project_terms.extend(["rest api", "backend", "microservices", "authentication", "internal tools"])
+    if family in {"frontend", "fullstack"} or any(token in lowered for token in {"html", "css", "javascript", "typescript", "react", "ui", "ux"}):
+        project_terms.extend(["responsive ui", "dashboard", "admin panel", "web app", "components"])
+    if family == "data" or any(token in lowered for token in {"data", "analytics", "etl", "pipeline"}):
+        project_terms.extend(["data pipelines", "analytics", "dashboards", "etl"])
+
+    if not project_terms:
+        project_terms.extend(["project", "web app", "product engineering"])
+
+    cleaned_terms: list[str] = []
+    seen: set[str] = set()
+    for term in project_terms:
+        normalized = _normalize_text(term)
+        key = _normalize_lower(normalized)
+        if not normalized or key in seen:
+            continue
+        seen.add(key)
+        cleaned_terms.append(normalized)
+    return cleaned_terms[:8]
+
+
+def _build_google_xray_query_strategy(
+    *,
+    role: str,
+    seniority: str,
+    skills: list[str],
+    location: str,
+    company_stage: str,
+    hiring_preferences: str,
+    industry: str,
+    leadership_expectations: str,
+) -> dict[str, Any]:
+    normalized_role = _sanitize_role_query(role) or _sanitize_role_query(seniority) or _normalize_text(role) or "software engineer"
+    normalized_location = _normalize_text(location)
+    family = _role_family_for_query(role=normalized_role, skills=skills)
+    role_variants = _role_variants_for_query(role=normalized_role, seniority=seniority, skills=skills)
+    core_skills = _core_skills_for_query(skills, family=family)
+    project_terms = _project_terms_for_query(family=family, skills=skills)
+    negative_filters = list(_GOOGLE_XRAY_NEGATIVE_FILTERS)
+    def q(parts: list[str]) -> str:
+        return " ".join(_normalize_text(part) for part in parts if _normalize_text(part)).strip()
+
+    def role_query(phrase: str) -> str:
+        return q(["site:linkedin.com/in", f'"{_normalize_text(phrase)}"' if " " in _normalize_text(phrase) else _normalize_text(phrase).lower(), normalized_location, _negative_filters_clause()])
+
+    def keyword_query(*phrases: str) -> str:
+        return q(["site:linkedin.com/in", " ".join(_normalize_text(phrase) for phrase in phrases if _normalize_text(phrase)), normalized_location, _negative_filters_clause()])
+
+    def phrase_query(*phrases: str) -> str:
+        return q(["site:linkedin.com/in", " ".join(f'"{_normalize_text(phrase)}"' if " " in _normalize_text(phrase) else _normalize_text(phrase).lower() for phrase in phrases if _normalize_text(phrase)), normalized_location, _negative_filters_clause()])
+
+    if family == "frontend":
+        role_queries = [
+            role_query("frontend developer"),
+            role_query("ui developer"),
+        ]
+        stack_queries = [
+            keyword_query("html", "css", "javascript", "react"),
+            keyword_query("frontend", "ui", "react", "typescript"),
+        ]
+        project_queries = [
+            keyword_query("responsive ui", "dashboard"),
+            keyword_query("admin panel", "web app"),
+        ]
+        framework_queries = [
+            keyword_query("react", "next.js"),
+            keyword_query("vue", "angular"),
+        ]
+    elif family == "fullstack":
+        role_queries = [
+            role_query("full stack developer"),
+            role_query("software engineer"),
+        ]
+        stack_queries = [
+            keyword_query("react", "node", "python"),
+            keyword_query("html", "css", "javascript", "react"),
+        ]
+        project_queries = [
+            keyword_query("web app", "api integration"),
+            keyword_query("dashboard", "product engineering"),
+        ]
+        framework_queries = [
+            keyword_query("react", "django"),
+            keyword_query("next.js", "node"),
+        ]
+    elif family == "data":
+        role_queries = [
+            role_query("data engineer"),
+            role_query("analytics engineer"),
+        ]
+        stack_queries = [
+            keyword_query("python", "sql", "dbt", "snowflake"),
+            keyword_query("analytics", "pipeline", "sql"),
+        ]
+        project_queries = [
+            keyword_query("data pipelines", "analytics"),
+            keyword_query("etl", "dashboard"),
+        ]
+        framework_queries = [
+            keyword_query("dbt", "snowflake"),
+            keyword_query("airflow", "spark"),
+        ]
+    elif family == "backend":
+        if "python" in _normalize_lower(" ".join([normalized_role, " ".join(skills)])):
+            role_queries = [
+                role_query("python developer"),
+                role_query("backend engineer python"),
+            ]
+            stack_queries = [
+                keyword_query("python", "django", "fastapi", "mongodb"),
+                keyword_query("python", "fastapi", "rest api"),
+            ]
+            project_queries = [
+                keyword_query("fastapi", "rest api", "python"),
+                keyword_query("backend engineer", "python"),
+            ]
+            framework_queries = [
+                keyword_query("django", "fastapi"),
+                keyword_query("django", "rest api"),
+            ]
+        else:
+            role_queries = [
+                role_query("backend engineer"),
+                role_query("software engineer"),
+            ]
+            stack_queries = [
+                keyword_query("backend", "api", "python"),
+                keyword_query("backend", "microservices", "rest api"),
+            ]
+            project_queries = [
+                keyword_query("backend", "rest api"),
+                keyword_query("microservices", "api"),
+            ]
+            framework_queries = [
+                keyword_query("fastapi", "django"),
+                keyword_query("node", "express"),
+            ]
+    else:
+        role_queries = [
+            role_query(normalized_role),
+            role_query(f"{normalized_role} developer"),
+        ]
+        stack_queries = [
+            keyword_query(*core_skills[:4]) if core_skills else keyword_query(*skills[:4]),
+            keyword_query(*project_terms[:4]) if project_terms else keyword_query(normalized_role),
+        ]
+        project_queries = [
+            keyword_query("web app", "backend"),
+            keyword_query("software engineer"),
+        ]
+        framework_queries = [
+            keyword_query("django", "fastapi"),
+            keyword_query("react", "node"),
+        ]
+
+    def _dedupe_queries(values: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = _normalize_text(value)
+            key = _normalize_lower(normalized)
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(normalized)
+        return cleaned
+
+    role_queries = _dedupe_queries(role_queries)
+    stack_queries = _dedupe_queries(stack_queries)
+    project_queries = _dedupe_queries(project_queries)
+    framework_queries = _dedupe_queries(framework_queries)
+
+    all_queries = _dedupe_queries([*role_queries, *stack_queries, *project_queries, *framework_queries])
+    return {
+        "role_queries": role_queries,
+        "stack_queries": stack_queries,
+        "project_queries": project_queries,
+        "framework_queries": framework_queries,
+        "location": normalized_location,
+        "generated_query_count": len(all_queries),
+        "queries": all_queries,
+        "negative_filters": negative_filters,
+        "family": family,
+        "core_skills": core_skills,
+    }
+
+
 def _fallback_query_layers(
     *,
     role: str,
@@ -616,62 +983,23 @@ def _fallback_query_layers(
     industry: str,
     leadership_expectations: str,
 ) -> list[XRayQueryLayer]:
-    required_role = _sanitize_role_query(role) or _sanitize_role_query(seniority)
-    title_phrase = role or required_role or seniority or ""
-    skill_phrase = " ".join(_dedupe_preserve_order(skills[:4]))
-    domain_phrase = " ".join(
-        _dedupe_preserve_order(
-            [part for part in [company_stage, industry, hiring_preferences, leadership_expectations] if part]
-        )
+    strategy = _build_google_xray_query_strategy(
+        role=role,
+        seniority=seniority,
+        skills=skills,
+        location=location,
+        company_stage=company_stage,
+        hiring_preferences=hiring_preferences,
+        industry=industry,
+        leadership_expectations=leadership_expectations,
     )
-    layers: list[XRayQueryLayer] = []
-    if title_phrase:
-        context_terms = " ".join(
-            _dedupe_preserve_order(
-                [
-                    *([skill_phrase] if skill_phrase else []),
-                    *([location] if location else []),
-                    *([company_stage] if company_stage else []),
-                    *([industry] if industry else []),
-                    *([hiring_preferences] if hiring_preferences else []),
-                    *([leadership_expectations] if leadership_expectations else []),
-                ]
-            )
-        )
-        query_terms = f'site:linkedin.com/in/ "{title_phrase}" {context_terms}'.strip()
-        layers.append(
-            XRayQueryLayer(
-                layer_type="exact_title",
-                query=query_terms,
-            )
-        )
-    if role or skill_phrase:
-        variation_terms = " ".join(
-            _dedupe_preserve_order([part for part in [role, seniority, skill_phrase] if part])
-        )
-        if variation_terms:
-            layers.append(
-                XRayQueryLayer(
-                    layer_type="title_variation",
-                    query=f"site:linkedin.com/in/ {variation_terms} {location}".strip(),
-                )
-            )
-    if domain_phrase:
-        layers.append(
-            XRayQueryLayer(
-                layer_type="company_domain",
-                query=f"site:linkedin.com/in/ {domain_phrase} {location}".strip(),
-            )
-        )
-    if skill_phrase:
-        layers.append(
-            XRayQueryLayer(
-                layer_type="skills_signal",
-                query=f"site:linkedin.com/in/ {skill_phrase} {location}".strip(),
-            )
-        )
-    layers.append(XRayQueryLayer(layer_type="github_placeholder", query="", enabled=False))
-    return [layer for layer in layers if layer.query or not layer.enabled]
+    layers = [
+        *[XRayQueryLayer(layer_type=f"role_query_{index}", query=query) for index, query in enumerate(strategy["role_queries"], start=1)],
+        *[XRayQueryLayer(layer_type=f"stack_query_{index}", query=query) for index, query in enumerate(strategy["stack_queries"], start=1)],
+        *[XRayQueryLayer(layer_type=f"project_query_{index}", query=query) for index, query in enumerate(strategy["project_queries"], start=1)],
+        *[XRayQueryLayer(layer_type=f"framework_query_{index}", query=query) for index, query in enumerate(strategy["framework_queries"], start=1)],
+    ]
+    return [layer for layer in layers if layer.query]
 
 
 def _normalize_query_layer(payload: dict[str, Any], *, fallback_index: int) -> XRayQueryLayer | None:
@@ -697,7 +1025,16 @@ def _normalize_query_layer(payload: dict[str, Any], *, fallback_index: int) -> X
 
 
 def _select_primary_query_layer(layers: list[XRayQueryLayer]) -> XRayQueryLayer | None:
-    preferred_order = ("exact_title", "title_variation", "skills_signal", "company_domain")
+    preferred_order = (
+        "role_query_1",
+        "stack_query_1",
+        "project_query_1",
+        "framework_query_1",
+        "role_query_2",
+        "stack_query_2",
+        "project_query_2",
+        "framework_query_2",
+    )
     active_layers = [layer for layer in layers if layer.enabled and layer.query]
     if not active_layers:
         return None
@@ -709,7 +1046,16 @@ def _select_primary_query_layer(layers: list[XRayQueryLayer]) -> XRayQueryLayer 
 
 
 def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: int = 3) -> list[XRayQueryLayer]:
-    preferred_order = ("exact_title", "title_variation", "skills_signal", "company_domain")
+    preferred_order = (
+        "role_query_1",
+        "stack_query_1",
+        "project_query_1",
+        "framework_query_1",
+        "role_query_2",
+        "stack_query_2",
+        "project_query_2",
+        "framework_query_2",
+    )
     active_layers = [layer for layer in layers if layer.enabled and layer.query]
     if not active_layers:
         return []
@@ -781,86 +1127,24 @@ def build_linkedin_xray_query_layers(
     leadership_expectations = _normalize_text(leadership_expectations)
     skill_list = _dedupe_preserve_order(skills)
 
-    prompt = (
-        "Decompose this recruiter role into 3-5 LinkedIn X-Ray search layers.\n"
-        "Return only JSON with a top-level 'layers' array.\n"
-        "Each layer should have: layer_type, query, enabled, pages.\n"
-        "Required layers: exact_title, title_variation, company_domain, skills_signal.\n"
-        "Optional layer: github_placeholder, but keep it disabled by default.\n"
-        "Do not use hardcoded role vocabularies. Infer semantic search intent from the role, skills, location,\n"
-        "company stage, hiring preferences, industry, and leadership expectations.\n"
-        "Keep LinkedIn profile search queries broad and high-signal, not deep-pagination oriented.\n\n"
-        f"role: {role}\n"
-        f"seniority: {seniority}\n"
-        f"skills: {', '.join(skill_list)}\n"
-        f"location: {location}\n"
-        f"company_stage: {company_stage}\n"
-        f"hiring_preferences: {hiring_preferences}\n"
-        f"industry: {industry}\n"
-        f"leadership_expectations: {leadership_expectations}\n"
-        f"recruiter_preferences: {recruiter_preferences or {}}\n"
+    strategy = _build_google_xray_query_strategy(
+        role=role,
+        seniority=seniority,
+        skills=skill_list,
+        location=location,
+        company_stage=company_stage,
+        hiring_preferences=hiring_preferences,
+        industry=industry,
+        leadership_expectations=leadership_expectations,
     )
 
-    layers: list[XRayQueryLayer] = []
-    try:
-        response = generate(prompt, expect_json=True)
-        payload = response if isinstance(response, dict) else {}
-        raw_layers = payload.get("layers") if isinstance(payload.get("layers"), list) else payload.get("query_layers")
-        if isinstance(raw_layers, list):
-            for index, item in enumerate(raw_layers[:5]):
-                if isinstance(item, dict):
-                    normalized = _normalize_query_layer(item, fallback_index=index)
-                    if normalized is not None:
-                        layers.append(normalized)
-    except Exception as exc:
-        logger.info("serpapi_query_layer_llm_fallback error=%s", str(exc))
-
-    if not layers:
-        layers = _fallback_query_layers(
-            role=role,
-            seniority=seniority,
-            skills=skill_list,
-            location=location,
-            company_stage=company_stage,
-            hiring_preferences=hiring_preferences,
-            industry=industry,
-            leadership_expectations=leadership_expectations,
-        )
-
-    active_layers: list[XRayQueryLayer] = []
-    seen_keys: set[str] = set()
-    for layer in layers:
-        if not layer.enabled and not layer.query:
-            active_layers.append(layer)
-            continue
-        key = _normalize_lower(layer.query)
-        if not key or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        active_layers.append(layer)
-
-    if len([layer for layer in active_layers if layer.enabled]) < 3:
-        fallback_layers = _fallback_query_layers(
-            role=role,
-            seniority=seniority,
-            skills=skill_list,
-            location=location,
-            company_stage=company_stage,
-            hiring_preferences=hiring_preferences,
-            industry=industry,
-            leadership_expectations=leadership_expectations,
-        )
-        for layer in fallback_layers:
-            if not layer.enabled and not layer.query:
-                continue
-            key = _normalize_lower(layer.query)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            active_layers.append(layer)
-
-    active_layers = _diversify_query_layers(layers=active_layers, recruiter_preferences=recruiter_preferences)
-    return [layer for layer in active_layers[:5] if layer.query or not layer.enabled]
+    layers = [
+        *[XRayQueryLayer(layer_type=f"role_query_{index}", query=query) for index, query in enumerate(strategy["role_queries"], start=1)],
+        *[XRayQueryLayer(layer_type=f"stack_query_{index}", query=query) for index, query in enumerate(strategy["stack_queries"], start=1)],
+        *[XRayQueryLayer(layer_type=f"project_query_{index}", query=query) for index, query in enumerate(strategy["project_queries"], start=1)],
+        *[XRayQueryLayer(layer_type=f"framework_query_{index}", query=query) for index, query in enumerate(strategy["framework_queries"], start=1)],
+    ]
+    return [layer for layer in layers if layer.query]
 
 
 def build_linkedin_xray_queries(
@@ -875,20 +1159,18 @@ def build_linkedin_xray_queries(
     leadership_expectations: str,
     recruiter_preferences: dict[str, Any] | None = None,
 ) -> list[str]:
-    query_layer = _select_primary_query_layer(
-        build_linkedin_xray_query_layers(
-            role=role,
-            seniority=seniority,
-            skills=skills,
-            location=location,
-            company_stage=company_stage,
-            hiring_preferences=hiring_preferences,
-            industry=industry,
-            leadership_expectations=leadership_expectations,
-            recruiter_preferences=recruiter_preferences,
-        )
+    layers = build_linkedin_xray_query_layers(
+        role=role,
+        seniority=seniority,
+        skills=skills,
+        location=location,
+        company_stage=company_stage,
+        hiring_preferences=hiring_preferences,
+        industry=industry,
+        leadership_expectations=leadership_expectations,
+        recruiter_preferences=recruiter_preferences,
     )
-    return [query_layer.query] if query_layer and query_layer.query else []
+    return [layer.query for layer in layers if layer.query]
 
 
 class SerpApiClient:
@@ -1337,6 +1619,16 @@ def discover_linkedin_xray_candidates(
         recruiter_preferences=recruiter_preferences,
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
+    query_strategy = _build_google_xray_query_strategy(
+        role=resolved_intake["role_title"],
+        seniority=resolved_intake["seniority"],
+        skills=[skill.strip() for skill in resolved_intake["skills"].split(",") if skill.strip()],
+        location=resolved_intake["location"],
+        company_stage=resolved_intake["company_stage"],
+        hiring_preferences=resolved_intake["hiring_preferences"],
+        industry=resolved_intake["industry"],
+        leadership_expectations=resolved_intake["leadership_expectations"],
+    )
 
     limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
     job_role = resolved_intake["role_title"]
@@ -1505,6 +1797,7 @@ def discover_linkedin_xray_candidates(
         "workflow_token": resolved_workflow_token,
         "role_search_id": resolved_role_search_id,
         "archetype_ids": resolved_archetype_ids,
+        "query_strategy": query_strategy,
         "total_layer_count": len(query_layers),
         "active_layer_count": len(limited_layers),
         "generated_queries": [

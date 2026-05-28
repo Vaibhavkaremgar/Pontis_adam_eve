@@ -122,9 +122,10 @@ def _first_non_empty(*values: Any) -> str:
     return ""
 
 
-def _extract_profile_url(profile: Any) -> str:
+def _extract_profile_url(profile: Any, preferred_url: str = "") -> str:
     raw_data = dict(getattr(profile, "raw_data", {}) or {})
     return _first_non_empty(
+        preferred_url,
         getattr(profile, "linkedin_url", ""),
         raw_data.get("linkedin_url"),
         raw_data.get("linkedinUrl"),
@@ -261,6 +262,7 @@ def enrich_candidate_with_apify(
     job_id: str,
     candidate_id: str,
     source_type: str = "linkedin_xray",
+    linkedin_url: str = "",
     workflow_token: str = "",
     selection_session_id: str = "",
     automation_job_id: str = "",
@@ -274,7 +276,7 @@ def enrich_candidate_with_apify(
         profile = CandidateProfileRepository(db).ensure_candidate_profile(job_id=job_id, candidate_id=candidate_id)
 
     raw_profile = dict(getattr(profile, "raw_data", {}) or {})
-    linkedin_url = _extract_profile_url(profile)
+    linkedin_url = _extract_profile_url(profile, preferred_url=linkedin_url)
     identity = _extract_candidate_identity(profile)
     logger.info(
         "apify_candidate_identity job_id=%s candidate_id=%s name=%s linkedin=%s company=%s title=%s selection_session_id=%s automation_job_id=%s",
@@ -481,6 +483,7 @@ def enrich_selected_candidate(
     job_id: str,
     candidate_id: str,
     source_type: str = "linkedin_xray",
+    linkedin_url: str = "",
     workflow_token: str = "",
     selection_session_id: str = "",
     automation_job_id: str = "",
@@ -490,6 +493,7 @@ def enrich_selected_candidate(
         job_id=job_id,
         candidate_id=candidate_id,
         source_type=source_type,
+        linkedin_url=linkedin_url,
         workflow_token=workflow_token,
         selection_session_id=selection_session_id,
         automation_job_id=automation_job_id,

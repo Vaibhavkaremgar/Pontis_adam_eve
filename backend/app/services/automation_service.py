@@ -305,6 +305,7 @@ def _handle_candidate_enrichment(db: Session, row) -> dict[str, Any]:
         job_id=row.job_id or "",
         candidate_id=row.candidate_id or "",
         source_type=str((row.automation_payload or {}).get("sourceType") or "linkedin_xray"),
+        linkedin_url=str((row.automation_payload or {}).get("linkedinUrl") or (row.automation_payload or {}).get("linkedin_url") or ""),
         workflow_token=str((row.automation_payload or {}).get("workflowToken") or ""),
         selection_session_id=str((row.automation_payload or {}).get("selectionSessionId") or ""),
         automation_job_id=str(row.id),

@@ -162,6 +162,44 @@ def _experience_band_from_text(value: str) -> tuple[str, float]:
     return f"{max(0, years - 1)}-{years + 1} years", float(years)
 
 
+def _experience_band_from_text(value: str) -> tuple[str, float]:
+    text = _normalize_text(value)
+    if not text:
+        return "1-2 years", 1.5
+
+    range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s+years?", text, flags=re.IGNORECASE)
+    if range_match:
+        low = max(0.0, float(range_match.group(1)))
+        high = max(low, float(range_match.group(2)))
+        return f"{int(low)}-{int(high)} years", round((low + high) / 2.0, 1)
+
+    plus_match = re.search(r"(\d+(?:\.\d+)?)\+?\s+years?", text, flags=re.IGNORECASE)
+    if plus_match:
+        years = max(0.0, float(plus_match.group(1)))
+        if years <= 1:
+            return "0-1 years", 0.5
+        if years <= 2:
+            return "1-2 years", 1.5
+        if years <= 3:
+            return "2-3 years", 2.5
+        return f"{int(max(0.0, years - 1.0))}-{int(years + 1.0)} years", round(years, 1)
+
+    years = max(0, parse_experience(text))
+    if years <= 0:
+        return "1-2 years", 1.5
+    if years <= 1:
+        return "0-1 years", 0.5
+    if years <= 2:
+        return "1-2 years", 1.5
+    if years <= 3:
+        return "2-3 years", 2.5
+    if years <= 5:
+        return "4-5 years", float(years)
+    if years <= 7:
+        return "6-7 years", float(years)
+    return f"{max(0, years - 1)}-{years + 1} years", float(years)
+
+
 def _job_role_focus(job: Any, job_skills: list[str]) -> str:
     text = " ".join(
         [
@@ -182,38 +220,54 @@ def _job_role_focus(job: Any, job_skills: list[str]) -> str:
 def _build_role_title_variants(*, job: Any, job_skills: list[str], experience_band: str) -> list[str]:
     job_title = _compact_archetype_label(_job_text_field(job, "title") or "Developer", "Developer")
     focus = _job_role_focus(job, job_skills)
-    experience_years = parse_experience(experience_band)
-    junior = experience_years <= 3
+    entry_level = False
+    band_match = re.search(r"(\d+)", _normalize_text(experience_band))
+    if band_match:
+        try:
+            entry_level = int(band_match.group(1)) <= 2
+        except ValueError:
+            entry_level = False
+    junior_prefix = "Junior " if entry_level else ""
     if focus == "frontend":
         titles = [
-            "React Frontend Developer",
-            "HTML/CSS/JS Developer",
+            f"{junior_prefix}React Frontend Developer".strip(),
             "Frontend UI Developer",
+            "HTML/CSS/JS Developer",
             "Frontend + API Developer",
-            "Junior Frontend Developer" if junior else "Web Application Developer",
+            "UI Engineer",
+            "Web Application Developer",
+            "Frontend Engineer",
             f"{job_title}",
         ]
     elif focus == "backend":
         titles = [
-            "Python Backend Developer",
+            f"{junior_prefix}Python Backend Developer".strip(),
             "Python API Developer",
             "Django Backend Developer",
             "FastAPI Developer",
-            "Junior Python Developer" if junior else "Backend Developer",
+            "Backend Engineer",
+            "Python Automation Developer",
+            "Web API Developer",
+            "Software Engineer",
             f"{job_title}",
         ]
     elif focus == "fullstack":
         titles = [
-            "Junior Python Fullstack Developer" if junior else "Python Fullstack Developer",
+            f"{junior_prefix}Python Fullstack Developer".strip(),
+            "Python Backend Developer",
+            "Python API Developer",
             "Python + Frontend Developer",
             "Django Fullstack Developer",
             "API + UI Developer",
+            "Full Stack Web Developer",
             "Web Application Developer",
+            "Software Engineer",
             f"{job_title}",
         ]
     else:
         titles = [
-            f"Junior {job_title}" if junior else f"{job_title}",
+            f"{job_title}",
+            f"{junior_prefix}{job_title}".strip(),
             f"{job_title} with API Experience",
             f"{job_title} with Frontend Experience",
             f"{job_title} with Python Focus",
@@ -1122,6 +1176,8 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         "Do not use abstract headings or fantasy labels.\n"
         "BANNED title words: strategist, journalist, evangelist, visionary, architect, ninja, wizard, growth hacker.\n"
         "Generate exactly 3 sets with exactly 2 profile cards in each set.\n"
+        "Each of the 6 profiles must represent a different sourcing lane for the same job, not six near-duplicates.\n"
+        "Use one profile that is title-accurate, one that is stack-first, one that is framework-specific, one that is project-heavy, one that is adjacent-role, and one that is junior/entry-level if the intake supports it.\n"
         "Every profile must stay strictly aligned to the job title, skills, certifications, technologies, and experience band in the intake.\n"
         "Rules:\n"
         "- Return ONLY valid JSON.\n"
@@ -1136,6 +1192,7 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         "- Preferred project type should be concrete: CRUD apps, dashboards, internal tools, API integrations, admin panels, responsive web apps, etc.\n"
         "- Optional tools/frameworks should only include relevant tools from the stack.\n"
         "- Avoid unrelated backgrounds, staff-level claims, or inflated years of experience.\n"
+        "- Vary the six profiles meaningfully so the recruiter can use different cards to source different but still relevant candidates from SerpAPI.\n"
         "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n"
         "- Keep set themes grounded in the actual hiring decision, such as frontend-heavy vs backend-heavy or framework-light vs framework-specific.\n"
         "- Preserve compatibility fields when possible, but the core content must read like resume profiles rather than archetypes.\n\n"
@@ -1517,19 +1574,20 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
         ["B2B SaaS teams", "product engineering teams", "internal tooling teams"],
     ]
     years_pool = [experience_midpoint] * 6
+    option_pairs = [(0, 3), (1, 4), (2, 5)]
     sets: list[dict[str, Any]] = []
     for index in range(_CALIBRATION_SET_COUNT):
         calibration_set_id = _stable_calibration_set_id(index + 1)
-        option_indices = [index * 2, index * 2 + 1]
+        option_indices = list(option_pairs[index])
         set_titles = [
-            "Frontend vs backend emphasis",
-            "Framework-specific vs broader delivery",
-            "Junior-to-midfit vs adjacent-skill fit",
+            "Title-accurate vs project-heavy",
+            "Framework-specific vs adjacent-role",
+            "Junior-fit vs broader delivery",
         ]
         set_themes = [
-            f"Choose between a frontend-heavy and backend-heavy profile for {job_title}.",
-            f"Choose between a framework-specific profile and a broader delivery profile for {job_title}.",
-            f"Choose between two realistic resume patterns that stay within the requested experience band of {experience_band}.",
+            f"Choose between a role-identical profile and a project-first profile for {job_title}.",
+            f"Choose between a framework-specific profile and a nearby but different resume shape for {job_title}.",
+            f"Choose between a junior-fit profile and a broader delivery profile that still stays within {experience_band}.",
         ]
         archetypes: list[dict[str, Any]] = []
         for option_index, pool_index in enumerate(option_indices):

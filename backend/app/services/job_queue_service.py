@@ -298,12 +298,21 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
             candidate_id = str(payload.get("candidate_id") or "")
             if not job_id or not candidate_id:
                 return {"status": "skipped", "reason": "missing_job_or_candidate"}
+            candidate_snapshot = payload.get("candidateSnapshot")
+            candidate_snapshot_map = candidate_snapshot if isinstance(candidate_snapshot, dict) else {}
             with SessionLocal() as db:
                 enrichment = enrich_selected_candidate(
                     db=db,
                     job_id=job_id,
                     candidate_id=candidate_id,
                     source_type=str(payload.get("source_type") or payload.get("sourceType") or "linkedin_xray"),
+                    linkedin_url=str(
+                        payload.get("linkedin_url")
+                        or payload.get("linkedinUrl")
+                        or candidate_snapshot_map.get("linkedinUrl")
+                        or candidate_snapshot_map.get("linkedin_url")
+                        or ""
+                    ),
                     workflow_token=str(payload.get("workflow_token") or payload.get("workflowToken") or ""),
                     selection_session_id=str(payload.get("selection_session_id") or payload.get("selectionSessionId") or ""),
                     automation_job_id=str(payload.get("automation_job_id") or payload.get("automationJobId") or payload.get("job_id") or ""),

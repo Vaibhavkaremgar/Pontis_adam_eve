@@ -144,7 +144,7 @@ def _normalize_origin(value: str) -> str:
 
 CORS_ALLOW_ORIGINS = [_normalize_origin(FRONTEND_ORIGIN)]
 COOKIE_SECURE = APP_ENV not in {"development", "dev", "local", "test"}
-COOKIE_SAMESITE = "none"
+COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
 AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "pontis_auth").strip() or "pontis_auth"
 CSRF_COOKIE_NAME = os.getenv("CSRF_COOKIE_NAME", "pontis_csrf").strip() or "pontis_csrf"
 CSRF_HEADER_NAME = os.getenv("CSRF_HEADER_NAME", "X-CSRF-Token").strip() or "X-CSRF-Token"

@@ -738,6 +738,13 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             )
 
         try:
+            selected_linkedin_url = _normalize_text(
+                getattr(selected_candidate, "linkedinUrl", "")
+                or getattr(selected_candidate, "linkedin_url", "")
+                or selected_profile_data.get("linkedin_url")
+                or selected_profile_data.get("linkedinUrl")
+                or profile.linkedin_url
+            )
             enqueue_job(
                 "candidate_enrichment",
                 {
@@ -745,6 +752,16 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                     "candidate_id": candidate_id,
                     "selectionSessionId": session.id,
                     "sourceType": "linkedin_xray",
+                    "linkedinUrl": selected_linkedin_url,
+                    "candidateSnapshot": {
+                        "id": candidate_id,
+                        "name": selected_name,
+                        "role": selected_role,
+                        "company": selected_company,
+                        "summary": selected_summary,
+                        "skills": selected_skills,
+                        "linkedinUrl": selected_linkedin_url,
+                    },
                     "status": "queued",
                 },
                 idempotency_key=f"candidate-enrichment:{job_id}:{candidate_id}",
@@ -781,6 +798,7 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                     job_id=job_id,
                     candidate_id=candidate_id,
                     source_type="linkedin_xray",
+                    linkedin_url=selected_linkedin_url,
                     workflow_token="",
                     selection_session_id=str(session.id or ""),
                     automation_job_id=str(session.id or ""),
