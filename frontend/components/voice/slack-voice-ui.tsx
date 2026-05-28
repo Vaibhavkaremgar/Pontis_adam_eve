@@ -7,6 +7,13 @@ import { Mic, PhoneOff, Sparkles } from "lucide-react";
 
 import { ChatBubble } from "./chat-bubble";
 import { Button } from "@/components/ui/button";
+import {
+  getConfiguredPublicAppUrl,
+  getCurrentOrigin,
+  getEffectiveVapiOrigin,
+  getVapiRuntimeSnapshot,
+  suggestVapiOriginHint,
+} from "@/lib/vapi-runtime";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { completeOrchestrationVoice, startOrchestrationVoice, type OrchestrationVoiceStartData } from "@/lib/api/orchestration";
 
@@ -78,7 +85,10 @@ function buildTranscript(turns: TranscriptTurn[]) {
 
 async function loadVapiConfig(): Promise<{ assistantId: string; publicKey: string }> {
   const response = await fetch("/api/vapi/config", { method: "GET" });
-  const json = (await response.json()) as { success?: boolean; data?: { assistantId?: string; publicKey?: string } };
+  const json = (await response.json()) as {
+    success?: boolean;
+    data?: { assistantId?: string; publicKey?: string; publicAppUrl?: string };
+  };
   return {
     assistantId: String(json.data?.assistantId || "").trim(),
     publicKey: String(json.data?.publicKey || "").trim(),
@@ -132,6 +142,10 @@ export function SlackVoiceUi({ token }: { token: string }) {
 
     const startCall = async () => {
       try {
+        const runtimeSnapshot = getVapiRuntimeSnapshot();
+        console.log("Current origin:", getCurrentOrigin());
+        console.log("VAPI_ASSISTANT_ID", process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID);
+        console.log("NEXT_PUBLIC_PUBLIC_APP_URL", getConfiguredPublicAppUrl());
         startedRef.current = true;
         const vapi = new Vapi(publicKey);
         vapiRef.current = vapi;
@@ -153,8 +167,20 @@ export function SlackVoiceUi({ token }: { token: string }) {
         });
         vapi.on("error", (errorEvent) => {
           if (cancelled) return;
+          const originHint = suggestVapiOriginHint(runtimeSnapshot);
+          console.error("[vapi] slack voice error", {
+            currentOrigin: getCurrentOrigin(),
+            publicAppUrl: getConfiguredPublicAppUrl(),
+            effectiveOrigin: getEffectiveVapiOrigin(),
+            assistantId,
+            environment: runtimeSnapshot.runtime,
+            originHint,
+            errorEvent,
+          });
           setStatus("error");
-          setError(`Voice assistant error: ${String((errorEvent as Record<string, unknown>)?.message || "unknown")}`);
+          setError(
+            `Voice assistant error: ${String((errorEvent as Record<string, unknown>)?.message || "unknown")}${originHint ? ` ${originHint}` : ""}`
+          );
         });
         vapi.on("call-end", async () => {
           if (cancelled) return;
@@ -182,10 +208,24 @@ export function SlackVoiceUi({ token }: { token: string }) {
         setStatus("connecting");
         await vapi.start(assistantId, {
           firstMessage: session.firstMessage || question,
-          variableValues: session.variableValues || {},
+          variableValues: {
+            ...(session.variableValues || {}),
+            currentOrigin: getCurrentOrigin(),
+            publicAppUrl: getConfiguredPublicAppUrl(),
+            effectiveOrigin: getEffectiveVapiOrigin(),
+            runtimeEnvironment: runtimeSnapshot.runtime,
+          },
         });
       } catch (err) {
         if (cancelled) return;
+        console.error("[vapi] slack start failed", {
+          currentOrigin: getCurrentOrigin(),
+          publicAppUrl: getConfiguredPublicAppUrl(),
+          effectiveOrigin: getEffectiveVapiOrigin(),
+          assistantId,
+          environment: getVapiRuntimeSnapshot().runtime,
+          error: err,
+        });
         setStatus("error");
         setError(err instanceof Error ? err.message : "Unable to start Slack voice intake.");
       }

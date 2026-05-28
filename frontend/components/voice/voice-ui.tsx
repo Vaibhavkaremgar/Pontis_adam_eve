@@ -23,6 +23,13 @@ import { Button } from "@/components/ui/button";
 
 import { ChatBubble } from "./chat-bubble";
 import { WaveAnimation } from "./wave-animation";
+import {
+  getConfiguredPublicAppUrl,
+  getCurrentOrigin,
+  getEffectiveVapiOrigin,
+  getVapiRuntimeSnapshot,
+  suggestVapiOriginHint,
+} from "@/lib/vapi-runtime";
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -707,15 +714,18 @@ async function loadVapiConfig() {
     data?: {
       publicKey?: string;
       assistantId?: string;
+      publicAppUrl?: string;
       hasPublicKey?: boolean;
       hasAssistantId?: boolean;
+      hasPublicAppUrl?: boolean;
     };
     error?: string;
   };
 
   const publicKey = payload.data?.publicKey?.trim() || "";
   const assistantId = payload.data?.assistantId?.trim() || "";
-  return { publicKey, assistantId };
+  const publicAppUrl = payload.data?.publicAppUrl?.trim() || "";
+  return { publicKey, assistantId, publicAppUrl };
 }
 
 // ─── component ────────────────────────────────────────────────────────────────
@@ -1028,14 +1038,21 @@ export function VoiceUi() {
       hasJobTitle: Boolean(job.title),
       hasCompany: Boolean(company.name),
     });
-    debugVoice("runtime snapshot", getRuntimeEnvSnapshot());
+    const runtimeSnapshot = getVapiRuntimeSnapshot();
+    debugVoice("runtime snapshot", runtimeSnapshot);
+    console.log("Current origin:", getCurrentOrigin());
+    console.log("VAPI_ASSISTANT_ID", process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID);
+    console.log("NEXT_PUBLIC_PUBLIC_APP_URL", getConfiguredPublicAppUrl());
     let assistantId = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID;
     let publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+    let publicAppUrl = getConfiguredPublicAppUrl();
     debugVoice("env snapshot", {
       hasAssistantId: Boolean(assistantId),
       hasPublicKey: Boolean(publicKey),
+      hasPublicAppUrl: Boolean(publicAppUrl),
       assistantIdPreview: assistantId ? `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}` : null,
       publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
+      publicAppUrl,
     });
 
     if (!assistantId || !publicKey) {
@@ -1043,11 +1060,14 @@ export function VoiceUi() {
         const runtimeConfig = await loadVapiConfig();
         assistantId = assistantId || runtimeConfig.assistantId;
         publicKey = publicKey || runtimeConfig.publicKey;
+        publicAppUrl = publicAppUrl || runtimeConfig.publicAppUrl;
         debugVoice("runtime vapi config loaded", {
           hasAssistantId: Boolean(assistantId),
           hasPublicKey: Boolean(publicKey),
+          hasPublicAppUrl: Boolean(publicAppUrl),
           assistantIdPreview: assistantId ? `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}` : null,
           publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
+          publicAppUrl,
         });
       } catch (error) {
         debugVoice("runtime vapi config failed", { error });
@@ -1100,6 +1120,8 @@ export function VoiceUi() {
       atsProvider: company.atsProvider || "",
       atsConnected: Boolean(company.atsConnected),
     };
+    const effectiveOrigin = publicAppUrl || getEffectiveVapiOrigin();
+    const originHint = suggestVapiOriginHint(runtimeSnapshot);
 
     const interviewQuestions = intelligence?.interview?.recommended_questions || intelligence?.selection?.recommended_questions || [];
     const firstQuestion = intelligence?.interview?.current_question || interviewQuestions[0] || "What's the most important thing you're looking for in this candidate?";
@@ -1141,6 +1163,10 @@ export function VoiceUi() {
           jobContext: JSON.stringify(jobContext),
           companyContext: JSON.stringify(companyContext),
           recruiterName,
+          currentOrigin: getCurrentOrigin(),
+          publicAppUrl,
+          effectiveOrigin,
+          runtimeEnvironment: runtimeSnapshot.runtime,
           closingInstructions,
         },
         firstMessage,
@@ -1150,11 +1176,26 @@ export function VoiceUi() {
       terminalStateRef.current = "error";
       debugVoice("start_failed", {
         jobId,
+        currentOrigin: getCurrentOrigin(),
+        publicAppUrl,
+        effectiveOrigin,
+        runtimeEnvironment: runtimeSnapshot.runtime,
+        originHint,
+        error,
+      });
+      console.error("[vapi] start failed", {
+        currentOrigin: getCurrentOrigin(),
+        publicAppUrl,
+        effectiveOrigin,
+        assistantId,
+        publicKeyPreview: publicKey.slice(0, 6) + "..." + publicKey.slice(-4),
+        environment: runtimeSnapshot.runtime,
+        originHint,
         error,
       });
       setCallStatus("error");
       setPipelineStatus("error");
-      setPipelineError(`Unable to start voice session: ${toErrorMessage(error)}`);
+      setPipelineError(`Unable to start voice session: ${toErrorMessage(error)}${originHint ? ` ${originHint}` : ""}`);
     }
   };
 

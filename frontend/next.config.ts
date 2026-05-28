@@ -9,6 +9,19 @@ const nextConfig: NextConfig = {
     workerThreads: true,
   },
 
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          // Required for Vapi/Daily.co WebRTC — allows cross-origin postMessage
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
+          { key: "Cross-Origin-Embedder-Policy", value: "unsafe-none" },
+        ],
+      },
+    ];
+  },
+
   webpack(config) {
     return config;
   },
