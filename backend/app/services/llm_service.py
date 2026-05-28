@@ -10,6 +10,9 @@ from typing import Any
 from openai import OpenAI
 
 from app.core.config import (
+    GEMINI_API_KEY,
+    GEMINI_BASE_URL,
+    GEMINI_MODEL,
     GROQ_API_KEY,
     GROQ_BASE_URL,
     GROQ_MODEL,
@@ -22,6 +25,13 @@ _llm_disable_reason = ""
 _llm_last_error = ""
 LLM_DISABLE_COOLDOWN_SECONDS = 300
 LLM_RATE_LIMIT_COOLDOWN_SECONDS = 60 * 60
+
+
+@lru_cache(maxsize=1)
+def _gemini_client() -> OpenAI:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY missing")
+    return OpenAI(base_url=GEMINI_BASE_URL, api_key=GEMINI_API_KEY)
 
 
 @lru_cache(maxsize=1)
@@ -108,57 +118,81 @@ def _extract_json_payload(text: str) -> dict | list | None:
 
 
 def generate(prompt: str, expect_json: bool = False):
-    if _llm_is_disabled() and not GROQ_API_KEY:
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json, reason=_llm_disable_reason or "disabled")
+    providers: list[tuple[str, str, str, callable]] = [
+        ("gemini", GEMINI_MODEL, "GEMINI_API_KEY", _gemini_client),
+    ]
+    if GROQ_API_KEY:
+        providers.append(("groq", GROQ_MODEL, "GROQ_API_KEY", _groq_client))
+
+    if _llm_is_disabled() and not any(name == "groq" for name, _, _, _ in providers):
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=True, fallback=True, expect_json=expect_json, reason=_llm_disable_reason or "disabled")
         return _local_fallback(prompt, expect_json=expect_json)
 
-    if not GROQ_API_KEY:
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json, reason="GROQ_API_KEY missing")
-        return _local_fallback(prompt, expect_json=expect_json)
+    last_error: Exception | None = None
+    for provider_name, model_name, key_label, client_factory in providers:
+        if provider_name == "gemini" and not GEMINI_API_KEY:
+            continue
+        if provider_name == "groq" and not GROQ_API_KEY:
+            continue
+        try:
+            client = client_factory()
+        except Exception as exc:
+            last_error = exc
+            logger.warning("llm_client_unavailable provider=%s reason=%s", provider_name, str(exc))
+            continue
 
-    try:
-        client = _groq_client()
-    except Exception as exc:
-        _disable_llm(str(exc))
-        logger.warning("llm_client_unavailable provider=groq reason=%s", str(exc))
-        log_metric("llm_usage", model=GROQ_MODEL, disabled=True, fallback=True, expect_json=expect_json)
-        return _local_fallback(prompt, expect_json=expect_json)
+        try:
+            output = _run_chat(client, model=model_name, prompt=prompt)
+            log_metric("llm_usage", model=model_name, provider=provider_name, disabled=False, fallback=(provider_name != "gemini"), expect_json=expect_json)
+            if not expect_json:
+                return output
 
-    try:
-        output = _run_chat(client, model=GROQ_MODEL, prompt=prompt)
-        log_metric("llm_usage", model=GROQ_MODEL, provider="groq", disabled=False, fallback=False, expect_json=expect_json)
-        if not expect_json:
-            return output
+            parsed = _extract_json_payload(output)
+            if parsed is not None:
+                return parsed
 
-        parsed = _extract_json_payload(output)
-        if parsed is not None:
-            return parsed
+            retry_output = _run_chat(client, model=model_name, prompt="Return ONLY valid JSON:\n" + prompt)
+            log_metric("llm_usage", model=model_name, provider=provider_name, disabled=False, fallback=(provider_name != "gemini"), expect_json=expect_json, retry=True)
+            parsed = _extract_json_payload(retry_output)
+            if parsed is not None:
+                return parsed
 
-        retry_output = _run_chat(client, model=GROQ_MODEL, prompt="Return ONLY valid JSON:\n" + prompt)
-        log_metric("llm_usage", model=GROQ_MODEL, provider="groq", disabled=False, fallback=False, expect_json=expect_json, retry=True)
-        parsed = _extract_json_payload(retry_output)
-        if parsed is not None:
-            return parsed
-        return _local_fallback(prompt, expect_json=True)
-    except Exception as exc:
-        logger.warning("llm_generation_failed provider=groq model=%s reason=%s", GROQ_MODEL, str(exc))
-        if _is_rate_limit_error(exc):
-            _disable_llm(str(exc), cooldown_seconds=LLM_RATE_LIMIT_COOLDOWN_SECONDS)
-        else:
-            _disable_llm(str(exc))
-        log_metric("llm_usage", model=GROQ_MODEL, provider="groq", disabled=True, fallback=True, expect_json=expect_json)
-        return _local_fallback(prompt, expect_json=expect_json)
+            if provider_name == "gemini" and GROQ_API_KEY:
+                logger.info("llm_provider_fallback provider=%s fallback_provider=groq reason=invalid_json", provider_name)
+                continue
+            return _local_fallback(prompt, expect_json=True)
+        except Exception as exc:
+            last_error = exc
+            logger.warning("llm_generation_failed provider=%s model=%s reason=%s", provider_name, model_name, str(exc))
+            if provider_name == "gemini" and GROQ_API_KEY:
+                if _is_rate_limit_error(exc):
+                    _disable_llm(str(exc), cooldown_seconds=LLM_RATE_LIMIT_COOLDOWN_SECONDS)
+                    logger.info(
+                        "llm_provider_cooldown provider=%s fallback_provider=groq reason=rate_limit cooldown_seconds=%s",
+                        provider_name,
+                        LLM_RATE_LIMIT_COOLDOWN_SECONDS,
+                    )
+                continue
+            if provider_name != "groq":
+                _disable_llm(str(exc))
+            log_metric("llm_usage", model=model_name, provider=provider_name, disabled=True, fallback=True, expect_json=expect_json)
+            return _local_fallback(prompt, expect_json=expect_json)
+
+    if last_error is not None:
+        _disable_llm(str(last_error))
+        log_metric("llm_usage", model=GEMINI_MODEL, disabled=True, fallback=True, expect_json=expect_json, reason=type(last_error).__name__)
+    return _local_fallback(prompt, expect_json=expect_json)
 
 
 def llm_health() -> dict:
     try:
-        status = "disabled" if _llm_is_disabled() or not GROQ_API_KEY else "ok"
+        status = "disabled" if _llm_is_disabled() or (not GEMINI_API_KEY and not GROQ_API_KEY) else "ok"
         if status == "ok":
             generate("ping")
         return {
             "status": status,
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "model": GROQ_MODEL,
+            "model": GEMINI_MODEL if GEMINI_API_KEY else GROQ_MODEL,
             "retry_at": _llm_disabled_until.isoformat() if _llm_disabled_until else None,
             "last_error": _llm_last_error,
         }

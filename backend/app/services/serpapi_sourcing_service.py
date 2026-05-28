@@ -38,7 +38,6 @@ from app.core.config import (
     SERPAPI_RESULTS_PER_PAGE,
     SERPAPI_URL,
 )
-from app.services.redis_service import distributed_lock
 from app.services.persistent_cache_service import get_json as cache_get_json, set_json as cache_set_json
 from app.services.metrics_service import log_metric
 from app.db.repositories import CandidateProfileRepository
@@ -58,8 +57,6 @@ _quota_used_profiles = 0
 _quota_budget = max(0, DAILY_SERPAPI_BUDGET)
 _query_fingerprint_lock = threading.Lock()
 _query_fingerprint_last_seen: dict[str, float] = {}
-_role_cache_lock_registry_lock = threading.Lock()
-_role_cache_locks: dict[str, threading.Lock] = {}
 _debug_write_lock = threading.Lock()
 _XRAY_ROLE_CACHE_NAMESPACE = "serpapi_xray_role_results"
 _XRAY_ROLE_CACHE_VERSION = "v1"
@@ -1083,22 +1080,14 @@ def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: in
     return selected
 
 
-def _role_cache_lock(role_cache_key: str) -> threading.Lock:
-    with _role_cache_lock_registry_lock:
-        lock = _role_cache_locks.get(role_cache_key)
-        if lock is None:
-            lock = threading.Lock()
-            _role_cache_locks[role_cache_key] = lock
-        return lock
-
-
-def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: list[str], layers: list[XRayQueryLayer]) -> str:
+def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: list[str], layers: list[XRayQueryLayer], limit: int) -> str:
     payload = {
         "role_search_id": _normalize_text(role_search_id),
         "role": _normalize_lower(role),
         "location": _normalize_lower(location),
         "skills": _dedupe_preserve_order([_normalize_lower(skill) for skill in skills if skill]),
         "queries": [_normalize_lower(layer.query) for layer in layers if layer.enabled and layer.query],
+        "limit": int(limit),
         "pages_per_layer": 1,
         "engine": SERPAPI_ENGINE or "google",
         "page_size": SERPAPI_RESULTS_PER_PAGE,
@@ -1555,6 +1544,8 @@ def _xray_role_cache_key(
         "industry": _normalize_text(intake.get("industry") or ""),
         "leadership_expectations": _normalize_text(intake.get("leadership_expectations") or ""),
         "skills": [token.strip() for token in (intake.get("skills") or "").split(",") if token.strip()],
+        "archetype_ids": _dedupe_preserve_order(archetype_ids),
+        "recruiter_preferences": recruiter_preferences or {},
         "layers": [
             {
                 "layer_type": layer.layer_type,
@@ -1717,74 +1708,6 @@ def discover_linkedin_xray_candidates(
             )
             _register_profiles_found(count=len(cached_results))
             return cached_results
-
-    role_cache_lock = _role_cache_lock(role_cache_key)
-    with role_cache_lock:
-        lock_name = f"xray:role:{role_cache_key}"
-        with distributed_lock(lock_name, ttl=max(180, SERPAPI_REQUEST_TIMEOUT_SECONDS * max(1, MAX_CALLS_PER_ROLE) * 2)) as acquired:
-            if not acquired:
-                wait_deadline = time.monotonic() + max(15.0, float(SERPAPI_REQUEST_TIMEOUT_SECONDS * max(1, MAX_CALLS_PER_ROLE)))
-                while time.monotonic() < wait_deadline:
-                    cached_role_payload = cache_get_json(_XRAY_ROLE_CACHE_NAMESPACE, role_cache_key)
-                    if isinstance(cached_role_payload, dict):
-                        cached_results = cached_role_payload.get("results")
-                        if isinstance(cached_results, list):
-                            cached_dedupe = cached_role_payload.get("dedupe_report") if isinstance(cached_role_payload.get("dedupe_report"), dict) else {}
-                            logger.info(
-                                "serpapi_role_cache_wait_hit role=%s role_search_id=%s count=%s cache_key=%s",
-                                job_role,
-                                resolved_role_search_id,
-                                len(cached_results),
-                                role_cache_key[:12],
-                            )
-                            if isinstance(cached_dedupe, dict):
-                                _log_structured(
-                                    "xray_dedup",
-                                    raw_candidates=cached_dedupe.get("raw_candidates", 0),
-                                    duplicate_candidates=cached_dedupe.get("duplicate_candidates", 0),
-                                    deduped_candidates=cached_dedupe.get("deduped_candidates", len(cached_results)),
-                                    duplicate_rate=cached_dedupe.get("duplicate_rate", 0.0),
-                                )
-                            _log_structured(
-                                "serpapi_call_count",
-                                role_search_id=resolved_role_search_id,
-                                calls_executed=0,
-                                quota_remaining=_quota_snapshot().budget,
-                                daily_budget=DAILY_SERPAPI_BUDGET,
-                                max_calls_per_role=MAX_CALLS_PER_ROLE,
-                            )
-                            _log_structured(
-                                "xray_timing",
-                                query_generation_ms=query_generation_ms,
-                                serpapi_latency_ms=0.0,
-                                dedupe_ms=0.0,
-                                prefilter_ms=0.0,
-                                rerank_ms=0.0,
-                                total_pipeline_ms=query_generation_ms,
-                            )
-                            _register_profiles_found(count=len(cached_results))
-                            return cached_results
-                    time.sleep(0.35)
-                cached_role_payload = cache_get_json(_XRAY_ROLE_CACHE_NAMESPACE, role_cache_key)
-                if isinstance(cached_role_payload, dict):
-                    cached_results = cached_role_payload.get("results")
-                    if isinstance(cached_results, list):
-                        logger.info(
-                            "serpapi_role_cache_late_hit role=%s role_search_id=%s count=%s cache_key=%s",
-                            job_role,
-                            resolved_role_search_id,
-                            len(cached_results),
-                            role_cache_key[:12],
-                        )
-                        _register_profiles_found(count=len(cached_results))
-                        return cached_results
-                logger.warning(
-                    "serpapi_role_lock_wait_timeout role=%s role_search_id=%s cache_key=%s",
-                    job_role,
-                    resolved_role_search_id,
-                    role_cache_key[:12],
-                )
-                return []
 
     if not limited_layers:
         logger.info("serpapi_discovery_completed role=%s count=0 reason=no_active_layers", job_role)

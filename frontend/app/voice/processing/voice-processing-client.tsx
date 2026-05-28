@@ -9,7 +9,7 @@
  * directly to /review. This page is a safety net.
  *
  * What API it connects to:
- * POST /voice/refine and GET /candidates
+ * POST /voice/refine and GET /candidates?refresh=true
  */
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -72,7 +72,7 @@ export default function VoiceProcessingClient() {
 
       setCompleted(3);
 
-      const candidatesResult = await getCandidatesWithMode({ jobId, mode: "volume", refresh: false });
+      const candidatesResult = await getCandidatesWithMode({ jobId, mode: "volume", refresh: true });
       if (cancelled) return;
 
       if (!candidatesResult.success || !candidatesResult.data) {
