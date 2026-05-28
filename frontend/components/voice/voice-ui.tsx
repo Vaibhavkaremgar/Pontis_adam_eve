@@ -29,6 +29,7 @@ import {
   getEffectiveVapiOrigin,
   getVapiRuntimeSnapshot,
   suggestVapiOriginHint,
+  setVapiRuntimeConfig,
 } from "@/lib/vapi-runtime";
 
 // ─── types ────────────────────────────────────────────────────────────────────
@@ -722,9 +723,29 @@ async function loadVapiConfig() {
     error?: string;
   };
 
+  if (payload.success === false) {
+    console.error("[vapi] runtime config failed", {
+      error: payload.error,
+      hasPublicKey: payload.data?.hasPublicKey,
+      hasAssistantId: payload.data?.hasAssistantId,
+      hasPublicAppUrl: payload.data?.hasPublicAppUrl,
+      publicAppUrl: payload.data?.publicAppUrl || "",
+    });
+    throw new Error(payload.error || "Unable to load Vapi runtime config.");
+  }
+
   const publicKey = payload.data?.publicKey?.trim() || "";
   const assistantId = payload.data?.assistantId?.trim() || "";
   const publicAppUrl = payload.data?.publicAppUrl?.trim() || "";
+  setVapiRuntimeConfig({ publicAppUrl });
+  console.info("[vapi] runtime config payload", {
+    hasPublicKey: Boolean(publicKey),
+    hasAssistantId: Boolean(assistantId),
+    hasPublicAppUrl: Boolean(publicAppUrl),
+    publicAppUrl,
+    assistantIdPreview: assistantId ? `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}` : null,
+    publicKeyPreview: publicKey ? `${publicKey.slice(0, 6)}...${publicKey.slice(-4)}` : null,
+  });
   return { publicKey, assistantId, publicAppUrl };
 }
 
@@ -932,8 +953,22 @@ export function VoiceUi() {
   }, [jobId, router, setIsRefined, setVoiceNotes, user]);
 
   // ── Vapi instance (created once per session) ───────────────────────────────
-  const ensureVapi = useCallback((publicKey: string) => {
+  const ensureVapi = useCallback(
+    (
+      publicKey: string,
+      context?: {
+        assistantId?: string;
+        publicAppUrl?: string;
+        effectiveOrigin?: string;
+        runtimeSnapshot?: ReturnType<typeof getVapiRuntimeSnapshot>;
+      }
+    ) => {
     if (vapiRef.current) return vapiRef.current;
+
+    const assistantIdForLog = context?.assistantId || "";
+    const publicAppUrlForLog = context?.publicAppUrl || getConfiguredPublicAppUrl();
+    const effectiveOriginForLog = context?.effectiveOrigin || getEffectiveVapiOrigin();
+    const runtimeSnapshotForLog = context?.runtimeSnapshot || getVapiRuntimeSnapshot();
 
     debugVoice("ensureVapi called", {
       hasPublicKey: Boolean(publicKey),
@@ -957,7 +992,33 @@ export function VoiceUi() {
       debugVoice("call-start", {
         jobId,
       });
+      console.info("[vapi] call-start", {
+        jobId,
+        currentOrigin: getCurrentOrigin(),
+        publicAppUrl: publicAppUrlForLog,
+        effectiveOrigin: effectiveOriginForLog,
+      });
       setCallStatus("listening");
+    });
+
+    vapi.on("call-start-progress", (event) => {
+      console.info("[vapi] call-start-progress", {
+        jobId,
+        stage: event.stage,
+        status: event.status,
+        duration: event.duration,
+        timestamp: event.timestamp,
+        metadata: event.metadata,
+      });
+    });
+
+    vapi.on("call-start-success", (event) => {
+      console.info("[vapi] call-start-success", {
+        jobId,
+        totalDuration: event.totalDuration,
+        callId: event.callId,
+        timestamp: event.timestamp,
+      });
     });
 
     vapi.on("speech-start", () => {
@@ -990,6 +1051,17 @@ export function VoiceUi() {
         message: classified.message,
         error,
       });
+      console.error("[vapi] error", {
+        jobId,
+        currentOrigin: getCurrentOrigin(),
+        publicAppUrl: publicAppUrlForLog,
+        effectiveOrigin: effectiveOriginForLog,
+        assistantId: assistantIdForLog,
+        publicKeyPreview: publicKey.slice(0, 6) + "..." + publicKey.slice(-4),
+        environment: runtimeSnapshotForLog.runtime,
+        classified,
+        error,
+      });
       setCallStatus("error");
       setPipelineStatus("error");
       setPipelineError(classified.message);
@@ -998,6 +1070,15 @@ export function VoiceUi() {
       terminalStateRef.current = "error";
       debugVoice("call-start-failed", {
         jobId,
+        event,
+      });
+      console.error("[vapi] call-start-failed", {
+        jobId,
+        currentOrigin: getCurrentOrigin(),
+        publicAppUrl: publicAppUrlForLog,
+        effectiveOrigin: effectiveOriginForLog,
+        assistantId: assistantIdForLog,
+        environment: runtimeSnapshotForLog.runtime,
         event,
       });
       setCallStatus("error");
@@ -1029,7 +1110,9 @@ export function VoiceUi() {
 
     vapiRef.current = vapi;
     return vapi;
-  }, [jobId, processTranscriptEvent, runPipeline, setCallStatus]);
+    },
+    [jobId, processTranscriptEvent, runPipeline, setCallStatus]
+  );
 
   // ── start call ─────────────────────────────────────────────────────────────
   const handleStart = async () => {
@@ -1061,6 +1144,7 @@ export function VoiceUi() {
         assistantId = assistantId || runtimeConfig.assistantId;
         publicKey = publicKey || runtimeConfig.publicKey;
         publicAppUrl = publicAppUrl || runtimeConfig.publicAppUrl;
+        setVapiRuntimeConfig({ publicAppUrl });
         debugVoice("runtime vapi config loaded", {
           hasAssistantId: Boolean(assistantId),
           hasPublicKey: Boolean(publicKey),
@@ -1138,7 +1222,12 @@ export function VoiceUi() {
     ].join(" ");
 
     try {
-      const vapi = ensureVapi(publicKey);
+      const vapi = ensureVapi(publicKey, {
+        assistantId,
+        publicAppUrl,
+        effectiveOrigin,
+        runtimeSnapshot,
+      });
       setCallStatus("connecting");
       debugVoice("calling vapi.start", {
         assistantIdPreview: `${assistantId.slice(0, 6)}...${assistantId.slice(-4)}`,
@@ -1191,6 +1280,7 @@ export function VoiceUi() {
         publicKeyPreview: publicKey.slice(0, 6) + "..." + publicKey.slice(-4),
         environment: runtimeSnapshot.runtime,
         originHint,
+        runtimeSnapshot,
         error,
       });
       setCallStatus("error");

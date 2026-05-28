@@ -10,8 +10,10 @@ export type VapiRuntimeSnapshot = {
   originMatchesConfiguredUrl: boolean;
 };
 
+let runtimePublicAppUrl = "";
+
 function readPublicAppUrl(): string {
-  return process.env.NEXT_PUBLIC_PUBLIC_APP_URL?.trim() || "";
+  return runtimePublicAppUrl || process.env.NEXT_PUBLIC_PUBLIC_APP_URL?.trim() || "";
 }
 
 export function getCurrentOrigin(): string {
@@ -21,6 +23,10 @@ export function getCurrentOrigin(): string {
 
 export function getConfiguredPublicAppUrl(): string {
   return readPublicAppUrl();
+}
+
+export function setVapiRuntimeConfig(config: { publicAppUrl?: string } = {}): void {
+  runtimePublicAppUrl = config.publicAppUrl?.trim() || runtimePublicAppUrl;
 }
 
 export function getEffectiveVapiOrigin(): string {
