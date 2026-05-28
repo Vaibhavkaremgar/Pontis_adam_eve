@@ -32,11 +32,11 @@ from app.services.state_machine import assert_valid_transition, is_swipe_locked
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
-DEFAULT_BATCH_SIZE = 30
+DEFAULT_BATCH_SIZE = 20
 DEFAULT_TOTAL_BATCHES = 1
 DEFAULT_SELECTION_LIMIT = DEFAULT_BATCH_SIZE * DEFAULT_TOTAL_BATCHES
 DEFAULT_FINAL_LIMITS = {
-    "volume": 30,
+    "volume": 20,
     "elite": 15,
 }
 
@@ -162,11 +162,12 @@ def _select_diverse_subset(candidates: list[CandidateResult], *, limit: int) -> 
 
 
 def _build_batch_plan(candidates: list[CandidateResult]) -> list[list[str]]:
-    if len(candidates) < DEFAULT_SELECTION_LIMIT:
-        raise APIError("Not enough candidates to build the candidate set", status_code=409)
+    if not candidates:
+        raise APIError("No X-Ray candidates available for review", status_code=404)
 
-    highest_matches = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))[:DEFAULT_SELECTION_LIMIT]
-    return [[candidate.id for candidate in highest_matches]]
+    highest_matches = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+    limit = min(DEFAULT_SELECTION_LIMIT, len(highest_matches))
+    return [[candidate.id for candidate in highest_matches[:limit]]]
 
 
 def _candidate_lookup_snapshot(snapshot: list[dict[str, Any]]) -> dict[str, CandidateResult]:
@@ -197,7 +198,7 @@ def _is_external_candidate(candidate: CandidateResult) -> bool:
 
 
 def _selection_candidate_pool(*, db: Session, job: Any) -> list[CandidateResult]:
-    candidates = fetch_ranked_candidates(db=db, job_id=job.id, mode=_job_mode(job), refresh=True)
+    candidates = fetch_ranked_candidates(db=db, job_id=job.id, mode=_job_mode(job), refresh=False)
     external_candidates = [
         _candidate_without_resume(candidate)
         for candidate in candidates
@@ -215,6 +216,25 @@ def _selection_candidate_pool(*, db: Session, job: Any) -> list[CandidateResult]
         )
         limit = _selection_limit(job)
         highest_matches = sorted(candidates, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+        return highest_matches[:limit]
+    profile_repo = CandidateProfileRepository(db)
+    stored_profiles: list[CandidateResult] = []
+    for row in profile_repo.list_for_job(job.id):
+        raw_data = row.raw_data if isinstance(row.raw_data, dict) else {}
+        try:
+            candidate = CandidateResult.model_validate(raw_data)
+        except Exception:
+            continue
+        if _is_external_candidate(candidate):
+            stored_profiles.append(_candidate_without_resume(candidate))
+    if stored_profiles:
+        limit = _selection_limit(job)
+        highest_matches = sorted(stored_profiles, key=lambda candidate: (-float(candidate.fitScore or 0.0), candidate.name or candidate.id))
+        logger.info(
+            "selection_candidate_pool_recovered_from_profiles job_id=%s count=%s",
+            job.id,
+            len(highest_matches),
+        )
         return highest_matches[:limit]
     raise APIError("No X-Ray candidates available for review", status_code=404)
 

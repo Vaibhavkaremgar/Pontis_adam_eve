@@ -24,6 +24,7 @@ _llm_disabled_until: datetime | None = None
 _llm_disable_reason = ""
 _llm_last_error = ""
 LLM_DISABLE_COOLDOWN_SECONDS = 300
+LLM_RATE_LIMIT_COOLDOWN_SECONDS = 60 * 60
 
 
 @lru_cache(maxsize=1)
@@ -83,6 +84,11 @@ def _run_chat(client: OpenAI, *, model: str, prompt: str) -> str:
         temperature=0.2,
     )
     return (response.choices[0].message.content or "").strip()
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "429" in text or "rate limit" in text or "quota" in text or "resource_exhausted" in text
 
 
 def _extract_json_payload(text: str) -> dict | list | None:
@@ -159,6 +165,13 @@ def generate(prompt: str, expect_json: bool = False):
             last_error = exc
             logger.warning("llm_generation_failed provider=%s model=%s reason=%s", provider_name, model_name, str(exc))
             if provider_name == "gemini" and GROQ_API_KEY:
+                if _is_rate_limit_error(exc):
+                    _disable_llm(str(exc), cooldown_seconds=LLM_RATE_LIMIT_COOLDOWN_SECONDS)
+                    logger.info(
+                        "llm_provider_cooldown provider=%s fallback_provider=groq reason=rate_limit cooldown_seconds=%s",
+                        provider_name,
+                        LLM_RATE_LIMIT_COOLDOWN_SECONDS,
+                    )
                 continue
             if provider_name != "groq":
                 _disable_llm(str(exc))

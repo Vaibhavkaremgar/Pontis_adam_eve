@@ -1179,7 +1179,6 @@ function RecruiterSwipeDeck({
             {candidates.length} remaining · {shortlistedCandidates.length} shortlisted
           </p>
         </div>
-        <Badge variant="high">{candidates.length} ranked candidates</Badge>
       </div>
 
       <p className="text-center font-body text-xs text-[#9CA3AF]">Swipe right to shortlist · Swipe left to reject · Tap for details</p>
@@ -2086,17 +2085,6 @@ export default function ReviewPage() {
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
                     Review the externally sourced candidates. Each card is ranked from X-Ray signals and reranked with recruiter memory.
                   </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                    Ranked candidates
-                  </Badge>
-                  <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#F4FBF7] px-5 py-2 text-[13px] font-semibold text-[#0F6B3A] shadow-none">
-                    {shortlistedCount} shortlisted
-                  </Badge>
-                  <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#FFF7ED] px-5 py-2 text-[13px] font-semibold text-[#B45309] shadow-none">
-                    {swipeCandidates.length} candidates
-                  </Badge>
                 </div>
               </div>
 

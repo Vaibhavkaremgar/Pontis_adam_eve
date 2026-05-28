@@ -1249,8 +1249,6 @@ def _xray_role_cache_key(
     company_id: str,
     intake: dict[str, str],
     limited_layers: list[XRayQueryLayer],
-    recruiter_preferences: dict[str, Any] | None,
-    archetype_ids: list[str],
 ) -> str:
     payload = {
         "cache_version": _XRAY_ROLE_CACHE_VERSION,
@@ -1378,8 +1376,6 @@ def discover_linkedin_xray_candidates(
         company_id=resolved_company_id,
         intake=resolved_intake,
         limited_layers=limited_layers,
-        recruiter_preferences=recruiter_preferences,
-        archetype_ids=resolved_archetype_ids,
     )
     cached_role_payload = cache_get_json(_XRAY_ROLE_CACHE_NAMESPACE, role_cache_key)
     if isinstance(cached_role_payload, dict):

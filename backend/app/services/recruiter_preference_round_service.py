@@ -562,8 +562,8 @@ def _real_candidate_pool_snapshot(
             db=db,
             job_id=str(getattr(job, "id", "") or ""),
             mode=mode,
-            refresh=True,
-            limit=12,
+            refresh=False,
+            limit=20,
         )
     except Exception as exc:
         logger.warning(
@@ -574,9 +574,6 @@ def _real_candidate_pool_snapshot(
         return []
 
     snapshot = [candidate.model_dump(exclude_none=True) for candidate in candidates]
-    if len(snapshot) < 6:
-        return []
-
     logger.info(
         "real_selection_snapshot_captured job_id=%s count=%s mode=%s",
         getattr(job, "id", ""),
