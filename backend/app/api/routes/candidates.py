@@ -8,7 +8,7 @@ from app.core.security import get_current_user
 from app.db.session import get_db
 from app.schemas.candidate import CandidateExportRequest, CandidateSelectionRequest, SwipeFeedbackRequest
 from app.services.ats_service import export_to_ats
-from app.services.candidate_service import apply_feedback, fetch_ranked_candidates
+from app.services.candidate_service import apply_feedback, build_candidate_fetch_debug, fetch_ranked_candidates
 from app.services.candidate_selection_service import (
     get_final_selection_results,
     get_first_selection_batch,
@@ -32,7 +32,18 @@ def get_candidates(
 ):
     assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     candidates = fetch_ranked_candidates(db=db, job_id=jobId, mode=mode, refresh=refresh, debug=debug)
-    return success_response([candidate.model_dump(exclude_none=True) for candidate in candidates])
+    payload = [candidate.model_dump(exclude_none=True) for candidate in candidates]
+    debug_payload = build_candidate_fetch_debug(
+        db=db,
+        job_id=jobId,
+        mode=mode,
+        refresh=refresh,
+        request_source="api",
+        returned_count=len(payload),
+    )
+    if debug or not payload:
+        return {"success": True, "data": payload, "error": None, "debug": debug_payload}
+    return success_response(payload)
 
 
 @router.get("/candidates/shortlisted")

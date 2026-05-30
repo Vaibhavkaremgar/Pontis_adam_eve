@@ -149,7 +149,8 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
     const result: ApiResponse<T> = {
       success: Boolean(parsed?.success),
       data: (parsed?.data as T | null) ?? null,
-      error: parsed?.error || null
+      error: parsed?.error || null,
+      debug: parsed?.debug ?? null
     };
 
     logRequest({ url, method, payload, response: result });

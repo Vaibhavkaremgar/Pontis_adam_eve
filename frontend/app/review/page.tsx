@@ -52,6 +52,16 @@ import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intellige
 
 function statusLabel(candidate: Candidate): string {
   const normalizedStatus = String(candidate.status || "").trim().toLowerCase();
+  const enrichmentStatus = String(candidate.enrichmentStatus || "").trim().toLowerCase();
+  const outreachStatus = String(candidate.outreachStatus || "").trim().toLowerCase();
+  const atsStatus = String(candidate.ats_status || "").trim().toLowerCase();
+  const pipelineStatus = enrichmentStatus || outreachStatus || atsStatus;
+
+  if (pipelineStatus === "enriching") return "Enriching";
+  if (pipelineStatus === "high_confidence" || pipelineStatus === "enriched") return "Enriched";
+  if (pipelineStatus === "outreach_pending") return "Outreach pending";
+  if (pipelineStatus === "outreach_sent") return "Outreach sent";
+  if (pipelineStatus === "replied_interested" || pipelineStatus === "replied_not_interested") return "Replied";
   if (normalizedStatus === "sourced") return "LinkedIn sourced";
   if (normalizedStatus === "reviewed") return "Reviewed";
   if (normalizedStatus === "selected" || normalizedStatus === "shortlisted") return "Shortlisted";
@@ -60,7 +70,31 @@ function statusLabel(candidate: Candidate): string {
   if (normalizedStatus === "outreach_pending") return "Outreach pending";
   if (normalizedStatus === "outreach_sent") return "Outreach sent";
   if (normalizedStatus === "rejected") return "Rejected";
+  if (pipelineStatus === "failed" || normalizedStatus === "enrichment_failed") return "Enrichment failed";
   return "Awaiting choice";
+}
+
+function selectionPipelineLabel(update: {
+  enrichmentStatus?: string;
+  outreachStatus?: string;
+  replyStatus?: string;
+  contactEmail?: string;
+}): string {
+  const enrichmentStatus = String(update.enrichmentStatus || "").trim().toLowerCase();
+  const outreachStatus = String(update.outreachStatus || "").trim().toLowerCase();
+  const replyStatus = String(update.replyStatus || "").trim().toLowerCase();
+  const hasContactEmail = Boolean(String(update.contactEmail || "").trim());
+
+  if (enrichmentStatus === "queued") return "Enriching candidate data from LinkedIn...";
+  if (enrichmentStatus === "failed") return "Enrichment failed. The record was updated, but outreach may need a retry.";
+  if (enrichmentStatus === "missing_email") return "Enriched, but no email was found.";
+  if (outreachStatus === "sent") return replyStatus === "waiting_for_reply" ? "Outreach sent. Waiting for reply." : "Outreach sent.";
+  if (outreachStatus === "dry_run" || outreachStatus === "simulated") return "Outreach prepared in dry-run mode.";
+  if (outreachStatus === "queued") return hasContactEmail ? "Outreach queued. Waiting for send." : "Outreach is waiting on enrichment.";
+  if (outreachStatus === "suppressed") return "Outreach suppressed for this candidate.";
+  if (outreachStatus === "failed") return "Outreach failed. We can retry if needed.";
+  if (replyStatus === "outreach_not_sent") return "Waiting for a valid contact before outreach.";
+  return "Selection saved. Candidate enrichment is now running.";
 }
 
 function isShortlistedStatus(value: unknown): boolean {
@@ -1520,11 +1554,19 @@ export default function ReviewPage() {
       const result = await getCandidates({
         jobId,
         refined: true,
+        debug: true,
       });
 
       if (!result.success || !result.data) {
         const message = result.error || "Could not load sourced candidates.";
         setSourcingError(message);
+        console.warn("[review:candidates-fetch-failed]", {
+          jobId,
+          source,
+          forceRefresh,
+          message,
+          debug: result.debug ?? null,
+        });
         if (cachedCandidates.length === 0) {
           setReviewCandidates([]);
         }
@@ -1565,10 +1607,21 @@ export default function ReviewPage() {
       );
       storeReviewCandidates(jobId, normalizedRankedCandidates);
       storeShortlistedCandidateIds(jobId, mergedShortlistedIds);
+      const debugPayload = result.debug && typeof result.debug === "object" ? (result.debug as Record<string, unknown>) : null;
+      if (rankedCandidates.length === 0) {
+        console.warn("[review:candidates-empty]", {
+          jobId,
+          source,
+          forceRefresh,
+          cachedCandidates: cachedCandidates.length,
+          debug: debugPayload,
+        });
+      }
+      const likelyReason = typeof debugPayload?.likelyReason === "string" ? debugPayload.likelyReason : "";
       setFeedbackMessage(
         rankedCandidates.length > 0
           ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
-          : "X-Ray sourcing completed, but no candidates were returned."
+          : `X-Ray sourcing completed, but no candidates were returned${likelyReason ? ` (${likelyReason.replace(/_/g, " ")})` : ""}.`
       );
     } finally {
       setReviewLoading(false);
@@ -1784,6 +1837,7 @@ export default function ReviewPage() {
     setIsAdvancing(true);
     setError("");
     setSelectedCandidateId(candidateId);
+    setFeedbackMessage("Enriching candidate data from LinkedIn...");
     candidateStateVersionRef.current += 1;
     const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
     const nextShortlistedIds = Array.from(new Set([...finalShortlistedIds, candidateId]));
@@ -1825,8 +1879,53 @@ export default function ReviewPage() {
       return;
     }
 
+    const selectionUpdate = result.data;
+    const enrichmentStatus = String(selectionUpdate.enrichmentStatus || "").trim().toLowerCase();
+    const outreachStatus = String(selectionUpdate.outreachStatus || "").trim().toLowerCase();
+    const replyStatus = String(selectionUpdate.replyStatus || "").trim().toLowerCase();
+    const contactEmail = String(selectionUpdate.contactEmail || "").trim();
+    const contactPhone = String(selectionUpdate.contactPhone || "").trim();
+
+    const mergeSelectionMetadata = (candidate: Candidate): Candidate =>
+      candidate.id === candidateId
+        ? {
+            ...candidate,
+            status: "selected",
+            enrichmentStatus: enrichmentStatus || candidate.enrichmentStatus,
+            outreachStatus: outreachStatus || candidate.outreachStatus,
+            contactEmail: contactEmail || candidate.contactEmail,
+            contactPhone: contactPhone || candidate.contactPhone,
+            ats_status:
+              outreachStatus === "sent"
+                ? "outreach_sent"
+                : enrichmentStatus === "enriching"
+                  ? "enriching"
+                  : candidate.ats_status,
+            ats_status_reason:
+              outreachStatus === "sent"
+                ? "Outreach sent. Waiting for reply."
+                : enrichmentStatus === "enriching"
+                  ? "Enriching candidate data from LinkedIn."
+                  : candidate.ats_status_reason,
+          }
+        : candidate;
+
+    const mergedSelectionCandidates = reviewCandidates.map(mergeSelectionMetadata);
+    const updatedSelectedCandidate = nextCandidate ? mergeSelectionMetadata({ ...nextCandidate, status: "selected" }) : null;
+    setReviewCandidates(mergedSelectionCandidates);
+    setRemainingCandidates((prev) => prev.filter((candidate) => candidate.id !== candidateId));
+    setShortlistedCandidates((prev) =>
+      updatedSelectedCandidate ? [...prev.filter((candidate) => candidate.id !== candidateId), updatedSelectedCandidate] : prev
+    );
+    storeReviewCandidates(jobId, mergedSelectionCandidates);
+    if (selectionUpdate.warning) {
+      setFeedbackMessage(selectionPipelineLabel(selectionUpdate));
+    } else if (outreachStatus === "sent") {
+      setFeedbackMessage("Outreach sent. Waiting for reply.");
+    } else {
+      setFeedbackMessage(selectionPipelineLabel(selectionUpdate));
+    }
     setActiveCandidate(null);
-    setFeedbackMessage("Selection saved. Candidate enrichment is now running.");
     setIsAdvancing(false);
     setSelectedCandidateId("");
   };

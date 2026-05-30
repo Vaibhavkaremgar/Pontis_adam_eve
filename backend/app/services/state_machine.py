@@ -127,6 +127,7 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         ("offer_sent", "placed"),
         ("offer_sent", "search_closed"),
         ("offer_sent", "archived"),
+        ("rejected", "selected"),
         ("placed", "search_closed"),
         ("placed", "archived"),
         ("search_closed", "archived"),
@@ -136,7 +137,7 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
 )
 
 # States from which NO further transition is ever allowed
-_TERMINAL_STATES: frozenset[str] = frozenset({"hired", "rejected", "archived"})
+_TERMINAL_STATES: frozenset[str] = frozenset({"hired", "archived"})
 
 # States that are locked against swipe (accept/reject) actions specifically
 _SWIPE_LOCKED_STATES: frozenset[str] = frozenset(

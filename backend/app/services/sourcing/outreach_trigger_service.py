@@ -25,12 +25,14 @@ def trigger_outreach_after_enrichment(
     should_outreach = bool(enrichment_result.get("shouldOutreach"))
     contact_email = str(enrichment_result.get("contactEmail") or "").strip()
     if status not in {"verified", "high_confidence"} or not should_outreach or not contact_email:
-        logger.info(
-            "[outreach_trigger] skipped job_id=%s candidate_id=%s status=%s should_outreach=%s",
+        logger.warning(
+            "[outreach_trigger] skipped job_id=%s candidate_id=%s status=%s should_outreach=%s contact_email=%s reason=%s",
             job_id,
             candidate_id,
             status,
             should_outreach,
+            contact_email or "missing",
+            "missing_or_unverified_email" if not contact_email else "enrichment_not_ready",
         )
         return {"status": "skipped", "shouldOutreach": False}
 
@@ -48,17 +50,41 @@ def trigger_outreach_after_enrichment(
             "contactEmail": contact_email,
         },
     )
-    result = process_outreach(
-        db=db,
-        job_id=job_id,
-        selected_candidates=[candidate_id],
-        custom_body="",
-        recipient_email=contact_email,
-    )
-    logger.info(
-        "[outreach_trigger] sent job_id=%s candidate_id=%s provider=%s",
-        job_id,
-        candidate_id,
-        result.get("provider") or "",
-    )
+    try:
+        result = process_outreach(
+            db=db,
+            job_id=job_id,
+            selected_candidates=[candidate_id],
+            custom_body="",
+            recipient_email=contact_email,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[outreach_trigger] failed job_id=%s candidate_id=%s recipient_email=%s error=%s",
+            job_id,
+            candidate_id,
+            contact_email,
+            str(exc),
+        )
+        raise
+
+    outreach_status = str(result.get("status") or "").strip().lower()
+    if outreach_status in {"sent", "delivered", "queued"}:
+        logger.info(
+            "[outreach_trigger] success job_id=%s candidate_id=%s status=%s provider=%s recipient_email=%s",
+            job_id,
+            candidate_id,
+            outreach_status,
+            result.get("provider") or "",
+            contact_email,
+        )
+    else:
+        logger.warning(
+            "[outreach_trigger] not_sent job_id=%s candidate_id=%s status=%s reason=%s recipient_email=%s",
+            job_id,
+            candidate_id,
+            outreach_status or "unknown",
+            result.get("reason") or result.get("error") or "outreach_not_sent",
+            contact_email,
+        )
     return result

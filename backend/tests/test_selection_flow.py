@@ -58,7 +58,19 @@ sys.modules.setdefault("slack_sdk", fake_slack_sdk)
 sys.modules.setdefault("slack_sdk.errors", fake_slack_sdk_errors)
 
 from app.schemas.candidate import CandidateExplanation, CandidateResult
-from app.db.repositories import _candidate_email_value
+from app.db.repositories import (
+    CandidateFeedbackRepository,
+    CandidateProfileRepository,
+    CandidateSelectionSessionRepository,
+    CompanyRepository,
+    InterviewRepository,
+    JobRepository,
+    UserRepository,
+    _candidate_email_value,
+)
+from app.db.session import SessionLocal, engine
+from app.models.entities import Base
+from app.services.ats_lifecycle_service import get_candidate_ats_state
 from app.services.candidate_service import _candidate_identity_key, build_selection_candidate_snapshot
 import app.services.candidate_service as candidate_service
 import app.services.recruiter_preference_round_service as calibration_service
@@ -591,6 +603,344 @@ class SelectionFlowTests(unittest.TestCase):
         }
 
         self.assertEqual(_candidate_email_value(nested_payload), "candidate@example.com")
+
+
+class SelectionReactivationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        engine.dispose()
+        Base.metadata.create_all(bind=engine)
+
+    def setUp(self) -> None:
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        self.db = SessionLocal()
+        self.user = UserRepository(self.db).create("reactivation@example.com", role="admin")
+        self.company = CompanyRepository(self.db).create(
+            user_id=self.user.id,
+            name="Reactivate Co",
+            website="https://reactivate.example",
+            description="Selection reactivation company",
+        )
+        self.job = JobRepository(self.db).create(
+            company_id=self.company.id,
+            created_by=self.user.id,
+            title="Backend Engineer",
+            description="Build backend systems.",
+            location="Remote",
+            compensation="$180k",
+            work_authorization="required",
+            remote_policy="remote",
+            experience_required="5+ years",
+            skills_required=["Python", "FastAPI"],
+            responsibilities=["Ship backend features"],
+        )
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def test_rejected_candidate_can_be_shortlisted_again_and_queues_enrichment(self) -> None:
+        candidate_id = "candidate-reactivate"
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            name="Reactivate Candidate",
+            role="Backend Engineer",
+            company="Reactivate Co",
+            summary="Backend engineer with LinkedIn profile.",
+            skills=["Python", "FastAPI"],
+            raw_data={
+                "name": "Reactivate Candidate",
+                "full_name": "Reactivate Candidate",
+                "linkedin_url": "https://www.linkedin.com/in/reactivate-candidate",
+                "email": "reactivate@example.com",
+                "work_email": "reactivate@example.com",
+                "skills": ["Python", "FastAPI"],
+            },
+            fit_score=4.9,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        InterviewRepository(self.db).upsert_status(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            status="rejected",
+            create_default="rejected",
+        )
+        session = CandidateSelectionSessionRepository(self.db).create(
+            job_id=self.job.id,
+            candidate_pool_snapshot=[
+                {"id": candidate_id, "linkedinUrl": "https://www.linkedin.com/in/reactivate-candidate"},
+                {"id": "candidate-other"},
+            ],
+            batch_plan=[[candidate_id, "candidate-other"]],
+        )
+        self.db.commit()
+
+        selected_candidate = CandidateResult(
+            id=candidate_id,
+            name="Reactivate Candidate",
+            role="Backend Engineer",
+            company="Reactivate Co",
+            email="reactivate@example.com",
+            skills=["Python", "FastAPI"],
+            summary="Backend engineer with LinkedIn profile.",
+            fitScore=4.9,
+            decision="strong_match",
+            explanation=CandidateExplanation(
+                semanticScore=0.9,
+                skillOverlap=0.9,
+                finalScore=0.95,
+                pdlRelevance=0.8,
+                recencyScore=0.7,
+                penalties={},
+            ),
+            strategy="HIGH",
+            status="rejected",
+            linkedinUrl="https://www.linkedin.com/in/reactivate-candidate",
+        )
+        payload = {
+            "sessionId": session.id,
+            "jobId": self.job.id,
+            "status": "active",
+            "currentBatchIndex": 0,
+            "totalBatches": 1,
+            "batchSize": 2,
+            "selectedCandidateIds": [],
+            "rejectedCandidateIds": [],
+            "currentBatch": [selected_candidate.model_dump()],
+            "analysis": None,
+            "completed": False,
+            "finalCandidates": [],
+        }
+
+        with patch.object(candidate_selection_service, "_get_or_create_selection_session", return_value=(session, payload)), patch.object(
+            candidate_selection_service, "_candidate_lookup_snapshot", return_value={candidate_id: selected_candidate}
+        ), patch.object(
+            candidate_selection_service, "_current_batch_from_session", return_value=[selected_candidate]
+        ), patch.object(
+            candidate_selection_service, "get_preference_session", return_value={}
+        ), patch.object(
+            candidate_selection_service, "enrich_selected_candidate",
+            return_value={
+                "status": "high_confidence",
+                "shouldOutreach": True,
+                "contactEmail": "reactivate@example.com",
+            },
+        ) as mock_enrich, patch.object(
+            candidate_selection_service, "trigger_outreach_after_enrichment",
+            return_value={"status": "sent", "outreachStatus": "sent"},
+        ) as mock_outreach, patch.object(
+            candidate_selection_service, "enqueue_job", return_value=None
+        ) as mock_enqueue:
+            result = candidate_selection_service.submit_selection_choice(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id=candidate_id,
+            )
+
+        self.assertIn(candidate_id, result["selectedCandidateIds"])
+        self.assertTrue(mock_enrich.called)
+        self.assertTrue(mock_outreach.called)
+        self.assertFalse(mock_enqueue.called)
+        enrich_kwargs = mock_enrich.call_args.kwargs
+        self.assertEqual(enrich_kwargs["job_id"], self.job.id)
+        self.assertEqual(enrich_kwargs["candidate_id"], candidate_id)
+        self.assertEqual(enrich_kwargs["source_type"], "linkedin_xray")
+        self.assertEqual(enrich_kwargs["linkedin_url"], "https://www.linkedin.com/in/reactivate-candidate")
+        self.assertEqual(get_candidate_ats_state(db=self.db, job_id=self.job.id, candidate_id=candidate_id), "selected")
+
+    def test_selected_candidate_can_be_explicitly_rejected(self) -> None:
+        candidate_id = "candidate-selected"
+        CandidateProfileRepository(self.db).upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            name="Selected Candidate",
+            role="Backend Engineer",
+            company="Reactivate Co",
+            summary="Selected candidate for rejection test.",
+            skills=["Python"],
+            raw_data={"name": "Selected Candidate", "email": "selected@example.com"},
+            fit_score=4.2,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        InterviewRepository(self.db).upsert_status(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            status="selected",
+            create_default="selected",
+        )
+
+        with patch.object(candidate_service, "update_recruiter_preferences", return_value={}):
+            result = candidate_service.apply_feedback(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id=candidate_id,
+                action="reject",
+            )
+
+        self.assertEqual(result["newState"], "rejected")
+        self.assertEqual(get_candidate_ats_state(db=self.db, job_id=self.job.id, candidate_id=candidate_id), "rejected")
+        feedback_row = CandidateFeedbackRepository(self.db).get(job_id=self.job.id, candidate_id=candidate_id)
+        self.assertIsNotNone(feedback_row)
+        self.assertEqual(feedback_row.feedback, "reject")
+
+    def test_selection_choice_without_email_skips_outreach_without_crash(self) -> None:
+        candidate_id = "candidate-no-email"
+        selected_candidate = CandidateResult(
+            id=candidate_id,
+            name="No Email Candidate",
+            role="Backend Engineer",
+            company="Reactivate Co",
+            email="",
+            skills=["Python"],
+            summary="LinkedIn x-ray candidate without reachable email.",
+            fitScore=4.5,
+            decision="strong_match",
+            explanation=CandidateExplanation(
+                semanticScore=0.9,
+                skillOverlap=0.9,
+                finalScore=0.95,
+                pdlRelevance=0.8,
+                recencyScore=0.7,
+                penalties={},
+            ),
+            strategy="HIGH",
+            status="new",
+            linkedinUrl="https://www.linkedin.com/in/no-email-candidate",
+        )
+        session = CandidateSelectionSessionRepository(self.db).create(
+            job_id=self.job.id,
+            candidate_pool_snapshot=[selected_candidate.model_dump()],
+            batch_plan=[[candidate_id]],
+        )
+        payload = {
+            "sessionId": session.id,
+            "jobId": self.job.id,
+            "status": "active",
+            "currentBatchIndex": 0,
+            "totalBatches": 1,
+            "batchSize": 1,
+            "selectedCandidateIds": [],
+            "rejectedCandidateIds": [],
+            "currentBatch": [selected_candidate.model_dump()],
+            "analysis": None,
+            "completed": False,
+            "finalCandidates": [],
+        }
+
+        with patch.object(candidate_selection_service, "_get_or_create_selection_session", return_value=(session, payload)), patch.object(
+            candidate_selection_service, "_candidate_lookup_snapshot", return_value={candidate_id: selected_candidate}
+        ), patch.object(
+            candidate_selection_service, "_current_batch_from_session", return_value=[selected_candidate]
+        ), patch.object(
+            candidate_selection_service, "get_preference_session", return_value={}
+        ), patch.object(
+            candidate_selection_service, "enrich_selected_candidate",
+            return_value={"status": "enriched", "shouldOutreach": True},
+        ), patch.object(
+            candidate_selection_service, "trigger_outreach_after_enrichment",
+        ) as mock_outreach:
+            result = candidate_selection_service.submit_selection_choice(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id=candidate_id,
+            )
+
+        self.assertEqual(result["outreachStatus"], "skipped")
+        self.assertFalse(mock_outreach.called)
+
+    def test_selection_choice_does_not_bulk_reject_other_candidates(self) -> None:
+        selected_id = "candidate-selected-one"
+        other_id = "candidate-still-reviewable"
+        selected_candidate = CandidateResult(
+            id=selected_id,
+            name="Selected Candidate",
+            role="Backend Engineer",
+            company="Reactivate Co",
+            email="selected@example.com",
+            skills=["Python"],
+            summary="Selected candidate for shortlist flow.",
+            fitScore=4.8,
+            decision="strong_match",
+            explanation=CandidateExplanation(
+                semanticScore=0.9,
+                skillOverlap=0.9,
+                finalScore=0.96,
+                pdlRelevance=0.8,
+                recencyScore=0.7,
+                penalties={},
+            ),
+            strategy="HIGH",
+            status="new",
+            linkedinUrl="https://www.linkedin.com/in/selected-candidate",
+        )
+        other_candidate = CandidateResult(
+            id=other_id,
+            name="Other Candidate",
+            role="Backend Engineer",
+            company="Reactivate Co",
+            email="other@example.com",
+            skills=["Python"],
+            summary="Other candidate remains in the pool.",
+            fitScore=4.4,
+            decision="potential",
+            explanation=CandidateExplanation(
+                semanticScore=0.8,
+                skillOverlap=0.8,
+                finalScore=0.9,
+                pdlRelevance=0.7,
+                recencyScore=0.6,
+                penalties={},
+            ),
+            strategy="HIGH",
+            status="new",
+            linkedinUrl="https://www.linkedin.com/in/other-candidate",
+        )
+        session = CandidateSelectionSessionRepository(self.db).create(
+            job_id=self.job.id,
+            candidate_pool_snapshot=[selected_candidate.model_dump(), other_candidate.model_dump()],
+            batch_plan=[[selected_id, other_id]],
+        )
+        payload = {
+            "sessionId": session.id,
+            "jobId": self.job.id,
+            "status": "active",
+            "currentBatchIndex": 0,
+            "totalBatches": 1,
+            "batchSize": 2,
+            "selectedCandidateIds": [],
+            "rejectedCandidateIds": [],
+            "currentBatch": [selected_candidate.model_dump(), other_candidate.model_dump()],
+            "analysis": None,
+            "completed": False,
+            "finalCandidates": [],
+        }
+
+        with patch.object(candidate_selection_service, "_get_or_create_selection_session", return_value=(session, payload)), patch.object(
+            candidate_selection_service, "_candidate_lookup_snapshot", return_value={selected_id: selected_candidate, other_id: other_candidate}
+        ), patch.object(
+            candidate_selection_service, "_current_batch_from_session", return_value=[selected_candidate, other_candidate]
+        ), patch.object(
+            candidate_selection_service, "get_preference_session", return_value={}
+        ), patch.object(
+            candidate_selection_service, "enrich_selected_candidate",
+            return_value={"status": "enriched", "shouldOutreach": True, "contactEmail": "selected@example.com"},
+        ), patch.object(
+            candidate_selection_service, "trigger_outreach_after_enrichment",
+            return_value={"status": "sent", "outreachStatus": "sent"},
+        ):
+            candidate_selection_service.submit_selection_choice(
+                db=self.db,
+                job_id=self.job.id,
+                candidate_id=selected_id,
+            )
+
+        self.assertEqual(
+            InterviewRepository(self.db).get_by_job_and_candidate(self.job.id, other_id),
+            None,
+        )
 
 
 if __name__ == "__main__":

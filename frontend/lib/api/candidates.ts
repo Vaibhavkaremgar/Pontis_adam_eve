@@ -17,6 +17,7 @@ import type { ApiResponse } from "./types";
 type CandidateQuery = {
   jobId: string;
   refined?: boolean;
+  debug?: boolean;
   mode?: "volume" | "elite";
   refresh?: boolean;
 };
@@ -85,11 +86,23 @@ type SelectionFinalData = {
   pairExplanation?: Record<string, unknown>;
 };
 
+type SelectionUpdateData = {
+  status?: string;
+  enrichmentStatus?: string;
+  outreachStatus?: string;
+  replyStatus?: string;
+  candidateStatus?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+  warning?: string;
+};
+
 /** This function calls backend API and returns structured response. */
-export async function getCandidates({ jobId, refined }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
+export async function getCandidates({ jobId, refined, debug }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
   const params = new URLSearchParams({ jobId });
   if (refined) params.set("refined", "true");
   if (refined) params.set("refresh", "true");
+  if (debug) params.set("debug", "true");
 
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates?${params.toString()}`,
@@ -140,8 +153,8 @@ export async function exportCandidates(payload: ExportPayload): Promise<ApiRespo
   });
 }
 
-export async function selectCandidateForEnrichment(payload: SelectionPayload): Promise<ApiResponse<Record<string, unknown>>> {
-  return requestApi<Record<string, unknown>>({
+export async function selectCandidateForEnrichment(payload: SelectionPayload): Promise<ApiResponse<SelectionUpdateData>> {
+  return requestApi<SelectionUpdateData>({
     url: `${API_BASE_URL}/candidates/select`,
     method: "POST",
     payload

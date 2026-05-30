@@ -2696,6 +2696,116 @@ def _build_candidate_state_maps(
     return interview_status_map, outreach_status_map, export_status_map, ats_export_status_map, ats_state_map, enrichment_state_map
 
 
+def _candidate_reviewability_debug(row: Any) -> dict[str, Any]:
+    raw_data = dict(getattr(row, "raw_data", {}) or {})
+    email = str(
+        raw_data.get("email")
+        or raw_data.get("work_email")
+        or raw_data.get("personal_email")
+        or raw_data.get("contactEmail")
+        or getattr(row, "phone", "")
+        or ""
+    ).strip().lower()
+    source_provider = str(
+        raw_data.get("sourceProvider")
+        or raw_data.get("source_provider")
+        or raw_data.get("source")
+        or getattr(row, "sourceProvider", "")
+        or getattr(row, "source_provider", "")
+        or ""
+    ).strip().lower()
+    source_type = str(
+        raw_data.get("sourceType")
+        or raw_data.get("source_type")
+        or getattr(row, "sourceType", "")
+        or getattr(row, "source_type", "")
+        or ""
+    ).strip().lower()
+    linkedin_url = str(_candidate_profile_url(raw_data) or getattr(row, "linkedin_url", "") or "").strip()
+    is_mock_email = bool(raw_data.get("isMockEmail") or email.endswith("@test.local"))
+
+    if is_mock_email:
+        reason = "mock_email"
+    elif source_provider == "xray_apollo" or source_type == "linkedin_xray":
+        reason = "reviewable_xray" if linkedin_url else "missing_linkedin_url"
+    elif not email:
+        reason = "missing_email"
+    else:
+        reason = "reviewable"
+
+    return {
+        "candidateId": str(getattr(row, "candidate_id", "") or "").strip(),
+        "sourceProvider": source_provider,
+        "sourceType": source_type,
+        "hasEmail": bool(email),
+        "hasLinkedInUrl": bool(linkedin_url),
+        "isMockEmail": is_mock_email,
+        "reason": reason,
+    }
+
+
+def build_candidate_fetch_debug(
+    *,
+    db: Session,
+    job_id: str,
+    mode: str | None = None,
+    refresh: bool = False,
+    request_source: str = "api",
+    returned_count: int = 0,
+) -> dict[str, Any]:
+    job = JobRepository(db).get(job_id)
+    profiles = CandidateProfileRepository(db).list_for_job(job_id) if job else []
+    interviews = InterviewRepository(db).list_for_job(job_id) if job else []
+    outreach_rows = OutreachEventRepository(db).list_for_job(job_id) if job else []
+    swiped_ids = _get_swiped_candidate_ids(db, job_id=job_id) if job else frozenset()
+
+    reviewability_rows = [_candidate_reviewability_debug(row) for row in profiles]
+    reason_counts: dict[str, int] = {}
+    for row in reviewability_rows:
+        reason = str(row.get("reason") or "unknown")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    reviewable_count = sum(1 for row in reviewability_rows if row.get("reason") in {"reviewable", "reviewable_xray"})
+    swiped_profile_count = sum(1 for row in profiles if getattr(row, "candidate_id", "") in swiped_ids)
+    current_job_status = str(getattr(job, "job_status", "") or "").strip().lower() if job else ""
+    likely_reason = "candidates_returned"
+    if returned_count <= 0:
+        if not profiles:
+            likely_reason = "no_candidate_profiles_persisted"
+        elif reviewable_count <= 0:
+            if reason_counts.get("missing_linkedin_url", 0) > 0:
+                likely_reason = "all_xray_hits_missing_linkedin_url"
+            elif reason_counts.get("mock_email", 0) == len(reviewability_rows) and reviewability_rows:
+                likely_reason = "all_candidates_are_mock_emails"
+            elif reason_counts.get("missing_email", 0) == len(reviewability_rows) and reviewability_rows:
+                likely_reason = "all_candidates_missing_email"
+            else:
+                likely_reason = "all_candidates_filtered_by_reviewability"
+        elif swiped_profile_count >= len(profiles) and profiles:
+            likely_reason = "all_candidates_already_swiped"
+        else:
+            likely_reason = "no_candidates_after_ranking_or_filtering"
+
+    return {
+        "jobId": job_id,
+        "jobStatus": current_job_status,
+        "mode": (mode or "").strip().lower(),
+        "refresh": bool(refresh),
+        "requestSource": (request_source or "api").strip().lower() or "api",
+        "sourceProvider": SOURCE_PROVIDER,
+        "candidateProfileCount": len(profiles),
+        "returnedCount": int(returned_count),
+        "reviewableCount": int(reviewable_count),
+        "swipedCount": int(len(swiped_ids)),
+        "swipedProfileCount": int(swiped_profile_count),
+        "interviewCount": len(interviews),
+        "outreachCount": len(outreach_rows),
+        "reviewabilityReasons": reason_counts,
+        "reviewability": reviewability_rows[:50],
+        "likelyReason": likely_reason,
+    }
+
+
 def _attach_candidate_workflow_state(db: Session, *, job_id: str, candidates: list[CandidateResult]) -> list[CandidateResult]:
     if not candidates:
         return candidates
@@ -3097,8 +3207,8 @@ def fetch_ranked_candidates(
             unswiped_xray_count = len(xray_results)
             xray_results = [candidate for candidate in xray_results if _is_reviewable_candidate(candidate)]
             if not xray_results:
-                logger.info(
-                    "xray_reviewable_candidates_missing job_id=%s raw_count=%s unswiped_count=%s reason=using_raw_xray_pool",
+                logger.warning(
+                    "xray_reviewable_candidates_missing job_id=%s raw_count=%s unswiped_count=%s reason=using_raw_xray_pool likely_reason=all_candidates_filtered_by_reviewability",
                     job.id,
                     raw_xray_count,
                     unswiped_xray_count,
@@ -3574,6 +3684,14 @@ def fetch_ranked_candidates(
     combined_run_metrics = {**local_run_metrics, **pdl_run_metrics}
     now = datetime.now(timezone.utc)
     if not candidates:
+        logger.warning(
+            "candidate_ranking_empty job_id=%s source=%s reason=pdl_empty_or_filtered local_count=%s pdl_count=%s swiped_count=%s",
+            job.id,
+            resolved_mode,
+            local_count,
+            len(pdl_results) if pdl_results else 0,
+            len(swiped_ids),
+        )
         return _finalize_candidate_sourcing_state(
             db=db,
             jobs=jobs,
@@ -3750,16 +3868,16 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
         }
 
     # ── State machine: enforce allowed transitions ─────────────────────────────
-    # is_swipe_locked covers shortlisted/contacted/interview_scheduled/exported.
+    # selected candidates can still be explicitly rejected later.
     # assert_valid_transition covers the full transition table.
-    if is_swipe_locked(current_status):
+    if is_swipe_locked(current_status) and not (current_status == "selected" and action == "reject"):
         logger.warning(
             "swipe_blocked job_id=%s candidate_id=%s current_status=%s action=%s",
             job_id, candidate_id, current_status, action,
         )
         raise APIError(
             f"Cannot swipe candidate in '{current_status}' state. "
-            "Only 'new' candidates can be accepted or rejected.",
+            "Only explicit reject is allowed after shortlist selection.",
             status_code=409,
         )
 

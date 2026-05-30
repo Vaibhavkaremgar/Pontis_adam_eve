@@ -107,7 +107,7 @@ _TRANSITION_ORDER: dict[str, set[str]] = {
     "placed": {"search_closed", "archived"},
     "search_closed": {"archived"},
     "hired": {"archived"},
-    "rejected": {"archived"},
+    "rejected": {"selected", "archived"},
     "archived": set(),
 }
 

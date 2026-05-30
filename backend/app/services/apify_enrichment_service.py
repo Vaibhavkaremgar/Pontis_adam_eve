@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import APIFY_TOKEN, HTTP_TIMEOUT_SECONDS
 from app.db.repositories import CandidateProfileRepository, JobRepository
+from app.services.identity.candidate_identity_service import normalize_linkedin_url
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -125,12 +126,12 @@ def _first_non_empty(*values: Any) -> str:
 def _extract_profile_url(profile: Any, preferred_url: str = "") -> str:
     raw_data = dict(getattr(profile, "raw_data", {}) or {})
     return _first_non_empty(
-        preferred_url,
-        getattr(profile, "linkedin_url", ""),
-        raw_data.get("linkedin_url"),
-        raw_data.get("linkedinUrl"),
-        raw_data.get("source_url"),
-        raw_data.get("sourceUrl"),
+        normalize_linkedin_url(preferred_url),
+        normalize_linkedin_url(getattr(profile, "linkedin_url", "")),
+        normalize_linkedin_url(raw_data.get("linkedin_url")),
+        normalize_linkedin_url(raw_data.get("linkedinUrl")),
+        normalize_linkedin_url(raw_data.get("source_url")),
+        normalize_linkedin_url(raw_data.get("sourceUrl")),
     )
 
 
@@ -195,9 +196,11 @@ def _select_profile_item(payload: Any) -> dict[str, Any] | None:
 
 def _request_apify_profile(*, linkedin_url: str) -> dict[str, Any]:
     if not APIFY_TOKEN:
+        logger.error("apify_request_blocked reason=missing_token linkedin_url=%s", linkedin_url or "missing")
         raise APIError("APIFY_TOKEN is missing", status_code=503)
 
     if not linkedin_url or "/in/" not in linkedin_url.lower() or "/jobs/" in linkedin_url.lower():
+        logger.error("apify_request_blocked reason=invalid_linkedin_url linkedin_url=%s", linkedin_url or "missing")
         raise APIError("A valid LinkedIn profile URL is required", status_code=400)
 
     params = urlencode({"token": APIFY_TOKEN})
@@ -229,11 +232,12 @@ def _request_apify_profile(*, linkedin_url: str) -> dict[str, Any]:
             )
             item = _select_profile_item(body)
             if not item:
+                logger.error("apify_request_empty_result linkedin_url=%s status_code=%s", linkedin_url, response.status_code)
                 raise APIError("Apify returned no profile data", status_code=502)
             return item
         except requests.Timeout as exc:
             last_error = exc
-            logger.warning("apify_request_timeout linkedin_url=%s attempt=%s timeout_seconds=%s", linkedin_url, attempt, HTTP_TIMEOUT_SECONDS)
+            logger.error("apify_request_timeout linkedin_url=%s attempt=%s timeout_seconds=%s", linkedin_url, attempt, HTTP_TIMEOUT_SECONDS)
             time.sleep(min(1.5 * attempt, 4.0))
         except requests.RequestException as exc:
             last_error = exc
@@ -320,7 +324,12 @@ def enrich_candidate_with_apify(
             },
         }
         db.flush()
-        logger.info("apify_enrichment_missing_linkedin job_id=%s candidate_id=%s", job_id, candidate_id)
+        logger.error(
+            "apify_enrichment_missing_linkedin job_id=%s candidate_id=%s reason=missing_linkedin_url source_type=%s",
+            job_id,
+            candidate_id,
+            source_type,
+        )
         return {
             "jobId": job_id,
             "candidateId": candidate_id,
@@ -338,7 +347,7 @@ def enrich_candidate_with_apify(
     try:
         apify_item = _request_apify_profile(linkedin_url=linkedin_url)
     except Exception as exc:
-        logger.warning("apify_candidate_enrichment_failed job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc))
+        logger.error("apify_candidate_enrichment_failed job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc), exc_info=exc)
         profile.candidate_status = "enrichment_failed"
         profile.ats_metadata = {
             **dict(profile.ats_metadata or {}),
@@ -402,6 +411,22 @@ def enrich_candidate_with_apify(
     status = "high_confidence" if email else "missing_email"
     should_outreach = bool(email)
     email_status = "found" if email else "missing"
+
+    if email:
+        logger.info(
+            "apify_candidate_enrichment_email_found job_id=%s candidate_id=%s email=%s linkedin_url=%s",
+            job_id,
+            candidate_id,
+            email,
+            linkedin_url,
+        )
+    else:
+        logger.error(
+            "apify_candidate_enrichment_no_email job_id=%s candidate_id=%s linkedin_url=%s reason=no_email_extracted",
+            job_id,
+            candidate_id,
+            linkedin_url,
+        )
 
     profile.name = profile_payload["full_name"] or profile.name
     profile.role = profile_payload["headline"] or profile.role

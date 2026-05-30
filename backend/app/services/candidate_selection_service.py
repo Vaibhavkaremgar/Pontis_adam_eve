@@ -27,8 +27,11 @@ from app.services.recruiter_preference_round_service import (
     get_preference_session,
 )
 from app.services.ranking.models import coerce_candidate_explanation, ranked_candidate_sort_key
+from app.services.sourcing.apify_enrichment_service import enrich_selected_candidate
+from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
 from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.state_machine import assert_valid_transition, is_swipe_locked
+from app.services.identity.candidate_identity_service import normalize_linkedin_url
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,14 @@ def _normalize_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _normalize_linkedin_profile_url(*values: Any) -> str:
+    for value in values:
+        normalized = normalize_linkedin_url(value)
+        if normalized:
+            return normalized
+    return ""
 
 
 def _job_mode(job: Any) -> str:
@@ -477,7 +488,7 @@ def _store_selection_feedback(
 
     selected_row = interview_repo.get_by_job_and_candidate(job_id, selected_candidate_id)
     selected_status = (selected_row.status if selected_row else "new") or "new"
-    if is_swipe_locked(selected_status):
+    if selected_status not in {"selected", "rejected"} and is_swipe_locked(selected_status):
         raise APIError(f"Cannot select candidate in '{selected_status}' state.", status_code=409)
 
     if selected_status != "selected":
@@ -518,52 +529,6 @@ def _store_selection_feedback(
         },
         source="selection",
     )
-
-    for candidate_id in rejected_candidate_ids:
-        if not candidate_id or candidate_id == selected_candidate_id:
-            continue
-        rejected_row = interview_repo.get_by_job_and_candidate(job_id, candidate_id)
-        rejected_status = (rejected_row.status if rejected_row else "new") or "new"
-        if is_swipe_locked(rejected_status):
-            raise APIError(f"Cannot reject candidate in '{rejected_status}' state.", status_code=409)
-        if rejected_status != "rejected":
-            assert_valid_transition(
-                candidate_id=candidate_id,
-                job_id=job_id,
-                from_status=rejected_status,
-                to_status="rejected",
-            )
-        feedback_repo.upsert(
-            job_id=job_id,
-            candidate_id=candidate_id,
-            feedback="reject",
-            recruiter_id=recruiter_id,
-            session_id=session_id,
-        )
-        scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback="reject")
-        interview_repo.upsert_status(job_id=job_id, candidate_id=candidate_id, status="rejected", create_default="rejected")
-        transition_candidate_ats_state(
-            db=db,
-            job_id=job_id,
-            candidate_id=candidate_id,
-            to_status="rejected",
-            source="selection",
-            actor_id=recruiter_id,
-            reason="selection_choice",
-            metadata={"selectionSessionId": session_id, "status": "rejected"},
-        )
-        record_job_lifecycle_event(
-            db=db,
-            job_id=job_id,
-            event_type="CANDIDATE_REJECTED",
-            payload={
-                "jobId": job_id,
-                "candidateId": candidate_id,
-                "selectionSessionId": session_id,
-                "status": "rejected",
-            },
-            source="selection",
-        )
 
 
 def _session_payload(
@@ -672,6 +637,12 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         selected_candidate = lookup.get(candidate_id)
         rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
         feedback_error = None
+        enrichment_status = "queued"
+        outreach_status = "queued"
+        reply_status = "waiting_for_reply"
+        contact_email = ""
+        contact_phone = ""
+        candidate_status = "selected"
         if selected_candidate:
             profile_repo = CandidateProfileRepository(db)
             profile = profile_repo.get(job_id=job_id, candidate_id=candidate_id) or profile_repo.ensure_candidate_profile(job_id=job_id, candidate_id=candidate_id)
@@ -737,40 +708,124 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 str(exc),
             )
 
+        selected_linkedin_url = _normalize_linkedin_profile_url(
+            getattr(selected_candidate, "linkedinUrl", ""),
+            getattr(selected_candidate, "linkedin_url", ""),
+            selected_profile_data.get("linkedin_url"),
+            selected_profile_data.get("linkedinUrl"),
+            selected_profile_data.get("source_url"),
+            selected_profile_data.get("sourceUrl"),
+            profile.linkedin_url,
+        )
+        enrichment_error = ""
+        outreach_error = ""
+        enrichment_result: dict[str, Any] | None = None
+        outreach_result: dict[str, Any] | None = None
+
         try:
-            selected_linkedin_url = _normalize_text(
-                getattr(selected_candidate, "linkedinUrl", "")
-                or getattr(selected_candidate, "linkedin_url", "")
-                or selected_profile_data.get("linkedin_url")
-                or selected_profile_data.get("linkedinUrl")
-                or profile.linkedin_url
+            enrichment_result = enrich_selected_candidate(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                source_type="linkedin_xray",
+                linkedin_url=selected_linkedin_url,
+                workflow_token="",
+                selection_session_id=str(session.id or ""),
+                automation_job_id=str(session.id or ""),
             )
-            enqueue_job(
-                "candidate_enrichment",
-                {
-                    "job_id": job_id,
-                    "candidate_id": candidate_id,
-                    "selectionSessionId": session.id,
-                    "sourceType": "linkedin_xray",
-                    "linkedinUrl": selected_linkedin_url,
-                    "candidateSnapshot": {
-                        "id": candidate_id,
-                        "name": selected_name,
-                        "role": selected_role,
-                        "company": selected_company,
-                        "summary": selected_summary,
-                        "skills": selected_skills,
-                        "linkedinUrl": selected_linkedin_url,
-                    },
-                    "status": "queued",
-                },
-                idempotency_key=f"candidate-enrichment:{job_id}:{candidate_id}",
+            enrichment_payload = enrichment_result or {}
+            enrichment_status = str(
+                enrichment_payload.get("enrichmentStatus")
+                or enrichment_payload.get("status")
+                or enrichment_status
+            ).strip().lower() or enrichment_status
+            contact_email = _normalize_text(
+                enrichment_payload.get("contactEmail")
+                or enrichment_payload.get("candidateEmail")
+                or enrichment_payload.get("email")
+                or ""
             )
+            contact_phone = _normalize_text(enrichment_payload.get("contactPhone") or enrichment_payload.get("phone") or "")
+            if not contact_email:
+                logger.error(
+                    "selection_candidate_enrichment_no_email job_id=%s candidate_id=%s enrichment_status=%s linkedin_url=%s reason=no_email_extracted",
+                    job_id,
+                    candidate_id,
+                    enrichment_status,
+                    selected_linkedin_url or "missing",
+                )
+                outreach_status = "skipped"
+                reply_status = "outreach_not_sent"
+                outreach_result = {
+                    "status": "skipped",
+                    "outreachStatus": "skipped",
+                    "reason": "missing_email",
+                }
+            else:
+                try:
+                    outreach_result = trigger_outreach_after_enrichment(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        enrichment_result=enrichment_result,
+                        selection_session_id=str(session.id or ""),
+                        automation_job_id=str(session.id or ""),
+                        source_type="linkedin_xray",
+                    )
+                    outreach_payload = outreach_result or {}
+                    outreach_status = str(
+                        outreach_payload.get("outreachStatus")
+                        or outreach_payload.get("status")
+                        or outreach_status
+                    ).strip().lower() or outreach_status
+                    if outreach_status in {"sent", "dry_run", "simulated"}:
+                        reply_status = "waiting_for_reply"
+                        logger.info(
+                            "selection_candidate_outreach_success job_id=%s candidate_id=%s outreach_status=%s provider=%s recipient_email=%s linkedin_url=%s",
+                            job_id,
+                            candidate_id,
+                            outreach_status,
+                            str(outreach_payload.get("provider") or ""),
+                            contact_email,
+                            selected_linkedin_url or "missing",
+                        )
+                    else:
+                        reply_status = "outreach_not_sent"
+                        outreach_error = str(
+                            outreach_payload.get("reason")
+                            or outreach_payload.get("error")
+                            or outreach_status
+                            or "outreach_not_sent"
+                        )
+                        logger.warning(
+                            "selection_candidate_outreach_not_sent job_id=%s candidate_id=%s outreach_status=%s reason=%s recipient_email=%s linkedin_url=%s",
+                            job_id,
+                            candidate_id,
+                            outreach_status,
+                            outreach_error,
+                            contact_email,
+                            selected_linkedin_url or "missing",
+                        )
+                except Exception as exc:
+                    outreach_error = str(exc)
+                    outreach_status = "failed"
+                    reply_status = "outreach_not_sent"
+                    logger.error(
+                        "selection_candidate_outreach_failed job_id=%s candidate_id=%s error=%s recipient_email=%s linkedin_url=%s",
+                        job_id,
+                        candidate_id,
+                        outreach_error,
+                        contact_email,
+                        selected_linkedin_url or "missing",
+                        exc_info=exc,
+                    )
             logger.info(
-                "selection_conversion job_id=%s candidate_id=%s session_id=%s enrichment_queued=true",
+                "selection_candidate_enrichment_completed job_id=%s candidate_id=%s enrichment_status=%s outreach_status=%s linkedin_url=%s",
                 job_id,
                 candidate_id,
-                session.id,
+                str((enrichment_result or {}).get("status") or ""),
+                str(outreach_status or ""),
+                selected_linkedin_url or "missing",
             )
             from app.services.metrics_service import log_metric as _log_metric
 
@@ -779,53 +834,69 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 job_id=job_id,
                 candidate_id=candidate_id,
                 session_id=session.id,
-                enrichment_queued=True,
+                enrichment_direct=True,
+                outreach_status=str((outreach_result or {}).get("status") or ""),
             )
         except Exception as exc:
-            logger.warning(
-                "selection_candidate_enrichment_schedule_failed job_id=%s candidate_id=%s error=%s",
+            enrichment_error = str(exc)
+            enrichment_status = "queued"
+            outreach_status = "queued"
+            reply_status = "waiting_for_reply"
+            logger.error(
+                "selection_candidate_enrichment_direct_failed job_id=%s candidate_id=%s error=%s linkedin_url=%s",
                 job_id,
                 candidate_id,
-                str(exc),
+                enrichment_error,
+                selected_linkedin_url or "missing",
                 exc_info=exc,
             )
             try:
-                from app.services.sourcing.apify_enrichment_service import enrich_selected_candidate
-                from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
-
-                enrichment = enrich_selected_candidate(
-                    db=db,
-                    job_id=job_id,
-                    candidate_id=candidate_id,
-                    source_type="linkedin_xray",
-                    linkedin_url=selected_linkedin_url,
-                    workflow_token="",
-                    selection_session_id=str(session.id or ""),
-                    automation_job_id=str(session.id or ""),
-                )
-                outreach = trigger_outreach_after_enrichment(
-                    db=db,
-                    job_id=job_id,
-                    candidate_id=candidate_id,
-                    enrichment_result=enrichment,
-                    selection_session_id=str(session.id or ""),
-                    automation_job_id=str(session.id or ""),
-                    source_type="linkedin_xray",
+                enqueue_job(
+                    "candidate_enrichment",
+                    {
+                        "job_id": job_id,
+                        "candidate_id": candidate_id,
+                        "selectionSessionId": session.id,
+                        "sourceType": "linkedin_xray",
+                        "linkedinUrl": selected_linkedin_url,
+                        "candidateSnapshot": {
+                            "id": candidate_id,
+                            "name": selected_name,
+                            "role": selected_role,
+                            "company": selected_company,
+                            "summary": selected_summary,
+                            "skills": selected_skills,
+                            "linkedinUrl": selected_linkedin_url,
+                        },
+                        "status": "queued",
+                    },
+                    idempotency_key=f"candidate-enrichment:{job_id}:{candidate_id}",
                 )
                 logger.info(
-                    "selection_candidate_enrichment_fallback job_id=%s candidate_id=%s enrichment_status=%s outreach_status=%s",
+                    "selection_candidate_enrichment_queued job_id=%s candidate_id=%s session_id=%s linkedin_url=%s",
                     job_id,
                     candidate_id,
-                    str(enrichment.get("status") or ""),
-                    str(outreach.get("status") or ""),
+                    session.id,
+                    selected_linkedin_url or "missing",
                 )
-            except Exception as fallback_exc:
-                logger.warning(
-                    "selection_candidate_enrichment_fallback_failed job_id=%s candidate_id=%s error=%s",
+                from app.services.metrics_service import log_metric as _log_metric
+
+                _log_metric(
+                    "selection_conversion",
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    session_id=session.id,
+                    enrichment_queued=True,
+                    enrichment_error=enrichment_error or "direct_pipeline_failed",
+                )
+            except Exception as queue_exc:
+                logger.error(
+                    "selection_candidate_enrichment_schedule_failed job_id=%s candidate_id=%s error=%s linkedin_url=%s",
                     job_id,
                     candidate_id,
-                    str(fallback_exc),
-                    exc_info=fallback_exc,
+                    str(queue_exc),
+                    selected_linkedin_url or "missing",
+                    exc_info=queue_exc,
                 )
 
         updated_session = repository.get_by_job(job_id)
@@ -879,7 +950,13 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 "stage": state.get("stage", "final_shortlist"),
                 "intentProfile": state.get("intent_profile") or {},
                 "telemetry": state.get("telemetry") or {},
-                "warning": feedback_error,
+                "warning": feedback_error or enrichment_error,
+                "enrichmentStatus": enrichment_status,
+                "outreachStatus": outreach_status,
+                "replyStatus": reply_status,
+                "candidateStatus": candidate_status,
+                "contactEmail": contact_email,
+                "contactPhone": contact_phone,
             }
 
         db.commit()
@@ -889,8 +966,14 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         refreshed_lookup = _candidate_lookup_snapshot(refreshed_session.candidate_pool_snapshot or [])
         next_batch = _best_effort_next_batch(refreshed_session, refreshed_lookup)
         payload = _selection_session_payload(session=refreshed_session, state=state, current_batch=next_batch)
-        if feedback_error:
-            payload["warning"] = feedback_error
+        if feedback_error or enrichment_error:
+            payload["warning"] = feedback_error or enrichment_error
+        payload["enrichmentStatus"] = enrichment_status
+        payload["outreachStatus"] = outreach_status
+        payload["replyStatus"] = reply_status
+        payload["candidateStatus"] = candidate_status
+        payload["contactEmail"] = contact_email
+        payload["contactPhone"] = contact_phone
         return payload
     except Exception as exc:
         logger.exception("selection_submit_unhandled job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc))

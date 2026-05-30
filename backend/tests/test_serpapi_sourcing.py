@@ -95,6 +95,79 @@ class SerpApiSourcingTests(unittest.TestCase):
         self.assertGreater(candidate["score"], 0.0)
         self.assertEqual(candidate["source_type"], "linkedin_xray")
 
+    @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
+    def test_discovery_extracts_clean_company_role_and_location_from_sentence_snippets(self, _mock_disabled: object) -> None:
+        job = SimpleNamespace(
+            title="Software Engineer",
+            location="Bengaluru",
+            experience_level="Mid",
+            skills_required=["Python", "FastAPI"],
+            structured_data={
+                "role": "Software Engineer",
+                "location": "Bengaluru",
+                "experience_level": "Mid",
+                "skills": ["Python", "FastAPI"],
+            },
+        )
+        raw_results = [
+            {
+                "title": "Riya Sharma - LinkedIn",
+                "link": "https://www.linkedin.com/in/riya-sharma/",
+                "snippet": "I am working at so and so company as a software developer in Bengaluru. Python, FastAPI, AWS.",
+                "displayed_link": "linkedin.com/in/riya-sharma",
+            }
+        ]
+
+        with patch("app.services.serpapi_sourcing_service.SERPAPI_API_KEY", "test-serpapi-key"), patch(
+            "app.services.serpapi_sourcing_service.SERPAPI_ENABLED", True
+        ), patch.object(
+            SerpApiClient,
+            "search",
+            side_effect=[raw_results, [], [], []],
+        ):
+            candidates = discover_linkedin_xray_candidates(job=job, intake=job.structured_data, limit=5)
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate["full_name"], "Riya Sharma")
+        self.assertEqual(candidate["role"], "software developer")
+        self.assertEqual(candidate["company"], "so and so company")
+        self.assertEqual(candidate["location"], "Bengaluru")
+        self.assertEqual(candidate["current_company"], "so and so company")
+
+    @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
+    def test_discovery_supports_archetype_ids_after_selection(self, _mock_disabled: object) -> None:
+        job = SimpleNamespace(
+            title="Senior Backend Engineer",
+            location="San Francisco",
+            experience_level="Senior",
+            skills_required=["Python", "FastAPI", "AWS"],
+            structured_data={
+                "role": "Senior Backend Engineer",
+                "location": "San Francisco",
+                "experience_level": "Senior",
+                "skills": ["Python", "FastAPI", "AWS"],
+                "company_stage": "Series A",
+            },
+        )
+
+        with patch("app.services.serpapi_sourcing_service.SERPAPI_API_KEY", "test-serpapi-key"), patch(
+            "app.services.serpapi_sourcing_service.SERPAPI_ENABLED", True
+        ), patch.object(
+            SerpApiClient,
+            "search",
+            side_effect=[[], [], [], []],
+        ):
+            candidates = discover_linkedin_xray_candidates(
+                job=job,
+                intake=job.structured_data,
+                limit=5,
+                recruiter_preferences={"preferredTechnicalStrengths": ["Python"]},
+                archetype_ids=["archetype-1", "archetype-2"],
+            )
+
+        self.assertEqual(candidates, [])
+
     def test_client_retries_after_rate_limit(self) -> None:
         client = SerpApiClient()
         payload = {"organic_results": [{"title": "Jane Doe", "link": "https://www.linkedin.com/in/janedoe/"}]}

@@ -98,6 +98,59 @@ _ROLE_KEYWORDS = {
     "cloud",
 }
 
+_PROFILE_FRAGMENT_SPLIT_RE = re.compile(r"(?:\.\s+|\n+|\s*[|•]\s+)")
+_PROFILE_CLAUSE_MARKERS = (
+    " as a ",
+    " as an ",
+    " as the ",
+    " as ",
+    " based in ",
+    " located in ",
+    " working as ",
+    " serving as ",
+    " currently as ",
+    " currently working as ",
+    " currently at ",
+    " working at ",
+    " from ",
+    " with ",
+    " for ",
+    " since ",
+)
+_LOCATION_FRAGMENT_BLOCKLIST = {
+    "engineer",
+    "developer",
+    "architect",
+    "platform",
+    "backend",
+    "frontend",
+    "full stack",
+    "fullstack",
+    "software",
+    "data",
+    "product",
+    "manager",
+    "lead",
+    "staff",
+    "principal",
+    "python",
+    "java",
+    "go",
+    "golang",
+    "javascript",
+    "typescript",
+    "react",
+    "node",
+    "aws",
+    "gcp",
+    "azure",
+    "sql",
+    "docker",
+    "kubernetes",
+    "terraform",
+    "graphql",
+}
+
 _COMPANY_CLUSTER_LIBRARY: dict[str, list[str]] = {
     "payments": ["Stripe", "Razorpay", "PhonePe", "Adyen", "PayPal"],
     "developer_infrastructure": ["Datadog", "HashiCorp", "Cloudflare", "Vercel", "Grafana"],
@@ -577,6 +630,111 @@ def _extract_company(text: str) -> str:
     if match:
         return _normalize_text(match.group(1))
     return ""
+
+
+def _profile_fragments(text: str) -> list[str]:
+    cleaned = _normalize_text(text)
+    if not cleaned:
+        return []
+    return [fragment.strip(" ,;:-–—|•") for fragment in _PROFILE_FRAGMENT_SPLIT_RE.split(cleaned) if fragment.strip(" ,;:-–—|•")]
+
+
+def _extract_clean_role(text: str) -> str:
+    for fragment in _profile_fragments(text):
+        lowered = fragment.lower()
+        if "linkedin" in lowered or lowered.startswith("http"):
+            continue
+        candidate = _normalize_text(fragment)
+        role_match = re.search(
+            r"\b(?:as a|as an|as the|as)\s+(?P<role>.+?)(?=\s+\b(?:in|at|based in|located in|from|with|for|since)\b|[.,;|•]|$)",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+        if role_match:
+            role = _normalize_text(role_match.group("role")).strip(" ,;:-–—|•")
+            if role and any(keyword in role.lower() for keyword in _ROLE_KEYWORDS):
+                return role
+        prefix_match = re.search(
+            r"^(?P<role>.+?)\s+\b(?:at|@|in|based in|located in)\b",
+            candidate,
+            flags=re.IGNORECASE,
+        )
+        if prefix_match:
+            role = _normalize_text(prefix_match.group("role")).strip(" ,;:-–—|•")
+            if role and any(keyword in role.lower() for keyword in _ROLE_KEYWORDS):
+                return role
+        for marker in _PROFILE_CLAUSE_MARKERS:
+            marker_index = candidate.lower().find(marker)
+            if marker_index > -1:
+                candidate = candidate[:marker_index].strip()
+                break
+        candidate = candidate.strip(" ,;:-–—|•")
+        if candidate and any(keyword in candidate.lower() for keyword in _ROLE_KEYWORDS):
+            return candidate
+    return ""
+
+
+def _extract_clean_company(text: str) -> str:
+    for fragment in _profile_fragments(text):
+        lowered = fragment.lower()
+        if "linkedin" in lowered or lowered.startswith("http"):
+            continue
+        match = re.search(r"\b(?:works?|working|currently|presently)?\s*at\s+(?P<company>.+)$", fragment, flags=re.IGNORECASE)
+        if not match:
+            continue
+        company = _normalize_text(match.group("company"))
+        for marker in _PROFILE_CLAUSE_MARKERS:
+            marker_index = company.lower().find(marker)
+            if marker_index > -1:
+                company = company[:marker_index].strip()
+                break
+        company = re.split(r"\s*(?:,|;|:|\||•| - | – | — )\s*", company, maxsplit=1)[0]
+        company = _normalize_text(company).strip(" ,;:-–—|•")
+        if company:
+            return company
+    return ""
+
+
+def _looks_like_location_fragment(fragment: str) -> bool:
+    lowered = fragment.lower()
+    if not fragment or "linkedin" in lowered or lowered.startswith("http"):
+        return False
+    if any(blocked in lowered for blocked in _LOCATION_FRAGMENT_BLOCKLIST):
+        return False
+    if lowered in {"remote", "hybrid", "on-site", "onsite"}:
+        return True
+    if len(fragment) > 60:
+        return False
+    if "," in fragment and len(fragment.split()) <= 5:
+        return True
+    if len(fragment.split()) <= 4 and re.search(r"[A-Z]", fragment):
+        return True
+    return False
+
+
+def _extract_clean_location(text: str, fallback: str = "") -> str:
+    lowered = _normalize_lower(text)
+    for token in ("remote", "hybrid", "on-site", "onsite"):
+        if token in lowered:
+            return token.replace("-", " ").title()
+
+    location_match = re.search(r"(?:\bbased in\b|\blocated in\b|\bin\b)\s+([A-Za-z0-9 ,.&-]{2,80})", text, flags=re.IGNORECASE)
+    if location_match:
+        location = _normalize_text(location_match.group(1))
+        for marker in _PROFILE_CLAUSE_MARKERS:
+            marker_index = location.lower().find(marker)
+            if marker_index > -1:
+                location = location[:marker_index].strip()
+                break
+        location = re.split(r"\s*(?:[.;|•]| - | – | — )\s*", location, maxsplit=1)[0]
+        location = _normalize_text(location).strip(" ,;:-–—|•")
+        if location:
+            return location
+
+    for fragment in _profile_fragments(text):
+        if _looks_like_location_fragment(fragment):
+            return _normalize_text(fragment).strip(" ,;:-–—|•")
+    return _normalize_text(fallback)
 
 
 def _extract_skills_from_text(text: str, known_skills: list[str]) -> list[str]:
@@ -1429,9 +1587,9 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
 
     text = " ".join([title, snippet, displayed_link])
     name = _candidate_name_from_title(title) or _candidate_name_from_title(displayed_link) or _candidate_name_from_title(snippet)
-    role = _candidate_role_from_text(title, snippet, displayed_link) or _normalize_text(title)
-    company = _extract_company(snippet)
-    location = _extract_location(snippet, fallback=intake.get("location", ""))
+    role = _extract_clean_role(snippet) or _extract_clean_role(title) or _candidate_role_from_text(title, snippet, displayed_link) or _normalize_text(title)
+    company = _extract_clean_company(snippet)
+    location = _extract_clean_location(snippet, fallback=intake.get("location", ""))
     skills = _extract_skills_from_text(text, [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()])
     snippet_quality = _snippet_quality(title=title, snippet=snippet, displayed_link=displayed_link, company=company, location=location)
 
@@ -1531,6 +1689,8 @@ def _xray_role_cache_key(
     company_id: str,
     intake: dict[str, str],
     limited_layers: list[XRayQueryLayer],
+    archetype_ids: list[str] | None = None,
+    recruiter_preferences: dict[str, Any] | None = None,
 ) -> str:
     payload = {
         "cache_version": _XRAY_ROLE_CACHE_VERSION,
@@ -1544,7 +1704,7 @@ def _xray_role_cache_key(
         "industry": _normalize_text(intake.get("industry") or ""),
         "leadership_expectations": _normalize_text(intake.get("leadership_expectations") or ""),
         "skills": [token.strip() for token in (intake.get("skills") or "").split(",") if token.strip()],
-        "archetype_ids": _dedupe_preserve_order(archetype_ids),
+        "archetype_ids": _dedupe_preserve_order(archetype_ids or []),
         "recruiter_preferences": recruiter_preferences or {},
         "layers": [
             {
@@ -1668,6 +1828,8 @@ def discover_linkedin_xray_candidates(
         company_id=resolved_company_id,
         intake=resolved_intake,
         limited_layers=limited_layers,
+        archetype_ids=resolved_archetype_ids,
+        recruiter_preferences=recruiter_preferences,
     )
     cached_role_payload = cache_get_json(_XRAY_ROLE_CACHE_NAMESPACE, role_cache_key)
     if isinstance(cached_role_payload, dict):
