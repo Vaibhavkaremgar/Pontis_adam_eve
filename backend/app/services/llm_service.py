@@ -16,6 +16,9 @@ from app.core.config import (
     GROQ_API_KEY,
     GROQ_BASE_URL,
     GROQ_MODEL,
+    OPEN_ROUTER_API,
+    OPEN_ROUTER_BASE_URL,
+    OPEN_ROUTER_MODEL,
 )
 from app.services.metrics_service import log_metric
 
@@ -39,6 +42,13 @@ def _groq_client() -> OpenAI:
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY missing")
     return OpenAI(base_url=GROQ_BASE_URL, api_key=GROQ_API_KEY)
+
+
+@lru_cache(maxsize=1)
+def _openrouter_client() -> OpenAI:
+    if not OPEN_ROUTER_API:
+        raise RuntimeError("OPEN_ROUTER_API missing")
+    return OpenAI(base_url=OPEN_ROUTER_BASE_URL, api_key=OPEN_ROUTER_API)
 
 
 def _llm_is_disabled() -> bool:
@@ -123,8 +133,10 @@ def generate(prompt: str, expect_json: bool = False):
     ]
     if GROQ_API_KEY:
         providers.append(("groq", GROQ_MODEL, "GROQ_API_KEY", _groq_client))
+    if OPEN_ROUTER_API:
+        providers.append(("openrouter", OPEN_ROUTER_MODEL, "OPEN_ROUTER_API", _openrouter_client))
 
-    if _llm_is_disabled() and not any(name == "groq" for name, _, _, _ in providers):
+    if _llm_is_disabled() and not any(name in {"groq", "openrouter"} for name, _, _, _ in providers):
         log_metric("llm_usage", model=GEMINI_MODEL, disabled=True, fallback=True, expect_json=expect_json, reason=_llm_disable_reason or "disabled")
         return _local_fallback(prompt, expect_json=expect_json)
 
@@ -133,6 +145,8 @@ def generate(prompt: str, expect_json: bool = False):
         if provider_name == "gemini" and not GEMINI_API_KEY:
             continue
         if provider_name == "groq" and not GROQ_API_KEY:
+            continue
+        if provider_name == "openrouter" and not OPEN_ROUTER_API:
             continue
         try:
             client = client_factory()
@@ -157,24 +171,34 @@ def generate(prompt: str, expect_json: bool = False):
             if parsed is not None:
                 return parsed
 
-            if provider_name == "gemini" and GROQ_API_KEY:
+            if provider_name == "gemini" and (GROQ_API_KEY or OPEN_ROUTER_API):
                 logger.info("llm_provider_fallback provider=%s fallback_provider=groq reason=invalid_json", provider_name)
+                continue
+            if provider_name == "groq" and OPEN_ROUTER_API:
+                logger.info("llm_provider_fallback provider=%s fallback_provider=openrouter reason=invalid_json", provider_name)
                 continue
             return _local_fallback(prompt, expect_json=True)
         except Exception as exc:
             last_error = exc
             logger.warning("llm_generation_failed provider=%s model=%s reason=%s", provider_name, model_name, str(exc))
-            if provider_name == "gemini" and GROQ_API_KEY:
+            if provider_name == "gemini" and (GROQ_API_KEY or OPEN_ROUTER_API):
                 if _is_rate_limit_error(exc):
                     _disable_llm(str(exc), cooldown_seconds=LLM_RATE_LIMIT_COOLDOWN_SECONDS)
                     logger.info(
-                        "llm_provider_cooldown provider=%s fallback_provider=groq reason=rate_limit cooldown_seconds=%s",
+                        "llm_provider_cooldown provider=%s fallback_provider=%s reason=rate_limit cooldown_seconds=%s",
                         provider_name,
+                        "openrouter" if OPEN_ROUTER_API and not GROQ_API_KEY else "groq",
                         LLM_RATE_LIMIT_COOLDOWN_SECONDS,
                     )
                 continue
-            if provider_name != "groq":
+            if provider_name == "groq" and OPEN_ROUTER_API:
+                logger.info("llm_provider_fallback provider=%s fallback_provider=openrouter reason=request_failed", provider_name)
+                continue
+            if provider_name == "openrouter":
                 _disable_llm(str(exc))
+                log_metric("llm_usage", model=model_name, provider=provider_name, disabled=True, fallback=True, expect_json=expect_json)
+                return _local_fallback(prompt, expect_json=expect_json)
+            _disable_llm(str(exc))
             log_metric("llm_usage", model=model_name, provider=provider_name, disabled=True, fallback=True, expect_json=expect_json)
             return _local_fallback(prompt, expect_json=expect_json)
 
@@ -186,13 +210,13 @@ def generate(prompt: str, expect_json: bool = False):
 
 def llm_health() -> dict:
     try:
-        status = "disabled" if _llm_is_disabled() or (not GEMINI_API_KEY and not GROQ_API_KEY) else "ok"
+        status = "disabled" if _llm_is_disabled() or (not GEMINI_API_KEY and not GROQ_API_KEY and not OPEN_ROUTER_API) else "ok"
         if status == "ok":
             generate("ping")
         return {
             "status": status,
             "checked_at": datetime.now(timezone.utc).isoformat(),
-            "model": GEMINI_MODEL if GEMINI_API_KEY else GROQ_MODEL,
+            "model": GEMINI_MODEL if GEMINI_API_KEY else GROQ_MODEL if GROQ_API_KEY else OPEN_ROUTER_MODEL,
             "retry_at": _llm_disabled_until.isoformat() if _llm_disabled_until else None,
             "last_error": _llm_last_error,
         }

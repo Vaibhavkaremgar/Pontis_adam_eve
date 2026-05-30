@@ -9,7 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.core.config import GROQ_API_KEY
+from app.core.config import GROQ_API_KEY, OPEN_ROUTER_API
 from app.db.repositories import CompanyRepository, JobIntakeRepository, JobRepository
 from app.services.embedding_service import get_embedding
 from app.services.llm_service import generate
@@ -176,9 +176,9 @@ def extract_structured_data_fallback(transcript: str) -> dict[str, Any]:
 
 
 def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None:
-    if not GROQ_API_KEY:
+    if not (GROQ_API_KEY or OPEN_ROUTER_API):
         log_metric("fallback", source="voice_structured_extraction", reason="unconfigured")
-        logger.info("voice_extraction_skipped reason=GROQ_API_KEY_missing")
+        logger.info("voice_extraction_skipped reason=LLM_PROVIDER_missing")
         return None
 
     prompt = (
@@ -716,8 +716,8 @@ def _fallback_refinement(description: str, voice_notes: list[str]) -> str:
 
 
 def _refine_description(*, description: str, voice_notes: list[str]) -> str:
-    if not GROQ_API_KEY:
-        logger.warning("GROQ_API_KEY is not configured; using local refinement fallback")
+    if not (GROQ_API_KEY or OPEN_ROUTER_API):
+        logger.warning("Neither GROQ_API_KEY nor OPEN_ROUTER_API is configured; using local refinement fallback")
         return _fallback_refinement(description, voice_notes)
 
     notes_blob = sanitize_prompt_text("\n".join(f"- {note}" for note in voice_notes if note.strip()), max_length=12000)

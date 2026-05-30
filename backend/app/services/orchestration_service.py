@@ -13,12 +13,14 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.core.config import GROQ_API_KEY
+from app.core.config import GROQ_API_KEY, OPEN_ROUTER_API
 from app.db.repositories import (
     CompanyRepository,
     JobRepository,
     OrchestrationEventRepository,
     OrchestrationSessionRepository,
+    SlackInstallationRepository,
+    SlackUserRepository,
     UserRepository,
 )
 from app.services.candidate_service import fetch_ranked_candidates
@@ -29,6 +31,7 @@ from app.services.recruiter_preference_round_service import (
     build_calibration_state_response,
 )
 from app.services.slack_integration import build_calibration_blocks, build_candidate_blocks, post_slack_message_with_result
+from app.services.slack_tenant_service import SlackCompanyResolver, record_slack_audit_event
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -567,6 +570,20 @@ def _ensure_system_user_id(db: Session) -> str:
     return str(user.id)
 
 
+def _resolve_slack_internal_user_id(db: Session, *, company_id: str, slack_user_id: str) -> str:
+    normalized_company_id = _normalize_text(company_id)
+    normalized_slack_user_id = _normalize_text(slack_user_id)
+    if not normalized_company_id or not normalized_slack_user_id:
+        return ""
+    mapping = SlackUserRepository(db).get_by_company_and_user_id(
+        company_id=normalized_company_id,
+        slack_user_id=normalized_slack_user_id,
+    )
+    if mapping and mapping.internal_user_id:
+        return _normalize_text(mapping.internal_user_id)
+    return ""
+
+
 def _archive_superseded_slack_sessions(
     db: Session,
     *,
@@ -857,7 +874,7 @@ def _generate_adaptive_question(
             for plan_key, plan_question, _field in CORE_QUESTION_PLAN:
                 if plan_key == key:
                     return plan_key, plan_question, 1.0
-    if GROQ_API_KEY:
+    if GROQ_API_KEY or OPEN_ROUTER_API:
         try:
             payload = generate(_build_followup_prompt(intake=intake, recent_conversation=recent_conversation), expect_json=True)
             parsed = _parse_llm_question(payload)
@@ -892,7 +909,7 @@ def _extract_answer_payload(
     normalized_value: Any = ""
     confidence = 0.0
     status_reason = ""
-    if GROQ_API_KEY:
+    if GROQ_API_KEY or OPEN_ROUTER_API:
         prompt = (
             "Extract structured hiring intake data from the recruiter answer.\n"
             "Return ONLY valid JSON with this schema:\n"
@@ -1075,6 +1092,7 @@ def _ensure_session_row(
     slack_channel_id: str = "",
     slack_thread_ts: str = "",
     slack_user_id: str = "",
+    company_id: str | None = None,
     source: str = ORCHESTRATION_SOURCE,
     reuse_existing_session: bool = False,
 ) -> Any:
@@ -1098,6 +1116,7 @@ def _ensure_session_row(
         slack_channel_id=slack_channel_id,
         slack_thread_ts=slack_thread_ts,
         slack_user_id=slack_user_id,
+        company_id=company_id,
         intake_mode="slack",
         selected_path="slack",
         structured_context={"question_plan": [key for key, _, _ in CORE_QUESTION_PLAN]},
@@ -1110,7 +1129,6 @@ def _ensure_session_row(
             "threadTs": slack_thread_ts,
             "userId": slack_user_id,
         },
-        company_id=None,
         job_id=None,
     )
     if not reuse_existing_session:
@@ -1371,9 +1389,46 @@ def _session_is_complete(session_row) -> bool:
 
 
 def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
+    slack_user_id = _normalize_text(session_row.slack_user_id or (dict(session_row.slack_context or {})).get("userId") or "")
+    slack_team_id = _normalize_text(session_row.slack_team_id or (dict(session_row.slack_context or {})).get("teamId") or "")
+    resolver = SlackCompanyResolver(db)
+    workspace_context = None
+    if slack_team_id:
+        try:
+            workspace_context = resolver.resolve_workspace_context(
+                team_id=slack_team_id,
+                slack_user_id=slack_user_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "slack_workspace_resolution_failed session_id=%s team_id=%s user_id=%s error=%s",
+                session_row.id,
+                slack_team_id,
+                slack_user_id,
+                str(exc),
+            )
+
+    company = None
+    if session_row.company_id:
+        company = CompanyRepository(db).get_by_id(session_row.company_id)
+    if not company and workspace_context:
+        company = workspace_context.company
+    if company:
+        session_row.company_id = company.id
+
+    actor_user_id = ""
+    if workspace_context and workspace_context.internal_user and workspace_context.internal_user.id:
+        actor_user_id = str(workspace_context.internal_user.id)
+    elif workspace_context and workspace_context.slack_user and workspace_context.slack_user.internal_user_id:
+        actor_user_id = str(workspace_context.slack_user.internal_user_id)
+    elif slack_user_id and company:
+        actor_user_id = _resolve_slack_internal_user_id(db, company_id=company.id, slack_user_id=slack_user_id)
+    if not actor_user_id:
+        actor_user_id = _ensure_system_user_id(db)
+
     if session_row.job_id:
         logger.info("orchestration_finalize_idempotent session_id=%s job_id=%s", session_row.id, session_row.job_id)
-        recruiter_id = _normalize_text(session_row.slack_user_id or (dict(session_row.slack_context or {})).get("userId") or "")
+        recruiter_id = _normalize_text(actor_user_id or slack_user_id)
         calibration_state = None
         if recruiter_id:
             calibration_state = bootstrap_preference_calibration_session(
@@ -1404,22 +1459,22 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
     company_payload = _compose_company_payload(intake)
     job_payload = _compose_job_payload(intake)
 
-    existing_company = None
-    if session_row.company_id:
-        existing_company = CompanyRepository(db).get_by_id(session_row.company_id)
-    if existing_company:
-        company_payload["name"] = existing_company.name
-        company_payload["website"] = existing_company.website
-        company_payload["description"] = existing_company.description
-        company_payload["industry"] = existing_company.industry
-
-    user_id = _ensure_system_user_id(db)
+    if company:
+        company_payload["name"] = company.name
+        company_payload["website"] = company.website
+        company_payload["description"] = company.description
+        company_payload["industry"] = company.industry
+    user_id = actor_user_id
 
     job_id = create_hiring_job(
         db=db,
         user_id=user_id,
         company=company_payload,
         job=job_payload,
+        company_id=company.id if company else session_row.company_id,
+        slack_installation_id=workspace_context.installation.id if workspace_context else None,
+        slack_team_id=slack_team_id,
+        slack_user_id=slack_user_id,
     )
 
     job = JobRepository(db).get(job_id)
@@ -1433,8 +1488,22 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
     session_row.state_version = int(getattr(session_row, "state_version", 0) or 0) + 1
     _append_event(db, session_id=session_row.id, event_type="INTAKE_COMPLETED", payload={"jobId": job.id, "companyId": job.company_id, "intake": intake})
     _append_event(db, session_id=session_row.id, event_type="CALIBRATION_STARTED", payload={"jobId": job.id, "companyId": job.company_id})
+    record_slack_audit_event(
+        db=db,
+        company_id=job.company_id,
+        user_id=user_id,
+        slack_user_id=slack_user_id,
+        action_type="job_create",
+        entity_type="job",
+        entity_id=job.id,
+        payload={
+            "teamId": slack_team_id,
+            "companyId": job.company_id,
+            "sessionId": session_row.id,
+        },
+    )
 
-    recruiter_id = _normalize_text(session_row.slack_user_id or (dict(session_row.slack_context or {})).get("userId") or "")
+    recruiter_id = _normalize_text(actor_user_id or slack_user_id)
     calibration_state = None
     if recruiter_id:
         calibration_state = bootstrap_preference_calibration_session(
@@ -1478,6 +1547,7 @@ def start_or_resume_slack_intake(
     slack_channel_id: str,
     slack_thread_ts: str = "",
     slack_user_id: str = "",
+    company_id: str = "",
     initial_brief: str = "",
     reuse_existing_session: bool = False,
 ) -> dict[str, Any]:
@@ -1487,8 +1557,26 @@ def start_or_resume_slack_intake(
         slack_channel_id=slack_channel_id,
         slack_thread_ts=slack_thread_ts,
         slack_user_id=slack_user_id,
+        company_id=company_id,
         reuse_existing_session=reuse_existing_session,
     )
+    if _normalize_text(company_id):
+        company = CompanyRepository(db).get_by_id(company_id)
+        if company:
+            session_row.company_id = company.id
+            session_row.normalized_intake = {
+                **dict(session_row.normalized_intake or _initial_intake_state()),
+                "company_name": company.name,
+                "company_description": company.description,
+                "company_website": company.website,
+                "industry": company.industry,
+            }
+            session_row.structured_context = {
+                **dict(session_row.structured_context or {}),
+                "companyId": company.id,
+                "companyName": company.name,
+            }
+            session_row.updated_at = _now()
     brief = _normalize_text(initial_brief)
     if brief:
         session_row.structured_context = {
@@ -1574,9 +1662,11 @@ def process_slack_answer(
     thread_ts: str,
     answer: str,
     timestamp: str,
+    company_id: str = "",
 ) -> dict[str, Any]:
     session_repo = OrchestrationSessionRepository(db)
     session_row = session_repo.get_active_by_slack_context(
+        company_id=company_id,
         slack_team_id=slack_team_id,
         slack_channel_id=slack_channel_id,
         slack_thread_ts=thread_ts,
@@ -1585,6 +1675,7 @@ def process_slack_answer(
     )
     if not session_row:
         session_row = session_repo.get_active_by_slack_context(
+            company_id=company_id,
             slack_team_id=slack_team_id,
             slack_channel_id=slack_channel_id,
             slack_user_id=slack_user_id,
@@ -1753,11 +1844,14 @@ def handle_slack_action(
     slack_user_id: str,
     thread_ts: str,
     question_key: str = "",
+    company_id: str = "",
 ) -> dict[str, Any]:
     repo = OrchestrationSessionRepository(db)
     session_row = repo.get(session_id)
     if not session_row:
         raise APIError("Orchestration session not found", status_code=404)
+    if _normalize_text(company_id) and _normalize_text(session_row.company_id) and _normalize_text(session_row.company_id) != _normalize_text(company_id):
+        raise APIError("Orchestration session company mismatch", status_code=403)
 
     normalized_action = (action or "").strip().lower()
     requested_question_key = _normalize_text(question_key)

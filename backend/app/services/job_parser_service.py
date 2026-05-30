@@ -13,7 +13,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from app.core.config import ENABLE_PLAYWRIGHT_JOB_PARSER, HTTP_TIMEOUT_SECONDS, GROQ_API_KEY
+from app.core.config import ENABLE_PLAYWRIGHT_JOB_PARSER, HTTP_TIMEOUT_SECONDS, GROQ_API_KEY, OPEN_ROUTER_API
 from app.services.llm_service import generate
 from app.utils.exceptions import APIError
 
@@ -654,7 +654,7 @@ def parse_job_posting_url(*, url: str) -> dict[str, str]:
     hints = _extract_structured_hints(parser, raw_url)
     llm_prompt = _build_llm_prompt(raw_url, parser, hints)
 
-    if GROQ_API_KEY:
+    if GROQ_API_KEY or OPEN_ROUTER_API:
         try:
             parsed = generate(llm_prompt, expect_json=True)
             if isinstance(parsed, dict):

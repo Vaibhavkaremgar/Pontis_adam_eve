@@ -54,7 +54,17 @@ def _build_job_vector_source(
     )
 
 
-def create_hiring_job(*, db: Session, user_id: str, company: dict, job: dict) -> str:
+def create_hiring_job(
+    *,
+    db: Session,
+    user_id: str,
+    company: dict,
+    job: dict,
+    company_id: str | None = None,
+    slack_installation_id: str | None = None,
+    slack_team_id: str = "",
+    slack_user_id: str = "",
+) -> str:
     company_name = (company.get("name") or "").strip()
     website = (company.get("website") or "").strip()
     description = (company.get("description") or "").strip()
@@ -80,14 +90,19 @@ def create_hiring_job(*, db: Session, user_id: str, company: dict, job: dict) ->
 
     job_repo = JobRepository(db)
 
-    company_row = get_or_create_company(
-        db=db,
-        user_id=user_id,
-        name=company_name,
-        website=website or "https://example.com",
-        description=description,
-        industry=industry,
-    )
+    company_row = None
+    normalized_company_id = (company_id or "").strip()
+    if normalized_company_id:
+        company_row = CompanyRepository(db).get_by_id(normalized_company_id)
+    if not company_row:
+        company_row = get_or_create_company(
+            db=db,
+            user_id=user_id,
+            name=company_name,
+            website=website or "https://example.com",
+            description=description,
+            industry=industry,
+        )
     job_row = job_repo.create(
         company_id=company_row.id,
         created_by=user_id,
@@ -107,6 +122,9 @@ def create_hiring_job(*, db: Session, user_id: str, company: dict, job: dict) ->
             "autoExportToAts": auto_export_to_ats,
         },
     )
+    job_row.slack_installation_id = (slack_installation_id or "").strip() or None
+    job_row.slack_team_id = (slack_team_id or "").strip()
+    job_row.slack_user_id = (slack_user_id or "").strip()
     try:
         vector_source = build_job_text(job_row)
         chunks = chunk_text(vector_source)

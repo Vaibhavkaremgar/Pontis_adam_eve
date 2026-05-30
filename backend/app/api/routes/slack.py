@@ -7,9 +7,10 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl
 
-from fastapi import APIRouter, BackgroundTasks, Form, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import PUBLIC_APP_URL
@@ -43,6 +44,14 @@ from app.services.slack_integration import (
     update_candidate_message_blocks,
     update_slack_message,
     verify_slack_signature,
+)
+from app.services.slack_tenant_service import (
+    SlackCompanyResolver,
+    build_slack_install_url,
+    exchange_slack_oauth_code,
+    fetch_slack_user_profile,
+    parse_slack_oauth_state,
+    record_slack_audit_event,
 )
 from app.db.repositories import OrchestrationSessionRepository
 from app.utils.responses import error_response
@@ -78,6 +87,11 @@ def _ensure_system_user_id(db) -> str:
         if user:
             return str(user.id)
         raise
+
+
+def _resolve_slack_workspace(db, *, team_id: str, slack_user_id: str = ""):
+    resolver = SlackCompanyResolver(db)
+    return resolver.resolve_workspace_context(team_id=team_id, slack_user_id=slack_user_id)
 
 
 def _derive_job_title(text: str) -> str:
@@ -121,17 +135,33 @@ def _is_channel_rate_limited(channel_id: str) -> bool:
     return False
 
 
-def _send_slack_message_sync(*, channel_id: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None) -> bool:
+def _send_slack_message_sync(
+    *,
+    channel_id: str,
+    text: str,
+    blocks: list[dict] | None = None,
+    thread_ts: str | None = None,
+    bot_token: str | None = None,
+) -> bool:
     try:
-        return asyncio.run(post_slack_message(channel_id=channel_id, text=text, blocks=blocks, thread_ts=thread_ts))
+        return asyncio.run(post_slack_message(channel_id=channel_id, text=text, blocks=blocks, thread_ts=thread_ts, bot_token=bot_token))
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.error("slack_message_post_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
         return False
 
 
-def _send_orchestration_message_sync(*, channel_id: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None) -> dict | None:
+def _send_orchestration_message_sync(
+    *,
+    channel_id: str,
+    text: str,
+    blocks: list[dict] | None = None,
+    thread_ts: str | None = None,
+    bot_token: str | None = None,
+) -> dict | None:
     try:
-        return asyncio.run(post_slack_message_with_result(channel_id=channel_id, text=text, blocks=blocks, thread_ts=thread_ts))
+        return asyncio.run(
+            post_slack_message_with_result(channel_id=channel_id, text=text, blocks=blocks, thread_ts=thread_ts, bot_token=bot_token)
+        )
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.error("slack_orchestration_message_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
         return None
@@ -173,7 +203,7 @@ def _build_orchestration_blocks(
     return blocks
 
 
-def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: str) -> None:
+def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: str, company_id: str = "", bot_token: str | None = None) -> None:
     try:
         with SessionLocal() as db:
             result = start_or_resume_slack_intake(
@@ -181,6 +211,7 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
                 slack_team_id=team_id,
                 slack_channel_id=channel_id,
                 slack_user_id=user_id,
+                company_id=company_id,
                 reuse_existing_session=False,
             )
             session = result.get("session") or {}
@@ -214,6 +245,7 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
                         include_actions=True,
                     ),
                     thread_ts=thread_ts,
+                    bot_token=bot_token,
                 )
             else:
                 response = _send_orchestration_message_sync(
@@ -226,6 +258,7 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
                         include_actions=False,
                     ),
                     thread_ts=thread_ts,
+                    bot_token=bot_token,
                 )
             posted_ts = ""
             if isinstance(response, dict):
@@ -242,7 +275,17 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
         logger.error("orchestration_start_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
 
 
-def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: str, thread_ts: str, text: str, ts: str) -> None:
+def _run_orchestration_message_event(
+    *,
+    team_id: str,
+    channel_id: str,
+    user_id: str,
+    thread_ts: str,
+    text: str,
+    ts: str,
+    company_id: str = "",
+    bot_token: str | None = None,
+) -> None:
     try:
         with SessionLocal() as db:
             result = process_slack_answer(
@@ -253,6 +296,7 @@ def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: 
                 thread_ts=thread_ts,
                 answer=text,
                 timestamp=ts,
+                company_id=company_id,
             )
             question = str(result.get("nextQuestion") or "").strip()
             question_key = str(result.get("nextQuestionKey") or "").strip()
@@ -263,12 +307,14 @@ def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: 
                         channel_id=channel_id,
                         text=" Intake complete. Calibration is now starting.",
                         thread_ts=thread_ts,
+                        bot_token=bot_token,
                     )
                 else:
                     _send_orchestration_message_sync(
                         channel_id=channel_id,
                         text=" Intake captured.",
                         thread_ts=thread_ts,
+                        bot_token=bot_token,
                     )
                 return
 
@@ -292,6 +338,7 @@ def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: 
                         include_actions=True,
                     ),
                     thread_ts=thread_ts,
+                    bot_token=bot_token,
                 )
             elif question:
                 _send_orchestration_message_sync(
@@ -304,6 +351,7 @@ def _run_orchestration_message_event(*, team_id: str, channel_id: str, user_id: 
                         include_actions=False,
                     ),
                     thread_ts=thread_ts,
+                    bot_token=bot_token,
                 )
     except Exception as exc:
         logger.error("orchestration_message_event_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
@@ -318,6 +366,8 @@ def _run_orchestration_action_event(
     thread_ts: str,
     message_ts: str,
     question_key: str = "",
+    company_id: str = "",
+    bot_token: str | None = None,
 ) -> None:
     try:
         with SessionLocal() as db:
@@ -329,6 +379,7 @@ def _run_orchestration_action_event(
                 slack_user_id=user_id,
                 thread_ts=thread_ts,
                 question_key=question_key,
+                company_id=company_id,
             )
 
             if result.get("duplicate"):
@@ -349,6 +400,7 @@ def _run_orchestration_action_event(
                             include_actions=False,
                         ),
                         thread_ts=thread_ts,
+                        bot_token=bot_token,
                     )
                 return
 
@@ -366,6 +418,7 @@ def _run_orchestration_action_event(
                             include_actions=False,
                         ),
                         thread_ts=thread_ts,
+                        bot_token=bot_token,
                     )
                 elif isinstance(calibration, dict) and calibration.get("current_pair"):
                     current_pair = calibration.get("current_pair") or {}
@@ -380,12 +433,14 @@ def _run_orchestration_action_event(
                         text="Calibration is ready. Pick your preferred candidate profiles before sourcing starts.",
                         blocks=blocks,
                         thread_ts=thread_ts,
+                        bot_token=bot_token,
                     )
                 else:
                     _send_orchestration_message_sync(
                         channel_id=channel_id,
                         text="✅ Intake confirmed. Calibration is now starting.",
                         thread_ts=thread_ts,
+                        bot_token=bot_token,
                     )
                 return
 
@@ -394,6 +449,7 @@ def _run_orchestration_action_event(
                     channel_id=channel_id,
                     text="🛑 Search cancelled.",
                     thread_ts=thread_ts,
+                    bot_token=bot_token,
                 )
                 return
 
@@ -405,12 +461,13 @@ def _run_orchestration_action_event(
                     channel_id=channel_id,
                     text=f"Open the voice intake here: {voice_url}",
                     thread_ts=thread_ts,
+                    bot_token=bot_token,
                 )
     except Exception as exc:
         logger.error("orchestration_action_event_failed session_id=%s action=%s error=%s", session_id, action, str(exc), exc_info=exc)
 
 
-def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, recruiter_id: str) -> None:
+def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, recruiter_id: str, bot_token: str | None = None) -> None:
     try:
         with SessionLocal() as db:
             candidates = fetch_ranked_candidates(
@@ -443,6 +500,7 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
                 _send_slack_message_sync(
                     channel_id=channel_id,
                     text="?? Calibration is complete, but no reachable candidates were found yet. Adam will keep sourcing.",
+                    bot_token=bot_token,
                 )
                 return
 
@@ -451,15 +509,16 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
                 channel_id=channel_id,
                 text="Top candidates",
                 blocks=blocks,
+                bot_token=bot_token,
             )
             if not posted:
-                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.")
+                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.", bot_token=bot_token)
     except Exception as exc:
         logger.error("slack_calibration_delivery_failed channel_id=%s job_id=%s error=%s", channel_id, job_id, str(exc), exc_info=exc)
-        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.")
+        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.", bot_token=bot_token)
 
 
-def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user_id: str) -> None:
+def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user_id: str, company_id: str = "", bot_token: str | None = None) -> None:
     logger.info("slack_request_received channel_id=%s text=%s", channel_id, text)
     try:
         with SessionLocal() as db:
@@ -469,6 +528,7 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                 slack_channel_id=channel_id,
                 slack_user_id=user_id,
                 initial_brief=text,
+                company_id=company_id,
                 reuse_existing_session=False,
             )
             session = result.get("session") or {}
@@ -498,12 +558,13 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                     include_actions=path_selection_needed,
                 ),
                 thread_ts=thread_ts,
+                bot_token=bot_token,
             )
             if not posted:
-                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.")
+                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.", bot_token=bot_token)
     except Exception as exc:
         logger.error("slack_hiring_pipeline_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
-        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.")
+        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.", bot_token=bot_token)
 
 
 @router.get("/health")
@@ -511,21 +572,104 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/install")
+def slack_install(company_id: str = ""):
+    normalized_company_id = str(company_id or "").strip()
+    if not normalized_company_id:
+        raise HTTPException(status_code=400, detail="company_id is required")
+    install_url = build_slack_install_url(company_id=normalized_company_id)
+    return RedirectResponse(url=install_url, status_code=302)
+
+
+@router.get("/oauth/callback")
+async def slack_oauth_callback(code: str = "", state: str = ""):
+    state_payload = parse_slack_oauth_state(state)
+    company_id = str(state_payload.get("companyId") or "").strip()
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Missing company context")
+
+    oauth_payload = exchange_slack_oauth_code(code=code)
+    team = oauth_payload.get("team") or {}
+    enterprise = oauth_payload.get("enterprise") or {}
+    authed_user = oauth_payload.get("authed_user") or {}
+    bot_info = oauth_payload.get("bot") or {}
+    scope_list = [
+        scope.strip()
+        for scope in str(oauth_payload.get("scope") or "").split(",")
+        if scope.strip()
+    ]
+
+    with SessionLocal() as db:
+        resolver = SlackCompanyResolver(db)
+        company = resolver.companies.get_by_id(company_id)
+        if not company:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        team_id = str(team.get("id") or oauth_payload.get("team_id") or "").strip()
+        if not team_id:
+            raise HTTPException(status_code=400, detail="Missing Slack team context")
+
+        installation = resolver.installations.upsert(
+            company_id=company.id,
+            team_id=team_id,
+            team_name=str(team.get("name") or "").strip(),
+            enterprise_id=str(enterprise.get("id") or oauth_payload.get("enterprise_id") or "").strip(),
+            bot_user_id=str(bot_info.get("bot_user_id") or oauth_payload.get("bot_user_id") or "").strip(),
+            bot_access_token=str(oauth_payload.get("access_token") or "").strip(),
+            scope_list=scope_list,
+            installed_by_user_id=None,
+            installed_at=datetime.now(timezone.utc),
+            revoked_at=None,
+            is_active=True,
+        )
+        installer_slack_user_id = str(authed_user.get("id") or "").strip()
+        installer_profile = fetch_slack_user_profile(bot_token=installation.bot_access_token, slack_user_id=installer_slack_user_id) if installer_slack_user_id else {"email": "", "display_name": ""}
+        slack_user = resolver.users.upsert(
+            company_id=company.id,
+            slack_installation_id=installation.id,
+            slack_user_id=installer_slack_user_id,
+            email=installer_profile.get("email", ""),
+            display_name=installer_profile.get("display_name", ""),
+            role="recruiter",
+        )
+        installation.installed_by_user_id = slack_user.internal_user_id
+        installation.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        record_slack_audit_event(
+            db=db,
+            company_id=company.id,
+            user_id=slack_user.internal_user_id,
+            slack_user_id=installer_slack_user_id,
+            action_type="slack_install",
+            entity_type="slack_installation",
+            entity_id=installation.id,
+            payload={
+                "teamId": installation.team_id,
+                "teamName": installation.team_name,
+                "enterpriseId": installation.enterprise_id,
+                "scopes": installation.scope_list,
+            },
+        )
+        db.commit()
+
+    success_url = f"{PUBLIC_APP_URL.rstrip('/')}/company?slack_install=success&team_id={installation.team_id}"
+    return RedirectResponse(url=success_url, status_code=302)
+
+
 @router.post("/commands")
 async def slack_commands(
     request: Request,
     background_tasks: BackgroundTasks,
-    text: str = Form(default=""),
-    user_id: str = Form(default=""),
-    channel_id: str = Form(default=""),
-    team_id: str = Form(default=""),
 ):
     try:
+        raw_body = await request.body()
+        _verify_request(request, raw_body)
+        form_payload = dict(parse_qsl(raw_body.decode("utf-8") or "", keep_blank_values=True))
         command = parse_slack_command_form(
             {
-                "text": text,
-                "user_id": user_id,
-                "channel_id": channel_id,
+                "text": str(form_payload.get("text") or ""),
+                "user_id": str(form_payload.get("user_id") or ""),
+                "channel_id": str(form_payload.get("channel_id") or ""),
             }
         )
         logger.info(
@@ -535,6 +679,31 @@ async def slack_commands(
             command.text,
         )
         print("Slack Hire Request:", command.text, "Channel:", command.channel_id)
+
+        team_id = str(form_payload.get("team_id") or "").strip()
+        if not team_id:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "response_type": "ephemeral",
+                    "text": "This Slack workspace is not connected to Adam yet.",
+                },
+            )
+
+        with SessionLocal() as db:
+            try:
+                workspace = _resolve_slack_workspace(db, team_id=team_id, slack_user_id=command.user_id)
+            except Exception as exc:
+                logger.warning("slack_command_workspace_resolution_failed team_id=%s user_id=%s error=%s", team_id, command.user_id, str(exc))
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "response_type": "ephemeral",
+                        "text": "This Slack workspace is not connected to Adam yet.",
+                    },
+                )
+            company_id = workspace.company.id
+            bot_token = workspace.installation.bot_access_token
 
         if _is_channel_rate_limited(command.channel_id):
             logger.warning("slack_command_rate_limited channel_id=%s user_id=%s", command.channel_id, command.user_id)
@@ -552,6 +721,8 @@ async def slack_commands(
                 team_id=team_id,
                 channel_id=command.channel_id,
                 user_id=command.user_id,
+                company_id=company_id,
+                bot_token=bot_token,
             )
             return JSONResponse(
                 status_code=200,
@@ -567,6 +738,8 @@ async def slack_commands(
             channel_id=command.channel_id,
             text=command.text,
             user_id=command.user_id,
+            company_id=company_id,
+            bot_token=bot_token,
         )
 
         return JSONResponse(
@@ -576,6 +749,8 @@ async def slack_commands(
                 "text": "",
             },
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("slack_command_failed error=%s", str(exc), exc_info=exc)
         return JSONResponse(
@@ -621,6 +796,17 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
     if not thread_ts or not channel_id or not user_id:
         return {"ok": True}
 
+    company_id = ""
+    bot_token = ""
+    with SessionLocal() as db:
+        try:
+            workspace = _resolve_slack_workspace(db, team_id=team_id, slack_user_id=user_id)
+            company_id = workspace.company.id
+            bot_token = workspace.installation.bot_access_token
+        except Exception as exc:
+            logger.warning("slack_event_workspace_resolution_failed team_id=%s user_id=%s error=%s", team_id, user_id, str(exc))
+            return {"ok": True}
+
     background_tasks.add_task(
         _run_orchestration_message_event,
         team_id=team_id,
@@ -629,6 +815,8 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
         thread_ts=thread_ts,
         text=text,
         ts=str(event.get("ts") or "").strip(),
+        company_id=company_id,
+        bot_token=bot_token,
     )
     return {"ok": True}
 
@@ -664,6 +852,17 @@ async def complete_orchestration_voice_route(token: str, request: Request):
             channel_id = str(session.get("slackChannelId") or session.get("slack_channel_id") or "").strip()
             thread_ts = str(session.get("slackThreadTs") or session.get("slack_thread_ts") or "").strip() or None
             job_id = str((payload.get("finalization") or {}).get("jobId") or session.get("jobId") or session.get("job_id") or "").strip()
+            team_id = str(session.get("slackTeamId") or session.get("slack_team_id") or "").strip()
+            user_id = str(session.get("slackUserId") or session.get("slack_user_id") or "").strip()
+            company_id = str(session.get("companyId") or session.get("company_id") or (payload.get("finalization") or {}).get("companyId") or "").strip()
+            bot_token = ""
+            if team_id:
+                try:
+                    with SessionLocal() as token_db:
+                        workspace = _resolve_slack_workspace(token_db, team_id=team_id, slack_user_id=user_id)
+                        bot_token = workspace.installation.bot_access_token
+                except Exception:
+                    logger.warning("slack_voice_completion_workspace_resolution_failed team_id=%s user_id=%s", team_id, user_id)
             if channel_id and job_id:
                 blocks = build_calibration_blocks(
                     job_id=job_id,
@@ -676,7 +875,24 @@ async def complete_orchestration_voice_route(token: str, request: Request):
                     text="Calibration is ready. Pick the candidate profile that best matches your hiring style.",
                     blocks=blocks,
                     thread_ts=thread_ts,
+                    bot_token=bot_token or None,
                 )
+                if company_id:
+                    record_slack_audit_event(
+                        db=db,
+                        company_id=company_id,
+                        user_id=None,
+                        slack_user_id=user_id,
+                        action_type="voice_intake_completion",
+                        entity_type="orchestration_session",
+                        entity_id=str(session.get("id") or session.get("sessionId") or session.get("session_id") or ""),
+                        payload={
+                            "jobId": job_id,
+                            "teamId": team_id,
+                            "channelId": channel_id,
+                        },
+                    )
+                    db.commit()
         return JSONResponse(status_code=200, content={"success": True, "data": payload})
 
 
@@ -702,6 +918,22 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         message = payload.get("message") or {}
         message_ts = str(message.get("ts") or "").strip()
         channel_id = str((payload.get("channel") or {}).get("id") or "").strip()
+        team = payload.get("team")
+        team_id = str(payload.get("team_id") or (team.get("id") if isinstance(team, dict) else team or "")).strip()
+        user_id = str((payload.get("user") or {}).get("id") or "").strip()
+        company_id = ""
+        bot_token = ""
+        internal_user_id = ""
+        if team_id and user_id:
+            with SessionLocal() as db:
+                try:
+                    workspace = _resolve_slack_workspace(db, team_id=team_id, slack_user_id=user_id)
+                    company_id = workspace.company.id
+                    bot_token = workspace.installation.bot_access_token
+                    internal_user_id = str(workspace.internal_user.id if workspace.internal_user else workspace.slack_user.internal_user_id if workspace.slack_user else "").strip()
+                except Exception as exc:
+                    logger.warning("slack_interaction_workspace_resolution_failed team_id=%s user_id=%s error=%s", team_id, user_id, str(exc))
+                    return JSONResponse(status_code=200, content={"ok": True})
 
         try:
             action, candidate_id, job_id, calibration_set_id = extract_button_action(payload)
@@ -731,10 +963,24 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             with SessionLocal() as db:
                 calibration_result = record_preference_calibration_choice(
                     db=db,
-                    recruiter_id=str((payload.get("user") or {}).get("id") or "").strip(),
+                    recruiter_id=internal_user_id or user_id,
                     job_id=job_id,
                     selected_candidate_id=candidate_id,
                     calibration_set_id=calibration_set_id,
+                )
+                record_slack_audit_event(
+                    db=db,
+                    company_id=company_id,
+                    user_id=internal_user_id or None,
+                    slack_user_id=user_id,
+                    action_type="calibration_select",
+                    entity_type="job",
+                    entity_id=job_id,
+                    payload={
+                        "candidateId": candidate_id,
+                        "calibrationSetId": calibration_set_id,
+                        "teamId": team_id,
+                    },
                 )
                 db.commit()
 
@@ -750,6 +996,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                 ts=message_ts,
                 blocks=updated_blocks,
                 text="Calibration choice saved",
+                bot_token=bot_token,
             )
             if not update_ok:
                 logger.warning(
@@ -767,12 +1014,14 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     _run_calibration_candidate_delivery_event,
                     channel_id=channel_id,
                     job_id=job_id,
-                    recruiter_id=str((payload.get("user") or {}).get("id") or "").strip(),
+                    recruiter_id=internal_user_id or user_id,
+                    bot_token=bot_token,
                 )
                 await post_slack_message(
                     channel_id=channel_id,
                     text="✅ Calibration complete. Adam is now sourcing the strongest reachable candidates.",
                     thread_ts=message_ts or None,
+                    bot_token=bot_token,
                 )
             else:
                 current_pair = calibration_result.get("current_pair") or {}
@@ -787,6 +1036,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     text="🧭 Preference calibrated. Pick the next candidate profile that best matches your hiring style.",
                     blocks=next_blocks,
                     thread_ts=message_ts or None,
+                    bot_token=bot_token,
                 )
             logger.info(
                 "slack_calibration_processed job_id=%s profile_id=%s stage=%s",
@@ -815,6 +1065,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     await post_slack_message(
                         channel_id=channel_id,
                         text="\u26a0\ufe0f This candidate has already been processed.",
+                        bot_token=bot_token,
                     )
                     return {"ok": True, "duplicate": True}
 
@@ -824,6 +1075,11 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                         job_id=job_id,
                         candidate_id=candidate_id,
                         action="accept",
+                        actor_id=internal_user_id or user_id,
+                        company_id=company_id,
+                        slack_team_id=team_id,
+                        slack_user_id=user_id,
+                        slack_installation_id=workspace.installation.id,
                     )
                 elif action == "advance":
                     result = transition_candidate_ats_state(
@@ -833,7 +1089,18 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                         to_status="advanced",
                         source="slack",
                         reason="slack_advance",
-                        metadata={"action": action, "channelId": channel_id, "messageTs": message_ts},
+                        actor_id=internal_user_id or user_id,
+                        slack_team_id=team_id,
+                        slack_user_id=user_id,
+                        slack_installation_id=workspace.installation.id,
+                        metadata={
+                            "action": action,
+                            "channelId": channel_id,
+                            "messageTs": message_ts,
+                            "companyId": company_id,
+                            "slackTeamId": team_id,
+                            "slackUserId": user_id,
+                        },
                     )
                 elif action == "archive":
                     result = transition_candidate_ats_state(
@@ -843,7 +1110,18 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                         to_status="archived",
                         source="slack",
                         reason="slack_archive",
-                        metadata={"action": action, "channelId": channel_id, "messageTs": message_ts},
+                        actor_id=internal_user_id or user_id,
+                        slack_team_id=team_id,
+                        slack_user_id=user_id,
+                        slack_installation_id=workspace.installation.id,
+                        metadata={
+                            "action": action,
+                            "channelId": channel_id,
+                            "messageTs": message_ts,
+                            "companyId": company_id,
+                            "slackTeamId": team_id,
+                            "slackUserId": user_id,
+                        },
                     )
                 else:
                     result = apply_feedback(
@@ -851,7 +1129,29 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                         job_id=job_id,
                         candidate_id=candidate_id,
                         action="reject",
+                        actor_id=internal_user_id or user_id,
+                        company_id=company_id,
+                        slack_team_id=team_id,
+                        slack_user_id=user_id,
+                        slack_installation_id=workspace.installation.id,
                     )
+                audit_action = "candidate_approval" if action in {"select", "save"} else "candidate_rejection" if action == "reject" else "candidate_ats_transition"
+                record_slack_audit_event(
+                    db=db,
+                    company_id=company_id,
+                    user_id=internal_user_id or None,
+                    slack_user_id=user_id,
+                    action_type=audit_action,
+                    entity_type="candidate",
+                    entity_id=candidate_id,
+                    payload={
+                        "jobId": job_id,
+                        "action": action,
+                        "teamId": team_id,
+                        "channelId": channel_id,
+                        "messageTs": message_ts,
+                    },
+                )
                 db.commit()
 
             updated_blocks = update_candidate_message_blocks(
@@ -865,6 +1165,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                 ts=message_ts,
                 blocks=updated_blocks,
                 text=f"Candidate {action}ed",
+                bot_token=bot_token,
             )
             if not update_ok:
                 logger.warning(
@@ -885,7 +1186,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                 response_text = "\U0001f5d1\ufe0f Candidate archived"
             else:
                 response_text = "\u274c Candidate rejected"
-            await post_slack_message(channel_id=channel_id, text=response_text)
+            await post_slack_message(channel_id=channel_id, text=response_text, bot_token=bot_token)
             logger.info(
                 "slack_interaction_processed job_id=%s candidate_id=%s action=%s result=%s",
                 job_id,
@@ -894,7 +1195,12 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                 json.dumps(result, ensure_ascii=False),
             )
             if action == "save":
-                await post_slack_message(channel_id=channel_id, text="💾 Candidate saved for future ranking", thread_ts=message_ts or None)
+                await post_slack_message(
+                    channel_id=channel_id,
+                    text="💾 Candidate saved for future ranking",
+                    thread_ts=message_ts or None,
+                    bot_token=bot_token,
+                )
                 return {"ok": True}
             return {"ok": True}
 
@@ -910,6 +1216,8 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                 thread_ts=str((message or {}).get("thread_ts") or message_ts or "").strip(),
                 message_ts=message_ts,
                 question_key=question_key,
+                company_id=company_id,
+                bot_token=bot_token,
             )
             return {"ok": True}
 
@@ -972,7 +1280,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         try:
             channel_id = (payload.get("channel") or {}).get("id") or (payload.get("channel") or {}).get("channel_id")
             if channel_id:
-                await post_slack_message(channel_id=channel_id, text="\u26a0\ufe0f Failed to fetch candidates. Please try again.")
+                await post_slack_message(channel_id=channel_id, text="\u26a0\ufe0f Failed to fetch candidates. Please try again.", bot_token=bot_token)
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception("slack_interaction_fallback_failed")
         return JSONResponse(status_code=500, content=error_response("Failed to process Slack interaction"))

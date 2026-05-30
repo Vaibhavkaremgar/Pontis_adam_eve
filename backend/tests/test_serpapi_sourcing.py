@@ -12,6 +12,7 @@ os.environ.setdefault("SERPAPI_ENABLED", "true")
 from app.services.serpapi_sourcing_service import (  # noqa: E402
     SerpApiClient,
     build_linkedin_xray_queries,
+    build_linkedin_xray_query_layers,
     discover_linkedin_xray_candidates,
 )
 
@@ -38,15 +39,42 @@ class SerpApiSourcingTests(unittest.TestCase):
             leadership_expectations="technical leadership",
         )
 
-        self.assertEqual(len(queries), 1)
-        query = queries[0]
-        self.assertIn("site:linkedin.com/in/", query)
-        self.assertIn("Senior Backend Engineer", query)
-        self.assertIn("Python", query)
-        self.assertIn("AWS", query)
-        self.assertIn("San Francisco", query)
-        self.assertTrue("Series A" in query or "Series A".lower() in query.lower())
-        self.assertIn("fintech", query.lower())
+        self.assertEqual(len(queries), 3)
+        self.assertEqual(len({query.lower() for query in queries}), 3)
+        self.assertTrue(all("site:linkedin.com/in" in query for query in queries))
+        self.assertTrue(any("backend" in query.lower() and "engineer" in query.lower() for query in queries))
+        self.assertTrue(any("python" in query.lower() and "fastapi" in query.lower() for query in queries))
+        self.assertTrue(any("aws" in query.lower() for query in queries))
+        self.assertTrue(any("san francisco" in query.lower() for query in queries))
+
+    def test_build_linkedin_query_layers_uses_selected_archetypes_and_keeps_three_queries(self) -> None:
+        layers = build_linkedin_xray_query_layers(
+            role="Backend Engineer",
+            seniority="Senior",
+            skills=["Python", "FastAPI", "MongoDB"],
+            location="Hyderabad",
+            company_stage="Series A",
+            hiring_preferences="startup ownership",
+            industry="platform",
+            leadership_expectations="technical leadership",
+            job_description="Build backend APIs and integrations for internal tooling.",
+            voice_summary="Candidate should have strong REST API experience.",
+            voice_transcript="We need someone who can own microservices and integrations.",
+            selected_archetypes=[
+                {
+                    "profile_title": "Backend API Engineer",
+                    "preferred_project_type": "API integrations",
+                    "core_skills": ["Python", "FastAPI", "MongoDB"],
+                    "experience_range": "7-10 years",
+                }
+            ],
+        )
+
+        self.assertEqual(len(layers), 3)
+        self.assertEqual(len({layer.query.lower() for layer in layers}), 3)
+        self.assertTrue(any("Backend API Engineer" in layer.query or "backend engineer" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("FastAPI" in layer.query or "REST API" in layer.query or "microservices" in layer.query.lower() for layer in layers))
+        self.assertTrue(all("hyderabad" in layer.query.lower() for layer in layers))
 
     @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
     def test_discovery_normalizes_and_dedupes_linkedin_results(self, _mock_disabled: object) -> None:

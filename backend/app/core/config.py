@@ -64,6 +64,12 @@ GROQ_BASE_URL = os.getenv(
     "https://api.groq.com/openai/v1",
 ).strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+OPEN_ROUTER_API = os.getenv("OPEN_ROUTER_API", "").strip()
+OPEN_ROUTER_BASE_URL = os.getenv(
+    "OPEN_ROUTER_BASE_URL",
+    "https://openrouter.ai/api/v1",
+).strip()
+OPEN_ROUTER_MODEL = os.getenv("OPEN_ROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct").strip()
 HF_TOKEN = os.getenv("HF_TOKEN", "").strip()
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 SOURCE_PROVIDER = os.getenv("SOURCE_PROVIDER", "xray_apollo").strip().lower() or "xray_apollo"
@@ -223,6 +229,14 @@ SLACK_SKIP_SIGNATURE_VERIFICATION = os.getenv("SLACK_SKIP_SIGNATURE_VERIFICATION
     "yes",
     "on",
 }
+SLACK_CLIENT_ID = os.getenv("SLACK_CLIENT_ID", "").strip()
+SLACK_CLIENT_SECRET = os.getenv("SLACK_CLIENT_SECRET", "").strip()
+SLACK_REDIRECT_URI = os.getenv("SLACK_REDIRECT_URI", "").strip()
+SLACK_OAUTH_SCOPES = os.getenv(
+    "SLACK_OAUTH_SCOPES",
+    "commands,chat:write,channels:history,groups:history,im:history,mpim:history,users:read,users:read.email",
+).strip()
+SLACK_STATE_SECRET = os.getenv("SLACK_STATE_SECRET", "").strip()
 # Disabled after Postgres migration: persistent sqlite cache backend is no longer active.
 PERSISTENT_CACHE_PATH = os.getenv("PERSISTENT_CACHE_PATH", "disabled").strip()
 REDIS_URL = os.getenv("REDIS_URL", "").strip()
@@ -263,8 +277,8 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("GEMINI_API_KEY and GROQ_API_KEY are missing; LLM features will use local fallback.")
     elif not GEMINI_API_KEY:
         warnings.append("GEMINI_API_KEY is missing; LLM features will fall back to GROQ when available.")
-    elif not GROQ_API_KEY:
-        warnings.append("GROQ_API_KEY is missing; Gemini fallback will not have a secondary provider.")
+    elif not GROQ_API_KEY and not OPEN_ROUTER_API:
+        warnings.append("GROQ_API_KEY and OPEN_ROUTER_API are missing; Gemini fallback will not have a secondary provider.")
     if SOURCE_PROVIDER == "xray_apollo" and XRAY_ENABLED and not SERPAPI_API_KEY:
         warnings.append("SERPAPI_API_KEY is missing; LinkedIn X-Ray sourcing will be unavailable.")
     if PDL_ENABLED and not PDL_API_KEY:
@@ -283,6 +297,8 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("SLACK_SIGNING_SECRET is missing; Slack request verification will fail.")
     if SLACK_SKIP_SIGNATURE_VERIFICATION:
         warnings.append("Slack signature verification is disabled; re-enable it after debugging.")
+    if not SLACK_CLIENT_ID or not SLACK_CLIENT_SECRET:
+        warnings.append("Slack OAuth client credentials are missing; workspace install flow will be unavailable.")
     if BOOKING_PROVIDER == "calendly" and not BOOKING_PROVIDER_URL:
         warnings.append("BOOKING_PROVIDER is calendly but BOOKING_PROVIDER_URL is missing.")
     if INTERVIEW_PROVIDER == "zoom" and not INTERVIEW_PROVIDER_URL:
@@ -350,8 +366,8 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             "INTERNAL_API_KEY": INTERNAL_API_KEY,
             "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_OAUTH_CLIENT_ID,
         }
-        if not GEMINI_API_KEY and not GROQ_API_KEY:
-            issues.append(ConfigIssue(key="LLM_PROVIDER", severity="critical", message="At least one of GEMINI_API_KEY or GROQ_API_KEY is required in production"))
+        if not GEMINI_API_KEY and not GROQ_API_KEY and not OPEN_ROUTER_API:
+            issues.append(ConfigIssue(key="LLM_PROVIDER", severity="critical", message="At least one of GEMINI_API_KEY, GROQ_API_KEY, or OPEN_ROUTER_API is required in production"))
         for key, value in production_required.items():
             if _is_placeholder_value(str(value or "")):
                 issues.append(ConfigIssue(key=key, severity="critical", message=f"{key} is required in production and must not be empty or placeholder"))

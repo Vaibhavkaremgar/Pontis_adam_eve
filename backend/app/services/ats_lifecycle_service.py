@@ -147,6 +147,9 @@ def transition_candidate_ats_state(
     to_status: str,
     source: str = "system",
     actor_id: str | None = None,
+    slack_team_id: str = "",
+    slack_user_id: str = "",
+    slack_installation_id: str | None = None,
     reason: str = "",
     metadata: dict[str, Any] | None = None,
     allow_idempotent: bool = True,
@@ -210,6 +213,11 @@ def transition_candidate_ats_state(
             transition_key=transition_key,
             event_metadata=payload,
         )
+        event.company_id = str(job.company_id)
+        event.slack_team_id = (slack_team_id or getattr(event, "slack_team_id", "") or "").strip()
+        event.slack_user_id = (slack_user_id or getattr(event, "slack_user_id", "") or "").strip()
+        event.slack_installation_id = (slack_installation_id or getattr(event, "slack_installation_id", None) or "").strip() or None
+        db.flush()
     except IntegrityError:
         # If the transition already exists, treat the request as idempotent.
         db.rollback()

@@ -21,6 +21,7 @@ from app.core.config import (
     FEEDBACK_WEIGHTS,
     GROQ_API_KEY,
     EMBEDDING_VERSION,
+    OPEN_ROUTER_API,
     SOURCE_PROVIDER,
     USE_INTERNAL_CANDIDATE_DB,
     MIN_SKILL_MATCH_THRESHOLD,
@@ -1657,7 +1658,7 @@ def _build_feedback_learning_context(db: Session, *, job_id: str) -> FeedbackLea
 
 
 def _elite_reasoning(job, candidate: CandidateResult) -> tuple[str, float]:
-    if not GROQ_API_KEY:
+    if not (GROQ_API_KEY or OPEN_ROUTER_API):
         heuristic = (
             "Strong semantic and skill alignment." if candidate.explanation.semanticScore >= 0.7 else "Moderate alignment."
         )
@@ -2767,6 +2768,7 @@ def build_candidate_fetch_debug(
 
     reviewable_count = sum(1 for row in reviewability_rows if row.get("reason") in {"reviewable", "reviewable_xray"})
     swiped_profile_count = sum(1 for row in profiles if getattr(row, "candidate_id", "") in swiped_ids)
+    removed_count = max(0, len(reviewability_rows) - reviewable_count)
     current_job_status = str(getattr(job, "job_status", "") or "").strip().lower() if job else ""
     likely_reason = "candidates_returned"
     if returned_count <= 0:
@@ -2785,6 +2787,22 @@ def build_candidate_fetch_debug(
             likely_reason = "all_candidates_already_swiped"
         else:
             likely_reason = "no_candidates_after_ranking_or_filtering"
+
+    logger.info(
+        "deck_rebuild_diagnostics job_id=%s profile_count=%s reviewable_count=%s removed_count=%s removal_reasons=%s",
+        job_id,
+        len(profiles),
+        reviewable_count,
+        removed_count,
+        reason_counts,
+    )
+    log_metric(
+        "deck_rebuild_diagnostics",
+        job_id=job_id,
+        profile_count=len(profiles),
+        reviewable_count=reviewable_count,
+        removed_count=removed_count,
+    )
 
     return {
         "jobId": job_id,
@@ -3191,7 +3209,7 @@ def fetch_ranked_candidates(
                     company=candidate.company,
                     summary=candidate.summary,
                     skills=list(candidate.skills or []),
-                    raw_data=candidate.model_dump(exclude_none=True),
+                    raw_data=candidate.model_dump(),
                     fit_score=float(candidate.fitScore or 0.0),
                     decision=candidate.decision or "potential",
                     strategy=candidate.strategy or "MEDIUM",
@@ -3206,6 +3224,29 @@ def fetch_ranked_candidates(
             )
             unswiped_xray_count = len(xray_results)
             xray_results = [candidate for candidate in xray_results if _is_reviewable_candidate(candidate)]
+            already_swiped_count = max(0, unswiped_xray_count - len(xray_results))
+            removed_reviewability_count = max(0, unswiped_xray_count - len(xray_results))
+            logger.info(
+                "candidate_retrieval_diagnostics job_id=%s source=xray raw_candidate_count=%s normalized_count=%s duplicate_count=%s invalid_url_count=%s already_swiped_count=%s reviewable_count=%s",
+                job.id,
+                len(reviewable_seed_candidates),
+                len(reviewable_seed_candidates),
+                0,
+                0,
+                already_swiped_count,
+                len(xray_results),
+            )
+            log_metric(
+                "candidate_retrieval_diagnostics",
+                job_id=job.id,
+                source="xray",
+                raw_candidate_count=len(reviewable_seed_candidates),
+                normalized_count=len(reviewable_seed_candidates),
+                duplicate_count=0,
+                invalid_url_count=0,
+                already_swiped_count=already_swiped_count,
+                reviewable_count=len(xray_results),
+            )
             if not xray_results:
                 logger.warning(
                     "xray_reviewable_candidates_missing job_id=%s raw_count=%s unswiped_count=%s reason=using_raw_xray_pool likely_reason=all_candidates_filtered_by_reviewability",
@@ -3829,7 +3870,18 @@ def warm_candidate_retrieval() -> int:
     return preloaded
 
 
-def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) -> dict:
+def apply_feedback(
+    *,
+    db: Session,
+    job_id: str,
+    candidate_id: str,
+    action: str,
+    actor_id: str | None = None,
+    company_id: str | None = None,
+    slack_team_id: str = "",
+    slack_user_id: str = "",
+    slack_installation_id: str | None = None,
+) -> dict:
     jobs = JobRepository(db)
     job = jobs.get(job_id)
     if not job:
@@ -3912,6 +3964,14 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
         recruiter_id=recruiter_id,
         session_id=session_id,
     )
+    feedback_row = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    if feedback_row:
+        feedback_row.company_id = (company_id or getattr(feedback_row, "company_id", None) or job.company_id or "").strip() or None
+        feedback_row.recruiter_id = (actor_id or recruiter_id or feedback_row.recruiter_id or "").strip() or None
+        feedback_row.slack_team_id = (slack_team_id or getattr(feedback_row, "slack_team_id", "") or "").strip()
+        feedback_row.slack_user_id = (slack_user_id or getattr(feedback_row, "slack_user_id", "") or "").strip()
+        feedback_row.slack_installation_id = (slack_installation_id or getattr(feedback_row, "slack_installation_id", None) or "").strip() or None
+        db.flush()
     if is_new_feedback and recruiter_id:
         update_recruiter_preferences(
             db,
@@ -3940,9 +4000,18 @@ def apply_feedback(*, db: Session, job_id: str, candidate_id: str, action: str) 
             candidate_id=candidate_id,
             to_status="selected" if action == "accept" else "rejected",
             source="candidate_feedback",
-            actor_id=recruiter_id,
+            actor_id=actor_id or recruiter_id,
+            slack_team_id=slack_team_id,
+            slack_user_id=slack_user_id,
+            slack_installation_id=slack_installation_id,
             reason="recruiter_feedback",
-            metadata={"action": action, "feedbackSource": "candidate_feedback"},
+            metadata={
+                "action": action,
+                "feedbackSource": "candidate_feedback",
+                "slackTeamId": slack_team_id,
+                "slackUserId": slack_user_id,
+                "companyId": company_id or job.company_id,
+            },
         )
 
     # Only run RLHF weight update for genuinely new feedback signals.

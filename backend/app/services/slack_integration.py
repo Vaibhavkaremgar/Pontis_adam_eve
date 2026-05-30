@@ -29,6 +29,13 @@ SLACK_TIMESTAMP_TOLERANCE_SECONDS = 60 * 5
 slack_client = WebClient(token=SLACK_BOT_TOKEN) if (SLACK_BOT_TOKEN and WebClient is not None) else None
 
 
+def _client_for_token(bot_token: str | None = None):
+    token = (bot_token or "").strip()
+    if token and WebClient is not None:
+        return WebClient(token=token)
+    return slack_client
+
+
 @dataclass(frozen=True)
 class SlackCommandPayload:
     text: str
@@ -424,12 +431,14 @@ async def post_slack_message(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
     thread_ts: str | None = None,
+    bot_token: str | None = None,
 ) -> bool:
     result = await post_slack_message_with_result(
         channel_id=channel_id,
         text=text,
         blocks=blocks,
         thread_ts=thread_ts,
+        bot_token=bot_token,
     )
     return bool(result)
 
@@ -440,8 +449,10 @@ async def post_slack_message_with_result(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
     thread_ts: str | None = None,
+    bot_token: str | None = None,
 ) -> dict[str, Any] | None:
-    if not slack_client:
+    client = _client_for_token(bot_token)
+    if not client:
         logger.error("slack_message_skipped missing_bot_token channel_id=%s", channel_id)
         return None
 
@@ -456,7 +467,7 @@ async def post_slack_message_with_result(
             kwargs["blocks"] = blocks
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
-        response = await asyncio.to_thread(slack_client.chat_postMessage, **kwargs)
+        response = await asyncio.to_thread(client.chat_postMessage, **kwargs)
         return response if isinstance(response, dict) else {"ok": True}
     except SlackApiError as exc:
         error = exc.response.get("error")
@@ -473,8 +484,10 @@ async def update_slack_message(
     ts: str | None,
     blocks: list[dict[str, Any]],
     text: str = "Updated candidate state",
+    bot_token: str | None = None,
 ) -> bool:
-    if not slack_client:
+    client = _client_for_token(bot_token)
+    if not client:
         logger.error("slack_message_update_skipped missing_bot_token channel_id=%s", channel_id)
         return False
 
@@ -491,7 +504,7 @@ async def update_slack_message(
             "text": text,
             "blocks": blocks,
         }
-        await asyncio.to_thread(slack_client.chat_update, **kwargs)
+        await asyncio.to_thread(client.chat_update, **kwargs)
         return True
     except SlackApiError as exc:
         logger.error(
@@ -513,8 +526,10 @@ async def send_slack_dm_message(
     text: str,
     blocks: list[dict[str, Any]] | None = None,
     thread_ts: str | None = None,
+    bot_token: str | None = None,
 ) -> bool:
-    if not slack_client:
+    client = _client_for_token(bot_token)
+    if not client:
         logger.error("slack_dm_message_skipped missing_bot_token user_id=%s", user_id)
         return False
 
@@ -524,7 +539,7 @@ async def send_slack_dm_message(
         return False
 
     try:
-        response = await asyncio.to_thread(slack_client.conversations_open, users=target_user)
+        response = await asyncio.to_thread(client.conversations_open, users=target_user)
         channel = response.get("channel") or {}
         dm_channel_id = str(channel.get("id") or "").strip()
         if not dm_channel_id:
@@ -550,8 +565,13 @@ async def send_slack_dm_message(
         return False
 
 
-async def open_slack_dm(user_id: str) -> str | None:
-    if not slack_client:
+async def open_slack_dm(user_id: str, bot_token: str | None = None) -> str | None:
+    return await open_slack_dm_for_token(user_id=user_id, bot_token=bot_token)
+
+
+async def open_slack_dm_for_token(user_id: str, bot_token: str | None = None) -> str | None:
+    client = _client_for_token(bot_token)
+    if not client:
         logger.error("slack_dm_open_failed missing_bot_token user_id=%s", user_id)
         return None
 
@@ -561,7 +581,7 @@ async def open_slack_dm(user_id: str) -> str | None:
         return None
 
     try:
-        response = await asyncio.to_thread(slack_client.conversations_open, users=user)
+        response = await asyncio.to_thread(client.conversations_open, users=user)
         channel = response.get("channel") or {}
         dm_channel_id = channel.get("id")
         if not dm_channel_id:

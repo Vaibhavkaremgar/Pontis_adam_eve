@@ -18,6 +18,7 @@ from app.core.config import (
     ENABLE_REAL_EMAIL_SENDING,
     ENABLE_REPLY_DETECTION,
     GROQ_API_KEY,
+    OPEN_ROUTER_API,
     OUTREACH_DRY_RUN,
     OUTREACH_FROM_EMAIL,
     OUTREACH_REPLY_TO_EMAIL,
@@ -517,7 +518,7 @@ def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
     Falls back to the heuristic template if the LLM is unavailable or fails.
     Prompts are deterministic — no hallucinated claims about the candidate.
     """
-    if not GROQ_API_KEY:
+    if not (GROQ_API_KEY or OPEN_ROUTER_API):
         return _build_heuristic_email(candidate_profile=candidate_profile, job=job)
 
     try:

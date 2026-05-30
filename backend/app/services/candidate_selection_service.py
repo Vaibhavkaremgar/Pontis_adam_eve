@@ -632,7 +632,8 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         if candidate_id in (session.selected_candidate_ids or []):
             return payload
 
-        rejected_candidate_ids = [cid for cid in current_batch_ids if cid != candidate_id]
+        # Keep the rest of the deck reviewable; selecting one candidate should not bulk-reject the others.
+        rejected_candidate_ids: list[str] = []
 
         selected_candidate = lookup.get(candidate_id)
         rejected_candidates = [lookup[candidate] for candidate in rejected_candidate_ids if candidate in lookup]
@@ -643,6 +644,16 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         contact_email = ""
         contact_phone = ""
         candidate_status = "selected"
+        previous_state = _normalize_text(getattr(selected_candidate, "status", "") or "new") if selected_candidate else "new"
+        logger.info(
+            "selection_choice_state job_id=%s candidate_id=%s feedback=%s previous_state=%s new_state=%s rejected_count=%s",
+            job_id,
+            candidate_id,
+            "accept",
+            previous_state,
+            "selected",
+            len(rejected_candidate_ids),
+        )
         if selected_candidate:
             profile_repo = CandidateProfileRepository(db)
             profile = profile_repo.get(job_id=job_id, candidate_id=candidate_id) or profile_repo.ensure_candidate_profile(job_id=job_id, candidate_id=candidate_id)

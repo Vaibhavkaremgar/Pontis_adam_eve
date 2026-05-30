@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import CHAR, TypeDecorator
@@ -54,6 +54,8 @@ class UserEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     companies: Mapped[list["CompanyEntity"]] = relationship(back_populates="user")
+    slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="internal_user")
+    slack_installations: Mapped[list["SlackInstallationEntity"]] = relationship(back_populates="installed_by_user")
 
 
 class CompanyEntity(Base):
@@ -78,6 +80,60 @@ class CompanyEntity(Base):
     inbound_email_replies: Mapped[list["InboundEmailReplyEntity"]] = relationship(back_populates="company_record")
     interview_sessions: Mapped[list["InterviewSessionEntity"]] = relationship(back_populates="company_record")
     orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="company_record")
+    slack_installations: Mapped[list["SlackInstallationEntity"]] = relationship(back_populates="company")
+    slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="company")
+
+
+class SlackInstallationEntity(Base):
+    __tablename__ = "slack_installations"
+    __table_args__ = (
+        UniqueConstraint("team_id", name="uq_slack_installations_team_id"),
+        Index("ix_slack_installations_company_active", "company_id", "is_active"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    team_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    team_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    enterprise_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    bot_access_token: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    scope_list: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    installed_by_user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    installed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    company: Mapped["CompanyEntity"] = relationship(back_populates="slack_installations")
+    installed_by_user: Mapped["UserEntity | None"] = relationship(back_populates="slack_installations")
+    slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="installation")
+
+
+class SlackUserEntity(Base):
+    __tablename__ = "slack_users"
+    __table_args__ = (
+        UniqueConstraint("slack_installation_id", "slack_user_id", name="uq_slack_users_installation_user"),
+        Index("ix_slack_users_company_slack_user", "company_id", "slack_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    slack_installation_id: Mapped[str] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=False, index=True)
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    internal_user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="recruiter")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    company: Mapped["CompanyEntity"] = relationship(back_populates="slack_users")
+    installation: Mapped["SlackInstallationEntity"] = relationship(back_populates="slack_users")
+    internal_user: Mapped["UserEntity | None"] = relationship(back_populates="slack_users")
 
 
 class JobEntity(Base):
@@ -100,6 +156,9 @@ class JobEntity(Base):
     auto_export_to_ats: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     created_by: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     remote_policy: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     experience_required: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     last_candidate_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
@@ -115,6 +174,7 @@ class JobEntity(Base):
     ats_exports: Mapped[list["ATSExportEntity"]] = relationship(back_populates="job")
     outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="job")
     orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="job_record")
+    slack_installation: Mapped["SlackInstallationEntity | None"] = relationship()
 
 
 class JobIntakeEntity(Base):
@@ -207,6 +267,9 @@ class CandidateLifecycleEventEntity(Base):
     to_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
     actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     transition_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     event_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
@@ -379,7 +442,11 @@ class CandidateFeedbackEntity(Base):
     feedback: Mapped[str] = mapped_column(String(16), nullable=False)  # accept | reject
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
     recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     session_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("candidate_selection_sessions.id"), nullable=True, index=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
@@ -570,6 +637,9 @@ class OutreachEventEntity(Base):
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="sendgrid")
     to_email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     subject: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -672,6 +742,9 @@ class InterviewSessionEntity(Base):
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     outreach_event_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
+    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
+    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     token: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
@@ -759,11 +832,16 @@ class AuditEventEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
     action: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    action_type: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
     entity_type: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     entity_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     event_metadata: Mapped[dict] = mapped_column("metadata", JSON, nullable=False, default=dict)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     ip_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     user_agent: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     request_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -129,43 +130,62 @@ def _compact_archetype_label(value: str, fallback: str) -> str:
     return " ".join(words[:4]).strip()
 
 
-def _experience_band_from_text(value: str) -> tuple[str, float]:
-    text = _normalize_text(value)
-    if not text:
-        return "1-3 years", 2.0
-    range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s+years?", text, flags=re.IGNORECASE)
-    if range_match:
-        low = max(0.0, float(range_match.group(1)))
-        high = max(low, float(range_match.group(2)))
-        midpoint = round((low + high) / 2.0, 1)
-        return f"{int(low)}-{int(high)} years", midpoint
-    plus_match = re.search(r"(\d+(?:\.\d+)?)\+?\s+years?", text, flags=re.IGNORECASE)
-    if plus_match:
-        years = max(0.0, float(plus_match.group(1)))
-        low = max(0.0, years - 1.0)
-        high = years + 1.0
-        midpoint = round(years, 1)
-        return f"{int(low)}-{int(high)} years", midpoint
-    years = max(0, parse_experience(text))
-    if years <= 0:
-        return "1-3 years", 2.0
-    if years <= 1:
+def _experience_band_from_years(years: float) -> tuple[str, float]:
+    years = max(0.0, float(years))
+    if years < 1.5:
         return "0-2 years", 1.0
-    if years <= 2:
-        return "1-3 years", 2.0
-    if years <= 3:
-        return "2-4 years", 3.0
-    if years <= 5:
-        return "4-6 years", float(years)
-    if years <= 7:
-        return "6-8 years", float(years)
-    return f"{max(0, years - 1)}-{years + 1} years", float(years)
+    if years < 3.5:
+        return "3-5 years", 4.0
+    if years < 6.5:
+        return "5-7 years", 6.0
+    if years < 9.5:
+        return "7-10 years", 8.5
+    if years < 12.5:
+        return "10-13 years", 11.5
+    low = max(0, int(math.floor(years - 1.0)))
+    high = int(math.ceil(years + 2.0))
+    return f"{low}-{high} years", round(years, 1)
+
+
+def _experience_band_from_sources(*, job: Any, voice_summary: str, gap_analysis: dict[str, Any], intent_profile: dict[str, Any]) -> tuple[str, float]:
+    raw_sources = [
+        _job_text_field(job, "experience_level", "experienceRequired", "seniority"),
+        _job_text_field(job, "description"),
+        _job_text_field(job, "title"),
+        _normalize_text(voice_summary),
+        _normalize_text((intent_profile or {}).get("preference_text") or ""),
+        _normalize_text((intent_profile or {}).get("voice_summary") or ""),
+        _normalize_text((gap_analysis or {}).get("summary") or ""),
+    ]
+
+    if isinstance(intent_profile, dict):
+        avg_years = intent_profile.get("average_experience_years") or intent_profile.get("averageExperienceYears")
+        try:
+            avg_years_value = float(avg_years)
+        except (TypeError, ValueError):
+            avg_years_value = 0.0
+        if avg_years_value > 0:
+            return _experience_band_from_years(avg_years_value)
+
+    for source in raw_sources:
+        band, midpoint = _experience_band_from_text(source)
+        if band:
+            return band, midpoint
+
+    combined = " ".join(raw_sources).strip()
+    if not combined:
+        return "", 0.0
+
+    years = max(0, parse_experience(combined))
+    if years > 0:
+        return _experience_band_from_years(float(years))
+    return "", 0.0
 
 
 def _experience_band_from_text(value: str) -> tuple[str, float]:
     text = _normalize_text(value)
     if not text:
-        return "1-2 years", 1.5
+        return "", 0.0
 
     range_match = re.search(r"(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)\s+years?", text, flags=re.IGNORECASE)
     if range_match:
@@ -186,7 +206,7 @@ def _experience_band_from_text(value: str) -> tuple[str, float]:
 
     years = max(0, parse_experience(text))
     if years <= 0:
-        return "1-2 years", 1.5
+        return "", 0.0
     if years <= 1:
         return "0-1 years", 0.5
     if years <= 2:
@@ -1169,7 +1189,13 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
     company_stage = _text_field(job, "company_stage", "companyStage", "stage", "company_type") or "unknown"
     role_seniority = _text_field(job, "experience_level", "experienceRequired", "seniority") or "unknown"
 
-    experience_band, experience_midpoint = _experience_band_from_text(_text_field(job, "experience_level", "experienceRequired", "seniority"))
+    experience_band, experience_midpoint = _experience_band_from_sources(
+        job=job,
+        voice_summary=voice_summary,
+        gap_analysis=gap_analysis,
+        intent_profile=intent_profile,
+    )
+    experience_label = experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "experience not specified"
     return (
         "You are generating realistic recruiter calibration profile cards and sourcing targets.\n"
         "These are NOT personas. They must read like grounded resume patterns a recruiter would actually source.\n"
@@ -1212,7 +1238,7 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
         f"{sanitize_prompt_block('Preferred skills', preferred_skills, max_length=800)}\n"
         f"{sanitize_prompt_block('Required skills', required_skills, max_length=800)}\n"
         f"{sanitize_prompt_block('Culture preferences', culture_preferences, max_length=800)}\n"
-        f"{sanitize_prompt_block('Experience band', experience_band, max_length=160)}\n"
+        f"{sanitize_prompt_block('Experience band', experience_label, max_length=160)}\n"
         f"{sanitize_prompt_block('Experience midpoint', f'{experience_midpoint:.1f}', max_length=64)}\n"
     )
 
@@ -1233,7 +1259,27 @@ def _normalize_archetype_option(
     fallback_headline = f"{_job_text_field(job, 'title') or 'Candidate'} {set_suffix}".strip()
     job_title = _job_text_field(job, "title") or "the role"
     job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
-    experience_band, experience_midpoint = _experience_band_from_text(_text_field(job, "experience_level", "experienceRequired", "seniority"))
+    experience_band, experience_midpoint = _experience_band_from_sources(
+        job=job,
+        voice_summary=_text_field(option, "voice_summary", "voiceSummary"),
+        gap_analysis={},
+        intent_profile={},
+    )
+    option_experience_band, option_experience_midpoint = _experience_band_from_text(
+        _text_field(
+            option,
+            "experience_range",
+            "experienceRange",
+            "experience_match",
+            "experienceMatch",
+            "candidate_experience",
+            "candidateExperience",
+            "years_experience",
+            "yearsExperience",
+        )
+    )
+    if option_experience_band:
+        experience_band, experience_midpoint = option_experience_band, option_experience_midpoint
     profile_title = _normalize_archetype_field(
         option.get("profile_title")
         or option.get("profileTitle")
@@ -1411,8 +1457,8 @@ def _normalize_archetype_option(
             "typical_companies": typical_companies,
             "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
             "yearsExperience": round(float(experience_midpoint), 1),
-            "experienceRange": experience_band,
-            "experience_range": experience_band,
+            "experienceRange": experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "",
+            "experience_range": experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "",
             "resumeSummary": resume_summary,
             "resume_summary": resume_summary,
             "experienceSnapshot": resume_summary,
@@ -1445,12 +1491,24 @@ def _normalize_archetype_option(
     }
 
 
-def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
+def _experience_year_variants(midpoint: float, *, count: int = 6) -> list[float]:
+    anchor = max(0.0, float(midpoint or 0.0))
+    offsets = [-1.0, -0.5, 0.0, 0.35, 0.75, 1.2]
+    return [round(max(0.0, anchor + offsets[index % len(offsets)]), 1) for index in range(max(1, count))][:count]
+
+
+def _fallback_archetype_sets(*, job: Any, voice_summary: str = "", gap_analysis: dict[str, Any] | None = None, intent_profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     job_title = _job_text_field(job, "title") or "the role"
     job_description = _job_text_field(job, "description")
     job_location = _job_text_field(job, "location")
     job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
-    experience_band, experience_midpoint = _experience_band_from_text(_job_text_field(job, "experience_level", "experienceRequired", "seniority"))
+    experience_band, experience_midpoint = _experience_band_from_sources(
+        job=job,
+        voice_summary=voice_summary,
+        gap_analysis=gap_analysis or {},
+        intent_profile=intent_profile or {},
+    )
+    experience_label = experience_band or _job_text_field(job, "experience_level", "experienceRequired", "seniority") or "experience not specified"
     focus = _job_role_focus(job, job_skills)
     role_titles = _build_role_title_variants(job=job, job_skills=job_skills, experience_band=experience_band)
     if len(role_titles) < 6:
@@ -1573,7 +1631,7 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
         ["Mid-stage startups", "platform teams", "business software teams"],
         ["B2B SaaS teams", "product engineering teams", "internal tooling teams"],
     ]
-    years_pool = [experience_midpoint] * 6
+    years_pool = _experience_year_variants(experience_midpoint, count=6)
     option_pairs = [(0, 3), (1, 4), (2, 5)]
     sets: list[dict[str, Any]] = []
     for index in range(_CALIBRATION_SET_COUNT):
@@ -1582,12 +1640,12 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
         set_titles = [
             "Title-accurate vs project-heavy",
             "Framework-specific vs adjacent-role",
-            "Junior-fit vs broader delivery",
+            "Experience-tight vs broader delivery",
         ]
         set_themes = [
             f"Choose between a role-identical profile and a project-first profile for {job_title}.",
             f"Choose between a framework-specific profile and a nearby but different resume shape for {job_title}.",
-            f"Choose between a junior-fit profile and a broader delivery profile that still stays within {experience_band}.",
+            f"Choose between a tighter experience band and a broader delivery profile that still stays within {experience_label}.",
         ]
         archetypes: list[dict[str, Any]] = []
         for option_index, pool_index in enumerate(option_indices):
@@ -1606,7 +1664,7 @@ def _fallback_archetype_sets(*, job: Any) -> list[dict[str, Any]]:
                 certifications.append("Frontend Web Foundations")
             profile_option = {
                 "profile_title": profile_title,
-                "resume_summary": f"{experience_band} developer profile focused on {', '.join(strongest_skills[:4]) or job_title.lower()}.",
+                "resume_summary": f"{experience_label} developer profile focused on {', '.join(strongest_skills[:4]) or job_title.lower()}.",
                 "typical_background": f"Worked on {project_types[pool_index]} with {', '.join(strongest_skills[:4]) or job_title.lower()} in small-to-medium product teams.",
                 "strongest_skills": strongest_skills,
                 "typical_companies": typical_companies,
@@ -1697,7 +1755,7 @@ def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict
         )
 
     if len(normalized_sets) < _CALIBRATION_SET_COUNT:
-        fallback_sets = _fallback_archetype_sets(job=job)
+        fallback_sets = _fallback_archetype_sets(job=job, voice_summary=voice_summary, gap_analysis=gap_analysis, intent_profile=intent_profile)
         for index in range(len(normalized_sets), _CALIBRATION_SET_COUNT):
             if index < len(fallback_sets):
                 normalized_sets.append(fallback_sets[index])

@@ -43,21 +43,21 @@ class CandidateRankingDebug(BaseModel):
 class CandidateResult(BaseModel):
     id: str
     name: str
-    role: str
-    company: str
-    email: str = ""
+    role: str | None = None
+    company: str | None = None
+    email: str | None = None
     isMockEmail: bool = False
-    headline: str = ""
-    location: str = ""
-    yearsExperience: float = 0.0
+    headline: str | None = None
+    location: str | None = None
+    yearsExperience: float | None = None
     skills: list[str]
-    summary: str
-    education: list[str] = Field(default_factory=list)
-    projects: list[str] = Field(default_factory=list)
-    certifications: list[str] = Field(default_factory=list)
-    companiesHistory: list[str] = Field(default_factory=list)
-    domainExperience: list[str] = Field(default_factory=list)
-    resumeText: str = ""
+    summary: str | None = None
+    education: list[str] | None = None
+    projects: list[str] | None = None
+    certifications: list[str] | None = None
+    companiesHistory: list[str] | None = None
+    domainExperience: list[str] | None = None
+    resumeText: str | None = None
     profileData: dict = Field(default_factory=dict)
     fitScore: float
     decision: str
@@ -80,8 +80,10 @@ class CandidateResult(BaseModel):
     source: str = ""
     source_url: str = ""
     linkedinUrl: str = ""
-    currentCompany: str = ""
-    inferredExperience: str = ""
+    githubUrl: str | None = None
+    portfolioUrl: str | None = None
+    currentCompany: str | None = None
+    inferredExperience: str | None = None
     snippetQuality: Literal["rich", "partial", "thin"] = "partial"
     rawDiscovery: dict = Field(default_factory=dict)
 

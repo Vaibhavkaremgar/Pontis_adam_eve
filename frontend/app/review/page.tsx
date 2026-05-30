@@ -126,7 +126,6 @@ function getCandidateCurrentRole(candidate: Candidate): string {
     profileData.role,
     profileData.title,
     candidate.role,
-    candidate.headline,
   ]
     .map((value) => String(value || "").trim())
     .filter((value) => value && !isLikelySummaryText(value) && !looksLikeSkillList(value, getCandidateSkills(candidate)));
@@ -421,76 +420,38 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
 }
 
 function CandidateDetails({ candidate }: { candidate: Candidate }) {
-  const topSkills = formatList(getCandidateSkills(candidate), "Not provided").slice(0, 6);
-  const role = getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided";
+  const lowConfidence = String(candidate.snippetQuality || "").trim().toLowerCase() === "thin";
+  const topSkills = formatList(getCandidateSkills(candidate), "Not Available").slice(0, 8);
+  const role = lowConfidence ? "Not Available" : String(candidate.role || "").trim() || "Not Available";
   const linkedInUrl = getCandidateLinkedInUrl(candidate);
-  const safeLocation = getCandidateLocation(candidate);
-  const rawDiscovery = getCandidateRawDiscovery(candidate);
-  const sourceUrl = String(candidate.sourceUrl || candidate.source_url || rawDiscovery.source_url || "").trim();
-  const sourceQuery = String(candidate.sourceQuery || rawDiscovery.query || "").trim();
-  const sourceTitle = String(rawDiscovery.title || candidate.name || "").trim();
-  const sourceSnippet = String(rawDiscovery.snippet || candidate.summary || "").trim();
-  const displayLink = String(rawDiscovery.displayed_link || "").trim();
-  const sourceProvider = String(candidate.sourceProvider || rawDiscovery.source_provider || "").trim();
-  const currentCompany = String(candidate.currentCompany || candidate.company || rawDiscovery.current_company || "").trim();
-  const experienceLabel = candidate.yearsExperience ? `${candidate.yearsExperience.toFixed(1)} years` : String(candidate.inferredExperience || rawDiscovery.inferred_experience || "").trim();
-  const profileSummary = sourceSnippet || candidate.summary || candidate.headline || "";
+  const safeLocation = lowConfidence ? "Not Available" : String(candidate.location || "").trim() || "Not Available";
+  const currentCompany = lowConfidence ? "Not Available" : String(candidate.currentCompany || candidate.company || "").trim() || "Not Available";
+  const profileSummary = lowConfidence ? "Not Available" : String(candidate.summary || "").trim() || "Not Available";
+  const whyMatched = lowConfidence ? "Not Available" : trimText(getReasoningSummary(candidate), 420) || "Not Available";
 
   return (
     <div className="space-y-4">
-      {linkedInUrl && (
-        <div className="flex justify-end">
-          <a
-            href={linkedInUrl}
-            target="_blank"
-            rel="noreferrer"
-            onClick={(event) => event.stopPropagation()}
-            aria-label="Open LinkedIn profile"
-            className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-4 py-2 text-xs font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
-          >
-            LinkedIn
-            <ArrowUpRight className="h-3.5 w-3.5" />
-          </a>
-        </div>
-      )}
-
       <div className="grid gap-3 rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-4 md:grid-cols-2">
         {[
-          candidate.name ? ["Name", candidate.name] : null,
-          role ? ["Current role", role] : null,
-          currentCompany ? ["Current company", currentCompany] : null,
-          safeLocation ? ["Location", safeLocation] : null,
-          experienceLabel ? ["Experience", experienceLabel] : null,
-          candidate.sourceProvider ? ["Source", candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider] : null,
+          ["Name", String(candidate.name || "").trim() || "Not Available"],
+          ["Current Title", role],
+          ["Current Company", currentCompany],
+          ["Location", safeLocation],
+          ["LinkedIn URL", linkedInUrl || "Not Available"],
         ]
-          .filter((item): item is [string, string] => Boolean(item))
           .map(([label, value]) => (
             <DetailRow key={`${candidate.id}-${label}`} label={label} value={value} />
           ))}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-4">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Top skills</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            {topSkills.map((item) => (
-              <span key={`skill-${candidate.id}-${item}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-xs font-semibold text-[#0F6B3A]">
-                {item}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-4">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Source details</p>
-          <div className="mt-3 space-y-2 text-sm text-[#4B5563]">
-            {sourceTitle && <p><span className="font-semibold text-[#111827]">Title:</span> {sourceTitle}</p>}
-            {displayLink && <p><span className="font-semibold text-[#111827]">Display:</span> {displayLink}</p>}
-            {sourceUrl && <p className="break-all"><span className="font-semibold text-[#111827]">URL:</span> {sourceUrl}</p>}
-            {sourceQuery && <p><span className="font-semibold text-[#111827]">Query:</span> {trimText(sourceQuery, 180)}</p>}
-            {rawDiscovery.page != null && <p><span className="font-semibold text-[#111827]">Page:</span> {String(rawDiscovery.page)}</p>}
-            {rawDiscovery.position != null && <p><span className="font-semibold text-[#111827]">Position:</span> {String(rawDiscovery.position)}</p>}
-          </div>
+      <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-4">
+        <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Skills</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {topSkills.map((item) => (
+            <span key={`skill-${candidate.id}-${item}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-xs font-semibold text-[#0F6B3A]">
+              {item}
+            </span>
+          ))}
         </div>
       </div>
 
@@ -502,11 +463,8 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
       )}
 
       <div className="rounded-[18px] border border-[#E5E7EB] bg-white p-4">
-        <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why ranked here</p>
-        <p className="mt-3 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 420)}</p>
-        <div className="mt-3 inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 text-[11px] font-semibold text-[#1D4ED8]">
-          {getSnippetQualityLabel(candidate)}
-        </div>
+        <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why Matched</p>
+        <p className="mt-3 font-body text-[13px] leading-6 text-[#374151]">{whyMatched}</p>
       </div>
     </div>
   );
@@ -557,16 +515,16 @@ function CandidateCard({
               <p className="flex items-center gap-2">
                 <BriefcaseBusiness className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
                 <span style={clampLines(2)}>
-                  {getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided"}
+                  {getCandidateCurrentRole(candidate) || candidate.role || "Not Available"}
                 </span>
               </p>
               <p className="flex items-center gap-2">
                 <Building2 className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{candidate.company || "Not provided"}</span>
+                <span>{candidate.company || candidate.currentCompany || "Not Available"}</span>
               </p>
               <p className="flex items-center gap-2">
                 <MapPin className="h-4 w-4 shrink-0 text-[#0F6B3A]" />
-                <span>{getCandidateLocation(candidate) || "Not provided"}</span>
+                <span>{getCandidateLocation(candidate) || "Not Available"}</span>
               </p>
             </div>
           </div>
@@ -722,7 +680,7 @@ function CandidateListRow({
           </div>
           <p className="font-body text-[14px] text-[#8A6F55]">{candidateSubtitle(candidate)}</p>
           <p style={clampLines(3)} className="max-w-4xl overflow-hidden font-body text-[15px] leading-6 text-[#5F564D]">
-            {trimText(candidate.summary || candidate.headline || candidate.role || "No summary provided", 260)}
+            {trimText(candidate.summary || "No summary provided", 260)}
           </p>
           <p className="mt-2 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 220)}</p>
         </div>
@@ -987,7 +945,7 @@ function SwipeDeck({
                     {current.name || "Unnamed candidate"}
                   </h3>
                   <p className="font-body text-[14px] text-[#4B5563]">
-                    {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
+                    {getCandidateCurrentRole(current) || current.role || "Not Available"}
                     {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
                   </p>
                   {getCandidateLocation(current) && (
@@ -1260,7 +1218,7 @@ function RecruiterSwipeDeck({
                 <div className="space-y-2">
                   <h3 className="font-heading text-[26px] font-bold leading-tight text-[#111827]">{current.name || current.id.slice(0, 8)}</h3>
                   <p className="font-body text-[14px] text-[#4B5563]">
-                    {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
+                    {getCandidateCurrentRole(current) || current.role || "Not Available"}
                     {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
                   </p>
                   {getCandidateLocation(current) && (
@@ -1302,16 +1260,16 @@ function RecruiterSwipeDeck({
               <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
                 <p>
                   <span className="font-semibold text-[#111827]">Current role:</span>{" "}
-                  {getCandidateCurrentRole(current) || current.role || current.headline || "Not provided"}
+                  {getCandidateCurrentRole(current) || current.role || "Not Available"}
                 </p>
                 <p>
-                  <span className="font-semibold text-[#111827]">Current company:</span> {current.currentCompany || current.company || "Not provided"}
+                  <span className="font-semibold text-[#111827]">Current company:</span> {current.currentCompany || current.company || "Not Available"}
                 </p>
                 <p>
-                  <span className="font-semibold text-[#111827]">Location:</span> {getCandidateLocation(current) || "Not provided"}
+                  <span className="font-semibold text-[#111827]">Location:</span> {getCandidateLocation(current) || "Not Available"}
                 </p>
                 <p>
-                  <span className="font-semibold text-[#111827]">Skills:</span> {getCandidateSkills(current).slice(0, 4).join(", ") || "Not provided"}
+                  <span className="font-semibold text-[#111827]">Skills:</span> {getCandidateSkills(current).slice(0, 4).join(", ") || "Not Available"}
                 </p>
               </div>
 
@@ -1378,18 +1336,10 @@ function RecruiterCandidateModal({
   candidate,
   open,
   onClose,
-  onReject,
-  onShortlist,
-  isAdvancing,
-  selectedCandidateId,
 }: {
   candidate: Candidate | null;
   open: boolean;
   onClose: () => void;
-  onReject: () => void;
-  onShortlist: () => void;
-  isAdvancing: boolean;
-  selectedCandidateId: string;
 }) {
   return (
     <Modal
@@ -1398,48 +1348,10 @@ function RecruiterCandidateModal({
         if (!nextOpen) onClose();
       }}
       title={candidate?.name || "Candidate profile"}
-      description={candidate ? `${getCandidateCurrentRole(candidate) || candidate.role || candidate.headline || "Not provided"}${candidate.company ? ` @ ${candidate.company}` : ""}` : ""}
+      description=""
       className="max-w-4xl max-h-[90vh] overflow-y-auto"
     >
-      {candidate && (
-        <div className="space-y-5">
-          <CandidateDetails candidate={candidate} />
-          <div className="flex flex-col gap-3 md:flex-row">
-            <Button
-              variant="outline"
-              className="w-full justify-center rounded-[14px] border-[#FCA5A5] bg-white text-red-700 hover:bg-red-50 md:w-auto md:flex-1"
-              onClick={(event) => {
-                event.stopPropagation();
-                onReject();
-              }}
-              disabled={isAdvancing || (selectedCandidateId !== "" && selectedCandidateId !== candidate.id)}
-            >
-              Reject
-            </Button>
-            <Button
-              className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
-              onClick={(event) => {
-                event.stopPropagation();
-                onShortlist();
-              }}
-                  disabled={isAdvancing || selectedCandidateId !== "" || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)}
-                >
-                  {isAdvancing && selectedCandidateId === candidate.id
-                    ? "Shortlisting..."
-                    : isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
-                      ? "Shortlisted"
-                      : "Shortlist"}
-                </Button>
-            <Button
-              variant="outline"
-              className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white md:w-auto"
-              onClick={onClose}
-            >
-              Close
-            </Button>
-          </div>
-        </div>
-      )}
+      {candidate && <CandidateDetails candidate={candidate} />}
     </Modal>
   );
 }
@@ -2252,213 +2164,10 @@ export default function ReviewPage() {
             </div>
           )}
 
-          <Modal
-            open={false}
-            onOpenChange={(open) => {
-              if (!open) {
-                setActiveCandidate(null);
-              }
-            }}
-            title={activeCandidate?.name || "Candidate profile"}
-            description={
-              activeCandidate ? `${activeCandidate.headline || activeCandidate.role}${activeCandidate.company ? ` @ ${activeCandidate.company}` : ""}` : ""
-            }
-            className="max-w-6xl"
-          >
-            {activeCandidate && (
-              <div className="max-h-[78vh] space-y-5 overflow-y-auto pr-1">
-                <CandidateDetails candidate={activeCandidate} />
-
-                <div className="rounded-[18px] border border-[#ECE7DE] bg-[#FBF8F1] p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">ATS status</p>
-                      <h3 className="mt-1 font-heading text-[18px] font-semibold text-[#111827]">{atsStatusLabel(activeCandidate)}</h3>
-                      <p className="mt-1 text-sm text-[#6B7280]">
-                        {activeCandidate.ats_status_reason || "Canonical ATS state tracked through orchestration and review."}
-                      </p>
-                    </div>
-                    <div className="text-right text-xs text-[#6B7280]">
-                      <p>Source: {activeCandidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : activeCandidate.sourceProvider || activeCandidate.ats_status_source || "system"}</p>
-                      {activeCandidate.sourceQuery ? <p>Query: {activeCandidate.sourceQuery}</p> : null}
-                      <p>Updated: {activeCandidate.ats_status_updated_at || "n/a"}</p>
-                      <p>
-                        Enrichment: {activeCandidate.enrichmentStatus || "pending"}
-                        {activeCandidate.enrichmentSource ? ` via ${activeCandidate.enrichmentSource}` : ""}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Interview stage</p>
-                          <h4 className="mt-1 font-semibold text-[#111827]">
-                            {String(activeInterviewStage?.label || activeInterviewInsights?.currentStage || "Recruiter screen")}
-                          </h4>
-                        </div>
-                        <Badge variant="neutral">{completedInterviewStages} completed</Badge>
-                      </div>
-                      <div className="mt-3 space-y-2 text-sm text-[#4B5563]">
-                        <p>Recommendation: {String(activeInterviewInsights?.intelligence?.recommendationSignal || "n/a")}</p>
-                        <p>Confidence: {String(activeInterviewInsights?.intelligence?.interviewQualityScore ?? 0)}</p>
-                        <p>Workflow token: {String(activeInterviewInsights?.workflowToken || activeCandidate.id).slice(0, 12)}â€¦</p>
-                        <p>Evaluations: {String(activeInterviewInsights?.evaluationCount ?? 0)}</p>
-                        <p>
-                          Contact: {activeCandidate.contactEmail || "pending"}
-                          {activeCandidate.contactPhone ? ` Â· ${activeCandidate.contactPhone}` : ""}
-                        </p>
-                      </div>
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        {(activeInterviewInsights?.progression || []).slice(0, 6).map((item: any) => (
-                          <Badge
-                            key={String(item.stage || item.label || "")}
-                            variant={item.active ? "high" : item.completed ? "neutral" : "low"}
-                          >
-                            {String(item.label || item.stage || "").replace(/_/g, " ")}
-                          </Badge>
-                        ))}
-                      </div>
-                      <div className="mt-3 rounded-xl bg-[#F8F7F3] p-3 text-xs text-[#6B7280]">
-                        <p className="font-medium text-[#111827]">Next-stage recommendation</p>
-                        <p>{String(activeInterviewStage?.stage || activeInterviewInsights?.currentStage || "recruiter_screen").replace(/_/g, " ")}</p>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
-                      <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Recruiter decision</p>
-                      <textarea
-                        value={decisionNote}
-                        onChange={(event) => setDecisionNote(event.target.value)}
-                        placeholder="Add decision notes for the next stage, offer, or rejection."
-                        className="mt-3 min-h-[92px] w-full rounded-xl border border-[#E7E0D4] bg-white px-3 py-2 text-sm text-[#111827] outline-none transition focus:border-[#0F6B3A]"
-                      />
-                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                        <Button
-                          variant="outline"
-                          className="justify-center"
-                          disabled={Boolean(decisionLoading)}
-                          onClick={() => void handleInterviewDecision("advance")}
-                        >
-                          {decisionLoading === "advance" ? "Advancing..." : "Advance next round"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="justify-center"
-                          disabled={Boolean(decisionLoading)}
-                          onClick={() => void handleInterviewDecision("mark_offer")}
-                        >
-                          {decisionLoading === "mark_offer" ? "Updating..." : "Mark offer"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="justify-center"
-                          disabled={Boolean(decisionLoading)}
-                          onClick={() => void handleInterviewDecision("mark_placed")}
-                        >
-                          {decisionLoading === "mark_placed" ? "Updating..." : "Mark placed"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="justify-center"
-                          disabled={Boolean(decisionLoading)}
-                          onClick={() => void handleInterviewDecision("archive")}
-                        >
-                          {decisionLoading === "archive" ? "Updating..." : "Archive"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="justify-center text-red-700 hover:bg-red-50"
-                          disabled={Boolean(decisionLoading)}
-                          onClick={() => void handleInterviewDecision("reject")}
-                        >
-                          {decisionLoading === "reject" ? "Updating..." : "Reject"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="justify-center"
-                          disabled={Boolean(decisionLoading)}
-                          onClick={() => void handleInterviewDecision("no_show")}
-                        >
-                          {decisionLoading === "no_show" ? "Updating..." : "Mark no-show"}
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="font-body text-sm font-semibold text-[#111827]">Candidate timeline</h4>
-                        {isTimelineLoading ? <span className="text-xs text-gray-500">Loading...</span> : null}
-                      </div>
-                      <div className="mt-3">
-                        {timelineError ? <p className="text-sm text-red-600">{timelineError}</p> : <TimelineList items={candidateTimeline} />}
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-[#ECE7DE] bg-white p-4">
-                      <div className="flex items-center justify-between gap-3">
-                        <h4 className="font-body text-sm font-semibold text-[#111827]">Notifications</h4>
-                        <span className="text-xs text-gray-500">{candidateNotifications.length} items</span>
-                      </div>
-                      <div className="mt-3 space-y-3">
-                        {candidateNotifications.length === 0 ? (
-                          <p className="text-sm text-gray-500">No recruiter or candidate notifications yet.</p>
-                        ) : (
-                          candidateNotifications.slice(0, 5).map((item) => (
-                            <div key={String(item.id)} className="rounded-xl border border-[#ECE7DE] bg-[#FBF8F1] p-3">
-                              <div className="flex items-center justify-between gap-2">
-                                <Badge variant="neutral">{String(item.channel || "notification")}</Badge>
-                                <span className="text-xs text-gray-500">{String(item.createdAt || "")}</span>
-                              </div>
-                              <p className="mt-2 text-sm font-medium text-gray-900">{String(item.title || "")}</p>
-                              <p className="text-xs text-gray-600">{String(item.status || "")}</p>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-3 md:flex-row">
-                  <Button
-                    data-testid={`final-select-${activeCandidate.id}`}
-                    className="w-full justify-center rounded-[14px] bg-[#0F6B3A] text-[16px] font-semibold text-white hover:bg-[#0C5A31] md:w-auto md:flex-1"
-                    onClick={() => void handleSelect(activeCandidate.id)}
-                    disabled={isAdvancing || selectedCandidateId !== "" || finalShortlistedIds.includes(activeCandidate.id) || isShortlistedStatus(activeCandidate.status) || isShortlistedStatus(activeCandidate.ats_status)}
-                  >
-                    {isAdvancing && selectedCandidateId === activeCandidate.id
-                      ? "Starting enrichment..."
-                      : finalShortlistedIds.includes(activeCandidate.id) || isShortlistedStatus(activeCandidate.status) || isShortlistedStatus(activeCandidate.ats_status)
-                        ? "Shortlisted"
-                        : "Select this candidate"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full justify-center rounded-[14px] border-[#E7E0D4] bg-white md:w-auto"
-                    onClick={() => setActiveCandidate(null)}
-                  >
-                    Close
-                  </Button>
-                </div>
-              </div>
-            )}
-          </Modal>
           <RecruiterCandidateModal
             candidate={activeCandidate}
             open={Boolean(activeCandidate)}
             onClose={() => setActiveCandidate(null)}
-            onReject={() => {
-              if (activeCandidate) void handleReject(activeCandidate.id);
-            }}
-            onShortlist={() => {
-              if (activeCandidate) void handleSelect(activeCandidate.id);
-            }}
-            isAdvancing={isAdvancing}
-            selectedCandidateId={selectedCandidateId}
           />
           <div className="mt-6 flex items-center justify-center gap-2 font-body text-sm text-[#6B7280]">
             <ShieldCheck className="h-4 w-4 text-[#0F6B3A]" />

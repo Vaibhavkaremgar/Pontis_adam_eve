@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
@@ -181,6 +181,7 @@ class XRayQueryLayer:
     query: str
     enabled: bool = True
     pages: int = 1
+    signals: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -492,7 +493,7 @@ def _diversify_query_layers(*, layers: list[XRayQueryLayer], recruiter_preferenc
             if remaining_anchors:
                 updated_query = _diversify_query_layer_query(layer.query, remaining_anchors)
                 if updated_query != layer.query:
-                    updated = XRayQueryLayer(layer_type=layer.layer_type, query=updated_query, enabled=layer.enabled, pages=layer.pages)
+                    updated = XRayQueryLayer(layer_type=layer.layer_type, query=updated_query, enabled=layer.enabled, pages=layer.pages, signals=dict(layer.signals or {}))
                     used_anchors.update(anchor.lower() for anchor in remaining_anchors[:2])
         diversified.append(updated)
 
@@ -562,6 +563,9 @@ def _candidate_name_from_title(title: str) -> str:
     cleaned = _normalize_text(title)
     if not cleaned:
         return ""
+    lowered = cleaned.lower()
+    if "linkedin.com/" in lowered or lowered.startswith("http"):
+        return ""
     cleaned = re.sub(r"\s*-\s*LinkedIn\s*$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*\|\s*LinkedIn\s*$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*at\s+LinkedIn\s*$", "", cleaned, flags=re.IGNORECASE)
@@ -579,18 +583,12 @@ def _candidate_role_from_text(*values: str) -> str:
         cleaned = _normalize_text(value)
         if not cleaned:
             continue
-        parts = [part.strip() for part in re.split(r"\s*[|•–—-]\s*", cleaned) if part.strip()]
+        parts = [part.strip() for part in re.split(r"\s*[|â€¢â€“â€”]\s*", cleaned) if part.strip()]
         for part in parts:
             lowered = part.lower()
             if "linkedin" in lowered or lowered.startswith("http"):
                 continue
             if any(keyword in lowered for keyword in _ROLE_KEYWORDS):
-                return part
-        if len(parts) >= 2:
-            for part in parts[1:]:
-                lowered = part.lower()
-                if "linkedin" in lowered or lowered.startswith("http"):
-                    continue
                 return part
     return ""
 
@@ -602,7 +600,7 @@ def _extract_linkedin_url(link: str) -> str:
         return ""
     if "/in/" not in lowered:
         return ""
-    if "/jobs/" in lowered:
+    if any(blocked in lowered for blocked in ("/jobs/", "/search/", "/company/", "/posts/", "/feed/")):
         return ""
     return url.rstrip("/")
 
@@ -632,6 +630,24 @@ def _extract_company(text: str) -> str:
     return ""
 
 
+def _extract_experience_from_text(*values: str) -> str:
+    for value in values:
+        cleaned = _normalize_text(value)
+        if not cleaned:
+            continue
+        range_match = re.search(r"(?<!\d)(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*(?:years?|yrs?|yr)\b", cleaned, flags=re.IGNORECASE)
+        if range_match:
+            low = int(range_match.group(1))
+            high = max(low, int(range_match.group(2)))
+            return f"{low}-{high} years"
+        match = re.search(r"(?<!\d)(\d{1,2})\s*\+?\s*(?:years?|yrs?|yr)\b", cleaned, flags=re.IGNORECASE)
+        if match:
+            years = int(match.group(1))
+            if years > 0:
+                return f"{years} years"
+    return ""
+
+
 def _profile_fragments(text: str) -> list[str]:
     cleaned = _normalize_text(text)
     if not cleaned:
@@ -646,13 +662,13 @@ def _extract_clean_role(text: str) -> str:
             continue
         candidate = _normalize_text(fragment)
         role_match = re.search(
-            r"\b(?:as a|as an|as the|as)\s+(?P<role>.+?)(?=\s+\b(?:in|at|based in|located in|from|with|for|since)\b|[.,;|•]|$)",
+            r"\b(?:as a|as an|as the|as)\s+(?P<role>.+?)(?=\s+\b(?:in|at|based in|located in|from|with|for|since)\b|[.,;|]|$)",
             candidate,
             flags=re.IGNORECASE,
         )
         if role_match:
-            role = _normalize_text(role_match.group("role")).strip(" ,;:-–—|•")
-            if role and any(keyword in role.lower() for keyword in _ROLE_KEYWORDS):
+            role = re.split(r"\s*(?:[.,;|]| - )\s*", _normalize_text(role_match.group("role")), maxsplit=1)[0].strip(" ,;:-|")
+            if role and any(keyword in role.lower() for keyword in _ROLE_KEYWORDS) and len(role.split()) <= 8:
                 return role
         prefix_match = re.search(
             r"^(?P<role>.+?)\s+\b(?:at|@|in|based in|located in)\b",
@@ -660,16 +676,16 @@ def _extract_clean_role(text: str) -> str:
             flags=re.IGNORECASE,
         )
         if prefix_match:
-            role = _normalize_text(prefix_match.group("role")).strip(" ,;:-–—|•")
-            if role and any(keyword in role.lower() for keyword in _ROLE_KEYWORDS):
+            role = re.split(r"\s*(?:[.,;|]| - )\s*", _normalize_text(prefix_match.group("role")), maxsplit=1)[0].strip(" ,;:-|")
+            if role and any(keyword in role.lower() for keyword in _ROLE_KEYWORDS) and len(role.split()) <= 8:
                 return role
         for marker in _PROFILE_CLAUSE_MARKERS:
             marker_index = candidate.lower().find(marker)
             if marker_index > -1:
                 candidate = candidate[:marker_index].strip()
                 break
-        candidate = candidate.strip(" ,;:-–—|•")
-        if candidate and any(keyword in candidate.lower() for keyword in _ROLE_KEYWORDS):
+        candidate = re.split(r"\s*(?:[.,;|]| - )\s*", candidate, maxsplit=1)[0].strip(" ,;:-|")
+        if candidate and any(keyword in candidate.lower() for keyword in _ROLE_KEYWORDS) and len(candidate.split()) <= 8:
             return candidate
     return ""
 
@@ -679,19 +695,25 @@ def _extract_clean_company(text: str) -> str:
         lowered = fragment.lower()
         if "linkedin" in lowered or lowered.startswith("http"):
             continue
-        match = re.search(r"\b(?:works?|working|currently|presently)?\s*at\s+(?P<company>.+)$", fragment, flags=re.IGNORECASE)
-        if not match:
-            continue
-        company = _normalize_text(match.group("company"))
-        for marker in _PROFILE_CLAUSE_MARKERS:
-            marker_index = company.lower().find(marker)
-            if marker_index > -1:
-                company = company[:marker_index].strip()
-                break
-        company = re.split(r"\s*(?:,|;|:|\||•| - | – | — )\s*", company, maxsplit=1)[0]
-        company = _normalize_text(company).strip(" ,;:-–—|•")
-        if company:
-            return company
+        for pattern in (
+            r"\b(?:works?|working|currently|presently)\s+at\s+(?P<company>[A-Z][A-Za-z0-9 &.''-]{1,80}?)(?=(?:[.,;|]|$|\s+\b(?:in|based in|located in|from|with|for|since)\b))",
+            r"\b(?:at|@)\s+(?P<company>[A-Z][A-Za-z0-9 &.''-]{1,80}?)(?=(?:[.,;|]|$|\s+\b(?:in|based in|located in|from|with|for|since)\b))",
+        ):
+            match = re.search(pattern, fragment, flags=re.IGNORECASE)
+            if not match:
+                continue
+            company = _normalize_text(match.group("company"))
+            if not company:
+                continue
+            for marker in _PROFILE_CLAUSE_MARKERS:
+                marker_index = company.lower().find(marker)
+                if marker_index > -1:
+                    company = company[:marker_index].strip()
+                    break
+            company = re.split(r"\s*(?:,|;|:|\|| - )\s*", company, maxsplit=1)[0]
+            company = _normalize_text(company).strip(" ,;:-|")
+            if company and len(company.split()) <= 6 and not any(keyword in company.lower() for keyword in _ROLE_KEYWORDS):
+                return company
     return ""
 
 
@@ -712,13 +734,13 @@ def _looks_like_location_fragment(fragment: str) -> bool:
     return False
 
 
-def _extract_clean_location(text: str, fallback: str = "") -> str:
+def _extract_clean_location(text: str) -> str:
     lowered = _normalize_lower(text)
     for token in ("remote", "hybrid", "on-site", "onsite"):
         if token in lowered:
             return token.replace("-", " ").title()
 
-    location_match = re.search(r"(?:\bbased in\b|\blocated in\b|\bin\b)\s+([A-Za-z0-9 ,.&-]{2,80})", text, flags=re.IGNORECASE)
+    location_match = re.search(r"(?:\bbased in\b|\blocated in\b|\bin\b)\s+([A-Za-z0-9 ,.&-]{2,80}?)(?=(?:[.,;|]|$|\s+\b(?:at|with|for|from|since|as)\b))", text, flags=re.IGNORECASE)
     if location_match:
         location = _normalize_text(location_match.group(1))
         for marker in _PROFILE_CLAUSE_MARKERS:
@@ -726,15 +748,17 @@ def _extract_clean_location(text: str, fallback: str = "") -> str:
             if marker_index > -1:
                 location = location[:marker_index].strip()
                 break
-        location = re.split(r"\s*(?:[.;|•]| - | – | — )\s*", location, maxsplit=1)[0]
-        location = _normalize_text(location).strip(" ,;:-–—|•")
-        if location:
+        location = re.split(r"\s*(?:[.;|]| - )\s*", location, maxsplit=1)[0]
+        location = _normalize_text(location).strip(" ,;:-|")
+        if location and len(location.split()) <= 6 and not any(keyword in location.lower() for keyword in _ROLE_KEYWORDS):
             return location
 
     for fragment in _profile_fragments(text):
         if _looks_like_location_fragment(fragment):
-            return _normalize_text(fragment).strip(" ,;:-–—|•")
-    return _normalize_text(fallback)
+            candidate = _normalize_text(fragment).strip(" ,;:-|")
+            if candidate and len(candidate.split()) <= 6 and not any(keyword in candidate.lower() for keyword in _ROLE_KEYWORDS):
+                return candidate
+    return ""
 
 
 def _extract_skills_from_text(text: str, known_skills: list[str]) -> list[str]:
@@ -959,6 +983,196 @@ def _project_terms_for_query(*, family: str, skills: list[str]) -> list[str]:
         seen.add(key)
         cleaned_terms.append(normalized)
     return cleaned_terms[:8]
+
+
+def _split_keyword_phrases(*values: str) -> list[str]:
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _normalize_text(value)
+        if not cleaned:
+            continue
+        for chunk in re.split(r"[,\n;/|•]+", cleaned):
+            chunk = _normalize_text(chunk)
+            if not chunk:
+                continue
+            chunk = re.sub(r"\s+", " ", chunk).strip(" ,;:-–—|•")
+            if not chunk or len(chunk) < 2:
+                continue
+            if len(chunk.split()) > 6:
+                continue
+            key = _normalize_lower(chunk)
+            if key in seen:
+                continue
+            seen.add(key)
+            phrases.append(chunk)
+    return phrases
+
+
+def _text_keywords(text: str, *, limit: int = 12) -> list[str]:
+    text = _normalize_text(text)
+    if not text:
+        return []
+    chunks = _split_keyword_phrases(text)
+    tokens = _dedupe_preserve_order([token for token in _tokenize_query_terms(text) if len(token) > 2])
+    phrases = chunks[:]
+    for token in tokens:
+        if len(phrases) >= limit:
+            break
+        if token not in _normalize_lower(" ".join(phrases)):
+            phrases.append(token)
+    return _dedupe_preserve_order(phrases)[:limit]
+
+
+def _quote_or_tokenize(value: str) -> str:
+    cleaned = _normalize_text(value)
+    if not cleaned:
+        return ""
+    return f'"{cleaned}"' if " " in cleaned else cleaned.lower()
+
+
+def _query_clause(*values: str) -> str:
+    terms = [_quote_or_tokenize(value) for value in values if _normalize_text(value)]
+    return " ".join(term for term in terms if term).strip()
+
+
+def _build_xray_query_strategy_v2(
+    *,
+    role: str,
+    seniority: str,
+    skills: list[str],
+    location: str,
+    recruiter_preferences: dict[str, Any] | None = None,
+    job_description: str = "",
+    voice_summary: str = "",
+    voice_transcript: str = "",
+    nice_to_have_skills: list[str] | None = None,
+    job_description_keywords: list[str] | None = None,
+    selected_archetypes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    normalized_role = _sanitize_role_query(role) or _sanitize_role_query(seniority) or _normalize_text(role) or "software engineer"
+    normalized_location = _normalize_text(location)
+    required_skills = _dedupe_preserve_order(skills)
+    nice_skills = _dedupe_preserve_order(nice_to_have_skills or [])
+    archetype_experience_terms: list[str] = []
+
+    preference_text = _normalize_text((recruiter_preferences or {}).get("preference_text") or "")
+    voice_text = _normalize_text(voice_summary or voice_transcript or (recruiter_preferences or {}).get("voice_summary") or "")
+    experience_context = " ".join([seniority, job_description, voice_summary, voice_transcript, preference_text, voice_text])
+    experience_hints = _experience_hints_for_query(experience_context)
+    description_keywords = _dedupe_preserve_order([
+        *_text_keywords(job_description, limit=10),
+        *(job_description_keywords or []),
+        *_text_keywords(" ".join([preference_text, voice_text]), limit=10),
+    ])
+    voice_keywords = _dedupe_preserve_order(_text_keywords(" ".join([voice_summary, voice_transcript]), limit=8))
+    project_terms = _project_terms_for_query(family=_role_family_for_query(role=normalized_role, skills=required_skills), skills=required_skills)
+
+    archetype_profiles = selected_archetypes or []
+    archetype_terms: list[str] = []
+    archetype_role = ""
+    archetype_project = ""
+    archetype_skill_terms: list[str] = []
+    archetype_domain_terms: list[str] = []
+    for archetype in archetype_profiles[:3]:
+        if not isinstance(archetype, dict):
+            continue
+        profile_title = _normalize_text(
+            archetype.get("profile_title")
+            or archetype.get("profileTitle")
+            or archetype.get("headlineRole")
+            or archetype.get("headline_role")
+            or archetype.get("title")
+            or archetype.get("role")
+            or "",
+        )
+        if profile_title and not archetype_role:
+            archetype_role = profile_title
+        archetype_project = archetype_project or _normalize_text(archetype.get("preferred_project_type") or archetype.get("preferredProjectType") or "")
+        archetype_skill_terms.extend(_split_keyword_phrases(
+            ", ".join([str(item) for item in (archetype.get("core_skills") or archetype.get("coreSkills") or []) if str(item).strip()]),
+            ", ".join([str(item) for item in (archetype.get("strongest_skills") or archetype.get("strongestSkills") or []) if str(item).strip()]),
+            ", ".join([str(item) for item in (archetype.get("optional_tools_frameworks") or archetype.get("optionalToolsFrameworks") or []) if str(item).strip()]),
+        ))
+        archetype_domain_terms.extend(_text_keywords(" ".join([
+            _normalize_text(archetype.get("typical_background") or archetype.get("typicalBackground") or ""),
+            _normalize_text(archetype.get("typical_companies") or archetype.get("typicalCompanies") or ""),
+            _normalize_text(archetype.get("summary") or archetype.get("resume_summary") or archetype.get("resumeSummary") or ""),
+        ]), limit=8))
+        archetype_experience_value = _normalize_text(
+            archetype.get("experience_range")
+            or archetype.get("experienceRange")
+            or archetype.get("candidateExperience")
+            or archetype.get("candidate_experience")
+            or archetype.get("years_experience")
+            or archetype.get("yearsExperience")
+            or ""
+        )
+        if archetype_experience_value:
+            archetype_experience_terms.extend(_text_keywords(archetype_experience_value, limit=4))
+        archetype_terms.extend(_split_keyword_phrases(profile_title, archetype_project, " ".join(archetype_skill_terms[:8]), " ".join(archetype_domain_terms[:8]), " ".join(archetype_experience_terms[:4])))
+
+    role_anchor = normalized_role or archetype_role or "software engineer"
+    role_terms = _dedupe_preserve_order([role_anchor, normalized_role, *experience_hints[:2], *required_skills[:4], *archetype_experience_terms[:2], normalized_location])
+    stack_terms = _dedupe_preserve_order([*required_skills[:5], *nice_skills[:4], *description_keywords[:6], *experience_hints[:2], normalized_location])
+    archetype_query_terms = _dedupe_preserve_order([*(archetype_terms[:3] if archetype_terms else []), *voice_keywords[:3], *description_keywords[:3], *archetype_skill_terms[:4], *archetype_domain_terms[:3], *archetype_experience_terms[:3], *project_terms[:3], normalized_location])
+
+    role_query = " ".join(part for part in ["site:linkedin.com/in", _query_clause(*role_terms), _negative_filters_clause()] if part)
+    stack_query = " ".join(part for part in ["site:linkedin.com/in", _query_clause(*stack_terms), _negative_filters_clause()] if part)
+    archetype_query = " ".join(part for part in ["site:linkedin.com/in", _query_clause(*archetype_query_terms), _negative_filters_clause()] if part)
+
+    family_debug = [
+        {
+            "family": "role",
+            "query": role_query,
+            "signals": {
+                "role_anchor": role_anchor,
+                "experience_hints": experience_hints[:2],
+                "required_skills": required_skills[:4],
+                "location": normalized_location,
+            },
+        },
+        {
+            "family": "stack",
+            "query": stack_query,
+            "signals": {
+                "required_skills": required_skills[:5],
+                "nice_to_have_skills": nice_skills[:4],
+                "jd_keywords": description_keywords[:6],
+                "location": normalized_location,
+            },
+        },
+        {
+            "family": "archetype",
+            "query": archetype_query,
+            "signals": {
+                "archetypes": [archetype.get("profile_title") or archetype.get("profileTitle") or archetype.get("headlineRole") for archetype in archetype_profiles if isinstance(archetype, dict)][:3],
+                "voice_keywords": voice_keywords[:4],
+                "jd_keywords": description_keywords[:4],
+                "project_terms": project_terms[:4],
+                "archetype_terms": archetype_terms[:8],
+                "location": normalized_location,
+            },
+        },
+    ]
+    queries = _dedupe_preserve_order([role_query, stack_query, archetype_query])
+    return {
+        "role_queries": [role_query] if role_query else [],
+        "stack_queries": [stack_query] if stack_query else [],
+        "project_queries": [archetype_query] if archetype_query else [],
+        "framework_queries": [],
+        "queries": queries,
+        "family": _role_family_for_query(role=normalized_role, skills=required_skills),
+        "core_skills": _core_skills_for_query(required_skills, family=_role_family_for_query(role=normalized_role, skills=required_skills)),
+        "role_variants": [role_anchor, normalized_role],
+        "project_terms": project_terms,
+        "description_keywords": description_keywords,
+        "voice_keywords": voice_keywords,
+        "nice_to_have_skills": nice_skills,
+        "selected_archetypes": [archetype.get("profile_title") or archetype.get("profileTitle") or archetype.get("headlineRole") for archetype in archetype_profiles if isinstance(archetype, dict)],
+        "family_debug": family_debug,
+        "family_signals": {item["family"]: item["signals"] for item in family_debug},
+    }
 
 
 def _build_google_xray_query_strategy(
@@ -1264,32 +1478,110 @@ def build_linkedin_xray_query_layers(
     industry: str,
     leadership_expectations: str,
     recruiter_preferences: dict[str, Any] | None = None,
+    job_description: str = "",
+    voice_summary: str = "",
+    voice_transcript: str = "",
+    nice_to_have_skills: list[str] | None = None,
+    job_description_keywords: list[str] | None = None,
+    selected_archetypes: list[dict[str, Any]] | None = None,
 ) -> list[XRayQueryLayer]:
     role = _normalize_text(role)
     seniority = _normalize_text(seniority)
     location = _normalize_text(location)
-    company_stage = _normalize_text(company_stage)
-    hiring_preferences = _normalize_text(hiring_preferences)
-    industry = _normalize_text(industry)
-    leadership_expectations = _normalize_text(leadership_expectations)
     skill_list = _dedupe_preserve_order(skills)
 
-    strategy = _build_google_xray_query_strategy(
+    strategy = _build_xray_query_strategy_v2(
         role=role,
         seniority=seniority,
         skills=skill_list,
         location=location,
-        company_stage=company_stage,
-        hiring_preferences=hiring_preferences,
-        industry=industry,
-        leadership_expectations=leadership_expectations,
+        recruiter_preferences=recruiter_preferences,
+        job_description=job_description,
+        voice_summary=voice_summary,
+        voice_transcript=voice_transcript,
+        nice_to_have_skills=nice_to_have_skills,
+        job_description_keywords=job_description_keywords,
+        selected_archetypes=selected_archetypes,
     )
 
+    def _pick_unique_query(*families: list[str], used: set[str]) -> str:
+        for family in families:
+            for query in family or []:
+                normalized = _normalize_lower(_normalize_text(query))
+                if not normalized or normalized in used:
+                    continue
+                used.add(normalized)
+                return _normalize_text(query)
+        return ""
+
+    used_queries: set[str] = set()
+    role_query = _pick_unique_query(strategy.get("role_queries") or [], strategy.get("stack_queries") or [], strategy.get("project_queries") or [], used=used_queries)
+    stack_query = _pick_unique_query(strategy.get("stack_queries") or [], strategy.get("project_queries") or [], strategy.get("framework_queries") or [], used=used_queries)
+    archetype_query = _pick_unique_query(strategy.get("project_queries") or [], strategy.get("framework_queries") or [], strategy.get("role_queries") or [], used=used_queries)
+
+    fallback_queries = list(strategy.get("queries") or [])
+    if not role_query:
+        role_query = _pick_unique_query(fallback_queries, used=used_queries)
+    if not stack_query:
+        stack_query = _pick_unique_query(fallback_queries, used=used_queries)
+    if not archetype_query:
+        archetype_query = _pick_unique_query(fallback_queries, used=used_queries)
+
+    if not role_query:
+        role_query = " ".join(
+            part
+            for part in [
+                "site:linkedin.com/in",
+                _query_clause(_sanitize_role_query(role) or _sanitize_role_query(seniority) or _normalize_text(role) or "software engineer", _normalize_text(location)),
+                _negative_filters_clause(),
+            ]
+            if part
+        ).strip()
+    if not stack_query:
+        fallback_stack_terms = _dedupe_preserve_order(
+            [
+                *skill_list[:4],
+                *_core_skills_for_query(
+                    skill_list,
+                    family=_role_family_for_query(role=_normalize_text(role) or _sanitize_role_query(seniority) or "software engineer", skills=skill_list),
+                )[:4],
+                _normalize_text(location),
+            ]
+        )
+        stack_query = " ".join(
+            part
+            for part in [
+                "site:linkedin.com/in",
+                _query_clause(*fallback_stack_terms),
+                _negative_filters_clause(),
+            ]
+            if part
+        ).strip()
+    if not archetype_query:
+        archetype_terms = _dedupe_preserve_order(
+            [
+                *(strategy.get("selected_archetypes") or []),
+                *strategy.get("voice_keywords", [])[:4],
+                *strategy.get("description_keywords", [])[:4],
+                *strategy.get("project_terms", [])[:4],
+                *strategy.get("core_skills", [])[:4],
+                _normalize_text(location),
+            ]
+        )
+        archetype_query = " ".join(
+            part
+            for part in [
+                "site:linkedin.com/in",
+                _query_clause(*archetype_terms),
+                _negative_filters_clause(),
+            ]
+            if part
+        ).strip()
+
     layers = [
-        *[XRayQueryLayer(layer_type=f"role_query_{index}", query=query) for index, query in enumerate(strategy["role_queries"], start=1)],
-        *[XRayQueryLayer(layer_type=f"stack_query_{index}", query=query) for index, query in enumerate(strategy["stack_queries"], start=1)],
-        *[XRayQueryLayer(layer_type=f"project_query_{index}", query=query) for index, query in enumerate(strategy["project_queries"], start=1)],
-        *[XRayQueryLayer(layer_type=f"framework_query_{index}", query=query) for index, query in enumerate(strategy["framework_queries"], start=1)],
+        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", **(strategy.get("family_signals", {}).get("role", {}))}),
+        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", **(strategy.get("family_signals", {}).get("stack", {}))}),
+        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", **(strategy.get("family_signals", {}).get("archetype", {}))}),
     ]
     return [layer for layer in layers if layer.query]
 
@@ -1305,6 +1597,12 @@ def build_linkedin_xray_queries(
     industry: str,
     leadership_expectations: str,
     recruiter_preferences: dict[str, Any] | None = None,
+    job_description: str = "",
+    voice_summary: str = "",
+    voice_transcript: str = "",
+    nice_to_have_skills: list[str] | None = None,
+    job_description_keywords: list[str] | None = None,
+    selected_archetypes: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     layers = build_linkedin_xray_query_layers(
         role=role,
@@ -1316,6 +1614,12 @@ def build_linkedin_xray_queries(
         industry=industry,
         leadership_expectations=leadership_expectations,
         recruiter_preferences=recruiter_preferences,
+        job_description=job_description,
+        voice_summary=voice_summary,
+        voice_transcript=voice_transcript,
+        nice_to_have_skills=nice_to_have_skills,
+        job_description_keywords=job_description_keywords,
+        selected_archetypes=selected_archetypes,
     )
     return [layer.query for layer in layers if layer.query]
 
@@ -1568,11 +1872,12 @@ def _snippet_quality(*, title: str, snippet: str, displayed_link: str, company: 
     return "thin"
 
 
-def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int, position: int, intake: dict[str, str], source: str) -> dict[str, Any] | None:
+def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int, position: int, intake: dict[str, str], source: str, query_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     link = _normalize_text(result.get("link") or "")
     title = _normalize_text(result.get("title") or "")
     snippet = _normalize_text(result.get("snippet") or "")
     displayed_link = _normalize_text(result.get("displayed_link") or "")
+    query_context = query_context or {}
     linkedin_url = _extract_linkedin_url(link)
     if not linkedin_url:
         logger.info(
@@ -1587,26 +1892,29 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
 
     text = " ".join([title, snippet, displayed_link])
     name = _candidate_name_from_title(title) or _candidate_name_from_title(displayed_link) or _candidate_name_from_title(snippet)
-    role = _extract_clean_role(snippet) or _extract_clean_role(title) or _candidate_role_from_text(title, snippet, displayed_link) or _normalize_text(title)
-    company = _extract_clean_company(snippet)
-    location = _extract_clean_location(snippet, fallback=intake.get("location", ""))
+    role = _extract_clean_role(snippet) or _extract_clean_role(title) or ""
+    company = _extract_clean_company(snippet) or _extract_clean_company(title) or ""
+    location = _extract_clean_location(snippet) or _extract_clean_location(title) or ""
     skills = _extract_skills_from_text(text, [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()])
     snippet_quality = _snippet_quality(title=title, snippet=snippet, displayed_link=displayed_link, company=company, location=location)
+    experience = _extract_experience_from_text(snippet, title, displayed_link)
+    query_family = _normalize_text(query_context.get("family") or query_context.get("family_name") or "")
+    query_signals = query_context.get("signals") if isinstance(query_context.get("signals"), dict) else {}
 
     normalized = {
         "id": linkedin_url or link,
-        "full_name": name or title or "Unknown Candidate",
-        "name": name or title or "Unknown Candidate",
-        "job_title": role,
-        "title": role,
-        "role": role,
-        "headline": role,
-        "job_company_name": company,
-        "company": company,
-        "location": location,
+        "full_name": name or "Unknown Candidate",
+        "name": name or "Unknown Candidate",
+        "job_title": role or None,
+        "title": role or None,
+        "role": role or None,
+        "headline": role or None,
+        "job_company_name": company or None,
+        "company": company or None,
+        "location": location or None,
         "skills": skills,
-        "summary": snippet or role,
-        "experience": _normalize_text(intake.get("seniority") or ""),
+        "summary": snippet or None,
+        "experience": experience or None,
         "linkedin_url": linkedin_url,
         "source": source,
         "source_type": "linkedin_xray",
@@ -1628,10 +1936,14 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         "sourceQuery": query,
         "source_timestamp": datetime.now(timezone.utc).isoformat(),
         "sourceTimestamp": datetime.now(timezone.utc).isoformat(),
-        "current_company": company,
-        "currentCompany": company,
-        "inferred_experience": _normalize_text(intake.get("seniority") or ""),
-        "inferredExperience": _normalize_text(intake.get("seniority") or ""),
+        "current_company": company or None,
+        "currentCompany": company or None,
+        "inferred_experience": experience or None,
+        "inferredExperience": experience or None,
+        "query_family": query_family,
+        "queryFamily": query_family,
+        "query_signals": query_signals,
+        "querySignals": query_signals,
         "raw_discovery": {
             "query": query,
             "page": page,
@@ -1641,6 +1953,8 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
             "snippet": snippet,
             "displayed_link": displayed_link,
             "source": source,
+            "query_family": query_family,
+            "query_signals": query_signals,
         },
     }
     logger.info(
@@ -1757,7 +2071,95 @@ def discover_linkedin_xray_candidates(
     resolved_role_search_id = _normalize_text(role_search_id) or resolved_job_id or f"{resolved_company_id or 'company'}:{_normalize_lower(resolved_intake['role_title'])}"
     resolved_archetype_ids = _dedupe_preserve_order([str(item).strip() for item in (archetype_ids or []) if str(item).strip()])
 
+    structured = getattr(job, "structured_data", None)
+    if not isinstance(structured, dict):
+        structured = {}
+    calibration = structured.get("recruiterCalibration")
+    if not isinstance(calibration, dict):
+        calibration = {}
+    current_pair = calibration.get("current_pair") if isinstance(calibration.get("current_pair"), dict) else calibration.get("currentPair")
+    if not isinstance(current_pair, dict):
+        current_pair = {}
+    selected_archetypes: list[dict[str, Any]] = []
+    for source in (
+        current_pair,
+        calibration.get("archetype_pool") if isinstance(calibration.get("archetype_pool"), list) else [],
+        calibration.get("archetype_sets") if isinstance(calibration.get("archetype_sets"), list) else [],
+        structured.get("archetypePool") if isinstance(structured.get("archetypePool"), list) else [],
+        structured.get("archetypeSets") if isinstance(structured.get("archetypeSets"), list) else [],
+    ):
+        if isinstance(source, dict):
+            for key in ("profile_sets", "profileSets", "candidate_profiles", "candidateProfiles", "archetypes", "profiles"):
+                items = source.get(key)
+                if isinstance(items, list):
+                    selected_archetypes.extend([item for item in items if isinstance(item, dict)])
+        elif isinstance(source, list):
+            selected_archetypes.extend([item for item in source if isinstance(item, dict)])
+    deduped_archetypes: list[dict[str, Any]] = []
+    seen_archetype_keys: set[str] = set()
+    for item in selected_archetypes:
+        profile_key = _normalize_lower(
+            _normalize_text(
+                item.get("id")
+                or item.get("profile_id")
+                or item.get("profileId")
+                or item.get("profile_title")
+                or item.get("profileTitle")
+                or item.get("headlineRole")
+                or item.get("title")
+                or ""
+            )
+        )
+        if not profile_key:
+            profile_key = _normalize_lower(_normalize_text(item.get("summary") or item.get("preferred_project_type") or item.get("preferredProjectType") or ""))
+        if profile_key and profile_key in seen_archetype_keys:
+            continue
+        if profile_key:
+            seen_archetype_keys.add(profile_key)
+        deduped_archetypes.append(item)
+    selected_archetypes = deduped_archetypes
+    if not selected_archetypes and isinstance(current_pair, dict):
+        pair_candidates = current_pair.get("archetypes") if isinstance(current_pair.get("archetypes"), list) else []
+        selected_archetypes = [item for item in pair_candidates if isinstance(item, dict)][:3]
+    if not selected_archetypes and isinstance(calibration.get("archetype_pool"), list):
+        selected_archetypes = [item for item in calibration.get("archetype_pool") if isinstance(item, dict)][:3]
+
+    job_description = _normalize_text(
+        getattr(job, "description", "")
+        or resolved_intake.get("job_description", "")
+        or structured.get("description", "")
+        or structured.get("jobDescription", "")
+    )
+    voice_summary = _normalize_text(
+        resolved_intake.get("voice_summary", "")
+        or structured.get("voiceTranscriptClean", "")
+        or structured.get("voice_summary", "")
+        or structured.get("voiceSummary", "")
+    )
+    voice_transcript = _normalize_text(
+        structured.get("voiceTranscriptRaw", "")
+        or structured.get("voiceTranscript", "")
+        or (structured.get("voiceExtraction", {}).get("rawTranscript", "") if isinstance(structured.get("voiceExtraction"), dict) else "")
+    )
+    job_description_keywords = _split_keyword_phrases(job_description, voice_summary, voice_transcript, _normalize_text(resolved_intake.get("hiring_preferences", "")))
+    nice_to_have_skills = _dedupe_preserve_order(
+        [token.strip() for token in _normalize_text(resolved_intake.get("nice_to_have_skills", "")).split(",") if token.strip()]
+    )
+
     query_generation_started = perf_counter()
+    query_strategy = _build_xray_query_strategy_v2(
+        role=resolved_intake["role_title"],
+        seniority=resolved_intake["seniority"],
+        skills=[skill.strip() for skill in resolved_intake["skills"].split(",") if skill.strip()],
+        location=resolved_intake["location"],
+        recruiter_preferences=recruiter_preferences,
+        job_description=job_description,
+        voice_summary=voice_summary,
+        voice_transcript=voice_transcript,
+        nice_to_have_skills=nice_to_have_skills,
+        job_description_keywords=job_description_keywords,
+        selected_archetypes=selected_archetypes,
+    )
     query_layers = build_linkedin_xray_query_layers(
         role=resolved_intake["role_title"],
         seniority=resolved_intake["seniority"],
@@ -1768,18 +2170,14 @@ def discover_linkedin_xray_candidates(
         industry=resolved_intake["industry"],
         leadership_expectations=resolved_intake["leadership_expectations"],
         recruiter_preferences=recruiter_preferences,
+        job_description=job_description,
+        voice_summary=voice_summary,
+        voice_transcript=voice_transcript,
+        nice_to_have_skills=nice_to_have_skills,
+        job_description_keywords=job_description_keywords,
+        selected_archetypes=selected_archetypes,
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
-    query_strategy = _build_google_xray_query_strategy(
-        role=resolved_intake["role_title"],
-        seniority=resolved_intake["seniority"],
-        skills=[skill.strip() for skill in resolved_intake["skills"].split(",") if skill.strip()],
-        location=resolved_intake["location"],
-        company_stage=resolved_intake["company_stage"],
-        hiring_preferences=resolved_intake["hiring_preferences"],
-        industry=resolved_intake["industry"],
-        leadership_expectations=resolved_intake["leadership_expectations"],
-    )
 
     limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
     job_role = resolved_intake["role_title"]
@@ -1882,6 +2280,15 @@ def discover_linkedin_xray_candidates(
         "workflow_token": resolved_workflow_token,
         "role_search_id": resolved_role_search_id,
         "archetype_ids": resolved_archetype_ids,
+        "selected_archetypes": [
+            {
+                "profile_title": item.get("profile_title") or item.get("profileTitle") or item.get("headlineRole") or item.get("title") or "",
+                "preferred_project_type": item.get("preferred_project_type") or item.get("preferredProjectType") or "",
+                "core_skills": list(item.get("core_skills") or item.get("coreSkills") or []),
+            }
+            for item in selected_archetypes
+            if isinstance(item, dict)
+        ],
         "query_strategy": query_strategy,
         "total_layer_count": len(query_layers),
         "active_layer_count": len(limited_layers),
@@ -1892,6 +2299,8 @@ def discover_linkedin_xray_candidates(
                 "query": layer.query,
                 "pages": 1,
                 "enabled": layer.enabled,
+                "family": layer.signals.get("family", ""),
+                "signals": layer.signals,
             }
             for index, layer in enumerate(limited_layers, start=1)
         ],
@@ -2024,6 +2433,7 @@ def discover_linkedin_xray_candidates(
                 position=position_index,
                 intake=resolved_intake,
                 source="serpapi",
+                query_context=layer.signals,
             )
             position_index += 1
             if position_index > max(1, SERPAPI_RESULTS_PER_PAGE):
@@ -2107,6 +2517,7 @@ def discover_linkedin_xray_candidates(
         "duplicate_candidate_names": duplicate_candidate_names,
         "duplicate_canonical_ids": duplicate_candidate_ids,
         "duplicate_recruiter_memory_candidates": duplicate_memory_candidates,
+        "invalid_url_candidates": rejected_count,
         "calls_executed": serpapi_calls_executed,
         "pages_requested": sum(pages for _, _, pages in layer_results),
         "query_layers": [
@@ -2163,6 +2574,23 @@ def discover_linkedin_xray_candidates(
         duplicate_candidates=duplicate_candidates,
         deduped_candidates=len(normalized_results),
         duplicate_rate=duplicate_rate,
+        invalid_url_candidates=rejected_count,
+    )
+    logger.info(
+        "xray_source_counts job_id=%s raw_candidate_count=%s normalized_count=%s duplicate_count=%s invalid_url_count=%s",
+        resolved_job_id,
+        raw_candidates,
+        len(normalized_results),
+        duplicate_candidates,
+        rejected_count,
+    )
+    log_metric(
+        "xray_source_counts",
+        job_id=resolved_job_id,
+        raw_candidate_count=raw_candidates,
+        normalized_count=len(normalized_results),
+        duplicate_count=duplicate_candidates,
+        invalid_url_count=rejected_count,
     )
     _log_structured(
         "xray_timing",
@@ -2203,3 +2631,4 @@ def serpapi_health_snapshot() -> dict[str, str]:
     if is_serpapi_disabled():
         return {"status": "down", "reason": "serpapi_disabled"}
     return {"status": "ok", "reason": "configured"}
+

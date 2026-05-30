@@ -140,7 +140,7 @@ def _extract_candidate_role(*values: Any) -> str:
         return ""
 
     for value in cleaned_values:
-        parts = [part.strip() for part in re.split(r"\s*[|•–—-]\s*", value) if part.strip()]
+        parts = [part.strip() for part in re.split(r"\s*[|???-]\s*", value) if part.strip()]
         role_parts: list[str] = []
         for part in parts:
             lowered = part.lower()
@@ -152,17 +152,6 @@ def _extract_candidate_role(*values: Any) -> str:
             role = " - ".join(role_parts[:2]).strip()
             if role:
                 return role
-
-    for value in cleaned_values:
-        parts = [part.strip() for part in re.split(r"\s*[|•–—-]\s*", value) if part.strip()]
-        if len(parts) >= 2:
-            middle_parts = [part for part in parts[1:] if "linkedin" not in part.lower() and not part.lower().startswith("http")]
-            if middle_parts:
-                return " - ".join(middle_parts[:2]).strip()
-
-    for value in cleaned_values:
-        if "linkedin" not in value.lower() and not value.lower().startswith("http"):
-            return value
     return ""
 
 
@@ -171,7 +160,7 @@ def _score_candidate(job: Any, candidate: dict[str, Any]) -> tuple[float, float,
     job_location = _normalize_text(getattr(job, "location", "") or "")
     job_skills = _job_skills(job)
 
-    candidate_title = _normalize_text(candidate.get("title") or candidate.get("headline") or candidate.get("job_title") or "")
+    candidate_title = _normalize_text(candidate.get("title") or candidate.get("job_title") or candidate.get("role") or "")
     candidate_company = _normalize_text(candidate.get("current_company") or candidate.get("company") or candidate.get("job_company_name") or "")
     candidate_location = _normalize_text(candidate.get("location") or "")
     candidate_skills = [str(skill).strip() for skill in (candidate.get("skills") or []) if str(skill).strip()]
@@ -199,22 +188,19 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
     fit_score = round(final_score * 5.0, 2)
     skills = list(candidate.get("skills") or [])
     company = _normalize_text(candidate.get("current_company") or candidate.get("company") or candidate.get("job_company_name") or "")
-    role = _extract_candidate_role(
-        candidate.get("role"),
-        candidate.get("headline"),
-        candidate.get("title"),
-        candidate.get("job_title"),
-        candidate.get("snippet"),
-        candidate.get("displayed_link"),
-    ) or _normalize_text(candidate.get("role") or candidate.get("headline") or candidate.get("title") or candidate.get("job_title") or "")
-    title = _normalize_text(candidate.get("name") or candidate.get("full_name") or role or "")
+    role = _normalize_text(candidate.get("title") or candidate.get("job_title") or candidate.get("role") or "")
+    candidate_name = _normalize_text(candidate.get("name") or candidate.get("full_name") or "")
     linkedin_url = normalize_linkedin_url(candidate.get("linkedin_url") or candidate.get("linkedinUrl") or "")
     source_query = _normalize_text(candidate.get("source_query") or candidate.get("sourceQuery") or candidate.get("search_query") or "")
     source_timestamp = _normalize_text(candidate.get("source_timestamp") or candidate.get("sourceTimestamp") or datetime.now(timezone.utc).isoformat())
     source_provider = _normalize_text(candidate.get("source_provider") or candidate.get("sourceProvider") or "xray_apollo") or "xray_apollo"
     location = _normalize_text(candidate.get("location") or "")
-    summary = _normalize_text(candidate.get("snippet") or candidate.get("summary") or "")
-    experience = _normalize_text(candidate.get("inferred_experience") or candidate.get("experience") or getattr(job, "experience_required", "") or "")
+    summary = _normalize_text(candidate.get("summary") or candidate.get("snippet") or "")
+    experience = _normalize_text(candidate.get("experience") or candidate.get("inferred_experience") or "")
+    if experience and not re.search(r"\b\d{1,2}\s*[-–—]\s*(?:\d{1,2})\s*(?:years?|yrs?|yr)\b|\b\d{1,2}\+?\s*(?:years?|yrs?|yr)\b", experience, flags=re.IGNORECASE):
+        experience = ""
+    query_family = _normalize_text(candidate.get("query_family") or candidate.get("queryFamily") or "")
+    query_signals = candidate.get("query_signals") if isinstance(candidate.get("query_signals"), dict) else candidate.get("querySignals") if isinstance(candidate.get("querySignals"), dict) else {}
 
     explanation = CandidateExplanation(
         semanticScore=round(title_signal, 4),
@@ -240,36 +226,38 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
 
     return CandidateResult(
         id=candidate_id,
-        name=_normalize_text(candidate.get("name") or candidate.get("full_name") or title or "Unknown Candidate"),
-        role=role or "Unknown Role",
-        company=company or "",
-        email="",
+        name=candidate_name or "Unknown Candidate",
+        role=role or None,
+        company=company or None,
+        email=None,
         isMockEmail=False,
-        headline=role or company,
-        location=location,
-        yearsExperience=0.0,
+        headline=role or None,
+        location=location or None,
+        yearsExperience=float(match.group(1)) if experience and (match := re.search(r"\d+(?:\.\d+)?", experience)) else None,
         skills=skills,
-        summary=summary,
-        education=[],
-        projects=[],
-        certifications=[],
-        companiesHistory=[],
-        domainExperience=[],
-        resumeText="",
+        summary=summary or None,
+        education=None,
+        projects=None,
+        certifications=None,
+        companiesHistory=None,
+        domainExperience=None,
+        resumeText=None,
         profileData={
             "linkedin_url": linkedin_url,
             "linkedinUrl": linkedin_url,
-                "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
-                "identity": identity.to_dict(),
-                "id": candidate_id,
-                "source_provider": source_provider,
+            "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
+            "identity": identity.to_dict(),
+            "id": candidate_id,
+            "source_provider": source_provider,
             "source_provider_label": "xray_apollo",
             "source_query": source_query,
             "source_timestamp": source_timestamp,
-            "current_company": company,
-            "inferred_experience": experience,
-            "snippet": summary,
+            "current_company": company or None,
+            "inferred_experience": experience or None,
+            "snippet": summary or None,
             "snippet_quality": snippet_quality,
+            "query_family": query_family,
+            "query_signals": query_signals,
         },
         fitScore=fit_score,
         decision="strong_match" if fit_score >= 4 else "potential" if fit_score >= 2.5 else "weak",
@@ -290,23 +278,27 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         sourceTimestamp=source_timestamp,
         sourceType="linkedin_xray",
         linkedinUrl=linkedin_url,
+        githubUrl=None,
+        portfolioUrl=None,
         source_url=_normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
-        currentCompany=company,
-        inferredExperience=experience,
+        currentCompany=company or None,
+        inferredExperience=experience or None,
         snippetQuality=snippet_quality if snippet_quality in {"rich", "partial", "thin"} else "partial",
         rawDiscovery={
             "query": source_query,
             "source_url": _normalize_text(candidate.get("source_url") or candidate.get("link") or candidate.get("displayed_link") or ""),
             "displayed_link": _normalize_text(candidate.get("displayed_link") or ""),
             "linkedin_url": linkedin_url,
-            "snippet": summary,
+            "snippet": summary or None,
             "title": _normalize_text(candidate.get("name") or candidate.get("full_name") or title or ""),
-            "current_company": company,
-            "location": location,
+            "current_company": company or None,
+            "location": location or None,
             "linkedin_url": linkedin_url,
             "source_provider": source_provider,
             "source_timestamp": source_timestamp,
             "snippet_quality": snippet_quality,
+            "query_family": query_family,
+            "query_signals": query_signals,
         },
     )
 
@@ -361,6 +353,10 @@ def discover_xray_candidates(
         industry=_normalize_text((intake or {}).get("industry") or ""),
         leadership_expectations=_normalize_text((intake or {}).get("leadership_expectations") or ""),
         recruiter_preferences=recruiter_preferences,
+        job_description=_normalize_text(getattr(job, "description", "") or ""),
+        voice_summary=_normalize_text((getattr(job, "structured_data", {}) or {}).get("voiceTranscriptClean", "") if isinstance(getattr(job, "structured_data", {}), dict) else ""),
+        voice_transcript=_normalize_text((getattr(job, "structured_data", {}) or {}).get("voiceTranscriptRaw", "") if isinstance(getattr(job, "structured_data", {}), dict) else ""),
+        nice_to_have_skills=[str(skill).strip() for skill in ((getattr(job, "structured_data", {}) or {}).get("nice_to_have_skills") or []) if str(skill).strip()] if isinstance((getattr(job, "structured_data", {}) or {}).get("nice_to_have_skills"), list) else [],
     )
     primary_query = queries[0] if queries else ""
     logger.info("[xray_query] job_id=%s query=%s pages=%s", job_id, primary_query, max_pages)

@@ -437,11 +437,16 @@ def inspect_audit_logs(db: Session, limit: int = 100) -> list[dict[str, Any]]:
         {
             "id": row.id,
             "actorId": row.actor_id,
+            "companyId": getattr(row, "company_id", None),
+            "userId": getattr(row, "user_id", None),
+            "slackUserId": getattr(row, "slack_user_id", ""),
             "actorType": row.actor_type,
             "action": row.action,
+            "actionType": getattr(row, "action_type", "") or row.action,
             "entityType": row.entity_type,
             "entityId": row.entity_id,
             "metadata": row.event_metadata,
+            "payload": getattr(row, "payload", {}) or row.event_metadata,
             "requestId": row.request_id,
             "createdAt": row.created_at.isoformat() if row.created_at else None,
         }

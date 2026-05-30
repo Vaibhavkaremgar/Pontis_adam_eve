@@ -22,6 +22,8 @@ from app.models.entities import (
     CandidateLifecycleEventEntity,
     CandidateProfileEntity,
     CompanyEntity,
+    SlackInstallationEntity,
+    SlackUserEntity,
     JobIntakeEntity,
     InboundEmailAttachmentEntity,
     InboundEmailReplyEntity,
@@ -194,6 +196,203 @@ class UserRepository:
         self.db.add(entity)
         self.db.flush()
         return entity
+
+
+class SlackInstallationRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_team_id(self, team_id: str) -> SlackInstallationEntity | None:
+        normalized = (team_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(select(SlackInstallationEntity).where(SlackInstallationEntity.team_id == normalized))
+
+    def get_active_by_team_id(self, team_id: str) -> SlackInstallationEntity | None:
+        normalized = (team_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(SlackInstallationEntity).where(
+                SlackInstallationEntity.team_id == normalized,
+                SlackInstallationEntity.is_active.is_(True),
+            )
+        )
+
+    def get_active_for_company(self, company_id: str) -> SlackInstallationEntity | None:
+        normalized = (company_id or "").strip()
+        if not normalized:
+            return None
+        return self.db.scalar(
+            select(SlackInstallationEntity)
+            .where(
+                SlackInstallationEntity.company_id == normalized,
+                SlackInstallationEntity.is_active.is_(True),
+            )
+            .order_by(SlackInstallationEntity.updated_at.desc(), SlackInstallationEntity.created_at.desc())
+        )
+
+    def upsert(
+        self,
+        *,
+        company_id: str,
+        team_id: str,
+        team_name: str = "",
+        enterprise_id: str = "",
+        bot_user_id: str = "",
+        bot_access_token: str = "",
+        scope_list: list[str] | None = None,
+        installed_by_user_id: str | None = None,
+        installed_at: datetime | None = None,
+        revoked_at: datetime | None = None,
+        is_active: bool = True,
+    ) -> SlackInstallationEntity:
+        normalized_team_id = (team_id or "").strip()
+        if not normalized_team_id:
+            raise APIError("team_id is required", status_code=400)
+        row = self.get_by_team_id(normalized_team_id)
+        now = datetime.now(timezone.utc)
+        if not row:
+            row = SlackInstallationEntity(
+                id=str(uuid4()),
+                company_id=(company_id or "").strip(),
+                team_id=normalized_team_id,
+            )
+            self.db.add(row)
+            self.db.flush()
+        row.company_id = (company_id or row.company_id or "").strip()
+        row.team_name = (team_name or row.team_name or "").strip()
+        row.enterprise_id = (enterprise_id or row.enterprise_id or "").strip()
+        row.bot_user_id = (bot_user_id or row.bot_user_id or "").strip()
+        row.bot_access_token = (bot_access_token or row.bot_access_token or "").strip()
+        row.scope_list = list(scope_list or row.scope_list or [])
+        row.installed_by_user_id = (installed_by_user_id or row.installed_by_user_id or "").strip() or None
+        row.installed_at = installed_at or row.installed_at or now
+        row.revoked_at = revoked_at
+        row.is_active = bool(is_active)
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def revoke(self, team_id: str) -> SlackInstallationEntity | None:
+        row = self.get_by_team_id(team_id)
+        if not row:
+            return None
+        now = datetime.now(timezone.utc)
+        row.is_active = False
+        row.revoked_at = now
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+
+class SlackUserRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get_by_installation_and_user_id(self, *, slack_installation_id: str, slack_user_id: str) -> SlackUserEntity | None:
+        installation_id = (slack_installation_id or "").strip()
+        user_id = (slack_user_id or "").strip()
+        if not installation_id or not user_id:
+            return None
+        return self.db.scalar(
+            select(SlackUserEntity).where(
+                SlackUserEntity.slack_installation_id == installation_id,
+                SlackUserEntity.slack_user_id == user_id,
+            )
+        )
+
+    def get_by_company_and_internal_user_id(self, *, company_id: str, internal_user_id: str) -> SlackUserEntity | None:
+        normalized_company_id = (company_id or "").strip()
+        normalized_user_id = (internal_user_id or "").strip()
+        if not normalized_company_id or not normalized_user_id:
+            return None
+        return self.db.scalar(
+            select(SlackUserEntity).where(
+                SlackUserEntity.company_id == normalized_company_id,
+                SlackUserEntity.internal_user_id == normalized_user_id,
+            )
+        )
+
+    def get_by_company_and_user_id(self, *, company_id: str, slack_user_id: str) -> SlackUserEntity | None:
+        normalized_company_id = (company_id or "").strip()
+        normalized_user_id = (slack_user_id or "").strip()
+        if not normalized_company_id or not normalized_user_id:
+            return None
+        return self.db.scalar(
+            select(SlackUserEntity).where(
+                SlackUserEntity.company_id == normalized_company_id,
+                SlackUserEntity.slack_user_id == normalized_user_id,
+            )
+        )
+
+    def upsert(
+        self,
+        *,
+        company_id: str,
+        slack_installation_id: str,
+        slack_user_id: str,
+        email: str = "",
+        display_name: str = "",
+        internal_user_id: str | None = None,
+        role: str = "recruiter",
+    ) -> SlackUserEntity:
+        normalized_company_id = (company_id or "").strip()
+        normalized_installation_id = (slack_installation_id or "").strip()
+        normalized_slack_user_id = (slack_user_id or "").strip()
+        if not normalized_company_id:
+            raise APIError("company_id is required", status_code=400)
+        if not normalized_installation_id:
+            raise APIError("slack_installation_id is required", status_code=400)
+        if not normalized_slack_user_id:
+            raise APIError("slack_user_id is required", status_code=400)
+
+        row = self.get_by_installation_and_user_id(
+            slack_installation_id=normalized_installation_id,
+            slack_user_id=normalized_slack_user_id,
+        )
+        now = datetime.now(timezone.utc)
+        user_repo = UserRepository(self.db)
+        normalized_email = (email or "").strip().lower()
+        if not normalized_email:
+            normalized_email = f"slack-{normalized_company_id[:8]}-{normalized_slack_user_id[:16]}@adam.local"
+
+        if not internal_user_id:
+            existing_user = user_repo.get_by_email(normalized_email)
+            if existing_user:
+                internal_user_id = existing_user.id
+            else:
+                internal_user = user_repo.create(email=normalized_email, role=role)
+                internal_user_id = internal_user.id
+        else:
+            internal_user_id = internal_user_id.strip() or None
+
+        if not row:
+            row = SlackUserEntity(
+                id=str(uuid4()),
+                company_id=normalized_company_id,
+                slack_installation_id=normalized_installation_id,
+                slack_user_id=normalized_slack_user_id,
+                email=normalized_email,
+                display_name=(display_name or "").strip(),
+                internal_user_id=internal_user_id,
+                role=(role or "recruiter").strip().lower() or "recruiter",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            self.db.add(row)
+            self.db.flush()
+        row.company_id = normalized_company_id
+        row.slack_installation_id = normalized_installation_id
+        row.slack_user_id = normalized_slack_user_id
+        row.email = normalized_email or row.email
+        row.display_name = (display_name or row.display_name or "").strip()
+        row.internal_user_id = internal_user_id or row.internal_user_id
+        row.role = (role or row.role or "recruiter").strip().lower() or "recruiter"
+        row.last_seen_at = now
+        row.updated_at = now
+        self.db.flush()
+        return row
 
 
 class CompanyRepository:
@@ -405,6 +604,9 @@ class JobRepository:
         job = self.get(job_id)
         if not job:
             return None
+        recruiter_id = str(getattr(job, "created_by", "") or "").strip()
+        if recruiter_id:
+            return recruiter_id
         company = CompanyRepository(self.db).get_by_id(job.company_id)
         if not company:
             return None
@@ -600,6 +802,7 @@ class OrchestrationSessionRepository:
     def get_active_by_slack_context(
         self,
         *,
+        company_id: str = "",
         slack_team_id: str = "",
         slack_channel_id: str = "",
         slack_thread_ts: str = "",
@@ -608,6 +811,8 @@ class OrchestrationSessionRepository:
     ) -> OrchestrationSessionEntity | None:
         normalized_source = (source or "slack").strip().lower() or "slack"
         conditions = [OrchestrationSessionEntity.source == normalized_source]
+        if company_id.strip():
+            conditions.append(OrchestrationSessionEntity.company_id == company_id.strip())
         if slack_team_id.strip():
             conditions.append(OrchestrationSessionEntity.slack_team_id == slack_team_id.strip())
         if slack_channel_id.strip():
@@ -628,6 +833,7 @@ class OrchestrationSessionRepository:
     def archive_active_by_slack_context(
         self,
         *,
+        company_id: str = "",
         slack_team_id: str = "",
         slack_channel_id: str = "",
         slack_thread_ts: str = "",
@@ -637,6 +843,8 @@ class OrchestrationSessionRepository:
     ) -> list[OrchestrationSessionEntity]:
         normalized_source = (source or "slack").strip().lower() or "slack"
         conditions = [OrchestrationSessionEntity.source == normalized_source]
+        if company_id.strip():
+            conditions.append(OrchestrationSessionEntity.company_id == company_id.strip())
         if slack_team_id.strip():
             conditions.append(OrchestrationSessionEntity.slack_team_id == slack_team_id.strip())
         if slack_channel_id.strip():

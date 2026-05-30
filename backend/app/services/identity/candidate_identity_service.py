@@ -36,6 +36,9 @@ def normalize_linkedin_url(value: Any) -> str:
         host = "www.linkedin.com"
     path = re.sub(r"/+", "/", parsed.path or "").strip("/")
     path = re.sub(r"/(about|details|overlay|overlay/contact-info)$", "", path, flags=re.IGNORECASE).strip("/")
+    lowered_path = f"/{path}".lower()
+    if any(blocked in lowered_path for blocked in ("/jobs/", "/search/", "/company/", "/posts/", "/feed/")):
+        return ""
     slug_match = re.search(r"/in/([^/?#]+)", f"/{path}", flags=re.IGNORECASE)
     if not slug_match:
         return ""
@@ -48,7 +51,7 @@ def normalize_linkedin_url(value: Any) -> str:
 
 def _is_linkedin_search_or_job_url(value: str) -> bool:
     lowered = value.lower()
-    return "linkedin.com/jobs" in lowered or "/jobs/" in lowered or "/search/" in lowered
+    return any(blocked in lowered for blocked in ("linkedin.com/jobs", "/jobs/", "/search/", "/company/", "/posts/", "/feed/"))
 
 
 def extract_linkedin_slug(value: Any) -> str:
