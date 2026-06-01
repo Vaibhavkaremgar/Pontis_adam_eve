@@ -111,8 +111,9 @@ def upgrade() -> None:
     _create_index_if_missing(inspector, "slack_users", "ix_slack_users_company_slack_user", ["company_id", "slack_user_id"])
 
     if _table_exists(inspector, "jobs"):
-        if not _column_exists(inspector, "jobs", "slack_installation_id"):
-            op.add_column("jobs", sa.Column("slack_installation_id", sa.String(length=36), nullable=True))
+        cols = [c["name"] for c in inspector.get_columns("jobs")]
+        if "slack_installation_id" not in cols:
+            op.add_column("jobs", sa.Column("slack_installation_id", postgresql.UUID(as_uuid=True), nullable=True))
         if not _column_exists(inspector, "jobs", "slack_team_id"):
             op.add_column("jobs", sa.Column("slack_team_id", sa.String(length=64), nullable=False, server_default=""))
         if not _column_exists(inspector, "jobs", "slack_user_id"):
@@ -122,7 +123,7 @@ def upgrade() -> None:
 
     if _table_exists(inspector, "outreach_events"):
         if not _column_exists(inspector, "outreach_events", "slack_installation_id"):
-            op.add_column("outreach_events", sa.Column("slack_installation_id", sa.String(length=36), nullable=True))
+            op.add_column("outreach_events", sa.Column("slack_installation_id", postgresql.UUID(as_uuid=True), nullable=True))
         if not _column_exists(inspector, "outreach_events", "slack_team_id"):
             op.add_column("outreach_events", sa.Column("slack_team_id", sa.String(length=64), nullable=False, server_default=""))
         if not _column_exists(inspector, "outreach_events", "slack_user_id"):
@@ -132,7 +133,7 @@ def upgrade() -> None:
 
     if _table_exists(inspector, "candidate_feedback"):
         if not _column_exists(inspector, "candidate_feedback", "slack_installation_id"):
-            op.add_column("candidate_feedback", sa.Column("slack_installation_id", sa.String(length=36), nullable=True))
+            op.add_column("candidate_feedback", sa.Column("slack_installation_id", postgresql.UUID(as_uuid=True), nullable=True))
         if not _column_exists(inspector, "candidate_feedback", "slack_team_id"):
             op.add_column("candidate_feedback", sa.Column("slack_team_id", sa.String(length=64), nullable=False, server_default=""))
         if not _column_exists(inspector, "candidate_feedback", "slack_user_id"):
@@ -142,7 +143,7 @@ def upgrade() -> None:
 
     if _table_exists(inspector, "interview_sessions"):
         if not _column_exists(inspector, "interview_sessions", "slack_installation_id"):
-            op.add_column("interview_sessions", sa.Column("slack_installation_id", sa.String(length=36), nullable=True))
+            op.add_column("interview_sessions", sa.Column("slack_installation_id", postgresql.UUID(as_uuid=True), nullable=True))
         if not _column_exists(inspector, "interview_sessions", "slack_team_id"):
             op.add_column("interview_sessions", sa.Column("slack_team_id", sa.String(length=64), nullable=False, server_default=""))
         if not _column_exists(inspector, "interview_sessions", "slack_user_id"):
