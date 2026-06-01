@@ -96,6 +96,13 @@ _ROLE_KEYWORDS = {
     "security",
     "devops",
     "cloud",
+    "sales",
+    "account executive",
+    "business development",
+    "customer success",
+    "sdr",
+    "bdr",
+    "account manager",
 }
 
 _PROFILE_FRAGMENT_SPLIT_RE = re.compile(r"(?:\.\s+|\n+|\s*[|•]\s+)")
@@ -159,6 +166,37 @@ _COMPANY_CLUSTER_LIBRARY: dict[str, list[str]] = {
     "data": ["Snowflake", "Databricks", "Confluent", "dbt Labs", "Fivetran"],
     "sales": ["Salesforce", "HubSpot", "Gong", "ZoomInfo", "Gainsight"],
     "enterprise": ["ServiceNow", "SAP", "Oracle", "Workday", "Atlassian"],
+}
+
+_EDUCATION_INSTITUTION_EXPANSIONS: dict[str, list[str]] = {
+    "iim": [
+        "IIM Ahmedabad",
+        "IIM Bangalore",
+        "IIM Calcutta",
+        "IIM Lucknow",
+        "IIM Kozhikode",
+        "IIM Indore",
+    ],
+    "iit": [
+        "IIT Bombay",
+        "IIT Delhi",
+        "IIT Madras",
+        "IIT Kanpur",
+        "IIT Kharagpur",
+        "IIT Roorkee",
+        "IIT Guwahati",
+        "IIT Hyderabad",
+    ],
+    "ivy league": [
+        "Harvard",
+        "Yale",
+        "Princeton",
+        "Columbia",
+        "University of Pennsylvania",
+        "Brown",
+        "Dartmouth",
+        "Cornell",
+    ],
 }
 
 
@@ -343,6 +381,13 @@ def _normalize_text(value: Any) -> str:
 
 def _normalize_lower(value: Any) -> str:
     return _normalize_text(value).lower()
+
+
+def _normalize_query_bias(value: Any, *, fallback: str = "balanced") -> str:
+    normalized = _normalize_lower(value)
+    if normalized in {"precision", "recall", "balanced"}:
+        return normalized
+    return fallback
 
 
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
@@ -838,6 +883,8 @@ def _experience_hints_for_query(seniority: str) -> list[str]:
 
 def _role_family_for_query(role: str, skills: list[str]) -> str:
     text = " ".join([role, " ".join(skills)]).lower()
+    if any(token in text for token in ("sales", "account executive", "business development", "customer success", "sdr", "bdr", "ae", "quota", "pipeline")):
+        return "sales"
     has_frontend = any(marker in text for marker in _FRONTEND_MARKERS)
     has_backend = any(marker in text for marker in _BACKEND_MARKERS)
     has_data = any(marker in text for marker in _DATA_MARKERS)
@@ -885,6 +932,15 @@ def _role_variants_for_query(*, role: str, seniority: str, skills: list[str]) ->
             "data platform engineer",
             "software engineer",
             "python developer",
+        ]
+    elif family == "sales":
+        variants = [
+            "sales executive",
+            "account executive",
+            "business development representative",
+            "sales development representative",
+            "saas sales",
+            "enterprise sales",
         ]
     elif family == "backend":
         if "python" in role_text or "python" in skill_text:
@@ -985,6 +1041,25 @@ def _project_terms_for_query(*, family: str, skills: list[str]) -> list[str]:
     return cleaned_terms[:8]
 
 
+def _business_context_terms_for_query(*, role: str, seniority: str, skills: list[str]) -> list[str]:
+    text = " ".join([role, seniority, " ".join(skills)]).lower()
+
+    def _matched(*phrases: str) -> bool:
+        return any(phrase in text for phrase in phrases)
+
+    if _matched("sales", "account executive", "business development", "customer success", "sdr", "bdr", "quota", "pipeline") or re.search(r"\baccount\b(?!ing)", text):
+        return ["revenue", "quota", "pipeline", "B2B", "enterprise", "growth"]
+    if _matched("marketing", "brand", "demand generation", "demand gen", "growth marketing", "marketing ops", "content"):
+        return ["campaigns", "brand", "demand generation", "marketing ops", "growth"]
+    if _matched("hr", "human resources", "recruiter", "recruiting", "talent acquisition", "people ops", "talent"):
+        return ["hiring", "talent acquisition", "recruiting", "people ops", "candidate experience"]
+    if _matched("operations", "ops", "operations manager", "program manager", "project manager", "supply chain", "logistics"):
+        return ["operations", "process", "workflow", "execution", "process improvement"]
+    if _matched("finance", "accounting", "fp&a", "budget", "forecast", "controller", "treasury", "revops") or re.search(r"\baccount\b", text):
+        return ["finance", "forecasting", "budgeting", "accounting", "controls", "fp&a"]
+    return []
+
+
 def _split_keyword_phrases(*values: str) -> list[str]:
     phrases: list[str] = []
     seen: set[str] = set()
@@ -1022,6 +1097,124 @@ def _text_keywords(text: str, *, limit: int = 12) -> list[str]:
         if token not in _normalize_lower(" ".join(phrases)):
             phrases.append(token)
     return _dedupe_preserve_order(phrases)[:limit]
+
+
+def _normalize_list_input(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return _dedupe_preserve_order([_normalize_text(item) for item in value if _normalize_text(item)])
+    if isinstance(value, str):
+        return _dedupe_preserve_order([token.strip() for token in re.split(r"[,\n;/|]+", value) if token.strip()])
+    if value is None:
+        return []
+    normalized = _normalize_text(value)
+    return [normalized] if normalized else []
+
+
+def _expand_institution_terms(values: list[str], voice_transcript: str = "") -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    def add(term: str) -> None:
+        cleaned = _normalize_text(term)
+        key = _normalize_lower(cleaned)
+        if not cleaned or key in seen:
+            return
+        seen.add(key)
+        terms.append(cleaned)
+
+    for value in values:
+        cleaned = _normalize_text(value)
+        lowered = cleaned.lower()
+        if not cleaned:
+            continue
+        if lowered in _EDUCATION_INSTITUTION_EXPANSIONS:
+            for term in _EDUCATION_INSTITUTION_EXPANSIONS[lowered]:
+                add(term)
+            continue
+        if re.fullmatch(r"iim", lowered):
+            for term in _EDUCATION_INSTITUTION_EXPANSIONS["iim"]:
+                add(term)
+            continue
+        if re.fullmatch(r"iit", lowered):
+            for term in _EDUCATION_INSTITUTION_EXPANSIONS["iit"]:
+                add(term)
+            continue
+        if re.fullmatch(r"ivy league", lowered):
+            for term in _EDUCATION_INSTITUTION_EXPANSIONS["ivy league"]:
+                add(term)
+            continue
+        add(cleaned)
+
+    transcript = _normalize_text(voice_transcript)
+    lowered_transcript = transcript.lower()
+    if re.search(r"\biim\b(?!\s+(ahmedabad|bangalore|calcutta|lucknow|kozhikode|indore))", lowered_transcript):
+        for term in _EDUCATION_INSTITUTION_EXPANSIONS["iim"]:
+            add(term)
+    if re.search(r"\biit\b(?!\s+(bombay|delhi|madras|kanpur|kharagpur|roorkee|guwahati|hyderabad))", lowered_transcript):
+        for term in _EDUCATION_INSTITUTION_EXPANSIONS["iit"]:
+            add(term)
+    if "ivy league" in lowered_transcript:
+        for term in _EDUCATION_INSTITUTION_EXPANSIONS["ivy league"]:
+            add(term)
+    return terms[:12]
+
+
+def _education_signal_terms_from_text(text: str) -> dict[str, list[str] | str]:
+    cleaned = _normalize_text(text)
+    lowered = cleaned.lower()
+    education_levels: list[str] = []
+    certifications: list[str] = []
+    institutions: list[str] = []
+
+    degree_patterns = [
+        (r"\bmba\b", "MBA"),
+        (r"\bpgdm\b", "PGDM"),
+        (r"\bb\.?\s*tech\b", "B.Tech"),
+        (r"\bm\.?\s*tech\b", "M.Tech"),
+        (r"\bph\.?\s*d\b", "PhD"),
+        (r"\bphd\b", "PhD"),
+        (r"\bmasters?\b", "Masters"),
+        (r"\bdegree\b", "degree"),
+    ]
+    for pattern, label in degree_patterns:
+        if re.search(pattern, lowered, flags=re.IGNORECASE) and label not in education_levels:
+            education_levels.append(label)
+
+    specific_institution_patterns = [
+        (r"\biim\s+(ahmedabad|bangalore|calcutta|lucknow|kozhikode|indore)\b", "IIM"),
+        (r"\biit\s+(bombay|delhi|madras|kanpur|kharagpur|roorkee|guwahati|hyderabad)\b", "IIT"),
+    ]
+    for pattern, prefix in specific_institution_patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            institutions.append(_normalize_text(match.group(0)))
+    if re.search(r"\biim\b(?!\s+(ahmedabad|bangalore|calcutta|lucknow|kozhikode|indore))", lowered):
+        institutions.append("IIM")
+    if re.search(r"\biit\b(?!\s+(bombay|delhi|madras|kanpur|kharagpur|roorkee|guwahati|hyderabad))", lowered):
+        institutions.append("IIT")
+    if re.search(r"\bivy league\b", lowered):
+        institutions.append("Ivy League")
+
+    cert_patterns = [
+        r"\baws certified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bcfa\b",
+        r"\bpmp\b",
+        r"\bcertified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bcertification(?: [A-Za-z0-9 +./-]+)?",
+        r"\bscrum master\b",
+        r"\bsix sigma\b",
+    ]
+    for pattern in cert_patterns:
+        for match in re.finditer(pattern, cleaned, flags=re.IGNORECASE):
+            phrase = _normalize_text(match.group(0))
+            if phrase:
+                certifications.append(phrase)
+
+    return {
+        "education_level": education_levels[0] if education_levels else "",
+        "certifications": _dedupe_preserve_order(certifications),
+        "preferred_institutions": _dedupe_preserve_order(institutions),
+    }
 
 
 def _quote_or_tokenize(value: str) -> str:
@@ -1104,6 +1297,9 @@ def _build_boolean_xray_query_strategy(
     role: str,
     seniority: str,
     skills: list[str],
+    education_level: str = "",
+    preferred_institutions: list[str] | None = None,
+    certifications: list[str] | None = None,
     location: str,
     company_stage: str = "",
     hiring_preferences: str = "",
@@ -1125,18 +1321,38 @@ def _build_boolean_xray_query_strategy(
     normalized_remote_policy = _normalize_lower(remote_policy)
     required_skills = _dedupe_preserve_order(skills)
     nice_skills = _dedupe_preserve_order(nice_to_have_skills or [])
+    explicit_institutions = _dedupe_preserve_order(_normalize_list_input(preferred_institutions or []))
+    explicit_certifications = _dedupe_preserve_order(_normalize_list_input(certifications or []))
 
     preference_text = _normalize_text((recruiter_preferences or {}).get("preference_text") or "")
     voice_text = _normalize_text(voice_summary or voice_transcript or (recruiter_preferences or {}).get("voice_summary") or "")
-    experience_context = " ".join([seniority, job_description, voice_summary, voice_transcript, preference_text, voice_text])
+    experience_context = " ".join([seniority, job_description, preference_text])
     experience_hints = _experience_hints_for_query(experience_context)
     description_keywords = _dedupe_preserve_order([
         *_text_keywords(job_description, limit=10),
         *(job_description_keywords or []),
-        *_text_keywords(" ".join([preference_text, voice_text]), limit=10),
+        *_text_keywords(preference_text, limit=10),
     ])
     voice_keywords = _dedupe_preserve_order(_text_keywords(" ".join([voice_summary, voice_transcript]), limit=8))
     project_terms = _project_terms_for_query(family=_role_family_for_query(role=normalized_role, skills=required_skills), skills=required_skills)
+    business_context_terms = _business_context_terms_for_query(role=normalized_role, seniority=seniority, skills=required_skills)
+    context_fallback_terms = business_context_terms or project_terms
+    transcript_education = _education_signal_terms_from_text(voice_transcript)
+    education_levels = _dedupe_preserve_order([
+        education_level,
+        transcript_education.get("education_level") or "",
+    ])
+    institution_terms = _expand_institution_terms(
+        _dedupe_preserve_order([
+            *explicit_institutions,
+            *(_normalize_list_input(transcript_education.get("preferred_institutions") or [])),
+        ]),
+        voice_transcript=voice_transcript,
+    )
+    certification_terms = _dedupe_preserve_order([
+        *explicit_certifications,
+        *(_normalize_list_input(transcript_education.get("certifications") or [])),
+    ])
 
     archetype_profiles = selected_archetypes or []
     archetype_signal_keywords: list[str] = []
@@ -1207,8 +1423,11 @@ def _build_boolean_xray_query_strategy(
     title_variants = _build_title_variants_for_query(role=normalized_role, seniority=seniority, skills=required_skills)
     role_anchor = title_variants[0] if title_variants else normalized_role or "software engineer"
     title_clause = _or_group(title_variants[:8]) or _quote_query_term(role_anchor)
-    must_skills_clause = _and_group(required_skills[:5])
+    must_have_terms = _dedupe_preserve_order([*required_skills[:5], *certification_terms[:4]])
+    must_skills_clause = _and_group(must_have_terms[:8])
     nice_skills_clause = _or_group(nice_skills[:4])
+    education_clause = _or_group(education_levels[:4])
+    institution_clause = _or_group(institution_terms[:12])
     selected_signal_terms = _dedupe_preserve_order([
         *archetype_signal_keywords[:8],
         *archetype_skill_terms[:4],
@@ -1225,11 +1444,11 @@ def _build_boolean_xray_query_strategy(
         industry,
         leadership_expectations,
         preference_text,
-        voice_text,
+        *education_levels[:4],
+        *institution_terms[:6],
         *selected_signal_terms[:4],
         *description_keywords[:4],
-        *voice_keywords[:4],
-        *project_terms[:4],
+        *context_fallback_terms[:4],
     ])
     context_clause = _and_group(context_terms[:8]) if selected_query_bias == "precision" else _or_group(context_terms[:8])
     archetype_clause = _or_group(_dedupe_preserve_order([
@@ -1238,7 +1457,7 @@ def _build_boolean_xray_query_strategy(
         *archetype_skill_terms[:4],
         *archetype_domain_terms[:4],
         *archetype_experience_terms[:4],
-        *project_terms[:4],
+        *context_fallback_terms[:4],
     ]))
     experience_clause = _or_group(experience_hints[:4])
     location_clause = ""
@@ -1255,17 +1474,17 @@ def _build_boolean_xray_query_strategy(
         return " AND ".join(part for part in parts if part).strip()
 
     if selected_query_bias == "precision":
-        role_query = _compose(title_clause, must_skills_clause, experience_clause, location_clause, context_clause)
-        stack_query = _compose(title_clause, must_skills_clause, experience_clause, location_clause, context_clause)
-        archetype_query = _compose(title_clause, must_skills_clause, location_clause, context_clause)
+        role_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
+        stack_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
+        archetype_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, location_clause, context_clause)
     elif selected_query_bias == "recall":
-        role_query = _compose(title_clause, must_skills_clause, experience_clause, location_clause, context_clause)
-        stack_query = _compose(must_skills_clause, nice_skills_clause or _or_group(selected_signal_terms[:4]), title_clause, context_clause, location_clause)
-        archetype_query = _compose(title_clause, archetype_clause or context_clause, must_skills_clause, location_clause)
+        role_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
+        stack_query = _compose(must_skills_clause, nice_skills_clause or _or_group(selected_signal_terms[:4]), title_clause, education_clause, institution_clause, context_clause, location_clause)
+        archetype_query = _compose(title_clause, archetype_clause or context_clause, must_skills_clause, education_clause, institution_clause, location_clause)
     else:
-        role_query = _compose(title_clause, must_skills_clause, experience_clause, location_clause, context_clause)
-        stack_query = _compose(must_skills_clause, nice_skills_clause, title_clause, context_clause, location_clause)
-        archetype_query = _compose(title_clause, archetype_clause or context_clause, must_skills_clause, location_clause)
+        role_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
+        stack_query = _compose(must_skills_clause, nice_skills_clause, title_clause, education_clause, institution_clause, context_clause, location_clause)
+        archetype_query = _compose(title_clause, archetype_clause or context_clause, must_skills_clause, education_clause, institution_clause, location_clause)
     queries = _dedupe_preserve_order([role_query, stack_query, archetype_query])
 
     family = _role_family_for_query(role=normalized_role, skills=required_skills)
@@ -1277,6 +1496,9 @@ def _build_boolean_xray_query_strategy(
                 "role_anchor": role_anchor,
                 "experience_hints": experience_hints[:2],
                 "required_skills": required_skills[:4],
+                "education_levels": education_levels[:4],
+                "preferred_institutions": institution_terms[:6],
+                "certifications": certification_terms[:4],
                 "nice_to_have_skills": nice_skills[:4],
                 "archetype_signal_keywords": selected_signal_terms[:4],
                 "query_bias": selected_query_bias,
@@ -1291,6 +1513,9 @@ def _build_boolean_xray_query_strategy(
             "query": stack_query,
             "signals": {
                 "required_skills": required_skills[:5],
+                "education_levels": education_levels[:4],
+                "preferred_institutions": institution_terms[:6],
+                "certifications": certification_terms[:4],
                 "nice_to_have_skills": nice_skills[:4],
                 "jd_keywords": description_keywords[:6],
                 "archetype_signal_keywords": selected_signal_terms[:4],
@@ -1308,6 +1533,9 @@ def _build_boolean_xray_query_strategy(
                 "jd_keywords": description_keywords[:4],
                 "project_terms": project_terms[:4],
                 "archetype_terms": archetype_terms[:8],
+                "education_levels": education_levels[:4],
+                "preferred_institutions": institution_terms[:6],
+                "certifications": certification_terms[:4],
                 "archetype_signal_keywords": selected_signal_terms[:4],
                 "query_bias": selected_query_bias,
                 "location": normalized_location,
@@ -1328,6 +1556,9 @@ def _build_boolean_xray_query_strategy(
         "description_keywords": description_keywords,
         "voice_keywords": voice_keywords,
         "nice_to_have_skills": nice_skills,
+        "education_levels": education_levels,
+        "preferred_institutions": institution_terms,
+        "certifications": certification_terms,
         "selected_archetypes": [archetype.get("profile_title") or archetype.get("profileTitle") or archetype.get("headlineRole") for archetype in archetype_profiles if isinstance(archetype, dict)],
         "selected_archetype_signal_keywords": selected_signal_terms,
         "query_bias": selected_query_bias,
@@ -1344,6 +1575,9 @@ def _build_xray_query_strategy_v2(
     role: str,
     seniority: str,
     skills: list[str],
+    education_level: str = "",
+    preferred_institutions: list[str] | None = None,
+    certifications: list[str] | None = None,
     location: str,
     company_stage: str = "",
     hiring_preferences: str = "",
@@ -1364,6 +1598,9 @@ def _build_xray_query_strategy_v2(
         role=role,
         seniority=seniority,
         skills=skills,
+        education_level=education_level,
+        preferred_institutions=preferred_institutions,
+        certifications=certifications,
         location=location,
         company_stage=company_stage,
         hiring_preferences=hiring_preferences,
@@ -1679,6 +1916,9 @@ def build_linkedin_xray_query_layers(
     role: str,
     seniority: str,
     skills: list[str],
+    education_level: str = "",
+    preferred_institutions: list[str] | None = None,
+    certifications: list[str] | None = None,
     location: str,
     company_stage: str,
     hiring_preferences: str,
@@ -1704,6 +1944,9 @@ def build_linkedin_xray_query_layers(
         role=role,
         seniority=seniority,
         skills=skill_list,
+        education_level=education_level,
+        preferred_institutions=preferred_institutions,
+        certifications=certifications,
         location=location,
         company_stage=company_stage,
         hiring_preferences=hiring_preferences,
@@ -1797,21 +2040,11 @@ def build_linkedin_xray_query_layers(
             if part
         ).strip()
 
-    if query_bias == "precision":
-        layers = [
-            XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", **(strategy.get("family_signals", {}).get("stack", {}))}),
-        ]
-    elif query_bias == "balanced":
-        layers = [
-            XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", **(strategy.get("family_signals", {}).get("role", {}))}),
-            XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", **(strategy.get("family_signals", {}).get("stack", {}))}),
-        ]
-    else:
-        layers = [
-            XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", **(strategy.get("family_signals", {}).get("role", {}))}),
-            XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", **(strategy.get("family_signals", {}).get("stack", {}))}),
-            XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", **(strategy.get("family_signals", {}).get("archetype", {}))}),
-        ]
+    layers = [
+        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", **(strategy.get("family_signals", {}).get("role", {}))}),
+        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", **(strategy.get("family_signals", {}).get("stack", {}))}),
+        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", **(strategy.get("family_signals", {}).get("archetype", {}))}),
+    ]
     return [layer for layer in layers if layer.query]
 
 
@@ -1820,6 +2053,9 @@ def build_linkedin_xray_queries(
     role: str,
     seniority: str,
     skills: list[str],
+    education_level: str = "",
+    preferred_institutions: list[str] | None = None,
+    certifications: list[str] | None = None,
     location: str,
     company_stage: str,
     hiring_preferences: str,
@@ -1840,6 +2076,9 @@ def build_linkedin_xray_queries(
         role=role,
         seniority=seniority,
         skills=skills,
+        education_level=education_level,
+        preferred_institutions=preferred_institutions,
+        certifications=certifications,
         location=location,
         company_stage=company_stage,
         hiring_preferences=hiring_preferences,
@@ -2020,7 +2259,7 @@ class SerpApiClient:
         return results
 
 
-def _normalize_intake(job: Any, intake: dict[str, Any] | None = None) -> dict[str, str]:
+def _normalize_intake(job: Any, intake: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = intake if isinstance(intake, dict) else {}
     structured = getattr(job, "structured_data", None)
     if not isinstance(structured, dict):
@@ -2044,12 +2283,18 @@ def _normalize_intake(job: Any, intake: dict[str, Any] | None = None) -> dict[st
             value = payload.get(key)
             if isinstance(value, list):
                 return _dedupe_preserve_order([str(item) for item in value if str(item).strip()])
+            if isinstance(value, str) and value.strip():
+                return _dedupe_preserve_order([token.strip() for token in re.split(r"[,\n;/|]+", value) if token.strip()])
             value = structured.get(key)
             if isinstance(value, list):
                 return _dedupe_preserve_order([str(item) for item in value if str(item).strip()])
+            if isinstance(value, str) and value.strip():
+                return _dedupe_preserve_order([token.strip() for token in re.split(r"[,\n;/|]+", value) if token.strip()])
             value = getattr(job, key, None)
             if isinstance(value, list):
                 return _dedupe_preserve_order([str(item) for item in value if str(item).strip()])
+            if isinstance(value, str) and value.strip():
+                return _dedupe_preserve_order([token.strip() for token in re.split(r"[,\n;/|]+", value) if token.strip()])
         return []
 
     return {
@@ -2065,6 +2310,9 @@ def _normalize_intake(job: Any, intake: dict[str, Any] | None = None) -> dict[st
         "leadership_expectations": _field("leadership_expectations", "leadership", "leadership_style"),
         "skills": ", ".join(_list("skills", "skills_required")),
         "nice_to_have_skills": ", ".join(_list("nice_to_have_skills", "niceToHaveSkills", "preferred_skills")),
+        "education_level": _field("education_level", "educationLevel", "degree_requirements", "degreeRequirements", "degree"),
+        "preferred_institutions": _list("preferred_institutions", "preferredInstitutions", "preferred_colleges", "preferredColleges", "institutions", "colleges"),
+        "certifications": _list("certifications", "certification", "certs", "certifications_required", "certificationsRequired"),
     }
 
 
@@ -2416,7 +2664,25 @@ def discover_linkedin_xray_candidates(
         or structured.get("work_authorization", "")
         or getattr(job, "work_authorization", "")
     )
-    job_description_keywords = _split_keyword_phrases(job_description, voice_summary, voice_transcript, _normalize_text(resolved_intake.get("hiring_preferences", "")))
+    education_level = _normalize_text(
+        resolved_intake.get("education_level", "")
+        or structured.get("education_level", "")
+        or structured.get("educationLevel", "")
+        or getattr(job, "education_level", "")
+    )
+    preferred_institutions = _normalize_list_input(
+        resolved_intake.get("preferred_institutions")
+        or structured.get("preferred_institutions")
+        or structured.get("preferredInstitutions")
+        or getattr(job, "preferred_institutions", None)
+    )
+    certifications = _normalize_list_input(
+        resolved_intake.get("certifications")
+        or structured.get("certifications")
+        or structured.get("certification")
+        or getattr(job, "certifications", None)
+    )
+    job_description_keywords = _split_keyword_phrases(job_description, _normalize_text(resolved_intake.get("hiring_preferences", "")))
     nice_to_have_skills = _dedupe_preserve_order(
         [token.strip() for token in _normalize_text(resolved_intake.get("nice_to_have_skills", "")).split(",") if token.strip()]
     )
@@ -2426,6 +2692,9 @@ def discover_linkedin_xray_candidates(
         role=resolved_intake["role_title"],
         seniority=resolved_intake["seniority"],
         skills=[skill.strip() for skill in resolved_intake["skills"].split(",") if skill.strip()],
+        education_level=education_level,
+        preferred_institutions=preferred_institutions,
+        certifications=certifications,
         location=resolved_intake["location"],
         company_stage=resolved_intake["company_stage"],
         hiring_preferences=resolved_intake["hiring_preferences"],
@@ -2446,6 +2715,9 @@ def discover_linkedin_xray_candidates(
         role=resolved_intake["role_title"],
         seniority=resolved_intake["seniority"],
         skills=[skill.strip() for skill in resolved_intake["skills"].split(",") if skill.strip()],
+        education_level=education_level,
+        preferred_institutions=preferred_institutions,
+        certifications=certifications,
         location=resolved_intake["location"],
         company_stage=resolved_intake["company_stage"],
         hiring_preferences=resolved_intake["hiring_preferences"],

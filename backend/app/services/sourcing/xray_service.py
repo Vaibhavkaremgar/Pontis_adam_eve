@@ -347,6 +347,39 @@ def discover_xray_candidates(
         role=_normalize_text((intake or {}).get("role") or getattr(job, "title", "") or ""),
         seniority=_normalize_text((intake or {}).get("seniority") or getattr(job, "experience_level", "") or ""),
         skills=[str(skill).strip() for skill in ((intake or {}).get("skills") or []) if str(skill).strip()] if isinstance((intake or {}).get("skills"), list) else [token.strip() for token in _normalize_text((intake or {}).get("skills") or "").split(",") if token.strip()],
+        education_level=_normalize_text((intake or {}).get("education_level") or getattr(job, "education_level", "") or ""),
+        preferred_institutions=[
+            str(item).strip()
+            for item in (
+                (intake or {}).get("preferred_institutions")
+                or (getattr(job, "structured_data", {}) or {}).get("preferred_institutions")
+                or (getattr(job, "structured_data", {}) or {}).get("preferredInstitutions")
+                or []
+            )
+            if str(item).strip()
+        ] if isinstance(
+            (intake or {}).get("preferred_institutions")
+            or (getattr(job, "structured_data", {}) or {}).get("preferred_institutions")
+            or (getattr(job, "structured_data", {}) or {}).get("preferredInstitutions")
+            or [],
+            list,
+        ) else [token.strip() for token in _normalize_text((intake or {}).get("preferred_institutions") or "").split(",") if token.strip()],
+        certifications=[
+            str(item).strip()
+            for item in (
+                (intake or {}).get("certifications")
+                or (getattr(job, "structured_data", {}) or {}).get("certifications")
+                or (getattr(job, "structured_data", {}) or {}).get("certification")
+                or []
+            )
+            if str(item).strip()
+        ] if isinstance(
+            (intake or {}).get("certifications")
+            or (getattr(job, "structured_data", {}) or {}).get("certifications")
+            or (getattr(job, "structured_data", {}) or {}).get("certification")
+            or [],
+            list,
+        ) else [token.strip() for token in _normalize_text((intake or {}).get("certifications") or "").split(",") if token.strip()],
         location=_normalize_text((intake or {}).get("location") or getattr(job, "location", "") or ""),
         company_stage=_normalize_text((intake or {}).get("company_stage") or ""),
         hiring_preferences=_normalize_text((intake or {}).get("hiring_preferences") or ""),

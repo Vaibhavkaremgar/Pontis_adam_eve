@@ -383,7 +383,105 @@ def _collect_json_source_blocks(parser: _JobPageParser, limit: int = 3) -> list[
     return selected[:limit]
 
 
-def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str]:
+def _extract_education_terms_from_text(text: str) -> dict[str, Any]:
+    cleaned = _normalize_text(text)
+    lowered = cleaned.lower()
+    education_levels: list[str] = []
+    preferred_institutions: list[str] = []
+    certifications: list[str] = []
+
+    degree_patterns = [
+        (r"\bmba\b", "MBA"),
+        (r"\bpgdm\b", "PGDM"),
+        (r"\bb\.?\s*tech\b", "B.Tech"),
+        (r"\bbe\b", "B.E."),
+        (r"\bb\.?\s*e\.?\b", "B.E."),
+        (r"\bm\.?\s*tech\b", "M.Tech"),
+        (r"\bph\.?\s*d\b", "PhD"),
+        (r"\bphd\b", "PhD"),
+        (r"\bmaster(?:'s)?\b", "Masters"),
+        (r"\bdegree\b", "degree"),
+    ]
+    for pattern, label in degree_patterns:
+        if re.search(pattern, lowered, flags=re.IGNORECASE):
+            if label not in education_levels:
+                education_levels.append(label)
+
+    institution_lookup = {
+        "iim": [
+            "IIM Ahmedabad",
+            "IIM Bangalore",
+            "IIM Calcutta",
+            "IIM Lucknow",
+            "IIM Kozhikode",
+            "IIM Indore",
+        ],
+        "iit": [
+            "IIT Bombay",
+            "IIT Delhi",
+            "IIT Madras",
+            "IIT Kanpur",
+            "IIT Kharagpur",
+            "IIT Roorkee",
+            "IIT Guwahati",
+            "IIT Hyderabad",
+        ],
+        "ivy league": [
+            "Harvard",
+            "Yale",
+            "Princeton",
+            "Columbia",
+            "University of Pennsylvania",
+            "Brown",
+            "Dartmouth",
+            "Cornell",
+        ],
+    }
+    specific_institution_patterns = {
+        r"\biim\s+(ahmedabad|bangalore|calcutta|lucknow|kozhikode|indore)\b": "IIM",
+        r"\biit\s+(bombay|delhi|madras|kanpur|kharagpur|roorkee|guwahati|hyderabad)\b": "IIT",
+    }
+    for pattern in specific_institution_patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if match:
+            preferred_institutions.append(_normalize_text(match.group(0)).upper() if "iit" in pattern else _normalize_text(match.group(0)))
+
+    if re.search(r"\biim\b", lowered):
+        if not any(term.startswith("IIM ") for term in preferred_institutions):
+            preferred_institutions.extend(institution_lookup["iim"])
+    if re.search(r"\biit\b", lowered):
+        if not any(term.startswith("IIT ") for term in preferred_institutions):
+            preferred_institutions.extend(institution_lookup["iit"])
+    if re.search(r"\bivy league\b", lowered):
+        preferred_institutions.extend(institution_lookup["ivy league"])
+
+    certification_patterns = [
+        r"\baws certified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bcfa\b",
+        r"\bpmp\b",
+        r"\bcp[a-z]\b",
+        r"\bsix sigma\b",
+        r"\bscrum master\b",
+        r"\bazure certified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bgcp certified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bgoogle cloud certified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bcertified(?: [A-Za-z0-9 +./-]+)?",
+        r"\bcertification(?: [A-Za-z0-9 +./-]+)?",
+    ]
+    for pattern in certification_patterns:
+        for match in re.finditer(pattern, cleaned, flags=re.IGNORECASE):
+            phrase = _normalize_text(match.group(0))
+            if phrase and phrase.lower() not in {item.lower() for item in certifications}:
+                certifications.append(phrase)
+
+    return {
+        "education_level": education_levels[0] if education_levels else "",
+        "preferred_institutions": _ordered_unique(preferred_institutions),
+        "certifications": _ordered_unique(certifications),
+    }
+
+
+def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, Any]:
     ld_blocks = _extract_json_ld(parser)
     json_blocks = _extract_json_blocks(parser)
     job_schema = _select_job_schema(ld_blocks)
@@ -400,6 +498,9 @@ def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str
         "location": "",
         "compensation": "",
         "experience": "",
+        "education_level": "",
+        "preferred_institutions": [],
+        "certifications": [],
     }
 
     if not hints["title"]:
@@ -412,6 +513,16 @@ def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str
         hints["compensation"] = _find_in_structure(json_blocks, "salary", "compensation", "pay", "range", "minValue", "maxValue")
     if not hints["experience"]:
         hints["experience"] = _find_in_structure(json_blocks, "experience", "experienceRequired", "years", "seniority")
+    if not hints["education_level"]:
+        hints["education_level"] = _find_in_structure(json_blocks, "educationLevel", "education", "degree", "degreeRequirement", "degree_requirements")
+    if not hints["preferred_institutions"]:
+        institutions = _find_in_structure(json_blocks, "preferredInstitutions", "preferred_institutions", "school", "college", "institution")
+        if institutions:
+            hints["preferred_institutions"] = _ordered_unique(_normalize_text_list(institutions))
+    if not hints["certifications"]:
+        certs = _find_in_structure(json_blocks, "certifications", "certification", "certs", "certified")
+        if certs:
+            hints["certifications"] = _ordered_unique(_normalize_text_list(certs))
 
     job_location = job_schema.get("jobLocation")
     if isinstance(job_location, dict):
@@ -472,6 +583,14 @@ def _extract_structured_hints(parser: _JobPageParser, url: str) -> dict[str, str
     if experience_match:
         hints["experience"] = experience_match.group(0)
 
+    education_signals = _extract_education_terms_from_text(text)
+    if not hints["education_level"]:
+        hints["education_level"] = education_signals["education_level"]
+    if not hints["preferred_institutions"]:
+        hints["preferred_institutions"] = list(education_signals["preferred_institutions"] or [])
+    if not hints["certifications"]:
+        hints["certifications"] = list(education_signals["certifications"] or [])
+
     return hints
 
 
@@ -501,7 +620,7 @@ def _normalize_remote_policy(value: Any, fallback: str = "hybrid") -> str:
     return fallback
 
 
-def _normalize_job_parse_result(parsed: dict[str, Any], parser: _JobPageParser, url: str, hints: dict[str, str]) -> dict[str, str]:
+def _normalize_job_parse_result(parsed: dict[str, Any], parser: _JobPageParser, url: str, hints: dict[str, Any]) -> dict[str, Any]:
     text = parser.get_text()
     title = _coerce_text(parsed.get("title")) or hints["title"] or _slug_title_from_url(url)
     description = _coerce_text(parsed.get("description")) or hints["description"] or text[:1200]
@@ -510,6 +629,18 @@ def _normalize_job_parse_result(parsed: dict[str, Any], parser: _JobPageParser, 
     work_authorization = _normalize_work_authorization(parsed.get("workAuthorization"), "required")
     remote_policy = _normalize_remote_policy(parsed.get("remotePolicy"), "hybrid")
     experience_required = _coerce_text(parsed.get("experienceRequired")) or hints["experience"]
+    education_level = _coerce_text(
+        parsed.get("education_level")
+        or parsed.get("educationLevel")
+        or parsed.get("degree_requirements")
+        or parsed.get("degreeRequirements")
+    ) or _coerce_text(hints.get("education_level"))
+    preferred_institutions = _ordered_unique(
+        _normalize_text_list(parsed.get("preferred_institutions") or parsed.get("preferredInstitutions") or hints.get("preferred_institutions") or [])
+    )
+    certifications = _ordered_unique(
+        _normalize_text_list(parsed.get("certifications") or parsed.get("certification") or hints.get("certifications") or [])
+    )
 
     if not title:
         title = "Job Posting"
@@ -527,6 +658,9 @@ def _normalize_job_parse_result(parsed: dict[str, Any], parser: _JobPageParser, 
         "workAuthorization": work_authorization,
         "remotePolicy": remote_policy,
         "experienceRequired": experience_required,
+        "education_level": education_level,
+        "preferred_institutions": preferred_institutions,
+        "certifications": certifications,
     }
 
 
@@ -565,8 +699,12 @@ def _build_llm_prompt(url: str, parser: _JobPageParser, hints: dict[str, str]) -
         '  "compensation": "",\n'
         '  "workAuthorization": "required",\n'
         '  "remotePolicy": "hybrid",\n'
-        '  "experienceRequired": ""\n'
+        '  "experienceRequired": "",\n'
+        '  "education_level": "",\n'
+        '  "preferred_institutions": [],\n'
+        '  "certifications": []\n'
         "}\n\n"
+        "Extract education and certification requirements from the full page text, including any transcript-like content, not just form answers.\n"
         f"URL: {url}\n\n"
         f"Metadata:\n{meta_lines or '- none'}\n\n"
         f"Structured hints:\n{structured_hints or '- none'}\n\n"
@@ -575,7 +713,7 @@ def _build_llm_prompt(url: str, parser: _JobPageParser, hints: dict[str, str]) -
     )
 
 
-def _fallback_parse(url: str, parser: _JobPageParser) -> dict[str, str]:
+def _fallback_parse(url: str, parser: _JobPageParser) -> dict[str, Any]:
     text = parser.get_text()
     hints = _extract_structured_hints(parser, url)
     title = hints["title"] or _slug_title_from_url(url) or "Job Posting"
@@ -601,10 +739,13 @@ def _fallback_parse(url: str, parser: _JobPageParser) -> dict[str, str]:
         "workAuthorization": "required",
         "remotePolicy": remote_policy,
         "experienceRequired": hints["experience"],
+        "education_level": hints.get("education_level", ""),
+        "preferred_institutions": list(hints.get("preferred_institutions") or []),
+        "certifications": list(hints.get("certifications") or []),
     }
 
 
-def parse_job_posting_url(*, url: str) -> dict[str, str]:
+def parse_job_posting_url(*, url: str) -> dict[str, Any]:
     raw_url = (url or "").strip()
     if not raw_url:
         raise ValueError("url is required")
