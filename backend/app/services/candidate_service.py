@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import random
@@ -96,6 +97,36 @@ PDL_RETRY_BACKOFF_ON_QDRANT_ERROR_SECONDS = 180
 EXPLORATION_RATE_FLOOR = 0.10
 EXPLORATION_RATE_CEILING = 0.20
 _last_pdl_attempt_when_qdrant_error: datetime | None = None
+
+_CANDIDATE_REFRESH_VOLATILE_KEYS = {
+    "created_at",
+    "last_updated",
+    "lastupdated",
+    "source_timestamp",
+    "sourcetimestamp",
+    "updated_at",
+    "updatedat",
+}
+
+
+def _candidate_refresh_fingerprint(value: Any) -> str:
+    def _prune(item: Any) -> Any:
+        if isinstance(item, dict):
+            pruned: dict[str, Any] = {}
+            for key, nested in item.items():
+                key_text = str(key or "").strip()
+                if key_text.lower() in _CANDIDATE_REFRESH_VOLATILE_KEYS:
+                    continue
+                pruned[key_text] = _prune(nested)
+            return pruned
+        if isinstance(item, list):
+            return [_prune(entry) for entry in item]
+        return item
+
+    try:
+        return json.dumps(_prune(value), sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+    except Exception:
+        return str(value)
 
 SKILL_SYNONYMS = {
     "js": "javascript",
@@ -206,12 +237,21 @@ def _normalize_job_filters(
     preferred_tokens: list[str] | None = None,
     preferred_roles: list[str] | None = None,
 ) -> dict:
-    structured_skills = [str(skill).strip().lower() for skill in (getattr(job, "skills_required", None) or []) if str(skill).strip()]
+    structured = getattr(job, "structured_data", None)
+    if not isinstance(structured, dict):
+        structured = {}
+    structured_skills = [
+        str(skill).strip().lower()
+        for skill in (structured.get("skills_required") or structured.get("skills") or getattr(job, "skills_required", None) or [])
+        if str(skill).strip()
+    ]
     fallback_skills = [skill.strip().lower() for skill in job.description.replace("\n", " ").split() if len(skill) > 3][:5]
     learned_skills = [token for token in (preferred_tokens or []) if token and token not in structured_skills][:3]
     return {
         "role": job.title,
         "location": job.location,
+        "compensation": getattr(job, "compensation", "") or structured.get("compensation") or structured.get("salary_range") or "",
+        "experience": getattr(job, "experience_required", "") or structured.get("experienceRequired") or structured.get("experience_required") or getattr(job, "experience_level", ""),
         "skills": (structured_skills[:8] + learned_skills)[:10] or fallback_skills,
         "learned_query_tokens": list(preferred_tokens or []),
         "preferred_roles": [role for role in (preferred_roles or []) if role][:3],
@@ -223,7 +263,7 @@ def _candidate_text(candidate: dict) -> str:
     role = str(candidate.get("job_title") or candidate.get("title") or "").strip()
     company = str(candidate.get("job_company_name") or candidate.get("company") or "").strip()
     skills = ", ".join(str(s) for s in (candidate.get("skills") or []))
-    experience = _candidate_experience(candidate)
+    experience = _candidate_experience_value(candidate)
     summary = str(candidate.get("summary") or candidate.get("bio") or candidate.get("experience_summary") or "").strip()
     return (
         f"Name: {name}\n"
@@ -235,13 +275,32 @@ def _candidate_text(candidate: dict) -> str:
     )
 
 
-def _candidate_embedding_text(*, role: str, skills: list[str], experience: str, summary: str) -> str:
+def _candidate_embedding_text(candidate: dict) -> str:
     return build_candidate_text(
         {
-            "role": role,
-            "skills": skills,
-            "experience": experience,
-            "summary": summary,
+            "name": candidate.get("full_name") or candidate.get("name") or "",
+            "role": candidate.get("job_title") or candidate.get("title") or candidate.get("role") or "",
+            "headline": candidate.get("headline") or candidate.get("job_title") or candidate.get("title") or "",
+            "company": candidate.get("job_company_name") or candidate.get("company") or candidate.get("current_company") or "",
+            "location": candidate.get("location_name")
+            or candidate.get("location_locality")
+            or candidate.get("location_region")
+            or candidate.get("location_country")
+            or candidate.get("location")
+            or "",
+            "skills": candidate.get("skills") or candidate.get("skills_required") or [],
+            "experience": candidate.get("experience")
+            or candidate.get("years_experience")
+            or candidate.get("yearsExperience")
+            or candidate.get("experience_summary")
+            or "",
+            "summary": candidate.get("summary") or candidate.get("bio") or candidate.get("experience_summary") or "",
+            "companies": candidate.get("companies") or candidate.get("company_history") or candidate.get("companiesHistory") or [],
+            "projects": candidate.get("projects") or [],
+            "education": candidate.get("education") or [],
+            "certifications": candidate.get("certifications") or [],
+            "domain_experience": candidate.get("domain_experience") or candidate.get("domainExperience") or [],
+            "raw_resume_text": candidate.get("raw_resume_text") or candidate.get("parsed_resume_text") or "",
         }
     )
 
@@ -274,6 +333,88 @@ def _candidate_location(candidate: dict) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _candidate_experience_value(candidate: dict) -> str:
+    for key in ("experience", "years_experience", "yearsExperience", "experience_summary", "experienceLevel", "experience_level"):
+        value = candidate.get(key)
+        if isinstance(value, (int, float)):
+            return f"{float(value):g} years"
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    text = " ".join(
+        part
+        for part in [
+            str(candidate.get("summary") or ""),
+            str(candidate.get("bio") or ""),
+            str(candidate.get("experience_summary") or ""),
+        ]
+        if part
+    ).strip()
+    match = re.search(r"\b\d+\s*[-–]\s*\d+\s+years\b", text, flags=re.IGNORECASE) or re.search(
+        r"\b\d+\+?\s+years\b", text, flags=re.IGNORECASE
+    )
+    return match.group(0) if match else ""
+
+
+def _candidate_salary(candidate: dict) -> str:
+    for key in ("compensation", "salary_range", "salary", "target_salary", "desired_compensation"):
+        value = candidate.get(key)
+        if isinstance(value, (int, float)):
+            return f"{float(value):g}"
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _job_location(job) -> str:
+    structured = getattr(job, "structured_data", None)
+    if isinstance(structured, dict):
+        for key in ("location", "remotePolicy", "remote_policy"):
+            value = structured.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    value = getattr(job, "location", "")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
+
+
+def _job_compensation(job) -> str:
+    structured = getattr(job, "structured_data", None)
+    if isinstance(structured, dict):
+        for key in ("compensation", "salary_range", "salary", "target_salary"):
+            value = structured.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    value = getattr(job, "compensation", "")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return ""
+
+
+def _text_alignment(left: str, right: str) -> float:
+    left_text = _normalize_text(left).lower()
+    right_text = _normalize_text(right).lower()
+    if not left_text or not right_text:
+        return 0.5
+    if left_text == right_text:
+        return 1.0
+    left_tokens = set(_tokenize(left_text))
+    right_tokens = set(_tokenize(right_text))
+    if not left_tokens or not right_tokens:
+        return 0.5
+    return len(left_tokens.intersection(right_tokens)) / max(1, len(left_tokens.union(right_tokens)))
+
+
+def _location_match(candidate_location: str, job_location: str) -> float:
+    return _text_alignment(candidate_location, job_location)
+
+
+def _salary_match(candidate_salary: str, job_salary: str) -> float:
+    if not candidate_salary or not job_salary:
+        return 0.5 if candidate_salary or job_salary else 0.0
+    return _text_alignment(candidate_salary, job_salary)
 
 
 def _normalize_identity_value(value: str | None) -> str:
@@ -493,7 +634,7 @@ def _candidate_summary(candidate: dict) -> str:
 
     company = _candidate_company(candidate)
     skills = _candidate_skills(candidate)
-    experience = _candidate_experience(candidate)
+    experience = _candidate_experience_value(candidate)
     if company and skills:
         prefix = f"Currently at {company}"
         if experience:
@@ -705,10 +846,20 @@ def _candidate_freshness_score(candidate: Any) -> float:
 
 def _job_experience(job) -> str:
     structured = getattr(job, "structured_data", None)
-    structured_experience = ""
     if isinstance(structured, dict):
-        structured_experience = str(structured.get("experience") or structured.get("experience_level") or "").strip()
-    return str(getattr(job, "experience_level", "") or structured_experience or "").strip()
+        for key in ("experience_required", "experienceRequired", "experience", "experience_level"):
+            value = structured.get(key)
+            if isinstance(value, (int, float)):
+                return f"{float(value):g} years"
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for key in ("experience_required", "experience_level", "experienceRequired", "experience"):
+        value = getattr(job, key, "")
+        if isinstance(value, (int, float)):
+            return f"{float(value):g} years"
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _parse_year_span(text: str) -> tuple[float | None, float | None]:
@@ -893,11 +1044,17 @@ def _candidate_experience_years(candidate: dict, *, fallback_profile=None) -> in
     if fallback_profile is not None:
         raw_data = getattr(fallback_profile, "raw_data", None)
         if isinstance(raw_data, dict):
-            experience_text = _candidate_experience(raw_data)
+            years_value = raw_data.get("years_experience") or raw_data.get("yearsExperience")
+            if isinstance(years_value, (int, float)):
+                return int(max(0.0, float(years_value)))
+            experience_text = _candidate_experience_value(raw_data)
         if not experience_text:
             experience_text = str(getattr(fallback_profile, "summary", "") or "").strip()
     if not experience_text:
-        experience_text = _candidate_experience(candidate)
+        years_value = candidate.get("years_experience") or candidate.get("yearsExperience")
+        if isinstance(years_value, (int, float)):
+            return int(max(0.0, float(years_value)))
+        experience_text = _candidate_experience_value(candidate)
     return parse_experience(experience_text)
 
 
@@ -1087,7 +1244,45 @@ def build_job_text(job, structured_data: Any | None = None, transcript: str = ""
     experience = _normalize_text(
         resolved_structured_data.get("experience")
         or resolved_structured_data.get("experience_level")
+        or resolved_structured_data.get("experienceRequired")
         or getattr(job, "experience_level", "")
+        or getattr(job, "experience_required", "")
+    )
+    location = _normalize_text(
+        resolved_structured_data.get("location")
+        or getattr(job, "location", "")
+    )
+    compensation = _normalize_text(
+        resolved_structured_data.get("compensation")
+        or resolved_structured_data.get("salary_range")
+        or getattr(job, "compensation", "")
+    )
+    work_authorization = _normalize_text(
+        resolved_structured_data.get("workAuthorization")
+        or resolved_structured_data.get("work_authorization")
+        or getattr(job, "work_authorization", "")
+    )
+    remote_policy = _normalize_text(
+        resolved_structured_data.get("remotePolicy")
+        or resolved_structured_data.get("remote_policy")
+        or getattr(job, "remote_policy", "")
+    )
+    responsibilities = _normalize_list(
+        resolved_structured_data.get("responsibilities")
+        or getattr(job, "responsibilities", None)
+    )
+    company_name = _normalize_text(
+        resolved_structured_data.get("companyName")
+        or resolved_structured_data.get("company")
+        or getattr(getattr(job, "company", None), "name", "")
+    )
+    company_industry = _normalize_text(
+        resolved_structured_data.get("industry")
+        or getattr(getattr(job, "company", None), "industry", "")
+    )
+    company_description = _normalize_text(
+        resolved_structured_data.get("companyDescription")
+        or getattr(getattr(job, "company", None), "description", "")
     )
     original_jd = _normalize_text(getattr(job, "description", ""))
     if not original_jd:
@@ -1096,21 +1291,30 @@ def build_job_text(job, structured_data: Any | None = None, transcript: str = ""
     role_line = role or _normalize_text(getattr(job, "title", ""))
     skill_line = ", ".join(skills)
     job_text = (
+        f"Title: {role_line}\n"
         f"Role: {role_line}\n"
         f"Experience: {experience}\n"
         f"Skills: {skill_line}\n\n"
+        f"Responsibilities:\n" + ("\n".join(f"- {item}" for item in responsibilities) if responsibilities else "- Not specified") + "\n\n"
         f"Job Description:\n{original_jd}\n\n"
+        f"Location: {location}\n"
+        f"Compensation: {compensation}\n"
+        f"Work Authorization: {work_authorization}\n"
+        f"Remote Policy: {remote_policy}\n"
+        f"Company: {company_name}\n"
+        f"Industry: {company_industry}\n"
+        f"Company Description: {company_description}\n\n"
         f"Voice Input:\n{transcript_text}"
     ).strip()
     if not job_text:
         job_text = original_jd or transcript_text or " "
 
-    source = "structured_data" if role or skills or experience else "transcript" if transcript_text else "description"
+    source = "structured_data" if role or skills or experience or location or compensation else "transcript" if transcript_text else "description"
     logger.info(
         "job_text_built job_id=%s source=%s has_structured_data=%s transcript_present=%s length=%s",
         getattr(job, "id", "unknown"),
         source,
-        bool(role or skills or experience),
+        bool(role or skills or experience or location or compensation),
         bool(transcript_text),
         len(job_text),
     )
@@ -1192,8 +1396,8 @@ def get_mode_config(mode: str | None) -> ModeConfig:
             use_hard_filtering=True,
             ranking_weights=_normalize_weight_triplet(
                 {
-                    "similarity": 0.6,
-                    "skill_overlap": 0.25,
+                    "similarity": 0.55,
+                    "skill_overlap": 0.30,
                     "experience": 0.15,
                 }
             ),
@@ -1207,9 +1411,9 @@ def get_mode_config(mode: str | None) -> ModeConfig:
         use_hard_filtering=False,
         ranking_weights=_normalize_weight_triplet(
             {
-                "similarity": 0.8,
-                "skill_overlap": 0.15,
-                "experience": 0.05,
+                "similarity": 0.70,
+                "skill_overlap": 0.20,
+                "experience": 0.10,
             }
         ),
         strategy="high_volume",
@@ -1310,6 +1514,8 @@ def _explanation_source_breakdown(
     recency_score: float = 0.0,
     session_signal: float = 0.0,
     voice_score: float = 0.0,
+    location_score: float = 0.0,
+    salary_score: float = 0.0,
 ) -> dict[str, float]:
     return {
         "vector": round(max(0.0, min(1.0, vector_score)), 4),
@@ -1319,6 +1525,8 @@ def _explanation_source_breakdown(
         "freshness": round(max(0.0, min(1.0, recency_score)), 4),
         "selectionRound": round(max(-1.0, min(1.0, session_signal)), 4),
         "voiceInterview": round(max(0.0, min(1.0, voice_score)), 4),
+        "location": round(max(0.0, min(1.0, location_score)), 4),
+        "salary": round(max(0.0, min(1.0, salary_score)), 4),
     }
 
 
@@ -1899,7 +2107,10 @@ def _build_local_candidates(
         company = (profile.company if profile else str(payload.get("company") or "")).strip()
         role = (profile.role if profile else str(payload.get("role") or "")).strip() or "Unknown Role"
         skills = _candidate_skill_values(payload, fallback_profile=profile)
-        candidate_experience = _candidate_experience(profile.raw_data if profile and isinstance(profile.raw_data, dict) else payload)
+        candidate_source = profile.raw_data if profile and isinstance(profile.raw_data, dict) else payload
+        candidate_experience = _candidate_experience_value(candidate_source)
+        candidate_location = _candidate_location(candidate_source)
+        candidate_salary = _candidate_salary(candidate_source)
         candidate_rows.append(
             {
                 "candidate_id": candidate_id,
@@ -1910,6 +2121,8 @@ def _build_local_candidates(
                 "role": role,
                 "skills": skills,
                 "candidate_experience": candidate_experience,
+                "candidate_location": candidate_location,
+                "candidate_salary": candidate_salary,
                 "candidate_experience_years": _candidate_experience_years(payload, fallback_profile=profile),
                 "profile": profile,
                 "feedback_direct": feedback_direct,
@@ -2025,6 +2238,8 @@ def _build_local_candidates(
         feedback_bias = feedback_direct + global_skill_feedback + role_feedback
         rejection_penalty = _candidate_rejection_penalty(candidate_id, feedback_learning)
         freshness_score = _candidate_freshness_score(profile or payload)
+        location_match = _location_match(str(row.get("candidate_location") or ""), _job_location(job))
+        salary_match = _salary_match(str(row.get("candidate_salary") or ""), _job_compensation(job))
         log_metric(
             "candidate_penalty",
             job_id=job.id,
@@ -2044,6 +2259,8 @@ def _build_local_candidates(
             rejection_penalty=rejection_penalty,
             semantic_penalty=1.0,
             missing_skills_penalty=1.0,
+            location_match=location_match,
+            salary_match=salary_match,
         )
 
         fit_score = round(final * 5, 2)
@@ -2339,7 +2556,7 @@ def _build_ranked_candidates_from_pdl(
         candidate_location = _candidate_location(item)
         candidate_skills = _candidate_skills(item)
         candidate_summary = _candidate_summary(item)
-        candidate_experience = _candidate_experience(item)
+        candidate_experience = _candidate_experience_value(item)
         freshness_score = _candidate_freshness_score(item)
         candidate_email = ensure_candidate_email(item)
         candidate_external_id = _extract_candidate_external_id(item)
@@ -2356,12 +2573,7 @@ def _build_ranked_candidates_from_pdl(
         if not candidate_name.strip() or not candidate_role.strip():
             continue
 
-        candidate_embed_text = _candidate_embedding_text(
-            role=candidate_role,
-            skills=candidate_skills,
-            experience=candidate_experience,
-            summary=candidate_summary,
-        )
+        candidate_embed_text = _candidate_embedding_text(item)
         candidate_chunks = chunk_text(candidate_embed_text)
         candidate_vectors = [_embed_text(chunk) for chunk in candidate_chunks]
         candidate_vec = average_vectors(candidate_vectors)
@@ -2378,7 +2590,9 @@ def _build_ranked_candidates_from_pdl(
         semantic_similarity = retrieval.hybrid_score
         pdl_relevance = _pdl_relevance(item, index=index, total=total_candidates)
         skill_overlap = _skill_overlap(job_skills, candidate_skills)
-        experience_match = _experience_match(candidate_experience, job_experience)
+        experience_match = _experience_match(candidate_experience or _candidate_experience_value(item), job_experience)
+        location_match = _location_match(candidate_location, _job_location(job))
+        salary_match = _salary_match(_candidate_salary(item), _job_compensation(job))
         recency_score = _candidate_recency_score(item)
         pdl_component = weights.pdl * pdl_relevance
 
@@ -2421,6 +2635,8 @@ def _build_ranked_candidates_from_pdl(
             rejection_penalty=rejection_penalty,
             semantic_penalty=semantic_penalty,
             missing_skills_penalty=missing_skills_penalty,
+            location_match=location_match,
+            salary_match=salary_match,
         )
         final_score, weight_snapshot, adjusted_recruiter_score = _blend_final_score(
             existing_score=existing_score,
@@ -2497,6 +2713,8 @@ def _build_ranked_candidates_from_pdl(
                     recency_score=freshness_score,
                     session_signal=session_signal,
                     voice_score=1.0 if getattr(job, "structured_data", None) else 0.0,
+                    location_score=location_match,
+                    salary_score=salary_match,
                 ),
                 recruiterPreferenceInfluence=round(float(recruiter_score_details.get("score") or 0.0), 4),
                 voiceInterviewInfluence=1.0 if getattr(job, "structured_data", None) else 0.0,
@@ -3198,9 +3416,14 @@ def fetch_ranked_candidates(
                     candidate.company,
                     float(candidate.fitScore or 0.0),
                     float(explanation.finalScore or 0.0),
-                )
+            )
             profile_repo = CandidateProfileRepository(db)
+            refresh_queue_jobs: list[dict[str, str]] = []
             for candidate in xray_results:
+                existing_profile = profile_repo.get(job_id=job.id, candidate_id=candidate.id)
+                existing_raw_data = dict(getattr(existing_profile, "raw_data", {}) or {}) if existing_profile else {}
+                new_raw_data = candidate.model_dump()
+                raw_data_changed = not existing_profile or _candidate_refresh_fingerprint(existing_raw_data) != _candidate_refresh_fingerprint(new_raw_data)
                 profile_repo.upsert(
                     job_id=job.id,
                     candidate_id=candidate.id,
@@ -3213,6 +3436,34 @@ def fetch_ranked_candidates(
                     fit_score=float(candidate.fitScore or 0.0),
                     decision=candidate.decision or "potential",
                     strategy=candidate.strategy or "MEDIUM",
+                )
+                if raw_data_changed:
+                    refresh_queue_jobs.append({"job_id": job.id, "candidate_id": candidate.id})
+            _safe_commit(db, context="candidate_fetch_xray_refresh_queue_commit", job_id=job.id)
+            if refresh_queue_jobs:
+                from app.services.job_queue_service import enqueue_job
+
+                queued_count = 0
+                for payload in refresh_queue_jobs:
+                    try:
+                        enqueue_job(
+                            "candidate_refresh",
+                            payload,
+                            idempotency_key=f"candidate-refresh:{payload['job_id']}:{payload['candidate_id']}",
+                        )
+                        queued_count += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "xray_candidate_refresh_queue_failed job_id=%s candidate_id=%s error=%s",
+                            job.id,
+                            payload.get("candidate_id", ""),
+                            str(exc),
+                            exc_info=exc,
+                        )
+                logger.info(
+                    "xray_candidate_refresh_queued job_id=%s count=%s",
+                    job.id,
+                    queued_count,
                 )
             raw_xray_count = len(xray_results)
             reviewable_seed_candidates = list(xray_results)

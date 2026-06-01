@@ -352,9 +352,28 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
         return _handler
 
     if queue_type == "candidate_refresh":
-        from app.services.candidate_refresh_service import refresh_candidates
+        from app.db.repositories import CandidateProfileRepository
+        from app.services.candidate_refresh_service import refresh_candidate, refresh_candidates
 
         def _handler(payload: dict[str, Any]) -> Any:
+            job_id = str(payload.get("job_id") or "").strip()
+            candidate_id = str(payload.get("candidate_id") or "").strip()
+            if job_id and candidate_id:
+                from app.db.session import SessionLocal
+
+                with SessionLocal() as db:
+                    candidate = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+                    if not candidate:
+                        return {"processed": 0, "skipped": 1}
+                    refreshed = refresh_candidate(db, candidate)
+                    db.commit()
+                    return {
+                        "processed": 1,
+                        "refreshed": int(bool(refreshed)),
+                        "skipped": int(not refreshed),
+                        "job_id": job_id,
+                        "candidate_id": candidate_id,
+                    }
             batch_size = int(payload.get("batch_size") or 100)
             stale_days = int(payload.get("stale_days") or 7)
             return refresh_candidates(batch_size=batch_size, stale_days=stale_days)

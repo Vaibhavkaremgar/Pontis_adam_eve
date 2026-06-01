@@ -62,6 +62,7 @@ def get_recruiter_intelligence_job(
         recruiter_id=recruiter_id,
         job_id=job_id,
         voice_summary=interview_state.get("voice_summary", ""),
+        voice_transcript=interview_state.get("transcript", ""),
         gap_analysis=interview_state.get("gap_analysis") or {},
     )
     db.commit()
@@ -98,6 +99,7 @@ def update_recruiter_intelligence_job(
         recruiter_id=recruiter_id,
         job_id=job_id,
         voice_summary=interview_state.get("voice_summary", ""),
+        voice_transcript=interview_state.get("transcript", ""),
         gap_analysis=interview_state.get("gap_analysis") or {},
     )
     db.commit()
@@ -155,6 +157,7 @@ def advance_recruiter_intelligence_job(
         recruiter_id=recruiter_id,
         job_id=job_id,
         voice_summary=interview_state.get("voice_summary", ""),
+        voice_transcript=interview_state.get("transcript", ""),
         gap_analysis=interview_state.get("gap_analysis") or {},
     )
     db.commit()

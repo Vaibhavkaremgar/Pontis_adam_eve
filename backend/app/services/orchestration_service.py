@@ -1436,6 +1436,7 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
                 recruiter_id=recruiter_id,
                 job_id=session_row.job_id,
                 voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
+                voice_transcript=str((session_row.structured_context or {}).get("transcript") or (session_row.structured_context or {}).get("voiceTranscript") or ""),
                 gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
             )
             session_row.structured_context = {
@@ -1511,6 +1512,7 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
             recruiter_id=recruiter_id,
             job_id=job.id,
             voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
+            voice_transcript=str((session_row.structured_context or {}).get("transcript") or (session_row.structured_context or {}).get("voiceTranscript") or ""),
             gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
         )
         session_row.structured_context = {
@@ -2103,6 +2105,7 @@ def complete_voice_handoff(
                     recruiter_id=recruiter_id,
                     job_id=session_row.job_id,
                     voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
+                    voice_transcript=str((session_row.structured_context or {}).get("transcript") or (session_row.structured_context or {}).get("voiceTranscript") or ""),
                     gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
                 )
                 finalization["calibration"] = build_calibration_state_response(calibration_state)

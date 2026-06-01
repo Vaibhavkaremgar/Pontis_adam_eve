@@ -390,6 +390,7 @@ def _calibration_state_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     snapshot["archetype_pool"] = _json_safe_value(list(state.get("archetype_pool") or []))
     snapshot["history"] = _json_safe_value(list(state.get("history") or []))
     snapshot["selected_archetype_ids"] = list(state.get("selected_archetype_ids") or [])
+    snapshot["selected_archetypes"] = _json_safe_value(list(state.get("selected_archetypes") or []))
     snapshot["selected_candidate_ids"] = list(state.get("selected_candidate_ids") or [])
     snapshot["rejected_candidate_ids"] = list(state.get("rejected_candidate_ids") or [])
     snapshot["recommended_questions"] = list(state.get("recommended_questions") or [])
@@ -1092,6 +1093,72 @@ _CALIBRATION_STATE_PREFIX = "pontis:recruiter-preference-calibration:"
 _CALIBRATION_STATE_TTL_SECONDS = 24 * 60 * 60
 _CALIBRATION_SET_COUNT = 3
 _CALIBRATION_OPTIONS_PER_SET = 2
+_ARCTYPE_QUERY_BIAS_VALUES = {"precision", "recall", "balanced"}
+
+
+def _archetype_role_label(job: Any) -> str:
+    title = _job_text_field(job, "title") or "the role"
+    title = re.sub(r"\b(senior|sr\.?|mid(?:-level)?|junior|jr\.?|lead|principal|staff|entry[- ]level|associate)\b", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s{2,}", " ", title).strip(" -|,")
+    return title or "the role"
+
+
+def _normalize_query_bias(value: Any, fallback: str = "balanced") -> str:
+    normalized = _normalize_text_value(value).lower()
+    for token in ("precision", "recall", "balanced"):
+        if token in normalized:
+            return token
+    return fallback if fallback in _ARCTYPE_QUERY_BIAS_VALUES else "balanced"
+
+
+def _signal_keywords_from_values(*values: Any, limit: int = 4) -> list[str]:
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for token in _normalize_text_list(value):
+            cleaned = _normalize_text(token)
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            keywords.append(cleaned)
+            if len(keywords) >= limit:
+                return keywords
+    return keywords
+
+
+def _derived_archetype_signal_keywords(*, job: Any, voice_summary: str, signal_keywords: list[str] | None = None, extra: list[str] | None = None) -> list[str]:
+    job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
+    stage = _normalize_text(_job_text_field(job, "company_stage", "companyStage", "stage", "company_type"))
+    location = _normalize_text(_job_text_field(job, "location"))
+    description = _normalize_text(_job_text_field(job, "description"))
+    voice_tokens = _signal_keywords_from_values(voice_summary, limit=4)
+    candidates = [
+        *(signal_keywords or []),
+        *(extra or []),
+        *job_skills[:4],
+        stage,
+        location,
+        *_text_field({"voice": voice_summary}, "voice").split(),
+    ]
+    if description:
+        candidates.extend(_signal_keywords_from_values(description, limit=6))
+    candidates.extend(voice_tokens)
+    return _ordered_unique([item for item in candidates if _normalize_text(item)])[:4]
+
+
+def _archetype_description_for_job(*, job: Any, focus: str, role_label: str, voice_summary: str, signal_keywords: list[str]) -> str:
+    stage = _normalize_text(_job_text_field(job, "company_stage", "companyStage", "stage", "company_type")) or "the company"
+    remote_policy = _normalize_text(_job_text_field(job, "remote_policy", "remotePolicy")) or "hybrid"
+    location = _normalize_text(_job_text_field(job, "location")) or "the location"
+    skills = ", ".join(signal_keywords[:4]) or ", ".join(_ordered_unique(_job_list_values(job, "skills_required", "skills"))[:4]) or role_label.lower()
+    voice_note = _normalize_text(voice_summary)
+    voice_suffix = f" Voice signal: {voice_note[:80]}." if voice_note else ""
+    return (
+        f"{focus} {role_label.lower()} for {stage}, strong in {skills}, {remote_policy} at {location}.{voice_suffix}"
+    ).strip()
 
 
 def _calibration_state_key(*, recruiter_id: str, job_id: str) -> str:
@@ -1150,12 +1217,14 @@ def _load_calibration_state_from_job(*, db: Session, recruiter_id: str, job_id: 
     restored.setdefault("history", [])
     restored.setdefault("selected_candidate_ids", [])
     restored.setdefault("selected_archetype_ids", [])
+    restored.setdefault("selected_archetypes", [])
     restored.setdefault("rejected_candidate_ids", [])
     restored.setdefault("telemetry", {})
     restored.setdefault("intent_profile", {})
     restored.setdefault("gap_analysis", {})
     restored.setdefault("recommended_questions", [])
     restored.setdefault("current_pair", {})
+    restored.setdefault("voice_transcript", "")
     restored.setdefault("orchestration_session_id", _normalize_text(calibration.get("orchestrationSessionId") or calibration.get("orchestration_session_id") or snapshot.get("orchestration_session_id") or snapshot.get("orchestrationSessionId")))
     return restored
 
@@ -1180,14 +1249,17 @@ def _job_list_values(job: Any, *keys: str) -> list[str]:
     return [_normalize_text(value) for value in values if _normalize_text(value)]
 
 
-def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, Any], intent_profile: dict[str, Any]) -> str:
+def _archetype_prompt(*, job: Any, voice_summary: str, voice_transcript: str, gap_analysis: dict[str, Any], intent_profile: dict[str, Any]) -> str:
     missing_fields = ", ".join(gap_analysis.get("missing_fields") or []) or "none"
     ambiguous_fields = ", ".join(gap_analysis.get("ambiguous_fields") or []) or "none"
     preferred_skills = ", ".join(intent_profile.get("preferred_skills") or []) or "none"
     required_skills = ", ".join(intent_profile.get("required_skills") or []) or "none"
+    nice_to_have_skills = ", ".join(_job_list_values(job, "nice_to_have_skills", "niceToHaveSkills", "preferred_skills")) or "none"
     culture_preferences = ", ".join(intent_profile.get("culture_preferences") or []) or "none"
     company_stage = _text_field(job, "company_stage", "companyStage", "stage", "company_type") or "unknown"
     role_seniority = _text_field(job, "experience_level", "experienceRequired", "seniority") or "unknown"
+    remote_policy = _text_field(job, "remote_policy", "remotePolicy") or "unknown"
+    transcript_summary = _normalize_text(voice_transcript or voice_summary)
 
     experience_band, experience_midpoint = _experience_band_from_sources(
         job=job,
@@ -1197,40 +1269,34 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
     )
     experience_label = experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "experience not specified"
     return (
-        "You are generating realistic recruiter calibration profile cards and sourcing targets.\n"
-        "These are NOT personas. They must read like grounded resume patterns a recruiter would actually source.\n"
-        "Do not use abstract headings or fantasy labels.\n"
+        "You are generating six recruiter calibration archetypes for XRay sourcing.\n"
+        "These are NOT personas and NOT real people. They must read like grounded sourcing profiles a recruiter would actually select.\n"
+        "Return ONLY valid JSON. Return a JSON ARRAY of exactly 6 objects and nothing else.\n"
+        "Each object must contain exactly these fields: name, description, signal_keywords, query_bias.\n"
+        "query_bias must be one of: precision, recall, balanced.\n"
+        "signal_keywords must be an array of 3-4 short phrases derived from the intake, not generic filler.\n"
+        "The six archetypes must be meaningfully different and tailored to the specific job intake and voice signal.\n"
+        "Use no more than 15-20 words in each description.\n"
         "BANNED title words: strategist, journalist, evangelist, visionary, architect, ninja, wizard, growth hacker.\n"
-        "Generate exactly 3 sets with exactly 2 profile cards in each set.\n"
-        "Each of the 6 profiles must represent a different sourcing lane for the same job, not six near-duplicates.\n"
-        "Use one profile that is title-accurate, one that is stack-first, one that is framework-specific, one that is project-heavy, one that is adjacent-role, and one that is junior/entry-level if the intake supports it.\n"
-        "Every profile must stay strictly aligned to the job title, skills, certifications, technologies, and experience band in the intake.\n"
-        "Rules:\n"
-        "- Return ONLY valid JSON.\n"
+        "Generate two archetypes tied to company stage, two tied to seniority, one tied to the strongest must-have skill cluster, and one wildcard recall archetype.\n"
+        "Every archetype must stay strictly aligned to the job title, must-have skills, nice-to-have skills, stage, location, remote policy, and voice signal.\n"
+        "Prefer punchy names tied to this role, like The API Craftsman, The Scale Veteran, The Startup Builder, The Deep Specialist, The Technical Lead, The Hidden Gem.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
-        "- Keep titles role-like and resume-like, for example Python Backend Developer, Junior Python Fullstack Developer, React Frontend Developer, Django Backend Developer, Python API Developer.\n"
-        "- Each profile must include these core fields: profile_title, experience_range, core_skills, certifications, typical_background, preferred_project_type, optional_tools_frameworks.\n"
-        "- You may include compatibility fields, but they must not dominate the content.\n"
-        "- Do not upscale seniority. If the intake says 2 years, keep the profile in the 1-3 year band or similar.\n"
-        "- Keep the experience range within the intake band.\n"
-        "- Core skills must heavily reflect the entered skills and should only add close, relevant equivalents.\n"
-        "- Typical background must be short and realistic, like actual resume summary language.\n"
-        "- Preferred project type should be concrete: CRUD apps, dashboards, internal tools, API integrations, admin panels, responsive web apps, etc.\n"
-        "- Optional tools/frameworks should only include relevant tools from the stack.\n"
-        "- Avoid unrelated backgrounds, staff-level claims, or inflated years of experience.\n"
-        "- Vary the six profiles meaningfully so the recruiter can use different cards to source different but still relevant candidates from SerpAPI.\n"
-        "- Return schema: {\"sets\": [{\"round_index\": 1, \"set_title\": \"...\", \"set_theme\": \"...\", \"archetypes\": [{...}, {...}]}]}\n"
-        "- Keep set themes grounded in the actual hiring decision, such as frontend-heavy vs backend-heavy or framework-light vs framework-specific.\n"
-        "- Preserve compatibility fields when possible, but the core content must read like resume profiles rather than archetypes.\n\n"
+        "- Use the job title and seniority level directly.\n"
+        "- Include must-have skills, nice-to-have skills, company stage, remote policy, location, and voice transcript summary explicitly in the reasoning.\n"
+        "- Preserve compatibility fields when possible, but keep the primary output simple and direct.\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
-        f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
-        f"{sanitize_prompt_block('Location', _job_text_field(job, 'location'), max_length=160)}\n"
-        f"{sanitize_prompt_block('Company stage', company_stage, max_length=160)}\n"
         f"{sanitize_prompt_block('Seniority', role_seniority, max_length=160)}\n"
+        f"{sanitize_prompt_block('Must-have skills', required_skills, max_length=800)}\n"
+        f"{sanitize_prompt_block('Nice-to-have skills', nice_to_have_skills, max_length=800)}\n"
+        f"{sanitize_prompt_block('Company stage', company_stage, max_length=160)}\n"
+        f"{sanitize_prompt_block('Remote policy', remote_policy, max_length=160)}\n"
+        f"{sanitize_prompt_block('Location', _job_text_field(job, 'location'), max_length=160)}\n"
+        f"{sanitize_prompt_block('Voice transcript summary', transcript_summary, max_length=1200)}\n"
+        f"{sanitize_prompt_block('Job description', _job_text_field(job, 'description'), max_length=2200)}\n"
         f"{sanitize_prompt_block('Compensation', _job_text_field(job, 'compensation', 'salary_range'), max_length=160)}\n"
         f"{sanitize_prompt_block('Work authorization', _job_text_field(job, 'work_authorization', 'workAuthorization'), max_length=160)}\n"
         f"{sanitize_prompt_block('Experience', _job_text_field(job, 'experience_level', 'experienceRequired', 'seniority'), max_length=160)}\n"
-        f"{sanitize_prompt_block('Skills', ', '.join(_job_list_values(job, 'skills_required', 'skills')), max_length=1200)}\n"
         f"{sanitize_prompt_block('Responsibilities', ', '.join(_job_list_values(job, 'responsibilities')), max_length=1200)}\n"
         f"{sanitize_prompt_block('Voice summary', voice_summary, max_length=1200)}\n"
         f"{sanitize_prompt_block('Missing fields', missing_fields, max_length=800)}\n"
@@ -1245,6 +1311,200 @@ def _archetype_prompt(*, job: Any, voice_summary: str, gap_analysis: dict[str, A
 
 def _normalize_archetype_field(value: Any) -> str:
     return _normalize_text_value(value)
+
+
+def _archetype_stage_label(company_stage: str) -> str:
+    stage = _normalize_text(company_stage).lower()
+    if any(token in stage for token in ("startup", "series a", "series b", "seed", "early stage")):
+        return "startup"
+    if any(token in stage for token in ("growth", "scale", "series c", "series d", "series e")):
+        return "growth"
+    if any(token in stage for token in ("enterprise", "corp", "corporate", "large")):
+        return "enterprise"
+    return "growth"
+
+
+def _archetype_entry_description(*, job: Any, role_label: str, name: str, focus: str, signal_keywords: list[str], voice_summary: str) -> str:
+    keywords = ", ".join(signal_keywords[:2]) or role_label.lower()
+    location = _normalize_archetype_field(_job_text_field(job, "location")) or "the location"
+    remote_policy = _normalize_archetype_field(_job_text_field(job, "remote_policy", "remotePolicy")) or "hybrid"
+    description = f"{name}: {focus} {role_label.lower()} focused on {keywords}, {remote_policy} in {location}."
+    return " ".join(description.split())[:160].strip()
+
+
+def _build_fallback_archetype_entries(*, job: Any, voice_summary: str = "", gap_analysis: dict[str, Any] | None = None, intent_profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    job_title = _job_text_field(job, "title") or "the role"
+    role_label = _archetype_role_label(job)
+    company_stage = _job_text_field(job, "company_stage", "companyStage", "stage", "company_type")
+    stage_label = _archetype_stage_label(company_stage)
+    seniority = _job_text_field(job, "experience_level", "experienceRequired", "seniority")
+    job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
+    required_skills = _ordered_unique(list((intent_profile or {}).get("required_skills") or []) or job_skills)
+    preferred_skills = _ordered_unique(list((intent_profile or {}).get("preferred_skills") or []) or _job_list_values(job, "nice_to_have_skills", "niceToHaveSkills", "preferred_skills"))
+    location = _job_text_field(job, "location")
+    remote_policy = _job_text_field(job, "remote_policy", "remotePolicy")
+    voice_tokens = _signal_keywords_from_values(voice_summary, _text_field(gap_analysis or {}, "summary"), _text_field(intent_profile or {}, "preference_text"), limit=4)
+    stage_focus = "startup builder" if stage_label == "startup" else "scale operator" if stage_label == "growth" else "enterprise operator"
+    stage_names = {
+        "startup": ("The Scrappy Builder", "The Founding Engineer"),
+        "growth": ("The Scale Veteran", "The Systems Builder"),
+        "enterprise": ("The Process Driver", "The Domain Integrator"),
+    }
+    seniority_names = (
+        ("The Deep Specialist", "The Technical Lead")
+        if any(token in _normalize_text(seniority).lower() for token in ("senior", "lead", "principal", "staff"))
+        else ("The Senior Practitioner", "The Delivery Lead")
+        if any(token in _normalize_text(seniority).lower() for token in ("mid", "intermediate"))
+        else ("The Core Contributor", "The Rapid Learner")
+    )
+    def _skill_archetype_name(skill_values: list[str], fallback_role: str) -> str:
+        text = " ".join(skill_values).lower()
+        if any(token in text for token in ("machine learning", "ml", "pytorch", "tensorflow", "hugging face", "llm", "nlp")):
+            return "The ML Practitioner"
+        if any(token in text for token in ("analytics", "model", "statistics", "experiment")):
+            return "The Modeling Specialist"
+        if any(token in text for token in ("data", "sql")):
+            return "The Data Modeler"
+        return _compact_archetype_label(f"The {' '.join(skill_values[:2])} Practitioner", f"The {fallback_role} Practitioner")
+
+    stage_signal_sets = [
+        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=required_skills[:3], extra=[company_stage, location, remote_policy, stage_label]),
+        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=preferred_skills[:3], extra=[company_stage, remote_policy, stage_label]),
+    ]
+    seniority_signal_sets = [
+        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=required_skills[:4], extra=[seniority, location, "experience"]),
+        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=preferred_skills[:4], extra=[seniority, voice_summary, "delivery"]),
+    ]
+    skill_cluster = required_skills[:4] or preferred_skills[:4] or job_skills[:4] or [role_label]
+    skill_name = _skill_archetype_name(skill_cluster, role_label)
+    skill_signals = _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=skill_cluster, extra=[company_stage, location, seniority, remote_policy])
+    wildcard_signals = _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=required_skills[:2] or job_skills[:2], extra=[role_label, company_stage, location, remote_policy, "hidden gem"])
+
+    entries = [
+        {
+            "name": stage_names[stage_label][0],
+            "description": _archetype_entry_description(job=job, role_label=role_label, name=stage_names[stage_label][0], focus=stage_focus, signal_keywords=stage_signal_sets[0], voice_summary=voice_summary),
+            "signal_keywords": stage_signal_sets[0],
+            "query_bias": "balanced",
+        },
+        {
+            "name": stage_names[stage_label][1],
+            "description": _archetype_entry_description(job=job, role_label=role_label, name=stage_names[stage_label][1], focus=stage_focus, signal_keywords=stage_signal_sets[1], voice_summary=voice_summary),
+            "signal_keywords": stage_signal_sets[1],
+            "query_bias": "recall",
+        },
+        {
+            "name": seniority_names[0],
+            "description": _archetype_entry_description(job=job, role_label=role_label, name=seniority_names[0], focus="deep experience", signal_keywords=seniority_signal_sets[0], voice_summary=voice_summary),
+            "signal_keywords": seniority_signal_sets[0],
+            "query_bias": "precision",
+        },
+        {
+            "name": seniority_names[1],
+            "description": _archetype_entry_description(job=job, role_label=role_label, name=seniority_names[1], focus="technical leadership", signal_keywords=seniority_signal_sets[1], voice_summary=voice_summary),
+            "signal_keywords": seniority_signal_sets[1],
+            "query_bias": "balanced",
+        },
+        {
+            "name": skill_name,
+            "description": _archetype_entry_description(job=job, role_label=role_label, name=skill_name, focus="core skill depth", signal_keywords=skill_signals, voice_summary=voice_summary),
+            "signal_keywords": skill_signals,
+            "query_bias": "precision",
+        },
+        {
+            "name": "The Hidden Gem",
+            "description": _archetype_entry_description(job=job, role_label=role_label, name="The Hidden Gem", focus="recall", signal_keywords=wildcard_signals, voice_summary=voice_summary),
+            "signal_keywords": wildcard_signals,
+            "query_bias": "recall",
+        },
+    ]
+    return entries
+
+
+def _group_archetype_entries_into_sets(entries: list[dict[str, Any]], *, job: Any) -> list[dict[str, Any]]:
+    grouped: list[dict[str, Any]] = []
+    for set_index in range(0, min(len(entries), 6), 2):
+        calibration_index = (set_index // 2) + 1
+        calibration_set_id = _stable_calibration_set_id(calibration_index)
+        pair_entries = entries[set_index:set_index + 2]
+        grouped.append(
+            {
+                "round_index": calibration_index,
+                "calibration_set_id": calibration_set_id,
+                "calibrationSetId": calibration_set_id,
+                "set_title": [
+                    "Stage-aligned choice",
+                    "Seniority-aligned choice",
+                    "Skill-depth vs recall",
+                ][set_index // 2],
+                "set_theme": [
+                    "Choose between two profiles tuned to the company stage and operating context.",
+                    "Choose between two profiles tuned to the requested seniority and leadership style.",
+                    "Choose between a precision pick and a broader recall profile for the strongest skill cluster.",
+                ][set_index // 2],
+                "archetypes": [
+                    _normalize_archetype_option(
+                        {
+                            **entry,
+                            "set_title": [
+                                "Stage-aligned choice",
+                                "Seniority-aligned choice",
+                                "Skill-depth vs recall",
+                            ][set_index // 2],
+                            "set_theme": [
+                                "Choose between two profiles tuned to the company stage and operating context.",
+                                "Choose between two profiles tuned to the requested seniority and leadership style.",
+                                "Choose between a precision pick and a broader recall profile for the strongest skill cluster.",
+                            ][set_index // 2],
+                        },
+                        job=job,
+                        set_index=set_index // 2,
+                        option_index=option_index,
+                        calibration_set_id=calibration_set_id,
+                    )
+                    for option_index, entry in enumerate(pair_entries)
+                ],
+            }
+        )
+    return grouped
+
+
+def _parse_archetype_generation_payload(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(payload, dict):
+        for key in ("archetypes", "profile_sets", "profileSets", "sets", "items", "data", "result"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                payload = value
+                break
+        else:
+            return []
+    if not isinstance(payload, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        name = _normalize_archetype_field(item.get("name") or item.get("title") or item.get("profile_title") or item.get("profileTitle"))
+        description = _normalize_archetype_field(item.get("description") or item.get("summary") or item.get("description_summary"))
+        signal_keywords = _ordered_unique(_normalize_text_list(item.get("signal_keywords") or item.get("signalKeywords") or item.get("keywords")))
+        query_bias = _normalize_query_bias(item.get("query_bias") or item.get("queryBias") or item.get("bias"), fallback="balanced")
+        if not name or not description or not signal_keywords:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "description": description,
+                "signal_keywords": signal_keywords[:4],
+                "query_bias": query_bias,
+            }
+        )
+    return normalized if len(normalized) == 6 else []
 
 
 def _normalize_archetype_option(
@@ -1281,7 +1541,8 @@ def _normalize_archetype_option(
     if option_experience_band:
         experience_band, experience_midpoint = option_experience_band, option_experience_midpoint
     profile_title = _normalize_archetype_field(
-        option.get("profile_title")
+        option.get("name")
+        or option.get("profile_title")
         or option.get("profileTitle")
         or option.get("candidate_headline")
         or option.get("candidateHeadline")
@@ -1351,6 +1612,23 @@ def _normalize_archetype_option(
         "frameworks",
         "tooling",
     )
+    description = _text_field(
+        option,
+        "description",
+        "description_summary",
+        "summary",
+        "resume_summary",
+        "resumeSummary",
+        "typical_background",
+        "typicalBackground",
+    )
+    query_bias = _normalize_query_bias(option.get("query_bias") or option.get("queryBias") or option.get("bias"), fallback="balanced")
+    signal_keywords = _derived_archetype_signal_keywords(
+        job=job,
+        voice_summary=_text_field(option, "voice_summary", "voiceSummary"),
+        signal_keywords=_list_field(option, "signal_keywords", "signalKeywords", "keywords"),
+        extra=[query_bias, _text_field(option, "set_title", "setTitle"), _text_field(option, "set_theme", "setTheme")],
+    )
     headline_role = _normalize_archetype_field(option.get("headline_role") or option.get("headlineRole") or option.get("role") or option.get("title") or job_title or "the role")
     headline_role = _normalize_banned_title(headline_role, fallback=job_title)
 
@@ -1368,9 +1646,11 @@ def _normalize_archetype_option(
         preferred_project_type = "CRUD apps and API integrations"
     if not optional_tools_frameworks:
         optional_tools_frameworks = _ordered_unique([skill for skill in core_skills[:4] if skill.lower() not in {job_title.lower()}])
+    if not description:
+        description = f"{profile_title} aligned to {', '.join(core_skills[:4]) or job_title.lower()}."
     skills = _ordered_unique([*core_skills, *strongest_skills, *optional_tools_frameworks, *job_skills[:4]])
     archetype_id = _stable_archetype_id(calibration_set_id, option_index)
-    summary = f"{profile_title} is a grounded sourcing profile for {job_title}. {resume_summary} {typical_background}".strip()
+    summary = f"{profile_title} is a grounded sourcing profile for {job_title}. {description} {resume_summary} {typical_background}".strip()
     fit_score = max(3.2, min(4.8, 4.5 - (set_index * 0.05) - (option_index * 0.04)))
     explanation = CandidateExplanation(
         semanticScore=round(fit_score / 5.0, 3),
@@ -1405,6 +1685,13 @@ def _normalize_archetype_option(
         "calibration_set_id": calibration_set_id,
         "calibrationSetId": calibration_set_id,
         "name": profile_title,
+        "profile_name": profile_title,
+        "profileName": profile_title,
+        "description": description,
+        "signal_keywords": signal_keywords,
+        "signalKeywords": signal_keywords,
+        "query_bias": query_bias,
+        "queryBias": query_bias,
         "role": headline_role or profile_title,
         "company": _normalize_archetype_field(", ".join(typical_companies[:2]) if typical_companies else ""),
         "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
@@ -1446,6 +1733,13 @@ def _normalize_archetype_option(
             "setTheme": _normalize_archetype_field(option.get("set_theme") or option.get("setTheme") or ""),
             "profileTitle": profile_title,
             "profile_title": profile_title,
+            "profileName": profile_title,
+            "profile_name": profile_title,
+            "description": description,
+            "signalKeywords": signal_keywords,
+            "signal_keywords": signal_keywords,
+            "queryBias": query_bias,
+            "query_bias": query_bias,
             "candidateHeadline": profile_title,
             "candidate_headline": profile_title,
             "title": profile_title,
@@ -1498,274 +1792,25 @@ def _experience_year_variants(midpoint: float, *, count: int = 6) -> list[float]
 
 
 def _fallback_archetype_sets(*, job: Any, voice_summary: str = "", gap_analysis: dict[str, Any] | None = None, intent_profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    job_title = _job_text_field(job, "title") or "the role"
-    job_description = _job_text_field(job, "description")
-    job_location = _job_text_field(job, "location")
-    job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
-    experience_band, experience_midpoint = _experience_band_from_sources(
-        job=job,
-        voice_summary=voice_summary,
-        gap_analysis=gap_analysis or {},
-        intent_profile=intent_profile or {},
-    )
-    experience_label = experience_band or _job_text_field(job, "experience_level", "experienceRequired", "seniority") or "experience not specified"
-    focus = _job_role_focus(job, job_skills)
-    role_titles = _build_role_title_variants(job=job, job_skills=job_skills, experience_band=experience_band)
-    if len(role_titles) < 6:
-        role_titles = _ordered_unique([*role_titles, job_title] * 2)[:6]
-
-    base_skills = _ordered_unique([*(job_skills[:6]), *re.split(r"[^a-zA-Z0-9+.#-]+", job_title)])
-    locations = [
-        job_location or "Remote",
-        "Remote",
-        "Bengaluru, India",
-        "Hyderabad, India",
-        "Pune, India",
-        "Chennai, India",
-    ]
-    if focus == "frontend":
-        extra_skill_sets = [
-            ["React", "JavaScript", "HTML", "CSS", "Responsive UI"],
-            ["HTML", "CSS", "JavaScript", "TypeScript", "API integration"],
-            ["React", "UI components", "REST APIs", "Accessibility", "Tailwind CSS"],
-            ["JavaScript", "TypeScript", "Frontend testing", "State management", "Responsive design"],
-            ["Frontend architecture", "Design systems", "Component reuse", "CSS", "JavaScript"],
-            ["Web performance", "HTML", "CSS", "JavaScript", "Frontend tooling"],
-        ]
-        project_types = [
-            "Responsive marketing sites and dashboards",
-            "UI builds for internal tools",
-            "Frontend + API integration work",
-            "Design-system-driven product pages",
-            "Component libraries and admin panels",
-            "User-facing web applications",
-        ]
-        optional_tools = [
-            ["React", "Next.js", "TypeScript", "Tailwind CSS"],
-            ["Vue", "JavaScript", "API clients"],
-            ["React", "Redux", "REST APIs"],
-            ["TypeScript", "Jest", "Playwright"],
-            ["Figma handoff", "Storybook", "CSS modules"],
-            ["Vite", "Webpack", "browser debugging"],
-        ]
-    elif focus == "backend":
-        extra_skill_sets = [
-            ["Python", "REST APIs", "PostgreSQL", "FastAPI", "Django"],
-            ["Python", "Flask", "API design", "PostgreSQL", "Authentication"],
-            ["Python", "Django", "REST APIs", "Background jobs", "PostgreSQL"],
-            ["Python", "FastAPI", "SQL", "Testing", "Integration work"],
-            ["Python", "API development", "Database design", "Caching", "Webhooks"],
-            ["Backend integration", "Python", "PostgreSQL", "Redis", "JavaScript"],
-        ]
-        project_types = [
-            "REST API services and backend features",
-            "Authentication and workflow services",
-            "Internal tools and business APIs",
-            "API integrations and webhooks",
-            "Data-backed application services",
-            "Backend services for product teams",
-        ]
-        optional_tools = [
-            ["FastAPI", "PostgreSQL", "Redis", "AWS"],
-            ["Django", "PostgreSQL", "Docker"],
-            ["Flask", "Celery", "Redis"],
-            ["Pytest", "SQLAlchemy", "Git"],
-            ["Docker", "AWS", "Queue jobs"],
-            ["Postman", "GitHub Actions", "CI/CD"],
-        ]
-    elif focus == "fullstack":
-        extra_skill_sets = [
-            ["Python", "HTML", "CSS", "JavaScript", "Django"],
-            ["Python", "React", "REST APIs", "PostgreSQL", "Frontend integration"],
-            ["Python", "Django", "React", "CRUD apps", "Full-stack delivery"],
-            ["JavaScript", "HTML", "CSS", "Python", "API integration"],
-            ["Python", "Frontend UI", "Admin panels", "PostgreSQL", "Responsive design"],
-            ["Python", "React", "FastAPI", "Web apps", "Testing"],
-        ]
-        project_types = [
-            "CRUD apps and dashboards",
-            "Admin panels and internal tools",
-            "API + UI product features",
-            "Customer-facing web apps",
-            "Full-stack MVPs and prototypes",
-            "Backend + frontend integration work",
-        ]
-        optional_tools = [
-            ["Django", "React", "PostgreSQL", "Git"],
-            ["FastAPI", "TypeScript", "Tailwind CSS"],
-            ["Flask", "React", "Docker"],
-            ["Next.js", "REST APIs", "GitHub Actions"],
-            ["Storybook", "PostgreSQL", "AWS"],
-            ["Playwright", "Pytest", "CI/CD"],
-        ]
-    else:
-        extra_skill_sets = [
-            [*job_skills[:4], "Execution", "Ownership"],
-            [*job_skills[:4], "Product delivery", "Communication"],
-            [*job_skills[:4], "API integration", "Debugging"],
-            [*job_skills[:4], "Web delivery", "Testing"],
-            [*job_skills[:4], "Team collaboration", "Problem solving"],
-            [*job_skills[:4], "Build quality", "Shipping"],
-        ]
-        project_types = [
-            "Small-to-medium web applications",
-            "Internal tools and dashboards",
-            "API integrations",
-            "Frontend + backend feature work",
-            "Admin workflows",
-            "Customer-facing product features",
-        ]
-        optional_tools = [
-            ["Git", "SQL", "CI/CD"],
-            ["Docker", "REST APIs", "Debugging"],
-            ["PostgreSQL", "Redis", "Testing"],
-            ["React", "Python", "Postman"],
-            ["HTML", "CSS", "JavaScript"],
-            ["AWS", "GitHub Actions", "Developer tooling"],
-        ]
-    typical_companies_pool = [
-        ["Product startups", "SaaS teams", "internal product orgs"],
-        ["Growth-stage companies", "startup teams", "engineering-led product teams"],
-        ["Small product teams", "agency teams", "in-house startup teams"],
-        ["Product companies", "web product teams", "operations tools teams"],
-        ["Mid-stage startups", "platform teams", "business software teams"],
-        ["B2B SaaS teams", "product engineering teams", "internal tooling teams"],
-    ]
-    years_pool = _experience_year_variants(experience_midpoint, count=6)
-    option_pairs = [(0, 3), (1, 4), (2, 5)]
-    sets: list[dict[str, Any]] = []
-    for index in range(_CALIBRATION_SET_COUNT):
-        calibration_set_id = _stable_calibration_set_id(index + 1)
-        option_indices = list(option_pairs[index])
-        set_titles = [
-            "Title-accurate vs project-heavy",
-            "Framework-specific vs adjacent-role",
-            "Experience-tight vs broader delivery",
-        ]
-        set_themes = [
-            f"Choose between a role-identical profile and a project-first profile for {job_title}.",
-            f"Choose between a framework-specific profile and a nearby but different resume shape for {job_title}.",
-            f"Choose between a tighter experience band and a broader delivery profile that still stays within {experience_label}.",
-        ]
-        archetypes: list[dict[str, Any]] = []
-        for option_index, pool_index in enumerate(option_indices):
-            profile_title = role_titles[pool_index] if pool_index < len(role_titles) else (role_titles[0] if role_titles else job_title)
-            strongest_skills = _ordered_unique([*base_skills[:4], *extra_skill_sets[pool_index], *job_skills[:4]])
-            typical_companies = typical_companies_pool[pool_index]
-            certifications = []
-            skill_text = " ".join(strongest_skills).lower()
-            if any(token in skill_text for token in ("aws", "cloud")):
-                certifications.append("AWS Certified Cloud Practitioner")
-            if any(token in skill_text for token in ("gcp", "google cloud")):
-                certifications.append("Google Cloud Digital Leader")
-            if any(token in skill_text for token in ("azure",)):
-                certifications.append("Microsoft Azure Fundamentals")
-            if any(token in skill_text for token in ("html", "css", "javascript", "react", "frontend")):
-                certifications.append("Frontend Web Foundations")
-            profile_option = {
-                "profile_title": profile_title,
-                "resume_summary": f"{experience_label} developer profile focused on {', '.join(strongest_skills[:4]) or job_title.lower()}.",
-                "typical_background": f"Worked on {project_types[pool_index]} with {', '.join(strongest_skills[:4]) or job_title.lower()} in small-to-medium product teams.",
-                "strongest_skills": strongest_skills,
-                "typical_companies": typical_companies,
-                "core_skills": strongest_skills,
-                "certifications": certifications,
-                "preferred_project_type": project_types[pool_index],
-                "optional_tools_frameworks": optional_tools[pool_index],
-                "location": locations[pool_index],
-                "years_experience": years_pool[pool_index],
-            }
-            profile_option.update(
-                {
-                    "headline_role": profile_title,
-                    "current_location": locations[pool_index],
-                }
-            )
-            archetypes.append(profile_option)
-
-        title = set_titles[index]
-        theme = set_themes[index]
-        sets.append(
-            {
-                "round_index": index + 1,
-                "calibration_set_id": calibration_set_id,
-                "calibrationSetId": calibration_set_id,
-                "set_title": title,
-                "set_theme": theme,
-                "archetypes": [
-                    _normalize_archetype_option(
-                        {**archetype, "set_title": title, "set_theme": theme},
-                        job=job,
-                        set_index=index,
-                        option_index=option_index,
-                        calibration_set_id=calibration_set_id,
-                    )
-                    for option_index, archetype in enumerate(archetypes[:_CALIBRATION_OPTIONS_PER_SET])
-                ],
-            }
-        )
-    return sets
+    return _group_archetype_entries_into_sets(_build_fallback_archetype_entries(job=job, voice_summary=voice_summary, gap_analysis=gap_analysis, intent_profile=intent_profile), job=job)
 
 
-def _generate_archetype_sets(*, job: Any, voice_summary: str, gap_analysis: dict[str, Any], intent_profile: dict[str, Any]) -> list[dict[str, Any]]:
-    prompt = _archetype_prompt(job=job, voice_summary=voice_summary, gap_analysis=gap_analysis, intent_profile=intent_profile)
+def _generate_archetype_sets(*, job: Any, voice_summary: str, voice_transcript: str, gap_analysis: dict[str, Any], intent_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    prompt = _archetype_prompt(job=job, voice_summary=voice_summary, voice_transcript=voice_transcript, gap_analysis=gap_analysis, intent_profile=intent_profile)
     try:
         payload = generate(prompt, expect_json=True)
     except Exception as exc:
         logger.warning("recruiter_candidate_profile_generation_failed error=%s", str(exc))
         payload = {}
+    flat_archetypes = _parse_archetype_generation_payload(payload)
+    if len(flat_archetypes) == 6:
+        sets = _group_archetype_entries_into_sets(flat_archetypes, job=job)
+        logger.info("recruiter_candidate_profile_sets_generated source=%s count=%s", "groq", len(sets))
+        return sets[:_CALIBRATION_SET_COUNT]
 
-    raw_sets: list[Any] = []
-    if isinstance(payload, dict):
-        raw_sets = list(payload.get("sets") or payload.get("profile_sets") or payload.get("profileSets") or payload.get("archetypeSets") or [])
-    elif isinstance(payload, list):
-        raw_sets = payload
-
-    normalized_sets: list[dict[str, Any]] = []
-    for set_index, raw_set in enumerate(raw_sets[:_CALIBRATION_SET_COUNT]):
-        if not isinstance(raw_set, dict):
-            continue
-        archetypes = raw_set.get("archetypes") or raw_set.get("profiles") or raw_set.get("candidate_profiles") or raw_set.get("items") or []
-        if not isinstance(archetypes, list):
-            continue
-        calibration_set_id = _stable_calibration_set_id(int(raw_set.get("round_index") or set_index + 1))
-        normalized_sets.append(
-            {
-                "round_index": int(raw_set.get("round_index") or set_index + 1),
-                "calibration_set_id": calibration_set_id,
-                "calibrationSetId": calibration_set_id,
-                "set_title": _normalize_archetype_field(raw_set.get("set_title") or raw_set.get("title") or f"Calibration set {set_index + 1}"),
-                "set_theme": _normalize_archetype_field(raw_set.get("set_theme") or raw_set.get("theme") or ""),
-                "archetypes": [
-                    _normalize_archetype_option(
-                        {
-                            **(archetype if isinstance(archetype, dict) else {}),
-                            "set_title": raw_set.get("set_title") or raw_set.get("title") or "",
-                            "set_theme": raw_set.get("set_theme") or raw_set.get("theme") or "",
-                        },
-                        job=job,
-                        set_index=set_index,
-                        option_index=option_index,
-                        calibration_set_id=calibration_set_id,
-                    )
-                    for option_index, archetype in enumerate(archetypes[:_CALIBRATION_OPTIONS_PER_SET])
-                    if isinstance(archetype, dict)
-                ],
-            }
-        )
-
-    if len(normalized_sets) < _CALIBRATION_SET_COUNT:
-        fallback_sets = _fallback_archetype_sets(job=job, voice_summary=voice_summary, gap_analysis=gap_analysis, intent_profile=intent_profile)
-        for index in range(len(normalized_sets), _CALIBRATION_SET_COUNT):
-            if index < len(fallback_sets):
-                normalized_sets.append(fallback_sets[index])
-
-    logger.info(
-        "recruiter_candidate_profile_sets_generated source=%s count=%s",
-        "groq" if normalized_sets and raw_sets else "fallback",
-        len(normalized_sets),
-    )
-    return normalized_sets[:_CALIBRATION_SET_COUNT]
+    fallback_sets = _fallback_archetype_sets(job=job, voice_summary=voice_summary, gap_analysis=gap_analysis, intent_profile=intent_profile)
+    logger.info("recruiter_candidate_profile_sets_generated source=%s count=%s", "fallback", len(fallback_sets))
+    return fallback_sets[:_CALIBRATION_SET_COUNT]
 
 
 def _flatten_archetype_sets(archetype_sets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1801,6 +1846,7 @@ def _persist_calibration_snapshot(*, db: Session, job_id: str, state: dict[str, 
         "calibrationSetIds": [str(item.get("calibration_set_id") or "").strip() for item in list(state.get("archetype_sets") or []) if str(item.get("calibration_set_id") or "").strip()],
         "currentCalibrationSetId": str((state.get("current_pair") or {}).get("calibration_set_id") or "").strip(),
         "selectedArchetypeIds": list(state.get("selected_archetype_ids") or []),
+        "selectedArchetypes": list(state.get("selected_archetypes") or []),
         "selectedCandidateIds": list(state.get("selected_candidate_ids") or []),
         "rejectedCandidateIds": list(state.get("rejected_candidate_ids") or []),
         "setTitles": [str(item.get("set_title") or "").strip() for item in list(state.get("archetype_sets") or []) if str(item.get("set_title") or "").strip()],
@@ -1818,6 +1864,7 @@ def bootstrap_preference_calibration_session(
     recruiter_id: str,
     job_id: str,
     voice_summary: str = "",
+    voice_transcript: str = "",
     gap_analysis: dict[str, Any] | None = None,
     orchestration_session_id: str = "",
 ) -> dict[str, Any]:
@@ -1843,13 +1890,14 @@ def bootstrap_preference_calibration_session(
         voice_summary=voice_summary,
         gap_analysis=gap_analysis,
         selection_rounds=[],
-        transcript=voice_summary,
+        transcript=voice_transcript or voice_summary,
     )
     persist_recruiter_intent_profile(db=db, recruiter_id=recruiter_id, profile=intent_profile)
 
     archetype_sets = _generate_archetype_sets(
         job=job,
         voice_summary=voice_summary,
+        voice_transcript=voice_transcript,
         gap_analysis=gap_analysis,
         intent_profile=intent_profile,
     )
@@ -1859,6 +1907,7 @@ def bootstrap_preference_calibration_session(
         "job_id": job_id,
         "recruiter_id": recruiter_id,
         "orchestration_session_id": _normalize_text(orchestration_session_id),
+        "voice_transcript": _normalize_text(voice_transcript),
         "status": "active",
         "stage": "archetype_calibration",
         "current_round_index": 1,
@@ -1885,6 +1934,7 @@ def bootstrap_preference_calibration_session(
         "current_calibration_set_id": str(current_pair.get("calibration_set_id") or current_pair.get("calibrationSetId") or "").strip(),
         "selected_candidate_ids": [],
         "selected_archetype_ids": [],
+        "selected_archetypes": [],
         "rejected_candidate_ids": [],
         "history": [],
         "gap_analysis": gap_analysis,
@@ -2021,6 +2071,7 @@ def record_preference_calibration_choice(
         "selected_archetype_id": selected_candidate_id,
         "selectedArchetypeId": selected_candidate_id,
         "selected_archetype_title": selected_option.get("name") or selected_option.get("role") or "",
+        "selected_archetype": dict(selected_option),
         "rejected_archetype_ids": [str(option.get("id") or "").strip() for option in rejected_options if str(option.get("id") or "").strip()],
         "selected_at": datetime.now(timezone.utc).isoformat(),
         "set_title": current_set.get("set_title", ""),
@@ -2028,6 +2079,7 @@ def record_preference_calibration_choice(
     }
     state["selected_candidate_ids"] = list(dict.fromkeys([*state.get("selected_candidate_ids", []), selected_candidate_id]))
     state["selected_archetype_ids"] = list(dict.fromkeys([*state.get("selected_archetype_ids", []), selected_candidate_id]))
+    state["selected_archetypes"] = [*list(state.get("selected_archetypes") or []), dict(selected_option)]
     state["rejected_candidate_ids"] = list(
         dict.fromkeys([*state.get("rejected_candidate_ids", []), *history_entry["rejected_archetype_ids"]])
     )
@@ -2103,6 +2155,7 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
             "telemetry": {},
             "archetype_sets": [],
             "profile_sets": [],
+            "selected_archetypes": [],
             "orchestration_session_id": "",
         }
 
@@ -2133,8 +2186,10 @@ def build_calibration_state_response(state: dict[str, Any] | None) -> dict[str, 
         "intent_profile": state.get("intent_profile") or {},
         "telemetry": state.get("telemetry") or {},
         "voice_summary": state.get("voice_summary", ""),
+        "voice_transcript": state.get("voice_transcript", ""),
         "archetype_sets": profile_sets,
         "profile_sets": profile_sets,
         "candidate_profile_sets": profile_sets,
+        "selected_archetypes": list(state.get("selected_archetypes") or []),
         "orchestration_session_id": str(state.get("orchestration_session_id") or "").strip(),
     }

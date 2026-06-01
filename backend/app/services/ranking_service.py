@@ -17,6 +17,10 @@ def _normalize_skill_tokens(values: list[str]) -> set[str]:
     return {str(value).strip().lower() for value in values if str(value).strip()}
 
 
+def _normalize_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
 def _tokenize(text: str) -> list[str]:
     return [token for token in str(text or "").lower().replace("/", " ").replace("-", " ").split() if token]
 
@@ -26,24 +30,41 @@ def _job_experience(job_context: Any) -> str:
     if isinstance(job_context, dict):
         for key in keys:
             value = job_context.get(key, "")
+            if isinstance(value, (int, float)):
+                return f"{float(value):g} years"
             if isinstance(value, str) and value.strip():
                 return value.strip()
     else:
         for key in keys:
             value = getattr(job_context, key, "")
+            if isinstance(value, (int, float)):
+                return f"{float(value):g} years"
             if isinstance(value, str) and value.strip():
                 return value.strip()
+        structured = getattr(job_context, "structured_data", None)
+        if isinstance(structured, dict):
+            for key in ("experience_required", "experienceRequired", "experience_level", "experience"):
+                value = structured.get(key, "")
+                if isinstance(value, (int, float)):
+                    return f"{float(value):g} years"
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
     return ""
 
 
 def _candidate_experience(candidate: Any) -> str:
     if isinstance(candidate, dict):
-        for key in ("experience", "summary", "bio", "experience_summary"):
+        for key in ("experience", "years_experience", "yearsExperience", "summary", "bio", "experience_summary"):
             value = candidate.get(key)
+            if isinstance(value, (int, float)):
+                return f"{float(value):g} years"
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return ""
-    return str(getattr(candidate, "experience", "") or getattr(candidate, "summary", "") or "").strip()
+    experience_value = getattr(candidate, "experience", "") or getattr(candidate, "summary", "") or getattr(candidate, "years_experience", "") or getattr(candidate, "yearsExperience", "")
+    if isinstance(experience_value, (int, float)):
+        return f"{float(experience_value):g} years"
+    return str(experience_value or "").strip()
 
 
 def _candidate_skills(candidate: Any) -> list[str]:
@@ -53,7 +74,14 @@ def _candidate_skills(candidate: Any) -> list[str]:
 
 
 def _job_requirement_skills(job_context: Any) -> list[str]:
-    skills = getattr(job_context, "skills_required", None) if not isinstance(job_context, dict) else job_context.get("skills_required")
+    if isinstance(job_context, dict):
+        skills = job_context.get("skills_required") or job_context.get("skills") or []
+    else:
+        structured = getattr(job_context, "structured_data", None)
+        if isinstance(structured, dict):
+            skills = structured.get("skills_required") or structured.get("skills") or getattr(job_context, "skills_required", None)
+        else:
+            skills = getattr(job_context, "skills_required", None)
     if not isinstance(skills, list):
         return []
     return [str(skill).strip() for skill in skills if str(skill).strip()]
@@ -76,9 +104,81 @@ def _parse_year_span(text: str) -> tuple[float | None, float | None]:
     return min(years), max(years)
 
 
+def _alignment_score(left: str, right: str) -> float:
+    left_norm = _normalize_text(left).lower()
+    right_norm = _normalize_text(right).lower()
+    if not left_norm or not right_norm:
+        return 0.5
+    if left_norm == right_norm:
+        return 1.0
+    left_tokens = set(_tokenize(left_norm))
+    right_tokens = set(_tokenize(right_norm))
+    if not left_tokens or not right_tokens:
+        return 0.5
+    return len(left_tokens.intersection(right_tokens)) / max(1, len(left_tokens.union(right_tokens)))
+
+
+def _job_location(job_context: Any) -> str:
+    if isinstance(job_context, dict):
+        for key in ("location", "remote_policy", "remotePolicy"):
+            value = job_context.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    else:
+        for key in ("location", "remote_policy", "remotePolicy"):
+            value = getattr(job_context, key, "")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        structured = getattr(job_context, "structured_data", None)
+        if isinstance(structured, dict):
+            for key in ("location", "remote_policy", "remotePolicy"):
+                value = structured.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return ""
+
+
+def _job_salary(job_context: Any) -> str:
+    if isinstance(job_context, dict):
+        for key in ("compensation", "salary_range", "salary", "target_salary"):
+            value = job_context.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    else:
+        for key in ("compensation", "salary_range"):
+            value = getattr(job_context, key, "")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        structured = getattr(job_context, "structured_data", None)
+        if isinstance(structured, dict):
+            for key in ("compensation", "salary_range", "salary", "target_salary"):
+                value = structured.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return ""
+
+
+def _candidate_location(candidate: Any) -> str:
+    if isinstance(candidate, dict):
+        for key in ("location", "location_name", "location_locality", "location_region", "location_country"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return str(getattr(candidate, "location", "") or "").strip()
+
+
+def _candidate_salary(candidate: Any) -> str:
+    if isinstance(candidate, dict):
+        for key in ("compensation", "salary_range", "salary", "target_salary", "desired_compensation"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return str(getattr(candidate, "compensation", "") or "").strip()
+
+
 def _experience_match(candidate_experience: str, job_experience: str) -> float:
     if not candidate_experience or not job_experience:
-        return 0.0
+        return 0.5 if candidate_experience or job_experience else 0.0
     c_min, c_max = _parse_year_span(candidate_experience)
     j_min, j_max = _parse_year_span(job_experience)
     if c_min is None or j_min is None:
@@ -148,6 +248,8 @@ def compute_final_score(
     rejection_penalty: float,
     semantic_penalty: float,
     missing_skills_penalty: float,
+    location_match: float = 0.0,
+    salary_match: float = 0.0,
 ) -> float:
     base_match = compute_match_score(
         similarity=semantic_similarity,
@@ -158,6 +260,8 @@ def compute_final_score(
     raw = (
         base_match
         + (float(getattr(ranking_weights, "experience", 0.1)) * max(0.0, min(1.0, recency_score)))
+        + (0.06 * max(0.0, min(1.0, location_match)))
+        + (0.04 * max(0.0, min(1.0, salary_match)))
         + pdl_component
         + feedback_bias
         + diversity_bonus

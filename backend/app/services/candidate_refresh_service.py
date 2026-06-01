@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -10,7 +11,7 @@ from app.core.config import APP_ENV, REFRESH_CANDIDATE_LIMIT, STALE_DAYS
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
 from app.services.embedding_registry_service import get_active_embedding_version
-from app.services.enrichment_service import enrich_candidate as run_candidate_enrichment
+from app.services.apify_enrichment_service import enrich_candidate_with_apify
 from app.services.candidate_text import build_candidate_text
 from app.services.embedding_service import embed
 from app.services.metrics_service import log_metric
@@ -32,9 +33,18 @@ def _candidate_text_payload(candidate) -> dict[str, Any]:
     payload.update(
         {
             "role": getattr(candidate, "role", "") or payload.get("role") or payload.get("title") or "",
+            "headline": payload.get("headline") or getattr(candidate, "role", "") or payload.get("title") or "",
+            "location": getattr(candidate, "location", "") or payload.get("location") or payload.get("location_name") or payload.get("location_region") or "",
             "skills": list(getattr(candidate, "skills", None) or payload.get("skills") or payload.get("skills_required") or []),
-            "experience": payload.get("experience") or payload.get("experience_level") or payload.get("years_experience") or "",
+            "experience": payload.get("experience") or payload.get("experience_level") or payload.get("experience_required") or payload.get("years_experience") or "",
+            "years_experience": payload.get("years_experience") or payload.get("yearsExperience") or getattr(candidate, "total_experience_years", 0.0) or 0.0,
             "summary": getattr(candidate, "summary", "") or payload.get("summary") or payload.get("bio") or "",
+            "companies": list(payload.get("companies") or []),
+            "projects": list(payload.get("projects") or []),
+            "education": list(payload.get("education") or []),
+            "certifications": list(payload.get("certifications") or []),
+            "domain_experience": list(payload.get("domain_experience") or payload.get("domainExperience") or []),
+            "raw_resume_text": payload.get("raw_resume_text") or payload.get("parsed_resume_text") or "",
         }
     )
     return payload
@@ -49,22 +59,116 @@ def _candidate_embedding_version(candidate) -> str:
     return ""
 
 
+def _candidate_is_sparse(candidate_payload: dict[str, Any]) -> bool:
+    skills = candidate_payload.get("skills") or []
+    experience = candidate_payload.get("experience") or candidate_payload.get("experience_level") or candidate_payload.get("experience_required") or candidate_payload.get("years_experience") or ""
+    headline = candidate_payload.get("headline") or candidate_payload.get("role") or candidate_payload.get("title") or ""
+    return not bool(skills) or not bool(str(experience or "").strip()) or not bool(str(headline or "").strip())
+
+
+def _extract_candidate_linkedin_url(candidate) -> str:
+    raw_data = dict(getattr(candidate, "raw_data", {}) or {})
+    for key in (
+        "linkedin_url",
+        "linkedinUrl",
+        "linkedin",
+        "profile_url",
+        "profileUrl",
+        "source_url",
+        "sourceUrl",
+    ):
+        value = raw_data.get(key)
+        if isinstance(value, str) and "linkedin.com/in/" in value.lower():
+            return value.strip()
+    value = getattr(candidate, "linkedin_url", "")
+    if isinstance(value, str) and "linkedin.com/in/" in value.lower():
+        return value.strip()
+    return ""
+
+
+def _refresh_candidate_with_apify_timeout(db: Session, candidate, *, timeout_seconds: float = 30.0) -> bool:
+    linkedin_url = _extract_candidate_linkedin_url(candidate)
+    if not linkedin_url:
+        logger.info(
+            "candidate_refresh_apify_skipped job_id=%s candidate_id=%s reason=missing_linkedin_url",
+            candidate.job_id,
+            candidate.candidate_id,
+        )
+        return False
+
+    result_box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            with SessionLocal() as enrichment_db:
+                result_box["result"] = enrich_candidate_with_apify(
+                    db=enrichment_db,
+                    job_id=candidate.job_id,
+                    candidate_id=candidate.candidate_id,
+                    source_type="candidate_refresh",
+                    linkedin_url=linkedin_url,
+                )
+                enrichment_db.commit()
+        except Exception as exc:
+            result_box["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    finished = done.wait(timeout=max(0.0, float(timeout_seconds)))
+    if not finished:
+        logger.warning(
+            "candidate_refresh_apify_timeout job_id=%s candidate_id=%s timeout_seconds=%s",
+            candidate.job_id,
+            candidate.candidate_id,
+            timeout_seconds,
+        )
+        return False
+
+    if result_box.get("error"):
+        logger.warning(
+            "candidate_refresh_apify_failed job_id=%s candidate_id=%s error=%s",
+            candidate.job_id,
+            candidate.candidate_id,
+            str(result_box["error"]),
+            exc_info=result_box["error"],
+        )
+        return False
+
+    try:
+        db.refresh(candidate)
+    except Exception as exc:
+        logger.warning(
+            "candidate_refresh_apify_refresh_failed job_id=%s candidate_id=%s error=%s",
+            candidate.job_id,
+            candidate.candidate_id,
+            str(exc),
+            exc_info=exc,
+        )
+        return False
+
+    logger.info(
+        "candidate_refresh_apify_completed job_id=%s candidate_id=%s status=%s",
+        candidate.job_id,
+        candidate.candidate_id,
+        (result_box.get("result") or {}).get("status", ""),
+    )
+    return True
+
+
 def refresh_candidate(db: Session, candidate) -> bool:
     now = _utcnow()
     embedding_failed = False
     embedding_error = ""
     try:
         with db.begin_nested():
-            if APP_ENV in {"production", "prod"}:
-                logger.info(
-                    "candidate_refresh_legacy_enrichment_skipped job_id=%s candidate_id=%s reason=production_guard",
-                    candidate.job_id,
-                    candidate.candidate_id,
-                )
-            else:
-                run_candidate_enrichment(candidate)
-            recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             candidate_payload = _candidate_text_payload(candidate)
+            if _candidate_is_sparse(candidate_payload):
+                _refresh_candidate_with_apify_timeout(db, candidate, timeout_seconds=30.0)
+                candidate_payload = _candidate_text_payload(candidate)
+            recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             normalized_text = build_candidate_text(candidate_payload)
             chunks = chunk_text(normalized_text)
             try:

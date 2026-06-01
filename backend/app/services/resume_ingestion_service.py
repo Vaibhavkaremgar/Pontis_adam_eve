@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import EMBEDDING_VERSION, INTERNAL_CANDIDATE_COLLECTION_NAME
 from app.db.repositories import InternalCandidateResumeRepository
+from app.services.candidate_text import build_candidate_text
 from app.services.embedding_service import embed
 from app.services.llm_service import generate
 from app.services.metrics_service import log_metric
@@ -367,18 +368,24 @@ def extract_resume_contact_details(
 
 
 def _build_embedding_text(profile: ResumeStructuredProfile, resume_text: str) -> str:
-    parts = [
-        f"Headline: {profile.headline}".strip(),
-        f"Summary: {profile.summary}".strip(),
-        f"Skills: {', '.join(profile.skills)}".strip(),
-        f"Projects: {', '.join(profile.projects)}".strip(),
-        f"Companies: {', '.join(profile.companies)}".strip(),
-        f"Education: {', '.join(profile.education)}".strip(),
-        f"Certifications: {', '.join(profile.certifications)}".strip(),
-        f"Domain experience: {', '.join(profile.domain_experience)}".strip(),
-        f"Resume text: {resume_text[:8000]}".strip(),
-    ]
-    return "\n".join(part for part in parts if part).strip()
+    return build_candidate_text(
+        {
+            "full_name": profile.full_name,
+            "headline": profile.headline,
+            "role": profile.headline or "",
+            "skills": profile.skills,
+            "experience": profile.years_experience,
+            "years_experience": profile.years_experience,
+            "summary": profile.summary,
+            "location": profile.location,
+            "companies": profile.companies,
+            "projects": profile.projects,
+            "education": profile.education,
+            "certifications": profile.certifications,
+            "domain_experience": profile.domain_experience,
+            "raw_resume_text": resume_text[:8000],
+        }
+    )
 
 
 def build_internal_candidate_payload(
