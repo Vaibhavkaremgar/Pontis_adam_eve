@@ -12,6 +12,7 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
+from sqlalchemy.dialects import postgresql
 
 
 revision: str = "d5e6f7a8b9c1"
@@ -60,15 +61,15 @@ def upgrade() -> None:
     if not _table_exists(inspector, "slack_installations"):
         op.create_table(
             "slack_installations",
-            sa.Column("id", sa.String(length=36), primary_key=True, nullable=False),
-            sa.Column("company_id", sa.String(length=36), sa.ForeignKey("companies.id"), nullable=False),
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column("company_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("companies.id"), nullable=False),
             sa.Column("team_id", sa.String(length=64), nullable=False),
             sa.Column("team_name", sa.String(length=255), nullable=False, server_default=""),
             sa.Column("enterprise_id", sa.String(length=64), nullable=False, server_default=""),
             sa.Column("bot_user_id", sa.String(length=64), nullable=False, server_default=""),
             sa.Column("bot_access_token", sa.Text(), nullable=False, server_default=""),
             sa.Column("scope_list", sa.JSON(), nullable=False, server_default=sa.text("'[]'")),
-            sa.Column("installed_by_user_id", sa.String(length=36), sa.ForeignKey("users.id"), nullable=True),
+            sa.Column("installed_by_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
             sa.Column("installed_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
             sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
