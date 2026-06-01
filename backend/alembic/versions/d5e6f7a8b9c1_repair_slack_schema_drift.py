@@ -88,13 +88,13 @@ def upgrade() -> None:
     if not _table_exists(inspector, "slack_users"):
         op.create_table(
             "slack_users",
-            sa.Column("id", sa.String(length=36), primary_key=True, nullable=False),
-            sa.Column("company_id", sa.String(length=36), sa.ForeignKey("companies.id"), nullable=False),
-            sa.Column("slack_installation_id", sa.String(length=36), sa.ForeignKey("slack_installations.id"), nullable=False),
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column("company_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("companies.id"), nullable=False),
+            sa.Column("slack_installation_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("slack_installations.id"), nullable=False),
             sa.Column("slack_user_id", sa.String(length=64), nullable=False),
             sa.Column("email", sa.String(length=320), nullable=False, server_default=""),
             sa.Column("display_name", sa.String(length=255), nullable=False, server_default=""),
-            sa.Column("internal_user_id", sa.String(length=36), sa.ForeignKey("users.id"), nullable=True),
+            sa.Column("internal_user_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=True),
             sa.Column("role", sa.String(length=32), nullable=False, server_default="recruiter"),
             sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
             sa.Column("last_seen_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
