@@ -1004,8 +1004,17 @@ class InterviewRepository:
             )
         )
 
-    def upsert_status(self, *, job_id: str, candidate_id: str, status: str, create_default: str = "shortlisted") -> InterviewEntity:
+    def upsert_status(
+        self,
+        *,
+        job_id: str,
+        candidate_id: str,
+        status: str,
+        create_default: str = "shortlisted",
+        async_token: str | None = None,
+    ) -> InterviewEntity:
         candidate_id = (candidate_id or "").strip()
+        normalized_async_token = (async_token or "").strip() or None
         job = JobRepository(self.db).get(job_id)
         if not job:
             raise APIError("Job not found", status_code=404)
@@ -1019,6 +1028,7 @@ class InterviewRepository:
                 company_id=job.company_id,
                 candidate_id=candidate_id,
                 status=create_default,
+                async_token=normalized_async_token,
             )
             try:
                 with self.db.begin_nested():
@@ -1031,6 +1041,8 @@ class InterviewRepository:
                     raise
 
         row.status = status
+        if normalized_async_token and not getattr(row, "async_token", None):
+            row.async_token = normalized_async_token
         self.db.flush()
         return row
 
@@ -1073,6 +1085,9 @@ class InterviewSessionRepository:
         outreach_event_id: str | None = None,
         status: str = "pending",
         stage_name: str = "",
+        booking_status: str = "pending",
+        available_slots: list[str] | None = None,
+        timezone_name: str = "UTC",
     ) -> InterviewSessionEntity:
         job = JobRepository(self.db).get(job_id)
         if not job:
@@ -1086,6 +1101,7 @@ class InterviewSessionRepository:
             else:
                 existing_session.email = email
                 existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
+                existing_session.booking_status = booking_status if (existing_session.booking_status or "").strip().lower() != "confirmed" else existing_session.booking_status
                 existing_session.token = existing_session.token or token
                 existing_session.expires_at = expires_at if not existing_session.expires_at or existing_session.expires_at < expires_at else existing_session.expires_at
                 existing_session.company_id = job.company_id
@@ -1093,6 +1109,9 @@ class InterviewSessionRepository:
                     existing_session.outreach_event_id = outreach_event_id
                 if booking_url:
                     existing_session.booking_url = booking_url
+                if available_slots is not None:
+                    existing_session.available_slots = list(available_slots or [])
+                existing_session.timezone = (timezone_name or existing_session.timezone or "UTC").strip() or "UTC"
                 self.db.flush()
                 return existing_session
 
@@ -1103,10 +1122,14 @@ class InterviewSessionRepository:
             existing.email = email
             existing.expires_at = expires_at
             existing.status = status
+            existing.booking_status = booking_status
             existing.booked_at = None
             existing.company_id = job.company_id
             existing.outreach_event_id = outreach_event_id
             existing.booking_url = booking_url or existing.booking_url
+            if available_slots is not None:
+                existing.available_slots = list(available_slots or [])
+            existing.timezone = (timezone_name or existing.timezone or "UTC").strip() or "UTC"
             self.db.flush()
             return existing
 
@@ -1119,8 +1142,11 @@ class InterviewSessionRepository:
             email=email,
             token=token,
             status=status,
+            booking_status=booking_status,
             expires_at=expires_at,
             booking_url=booking_url,
+            available_slots=list(available_slots or []),
+            timezone=(timezone_name or "UTC").strip() or "UTC",
         )
         try:
             with self.db.begin_nested():
@@ -1147,6 +1173,7 @@ class InterviewSessionRepository:
         if not row:
             return None
         row.status = "interview_scheduled"
+        row.booking_status = "confirmed"
         row.booked_at = datetime.now(timezone.utc)
         self.db.flush()
         return row
@@ -2742,6 +2769,7 @@ class NotificationWorkflowTokenRepository:
             return None
         row.status = "consumed"
         row.is_active = False
+        row.used_at = row.used_at or datetime.now(timezone.utc)
         row.consumed_at = datetime.now(timezone.utc)
         row.updated_at = row.consumed_at
         self.db.flush()

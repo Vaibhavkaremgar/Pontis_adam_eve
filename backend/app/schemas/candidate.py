@@ -196,6 +196,8 @@ class CandidateSelectionFinalData(BaseModel):
 class InterviewSessionRequest(BaseModel):
     jobId: str
     candidateId: str
+    availableSlots: list[str] = Field(default_factory=list)
+    timezone: str = "UTC"
 
 
 class InterviewSessionData(BaseModel):
@@ -208,12 +210,19 @@ class InterviewSessionData(BaseModel):
     workflowToken: str = ""
     stageName: str = "recruiter_screen"
     stageIndex: int = 0
+    bookingStatus: str = "pending"
     email: str = ""
     token: str
     status: str
     expiresAt: str
     bookedAt: str | None = None
     scheduledAt: str | None = None
+    timezone: str = "UTC"
+    availableSlots: list[str] = Field(default_factory=list)
+    interviewer: dict = Field(default_factory=dict)
+    candidateName: str = ""
+    jobTitle: str = ""
+    companyName: str = ""
     stageHistory: list[dict] = Field(default_factory=list)
     bookingLink: str = ""
     bookingUrl: str = ""
@@ -240,6 +249,10 @@ class InterviewBookingData(BaseModel):
     stageName: str = "recruiter_screen"
     scheduledAt: str | None = None
     meetingLink: str = ""
+    bookingStatus: str = "confirmed"
+    timezone: str = "UTC"
+    availableSlots: list[str] = Field(default_factory=list)
+    interviewer: dict = Field(default_factory=dict)
 
 
 class InterviewRescheduleData(BaseModel):
@@ -252,6 +265,10 @@ class InterviewRescheduleData(BaseModel):
     stageName: str = "recruiter_screen"
     scheduledAt: str | None = None
     meetingLink: str = ""
+    bookingStatus: str = "confirmed"
+    timezone: str = "UTC"
+    availableSlots: list[str] = Field(default_factory=list)
+    interviewer: dict = Field(default_factory=dict)
 
 
 class InterviewDecisionRequest(BaseModel):

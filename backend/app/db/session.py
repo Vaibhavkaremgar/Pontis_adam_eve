@@ -345,6 +345,7 @@ def _ensure_optional_schema_columns() -> None:
                         status VARCHAR(32) NOT NULL DEFAULT 'active',
                         payload JSON NOT NULL DEFAULT {json_empty_object_default},
                         expires_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        used_at TIMESTAMPTZ NULL DEFAULT NULL,
                         consumed_at TIMESTAMPTZ NULL DEFAULT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -360,6 +361,8 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN workflow_name VARCHAR(64) NOT NULL DEFAULT ''"))
             if "is_active" not in token_columns:
                 conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
+            if "used_at" not in token_columns:
+                conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN used_at TIMESTAMPTZ NULL DEFAULT NULL"))
 
         if "inbound_email_replies" in table_names:
             inbound_columns = {column["name"] for column in inspector.get_columns("inbound_email_replies")}
@@ -459,9 +462,15 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN booked_at {booked_column_type} NULL DEFAULT NULL"))
             if "stage" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN stage VARCHAR(64) NOT NULL DEFAULT 'requested'"))
+            if "booking_status" not in interview_session_columns:
+                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN booking_status VARCHAR(32) NOT NULL DEFAULT 'pending'"))
             if "scheduled_at" not in interview_session_columns:
                 scheduled_column_type = "TIMESTAMPTZ" if dialect == "postgresql" else "DATETIME"
                 conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN scheduled_at {scheduled_column_type} NULL DEFAULT NULL"))
+            if "available_slots" not in interview_session_columns:
+                conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN available_slots JSON NOT NULL DEFAULT {json_empty_list_default}"))
+            if "timezone" not in interview_session_columns:
+                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'"))
             if "interviewer_metadata" not in interview_session_columns:
                 conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN interviewer_metadata JSON NOT NULL DEFAULT {json_empty_object_default}"))
             if "scheduling_metadata" not in interview_session_columns:

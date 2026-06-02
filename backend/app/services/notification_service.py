@@ -8,8 +8,10 @@ from urllib.parse import urlencode
 
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.db.repositories import NotificationWorkflowTokenRepository
+from app.models.entities import UserEntity
 
 BOOKING_BASE_URL = "https://interview1.pontis.one/booking.html"
 
@@ -162,10 +164,86 @@ def _string_field(item: Any, *names: str) -> str:
     return ""
 
 
+def _job_interview_questions(job: Any) -> list[Any]:
+    questions = getattr(job, "interview_questions", None)
+    if isinstance(questions, list):
+        return list(questions)
+    if isinstance(questions, tuple):
+        return list(questions)
+
+    structured_data = getattr(job, "structured_data", None)
+    if isinstance(structured_data, dict):
+        nested_questions = structured_data.get("interview_questions") or structured_data.get("async_questions")
+        if isinstance(nested_questions, list):
+            return list(nested_questions)
+        if isinstance(nested_questions, tuple):
+            return list(nested_questions)
+
+    return []
+
+
 def _build_booking_link(token: str, *, source_type: str = "dashboard") -> str:
     params = {"token": token, "source_type": source_type or "dashboard"} if token else {}
     query = urlencode(params) if params else ""
     return f"{BOOKING_BASE_URL}?{query}" if query else BOOKING_BASE_URL
+
+
+def _normalize_timezone_name(value: Any) -> str:
+    text = _normalize_text(value)
+    return text or "UTC"
+
+
+def _normalize_available_slots(values: Any, *, timezone_name: str = "UTC") -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    tz_name = _normalize_timezone_name(timezone_name)
+
+    try:
+        from zoneinfo import ZoneInfo
+
+        target_zone = ZoneInfo(tz_name)
+    except Exception:
+        target_zone = timezone.utc
+
+    for value in values:
+        text = _normalize_text(value)
+        if not text:
+            continue
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=target_zone)
+        slot_iso = parsed.astimezone(timezone.utc).isoformat()
+        if slot_iso in seen:
+            continue
+        seen.add(slot_iso)
+        normalized.append(slot_iso)
+    return normalized
+
+
+def _fetch_interviewer(*, db: Session | None, recruiter_id: str) -> dict[str, str]:
+    normalized_recruiter_id = _normalize_text(recruiter_id)
+    if not db or not normalized_recruiter_id:
+        return {"name": "", "email": "", "title": ""}
+
+    user = db.scalar(select(UserEntity).where(UserEntity.id == normalized_recruiter_id))
+    if not user:
+        return {"name": "", "email": "", "title": ""}
+
+    email = _normalize_text(user.email)
+    inferred_name = _normalize_text(email.split("@", 1)[0].replace(".", " ").replace("_", " "))
+    inferred_title = _normalize_text((user.role or "recruiter").replace("_", " ").title()) or "Recruiter"
+    return {
+        "name": inferred_name.title() if inferred_name else inferred_title,
+        "email": email,
+        "title": inferred_title,
+    }
 
 
 def _serialize_workflow_token(row) -> dict[str, Any]:
@@ -186,6 +264,7 @@ def _serialize_workflow_token(row) -> dict[str, Any]:
         "sourceType": source_type,
         "payload": payload,
         "expiresAt": row.expires_at.isoformat() if row.expires_at else None,
+        "usedAt": row.used_at.isoformat() if getattr(row, "used_at", None) else None,
         "consumedAt": row.consumed_at.isoformat() if row.consumed_at else None,
         "bookingLink": booking_link,
         "bookingUrl": booking_link,
@@ -194,7 +273,16 @@ def _serialize_workflow_token(row) -> dict[str, Any]:
     }
 
 
-def build_slot_booking_payload(*, candidate: Any, job: Any, resume_text: str | None = None) -> dict[str, Any]:
+def build_slot_booking_payload(
+    *,
+    candidate: Any,
+    job: Any,
+    resume_text: str | None = None,
+    recruiter_id: str = "",
+    db: Session | None = None,
+    available_slots: list[str] | None = None,
+    timezone_name: str = "UTC",
+) -> dict[str, Any]:
     source = _candidate_source(candidate)
     parsed_resume_json = _candidate_value(candidate, "parsed_resume_json", "parsedResumeJson")
     if not isinstance(parsed_resume_json, dict):
@@ -239,6 +327,15 @@ def build_slot_booking_payload(*, candidate: Any, job: Any, resume_text: str | N
     project_list = _collect_list_values(projects)
     certification_list = _collect_list_values(certifications)
     domain_experience_list = _collect_list_values(domain_experience)
+    interviewer = _fetch_interviewer(db=db, recruiter_id=recruiter_id)
+    normalized_available_slots = _normalize_available_slots(available_slots or [], timezone_name=timezone_name)
+    normalized_timezone = _normalize_timezone_name(timezone_name)
+    job_id = _string_field(job, "id")
+    candidate_id = _normalize_text(_candidate_value(candidate, "candidate_id", "id"))
+    job_description = _string_field(job, "description")
+    agency_id = _string_field(job, "company_id")
+    user_id = _normalize_text(recruiter_id or _string_field(job, "recruiter_id", "created_by"))
+    interview_questions = _job_interview_questions(job)
     resume_metadata = {
         "full_name": _normalize_text(name),
         "headline": _normalize_text(headline),
@@ -278,6 +375,15 @@ def build_slot_booking_payload(*, candidate: Any, job: Any, resume_text: str | N
             "metadata": resume_metadata,
             "structured": parsed_resume_json,
         },
+        "available_slots": normalized_available_slots,
+        "timezone": normalized_timezone,
+        "interviewer": interviewer,
+        "job_id": job_id,
+        "candidate_id": candidate_id,
+        "job_description": job_description,
+        "agency_id": agency_id,
+        "user_id": user_id,
+        "interview_questions": interview_questions,
         "fit_score": float(_candidate_value(candidate, "fit_score") or 0.0),
         "job_title": _string_field(job, "title", "job_title", "jobTitle"),
         "company_name": _string_field(job, "company_name", "company", "companyName"),

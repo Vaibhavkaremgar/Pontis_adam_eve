@@ -4477,6 +4477,8 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
         slot_payload = build_slot_booking_payload(
             candidate=profile or snapshot_candidate or {"id": candidate_id, "name": candidate_id},
             job={"title": job.title, "company_name": company.name if company else ""},
+            recruiter_id=recruiter_id,
+            db=db,
         )
         slot_payload.update(
             {

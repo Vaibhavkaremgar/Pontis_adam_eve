@@ -5,7 +5,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.config import APIFY_TOKEN, SERPAPI_ENABLED, SERPAPI_MAX_PAGES, SOURCE_PROVIDER, XRAY_ENABLED
+from app.core import config as settings
+from app.core.config import APIFY_TOKEN, SERPAPI_ENABLED, SOURCE_PROVIDER, XRAY_ENABLED
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.identity.candidate_identity_service import build_candidate_id, build_candidate_identity, normalize_linkedin_url
 from app.services.metrics_service import log_metric
@@ -325,7 +326,7 @@ def discover_xray_candidates(
         return []
 
     effective_limit = max(1, int(limit))
-    max_pages = 1
+    max_pages = max(1, int(getattr(settings, "SERPAPI_MAX_PAGES", 3)))
     job_id = getattr(job, "id", "")
     role = _normalize_text((intake or {}).get("role") or getattr(job, "title", "") or "")
     logger.info(

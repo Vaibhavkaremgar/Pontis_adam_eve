@@ -22,6 +22,11 @@ from app.services.metrics_service import log_metric
 
 logger = logging.getLogger(__name__)
 
+
+class QdrantUnavailableError(RuntimeError):
+    pass
+
+
 QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
     JOB_COLLECTION_NAME: {
         "vector_size": VECTOR_SIZE,
@@ -393,6 +398,9 @@ def delete_candidate_vectors(job_id: str) -> None:
 
 
 def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[float]], chunks: list[str], payload: dict[str, Any]) -> None:
+    client = _get_client()
+    if not client:
+        raise QdrantUnavailableError("Qdrant unavailable during candidate vector upsert")
     points: list[PointStruct] = []
     for idx, (vector, chunk) in enumerate(zip(vectors, chunks)):
         point_payload = {
@@ -409,11 +417,20 @@ def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[f
                 payload=point_payload,
             )
         )
-    _upsert_points(
-        collection_name=CANDIDATE_COLLECTION_NAME,
-        points=points,
-        operation="candidate_vector_upsert",
-        logger_fields={"jobId": job_id, "candidateId": candidate_id, "count": len(points)},
+    ensure_collection(CANDIDATE_COLLECTION_NAME)
+    try:
+        client.upsert(collection_name=CANDIDATE_COLLECTION_NAME, points=points, wait=True)
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        logger.warning("candidate_vector_upsert_failed collection=%s error=%s", CANDIDATE_COLLECTION_NAME, str(exc))
+        log_metric("error", source="qdrant", kind="candidate_vector_upsert_failed")
+        raise QdrantUnavailableError(str(exc)) from exc
+    logger.info(
+        "candidate_vector_upsert collection=%s jobId=%s candidateId=%s count=%s",
+        CANDIDATE_COLLECTION_NAME,
+        job_id,
+        candidate_id,
+        len(points),
     )
 
 

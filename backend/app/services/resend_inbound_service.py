@@ -27,10 +27,10 @@ from app.core.config import (
     REPLY_ATTACHMENT_STORAGE_DIR,
     RESEND_API_KEY,
 )
-from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, OutreachEventRepository, JobRepository, NotificationWorkflowTokenRepository
+from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, JobIntakeRepository, OutreachEventRepository, JobRepository, NotificationWorkflowTokenRepository
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.email_service import send_email
-from app.services.interview_invite_service import send_interview_invite
+from app.services.interview_invite_service import _generate_default_slots, send_interview_invite
 from app.services.resume_ingestion_service import extract_resume_contact_details, parse_resume_profile
 from app.services.outreach_intelligence_service import (
     classify_reply_state,
@@ -434,6 +434,62 @@ def _set_candidate_status(candidate_profile: Any, status: str) -> None:
         getattr(candidate_profile, "candidate_id", ""),
         status,
     )
+
+
+def _nested_value(node: Any, *keys: str) -> Any:
+    if isinstance(node, dict):
+        for key in keys:
+            value = node.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        for value in node.values():
+            nested = _nested_value(value, *keys)
+            if nested not in (None, "", [], {}):
+                return nested
+    elif isinstance(node, list):
+        for item in node:
+            nested = _nested_value(item, *keys)
+            if nested not in (None, "", [], {}):
+                return nested
+    return None
+
+
+def _slot_list_from_value(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    slots: list[str] = []
+    for item in value:
+        slot = str(item or "").strip()
+        if slot:
+            slots.append(slot)
+    return slots
+
+
+def _resolve_interview_invite_context(*, db: Session, job_id: str) -> tuple[list[str], str]:
+    job = JobRepository(db).get(job_id)
+    available_slots: list[str] = []
+    timezone_name = ""
+
+    if job:
+        structured_data = getattr(job, "structured_data", {})
+        available_slots = _slot_list_from_value(_nested_value(structured_data, "available_slots", "availableSlots", "slots") or [])
+        timezone_name = str(_nested_value(structured_data, "timezone", "timezone_name", "timezoneName") or "").strip()
+
+        if not available_slots or not timezone_name:
+            intake = JobIntakeRepository(db).get_by_job(job.id)
+            if intake:
+                intake_data = getattr(intake, "structured_data_json", {})
+                if not available_slots:
+                    available_slots = _slot_list_from_value(
+                        _nested_value(intake_data, "available_slots", "availableSlots", "slots") or []
+                    )
+                if not timezone_name:
+                    timezone_name = str(_nested_value(intake_data, "timezone", "timezone_name", "timezoneName") or "").strip()
+
+    timezone_name = timezone_name or "Asia/Kolkata"
+    if not available_slots:
+        available_slots = _generate_default_slots(timezone_name, count=5)
+    return available_slots, timezone_name
 
 
 def _send_resume_request_followup(*, to_email: str, job_title: str, company_name: str) -> None:
@@ -928,11 +984,14 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
 
     if candidate_profile and intent == "interested" and resume_attachment is not None and resume_parse_result is not None:
         try:
+            available_slots, timezone_name = _resolve_interview_invite_context(db=db, job_id=job_id or "")
             send_interview_invite(
                 candidate_id=candidate_id or "",
                 job_id=job_id or "",
                 outreach_event_id=getattr(outreach_event, "id", None),
                 resume_text=resume_parse_result.text,
+                available_slots=available_slots,
+                timezone=timezone_name,
             )
         except Exception as exc:
             logger.warning(

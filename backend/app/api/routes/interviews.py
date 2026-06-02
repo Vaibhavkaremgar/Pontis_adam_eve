@@ -28,7 +28,13 @@ def get_interviews(jobId: str = Query(...), _: dict = Depends(get_current_user),
 @router.post("/interview/session")
 def create_session(payload: InterviewSessionRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
-    data = create_interview_session(db=db, job_id=payload.jobId, candidate_id=payload.candidateId)
+    data = create_interview_session(
+        db=db,
+        job_id=payload.jobId,
+        candidate_id=payload.candidateId,
+        available_slots=list(payload.availableSlots or []),
+        timezone_name=payload.timezone or "UTC",
+    )
     record_audit_event(
         db=db,
         actor_id=request.state.user["id"],

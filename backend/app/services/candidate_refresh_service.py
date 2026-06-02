@@ -15,7 +15,7 @@ from app.services.apify_enrichment_service import enrich_candidate_with_apify
 from app.services.candidate_text import build_candidate_text
 from app.services.embedding_service import embed
 from app.services.metrics_service import log_metric
-from app.services.qdrant_service import ensure_all_collections, upsert_candidate_chunks
+from app.services.qdrant_service import QdrantUnavailableError, ensure_all_collections, upsert_candidate_chunks
 from app.utils.text import average_vectors, chunk_text
 
 logger = logging.getLogger(__name__)
@@ -187,24 +187,32 @@ def refresh_candidate(db: Session, candidate) -> bool:
                 return False
 
             ensure_all_collections()
-            upsert_candidate_chunks(
-                job_id=candidate.job_id,
-                candidate_id=candidate.candidate_id,
-                vectors=vectors,
-                chunks=chunks,
-                payload={
-                    **({"recruiterId": recruiter_id} if recruiter_id else {}),
-                    "role": getattr(candidate, "role", "") or "",
-                    "summary": getattr(candidate, "summary", "") or "",
-                    "name": getattr(candidate, "name", "") or "",
-                    "company": getattr(candidate, "company", "") or "",
-                    "skills": list(getattr(candidate, "skills", None) or []),
-                    "decision": getattr(candidate, "decision", "") or "",
-                    "finalScore": float(getattr(candidate, "fit_score", 0.0) or 0.0) / 5.0,
-                    "embeddingVersion": active_embedding_version,
-                    "lastUpdated": now.isoformat(),
-                },
-            )
+            try:
+                upsert_candidate_chunks(
+                    job_id=candidate.job_id,
+                    candidate_id=candidate.candidate_id,
+                    vectors=vectors,
+                    chunks=chunks,
+                    payload={
+                        **({"recruiterId": recruiter_id} if recruiter_id else {}),
+                        "role": getattr(candidate, "role", "") or "",
+                        "summary": getattr(candidate, "summary", "") or "",
+                        "name": getattr(candidate, "name", "") or "",
+                        "company": getattr(candidate, "company", "") or "",
+                        "skills": list(getattr(candidate, "skills", None) or []),
+                        "decision": getattr(candidate, "decision", "") or "",
+                        "finalScore": float(getattr(candidate, "fit_score", 0.0) or 0.0) / 5.0,
+                        "embeddingVersion": active_embedding_version,
+                        "lastUpdated": now.isoformat(),
+                    },
+                )
+            except QdrantUnavailableError:
+                logger.error(
+                    "candidate_refresh_failed vector_store_unavailable candidate_id=%s job_id=%s",
+                    candidate.candidate_id,
+                    candidate.job_id,
+                )
+                return False
             candidate.last_refreshed_at = now
             raw_data = dict(getattr(candidate, "raw_data", {}) or {})
             raw_data["embedding_version"] = active_embedding_version

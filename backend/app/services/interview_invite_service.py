@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.db.repositories import CandidateProfileRepository, InterviewRepository, JobRepository
 from app.core.config import OUTREACH_REPLY_TO_EMAIL
+from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, JobIntakeRepository, JobRepository
 from app.db.session import SessionLocal
 from app.services.email_service import send_email
 from app.services.interview_session_service import create_interview_session
+from app.services.job_queue_service import enqueue_job
 from app.services.slack_integration import post_slack_message
 from app.utils.exceptions import APIError
 
@@ -52,24 +56,179 @@ def _extract_candidate_email(profile) -> str:
     return ""
 
 
-def _build_invite_template(*, candidate_name: str, role: str, booking_link: str) -> tuple[str, str]:
+def _normalize_timezone_name(value: Any, *, default: str = "Asia/Kolkata") -> str:
+    text = str(value or "").strip()
+    return text or default
+
+
+def _safe_zoneinfo(timezone_name: str) -> ZoneInfo | dt_timezone:
+    try:
+        return ZoneInfo(_normalize_timezone_name(timezone_name))
+    except Exception:
+        return dt_timezone.utc
+
+
+def _generate_default_slots(timezone: str, count: int = 5) -> list[str]:
+    tz_name = _normalize_timezone_name(timezone)
+    tz = _safe_zoneinfo(tz_name)
+    current_day = datetime.now(tz).date() + timedelta(days=1)
+    while current_day.weekday() >= 5:
+        current_day += timedelta(days=1)
+
+    slot_hours = (10, 11, 14, 15, 16)
+    generated: list[str] = []
+    target_count = max(0, int(count or 0))
+    while len(generated) < target_count:
+        if current_day.weekday() >= 5:
+            current_day += timedelta(days=1)
+            continue
+        for hour in slot_hours:
+            if len(generated) >= target_count:
+                break
+            slot = datetime(
+                current_day.year,
+                current_day.month,
+                current_day.day,
+                hour,
+                0,
+                tzinfo=tz,
+            )
+            generated.append(slot.astimezone(dt_timezone.utc).isoformat())
+        current_day += timedelta(days=1)
+        while current_day.weekday() >= 5:
+            current_day += timedelta(days=1)
+    return generated
+
+
+def _nested_value(node: Any, *keys: str) -> Any:
+    if isinstance(node, dict):
+        for key in keys:
+            value = node.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        for value in node.values():
+            nested = _nested_value(value, *keys)
+            if nested not in (None, "", [], {}):
+                return nested
+    elif isinstance(node, list):
+        for item in node:
+            nested = _nested_value(item, *keys)
+            if nested not in (None, "", [], {}):
+                return nested
+    return None
+
+
+def _slot_list_from_value(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    slots: list[str] = []
+    for item in value:
+        slot = str(item or "").strip()
+        if slot:
+            slots.append(slot)
+    return slots
+
+
+def _resolve_job_booking_context(*, db: Session, job_id: str) -> tuple[list[str], str]:
+    job = JobRepository(db).get(job_id)
+    available_slots: list[str] = []
+    timezone_name = ""
+
+    if job:
+        structured_data = getattr(job, "structured_data", {})
+        available_slots = _slot_list_from_value(_nested_value(structured_data, "available_slots", "availableSlots", "slots") or [])
+        timezone_name = _normalize_timezone_name(
+            _nested_value(structured_data, "timezone", "timezone_name", "timezoneName") or "",
+            default="",
+        )
+        if not available_slots or not timezone_name:
+            intake = JobIntakeRepository(db).get_by_job(job.id)
+            if intake:
+                intake_data = getattr(intake, "structured_data_json", {})
+                if not available_slots:
+                    available_slots = _slot_list_from_value(
+                        _nested_value(intake_data, "available_slots", "availableSlots", "slots") or []
+                    )
+                if not timezone_name:
+                    timezone_name = _normalize_timezone_name(
+                        _nested_value(intake_data, "timezone", "timezone_name", "timezoneName") or "",
+                        default="",
+                    )
+
+    timezone_name = _normalize_timezone_name(timezone_name, default="Asia/Kolkata")
+    if not available_slots:
+        available_slots = _generate_default_slots(timezone_name, count=5)
+    return available_slots, timezone_name
+
+
+def _build_invite_template(
+    *,
+    candidate_name: str,
+    role: str,
+    company_name: str,
+    interviewer: dict[str, Any] | None,
+    booking_link: str,
+    timezone_name: str,
+) -> tuple[str, str]:
+    interviewer_name = str((interviewer or {}).get("name") or "").strip()
+    interviewer_title = str((interviewer or {}).get("title") or "").strip()
+    interviewer_line = ""
+    if interviewer_name and interviewer_title:
+        interviewer_line = f"Your interviewer will be {interviewer_name}, {interviewer_title}."
+    elif interviewer_name:
+        interviewer_line = f"Your interviewer will be {interviewer_name}."
+    elif interviewer_title:
+        interviewer_line = f"Your interviewer will be a {interviewer_title}."
+
     subject = f"Interview Invitation for {role}"
-    body = (
-        f"Hi {candidate_name},\n\n"
-        "We'd like to move forward with your application.\n\n"
-        "Please select a time slot for your interview:\n\n"
-        f"👉 {booking_link}\n\n"
-        "Best,\n"
-        "Adam"
+    body_parts = [
+        f"Hi {candidate_name},",
+        "",
+        f"We'd like to move forward with your application for {role} at {company_name}.",
+    ]
+    if interviewer_line:
+        body_parts.extend(["", interviewer_line])
+    body_parts.extend(
+        [
+            "",
+            f"Slots are shown in {timezone_name}.",
+            "",
+            "Book your interview here:",
+            booking_link,
+            "",
+            "Best,",
+            "Adam",
+        ]
     )
-    return subject, body
+    return subject, "\n".join(body_parts)
 
 
-def _build_invite_html(*, candidate_name: str, role: str, booking_link: str) -> str:
+def _build_invite_html(
+    *,
+    candidate_name: str,
+    role: str,
+    company_name: str,
+    interviewer: dict[str, Any] | None,
+    booking_link: str,
+    timezone_name: str,
+) -> str:
+    interviewer_name = str((interviewer or {}).get("name") or "").strip()
+    interviewer_title = str((interviewer or {}).get("title") or "").strip()
+    interviewer_line = ""
+    if interviewer_name and interviewer_title:
+        interviewer_line = f"<p>Your interviewer will be <strong>{interviewer_name}</strong>, {interviewer_title}.</p>"
+    elif interviewer_name:
+        interviewer_line = f"<p>Your interviewer will be <strong>{interviewer_name}</strong>.</p>"
+    elif interviewer_title:
+        interviewer_line = f"<p>Your interviewer will be a {interviewer_title}.</p>"
+
     return (
         f"<p>Hi {candidate_name},</p>"
-        f"<p>We'd like to move forward with your application for <b>{role}</b>.</p>"
-        f"<p>Please select a time slot for your interview: <a href=\"{booking_link}\">{booking_link}</a></p>"
+        f"<p>We'd like to move forward with your application for <b>{role}</b> at <b>{company_name}</b>.</p>"
+        f"{interviewer_line}"
+        f"<p>Slots are shown in {timezone_name}.</p>"
+        f"<p><a href=\"{booking_link}\" style=\"display:inline-block;background:#111827;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:8px;font-weight:600;\">Book your interview</a></p>"
+        f"<p>If the button does not work, use this link: <a href=\"{booking_link}\">{booking_link}</a></p>"
         "<p>Best,<br>Adam</p>"
     )
 
@@ -91,6 +250,8 @@ def send_interview_invite(
     outreach_event_id: str | None = None,
     channel_id: str | None = None,
     resume_text: str | None = None,
+    available_slots: list[str] | None = None,
+    timezone: str = "Asia/Kolkata",
 ) -> dict[str, Any]:
     with SessionLocal() as db:
         return _send_interview_invite(
@@ -100,6 +261,8 @@ def send_interview_invite(
             outreach_event_id=outreach_event_id,
             channel_id=channel_id,
             resume_text=resume_text,
+            available_slots=available_slots,
+            timezone=timezone,
         )
 
 
@@ -111,6 +274,8 @@ def _send_interview_invite(
     outreach_event_id: str | None = None,
     channel_id: str | None = None,
     resume_text: str | None = None,
+    available_slots: list[str] | None = None,
+    timezone: str = "Asia/Kolkata",
 ) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
@@ -128,6 +293,11 @@ def _send_interview_invite(
     if not candidate_email:
         raise APIError("Candidate email is required", status_code=400)
 
+    company = CompanyRepository(db).get_by_id(job.company_id)
+    company_name = str(getattr(company, "name", "") or "").strip() or "the company"
+    normalized_timezone = _normalize_timezone_name(timezone, default="Asia/Kolkata")
+    normalized_slots = list(available_slots or [])
+
     session = create_interview_session(
         db=db,
         job_id=job_id,
@@ -135,52 +305,104 @@ def _send_interview_invite(
         outreach_event_id=outreach_event_id,
         source_app="adam",
         resume_text=resume_text,
+        available_slots=normalized_slots,
+        timezone_name=normalized_timezone,
     )
     booking_link = str(session.get("slot_link") or session.get("slotLink") or session.get("bookingLink") or session.get("bookingUrl") or "")
-    subject, body = _build_invite_template(candidate_name=candidate_name, role=role, booking_link=booking_link)
-    html_body = _build_invite_html(candidate_name=candidate_name, role=role, booking_link=booking_link)
+    workflow_token = str(session.get("workflowToken") or session.get("workflow_token") or session.get("token") or "").strip()
+    interviewer = session.get("interviewer") if isinstance(session.get("interviewer"), dict) else {}
+    subject, body = _build_invite_template(
+        candidate_name=candidate_name,
+        role=role,
+        company_name=company_name,
+        interviewer=interviewer,
+        booking_link=booking_link,
+        timezone_name=normalized_timezone,
+    )
+    html_body = _build_invite_html(
+        candidate_name=candidate_name,
+        role=role,
+        company_name=company_name,
+        interviewer=interviewer,
+        booking_link=booking_link,
+        timezone_name=normalized_timezone,
+    )
 
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            send_email(
+                to_email=candidate_email,
+                subject=subject,
+                body=body,
+                html=html_body,
+                text=body,
+                reply_to=OUTREACH_REPLY_TO_EMAIL,
+                tags={"product": "pontis", "flow": "interview_invite"},
+            )
+            InterviewRepository(db).upsert_status(
+                job_id=job_id,
+                candidate_id=candidate_id,
+                status="interview_requested",
+                create_default="interview_requested",
+                async_token=workflow_token,
+            )
+            db.commit()
+            logger.info(
+                "interview_invite_sent job_id=%s candidate_id=%s to_email=%s",
+                job_id,
+                candidate_id,
+                candidate_email,
+            )
+            return {
+                "success": True,
+                "jobId": job_id,
+                "candidateId": candidate_id,
+                "candidateEmail": candidate_email,
+                "subject": subject,
+                "body": body,
+                "bookingLink": booking_link,
+                "status": "interview_requested",
+            }
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt < 3:
+                time.sleep(2)
+
+    logger.error(
+        "interview_invite_failed candidate_id=%s job_id=%s error=%s",
+        candidate_id,
+        job_id,
+        last_error,
+    )
     try:
-        send_email(
-            to_email=candidate_email,
-            subject=subject,
-            body=body,
-            html=html_body,
-            text=body,
-            reply_to=OUTREACH_REPLY_TO_EMAIL,
-            tags={"product": "pontis", "flow": "interview_invite"},
+        enqueue_job(
+            "candidate_refresh",
+            {
+                "job_id": job_id,
+                "candidate_id": candidate_id,
+                "reason": "interview_invite_email_failed",
+            },
+            idempotency_key=f"candidate_refresh:interview_invite_email_failed:{job_id}:{candidate_id}",
         )
-        InterviewRepository(db).upsert_status(
-            job_id=job_id,
-            candidate_id=candidate_id,
-            status="interview_requested",
-            create_default="interview_requested",
-        )
-        db.commit()
-        logger.info(
-            "interview_invite_sent job_id=%s candidate_id=%s to_email=%s",
-            job_id,
-            candidate_id,
-            candidate_email,
-        )
-        return {
-            "success": True,
-            "jobId": job_id,
-            "candidateId": candidate_id,
-            "candidateEmail": candidate_email,
-            "subject": subject,
-            "body": body,
-            "bookingLink": booking_link,
-            "status": "interview_requested",
-        }
     except Exception as exc:
-        db.rollback()
-        logger.error(
-            "interview_invite_failed job_id=%s candidate_id=%s error=%s",
-            job_id,
+        logger.warning(
+            "interview_invite_retry_enqueue_failed candidate_id=%s job_id=%s error=%s",
             candidate_id,
+            job_id,
             str(exc),
             exc_info=exc,
         )
-        asyncio.run(_post_slack_warning(channel_id, "\u26a0\ufe0f Failed to send interview invite"))
-        raise
+    asyncio.run(_post_slack_warning(channel_id, "\u26a0\ufe0f Failed to send interview invite"))
+    return {
+        "success": False,
+        "jobId": job_id,
+        "candidateId": candidate_id,
+        "candidateEmail": candidate_email,
+        "subject": subject,
+        "body": body,
+        "bookingLink": booking_link,
+        "status": "email_failed",
+        "error": last_error,
+        "retryQueued": True,
+    }

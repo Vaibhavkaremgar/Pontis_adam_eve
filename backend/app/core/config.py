@@ -125,6 +125,7 @@ DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
 PUBLIC_APP_URL = _required_env("PUBLIC_APP_URL").strip().rstrip("/")
+INTERVIEW_APP_URL = os.getenv("INTERVIEW_APP_URL", "").strip().rstrip("/") or PUBLIC_APP_URL
 APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "production"))).strip().lower() or "production"
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", PUBLIC_APP_URL).strip().rstrip("/")
 if not FRONTEND_ORIGIN and PUBLIC_APP_URL:

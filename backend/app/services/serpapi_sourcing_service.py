@@ -2238,7 +2238,7 @@ class SerpApiClient:
         query = _normalize_text(query)
         if not query:
             return results
-        page_count = 1 if pages else 1
+        page_count = max(1, int(pages or 1))
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
             payload = self._request(query=query, start=start, context={**(context or {}), "page": page + 1, "num_requested": SERPAPI_RESULTS_PER_PAGE})
@@ -2250,6 +2250,8 @@ class SerpApiClient:
                     results.append(item)
             if len(organic_results) < max(1, SERPAPI_RESULTS_PER_PAGE):
                 break
+            if page < page_count - 1:
+                time.sleep(1.0)
         return results
 
     def search_many(self, queries: list[str], *, pages: int = 1, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -2557,7 +2559,7 @@ def discover_linkedin_xray_candidates(
         return []
 
     resolved_intake = _normalize_intake(job, intake)
-    search_pages = 1
+    search_pages = max(1, int(pages_per_query or 1))
     resolved_job_id = _normalize_text(getattr(job, "id", ""))
     resolved_company_id = _normalize_text(company_id or getattr(job, "company_id", ""))
     resolved_recruiter_id = _normalize_text(recruiter_id)
@@ -2854,7 +2856,7 @@ def discover_linkedin_xray_candidates(
                 "layer_index": index,
                 "layer_type": layer.layer_type,
                 "query": layer.query,
-                "pages": 1,
+                "pages": search_pages,
                 "enabled": layer.enabled,
                 "family": layer.signals.get("family", ""),
                 "signals": layer.signals,
@@ -2917,13 +2919,13 @@ def discover_linkedin_xray_candidates(
                 duplicate_query_count += 1
                 logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
                 continue
-            layer_results.append((layer, mock_raw_results, 1))
+            layer_results.append((layer, mock_raw_results, search_pages))
         serpapi_calls_executed = 0
     else:
         with ThreadPoolExecutor(max_workers=effective_workers) as executor:
             future_map: dict[Any, tuple[XRayQueryLayer, int]] = {}
             for index, layer in enumerate(limited_layers, start=1):
-                pages_to_fetch = 1
+                pages_to_fetch = search_pages
                 if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
                     continue
                 fingerprint = _query_fingerprint(
