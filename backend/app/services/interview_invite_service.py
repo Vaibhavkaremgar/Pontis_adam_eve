@@ -327,6 +327,14 @@ def _send_interview_invite(
         booking_link=booking_link,
         timezone_name=normalized_timezone,
     )
+    InterviewRepository(db).upsert_status(
+        job_id=job_id,
+        candidate_id=candidate_id,
+        status="interview_requested",
+        create_default="interview_requested",
+        async_token=workflow_token,
+    )
+    db.commit()
 
     last_error = ""
     for attempt in range(1, 4):
@@ -339,13 +347,6 @@ def _send_interview_invite(
                 text=body,
                 reply_to=OUTREACH_REPLY_TO_EMAIL,
                 tags={"product": "pontis", "flow": "interview_invite"},
-            )
-            InterviewRepository(db).upsert_status(
-                job_id=job_id,
-                candidate_id=candidate_id,
-                status="interview_requested",
-                create_default="interview_requested",
-                async_token=workflow_token,
             )
             db.commit()
             logger.info(

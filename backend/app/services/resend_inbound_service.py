@@ -17,6 +17,7 @@ from typing import Any
 from xml.etree import ElementTree as ET
 
 import requests
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import (
@@ -28,6 +29,7 @@ from app.core.config import (
     RESEND_API_KEY,
 )
 from app.db.repositories import CandidateProfileRepository, InboundEmailRepository, JobIntakeRepository, OutreachEventRepository, JobRepository, NotificationWorkflowTokenRepository
+from app.models.entities import InterviewSessionEntity
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.email_service import send_email
 from app.services.interview_invite_service import _generate_default_slots, send_interview_invite
@@ -832,6 +834,16 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
             _update_candidate_from_resume(candidate_profile=candidate_profile, parsed_resume=resume_parse_result, sender_email=sender_email)
         except Exception as exc:
             processing_error = f"resume_parse_failed:{exc}"
+            candidate_profile.candidate_status = "resume_parse_failed"
+            raw_data = dict(candidate_profile.raw_data or {})
+            raw_data["candidate_status"] = "resume_parse_failed"
+            candidate_profile.raw_data = raw_data
+            logger.warning(
+                "resume_parse_failed candidate_id=%s error=%s",
+                candidate_id or "",
+                str(exc),
+                exc_info=exc,
+            )
             logger.warning(
                 "resume_parse_failed sender_email=%s filename=%s error=%s",
                 sender_email,
@@ -839,7 +851,6 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
                 str(exc),
                 exc_info=exc,
             )
-            _set_candidate_status(candidate_profile, "qualified")
     elif candidate_profile and intent == "interested":
         _set_candidate_status(candidate_profile, "awaiting_resume")
     elif candidate_profile and intent == "not_interested":
@@ -985,14 +996,40 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
     if candidate_profile and intent == "interested" and resume_attachment is not None and resume_parse_result is not None:
         try:
             available_slots, timezone_name = _resolve_interview_invite_context(db=db, job_id=job_id or "")
-            send_interview_invite(
-                candidate_id=candidate_id or "",
-                job_id=job_id or "",
-                outreach_event_id=getattr(outreach_event, "id", None),
-                resume_text=resume_parse_result.text,
-                available_slots=available_slots,
-                timezone=timezone_name,
+            duplicate_invite = db.scalar(
+                select(InterviewSessionEntity.id).where(
+                    InterviewSessionEntity.job_id == job_id,
+                    InterviewSessionEntity.candidate_id == (candidate_id or ""),
+                    ~InterviewSessionEntity.booking_status.in_(("cancelled", "expired")),
+                ).limit(1)
             )
+            if duplicate_invite:
+                logger.info(
+                    "interview_invite_skipped reason=duplicate candidate_id=%s job_id=%s",
+                    candidate_id,
+                    job_id,
+                )
+            else:
+                invite_result = send_interview_invite(
+                    candidate_id=candidate_id or "",
+                    job_id=job_id or "",
+                    outreach_event_id=getattr(outreach_event, "id", None),
+                    resume_text=resume_parse_result.text,
+                    available_slots=available_slots,
+                    timezone=timezone_name,
+                )
+                if not invite_result.get("success", False):
+                    logger.warning(
+                        "interview_invite_failed_in_webhook candidate_id=%s job_id=%s",
+                        candidate_id,
+                        job_id,
+                    )
+                    if outreach_event is None and job_id and candidate_id:
+                        outreach_event = OutreachEventRepository(db).get(job_id=job_id, candidate_id=candidate_id or "")
+                    if outreach_event is not None:
+                        outreach_event.status = "invite_failed"
+                        outreach_event.last_error = str(invite_result.get("error") or "")
+                        outreach_event.updated_at = datetime.now(timezone.utc)
         except Exception as exc:
             logger.warning(
                 "interview_invite_failed sender_email=%s candidate_id=%s job_id=%s error=%s",
