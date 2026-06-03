@@ -2006,7 +2006,7 @@ export default function ReviewPage() {
 
                   return (
                     <Card
-                      key={profileId || title}
+                      key={profileId || headerLabel}
                       className="overflow-hidden rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]"
                     >
                       <CardHeader className="space-y-3">
