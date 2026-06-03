@@ -92,9 +92,8 @@ SERPAPI_URL = os.getenv("SERPAPI_URL", "https://serpapi.com/search.json").strip(
 SERPAPI_ENGINE = os.getenv("SERPAPI_ENGINE", "google").strip().lower() or "google"
 SERPAPI_ENABLED = os.getenv("SERPAPI_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 SERPAPI_RESULTS_PER_PAGE = int(os.getenv("SERPAPI_RESULTS_PER_PAGE", "30"))
-# LinkedIn X-Ray uses this page budget to pull a larger raw candidate pool.
-# The production sourcing flow now stays on a single page for one-hit retrieval.
-SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "6"))
+# 3 pages = ~30 results per query variant, enough for testing without burning SerpAPI quota
+SERPAPI_MAX_PAGES = int(os.getenv("SERPAPI_MAX_PAGES", "3"))
 SERPAPI_MAX_PAGES_PER_LAYER = int(os.getenv("SERPAPI_MAX_PAGES_PER_LAYER", "3"))
 MAX_CALLS_PER_ROLE = int(os.getenv("MAX_CALLS_PER_ROLE", "3"))
 # X-Ray sourcing can expand to 3 layers x 30 profiles per layer.
@@ -169,8 +168,10 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "").strip()
 POSTMARK_SERVER_TOKEN = os.getenv("POSTMARK_SERVER_TOKEN", "").strip()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 RESEND_WEBHOOK_SECRET = os.getenv("RESEND_WEBHOOK_SECRET", "").strip()
+TEST_INVITE_EMAIL = os.getenv("TEST_INVITE_EMAIL", "").strip()
 OUTREACH_PROVIDER = os.getenv("OUTREACH_PROVIDER", "resend").strip().lower()
-OUTREACH_FROM_EMAIL = os.getenv("OUTREACH_FROM_EMAIL", "info@pontis.one").strip()
+OUTREACH_FROM_EMAIL: str = os.getenv("OUTREACH_FROM_EMAIL", "info@pontis.one").strip()
+OUTREACH_FROM_NAME: str = os.getenv("OUTREACH_FROM_NAME", "Adam from Pontis").strip()
 FROM_EMAIL = os.getenv("FROM_EMAIL", OUTREACH_FROM_EMAIL).strip()
 OUTREACH_REPLY_TO_EMAIL = os.getenv("OUTREACH_REPLY_TO_EMAIL", "info@pontis.one").strip()
 OUTREACH_RESEND_FALLBACK_FROM_EMAIL = os.getenv("OUTREACH_RESEND_FALLBACK_FROM_EMAIL", "onboarding@resend.dev").strip()

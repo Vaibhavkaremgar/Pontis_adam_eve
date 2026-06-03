@@ -1103,6 +1103,27 @@ def _archetype_role_label(job: Any) -> str:
     return title or "the role"
 
 
+def _archetype_role_family(job: Any) -> str:
+    text = " ".join(
+        [
+            _job_text_field(job, "title"),
+            _job_text_field(job, "description"),
+            " ".join(_job_list_values(job, "skills_required", "skills")),
+        ]
+    ).lower()
+    if any(token in text for token in ("sales", "account executive", "business development", "sdr", "bdr", "account manager", "quota", "pipeline", "revenue")):
+        return "sales"
+    if any(token in text for token in ("engineer", "developer", "backend", "frontend", "full stack", "fullstack", "software", "platform", "infra", "infrastructure")):
+        return "engineering"
+    if any(token in text for token in ("product manager", "product ", "pm", "product ops", "product operation")):
+        return "product"
+    if any(token in text for token in ("data", "machine learning", "ml", "ai", "scientist", "analytics", "experiment", "etl")):
+        return "data"
+    if any(token in text for token in ("hr", "recruiter", "talent", "people ops", "people operations", "people partner", "human resources")):
+        return "hr"
+    return "generic"
+
+
 def _normalize_query_bias(value: Any, fallback: str = "balanced") -> str:
     normalized = _normalize_text_value(value).lower()
     for token in ("precision", "recall", "balanced"):
@@ -1159,6 +1180,506 @@ def _archetype_description_for_job(*, job: Any, focus: str, role_label: str, voi
     return (
         f"{focus} {role_label.lower()} for {stage}, strong in {skills}, {remote_policy} at {location}.{voice_suffix}"
     ).strip()
+
+
+def _archetype_generation_has_duplicates(entries: list[dict[str, Any]]) -> bool:
+    if len(entries) != 6:
+        return True
+    descriptions: set[str] = set()
+    backgrounds: set[str] = set()
+    for item in entries:
+        description = _normalize_text(
+            item.get("career_highlight")
+            or item.get("careerHighlight")
+            or item.get("description")
+            or item.get("summary")
+            or item.get("description_summary")
+        ).lower()
+        background = _normalize_text(
+            item.get("works_best_at")
+            or item.get("worksBestAt")
+            or item.get("background")
+            or item.get("typical_background")
+            or item.get("typicalBackground")
+            or item.get("resume_summary")
+            or item.get("resumeSummary")
+        ).lower()
+        if not description or not background:
+            return True
+        if description in descriptions or background in backgrounds:
+            return True
+        descriptions.add(description)
+        backgrounds.add(background)
+    return False
+
+
+def _persona_years_label(years: float) -> str:
+    years_value = max(0.0, float(years or 0.0))
+    if years_value.is_integer():
+        return f"{int(years_value)} years"
+    return f"{years_value:.1f} years"
+
+
+def _persona_query_bias_from_years(years: float) -> str:
+    years_value = max(0.0, float(years or 0.0))
+    if years_value <= 3.5:
+        return "recall"
+    if years_value <= 5.0:
+        return "balanced"
+    return "precision"
+
+
+def _persona_skill_pool(job: Any) -> list[str]:
+    skills = _ordered_unique(
+        [
+            *_job_list_values(job, "skills_required", "skills"),
+            *_job_list_values(job, "nice_to_have_skills", "niceToHaveSkills", "preferred_skills"),
+        ]
+    )
+    return skills[:6] if skills else [_archetype_role_label(job)]
+
+
+def _persona_skill_groups(skill_pool: list[str]) -> list[list[str]]:
+    if not skill_pool:
+        return [["core skill"], ["core skill"], ["core skill"], ["core skill"], ["core skill"], ["core skill"]]
+    patterns = [
+        [0, 1, 2],
+        [1, 2, 3],
+        [0, 2, 4],
+        [2, 3, 4],
+        [0, 3, 4],
+        [1, 3, 4],
+    ]
+    groups: list[list[str]] = []
+    for pattern in patterns:
+        group = [_normalize_text(skill_pool[index % len(skill_pool)]) for index in pattern]
+        groups.append(_ordered_unique([skill for skill in group if skill]))
+    return groups
+
+
+def _persona_signal_keywords_from_skills(*, role_family: str, skill_group: list[str], current_role: str, company_stage: str, index: int) -> list[str]:
+    family_signals = {
+        "sales": [
+            ["enterprise", "quota", "C-suite"],
+            ["inbound", "pipeline", "qualification"],
+            ["product-led", "conversion", "demo"],
+            ["renewals", "expansion", "accounts"],
+            ["outbound", "prospecting", "meetings"],
+            ["solutions", "technical", "demo"],
+        ],
+        "engineering": [
+            ["backend", "APIs", "scalability"],
+            ["platform", "ownership", "services"],
+            ["product engineering", "frontend", "delivery"],
+            ["reliability", "observability", "on-call"],
+            ["full stack", "shipping", "systems"],
+            ["technical lead", "code review", "mentoring"],
+        ],
+        "product": [
+            ["discovery", "roadmap", "research"],
+            ["zero to one", "ambiguity", "founder"],
+            ["growth", "activation", "retention"],
+            ["PRD", "engineering", "tradeoffs"],
+            ["metrics", "experiments", "analytics"],
+            ["cross-functional", "alignment", "execution"],
+        ],
+        "data": [
+            ["analytics", "reporting", "insights"],
+            ["A/B testing", "experimentation", "statistics"],
+            ["pipelines", "ML", "deployment"],
+            ["funnels", "cohorts", "behavior"],
+            ["modeling", "forecasting", "decision"],
+            ["AI", "prototype", "impact"],
+        ],
+        "hr": [
+            ["talent acquisition", "candidate", "pipeline"],
+            ["high volume", "sourcing", "ATS"],
+            ["executive search", "leadership", "outreach"],
+            ["employer brand", "marketing", "inbound"],
+            ["people ops", "process", "support"],
+            ["campus hiring", "programs", "early talent"],
+        ],
+        "generic": [
+            ["ownership", "delivery", "adaptable"],
+            ["specialist", "depth", "experience"],
+            ["execution", "shipping", "build"],
+            ["leadership", "coordination", "collaboration"],
+            ["domain", "expertise", "judgment"],
+            ["learning", "transferable", "potential"],
+        ],
+    }
+    signal_pool = family_signals.get(role_family, family_signals["generic"])[index % 6]
+    resolved = _ordered_unique([_normalize_text(keyword) for keyword in signal_pool if _normalize_text(keyword)])
+    return resolved[:3]
+
+
+def _persona_education_variants(*, role_family: str, voice_summary: str) -> list[str]:
+    voice_summary_lower = _normalize_text(voice_summary).lower()
+    mba_preferred = "mba" in voice_summary_lower or "iim" in voice_summary_lower
+    if role_family == "sales":
+        variants = [
+            "MBA, IIM Hyderabad" if mba_preferred else "BBA, NMIMS Mumbai",
+            "BBA, NMIMS Mumbai",
+            "B.Com, St. Xavier's College",
+            "MBA, MICA Ahmedabad" if mba_preferred else "PGDM, SPJIMR Mumbai",
+            "B.Tech, VIT Vellore",
+            "PGDM, SPJIMR Mumbai" if mba_preferred else "MBA, Symbiosis Pune",
+        ]
+    elif role_family == "engineering":
+        variants = [
+            "B.Tech, IIT Delhi",
+            "B.Tech, NIT Trichy",
+            "M.Tech, BITS Pilani",
+            "B.E., VJTI Mumbai",
+            "B.Tech, IIIT Hyderabad",
+            "MCA, Pune University",
+        ]
+    elif role_family == "product":
+        variants = [
+            "MBA, ISB Hyderabad",
+            "B.Tech, IIT Bombay",
+            "BBA, Christ University",
+            "PGDM, XLRI Jamshedpur",
+            "M.Sc, University of Warwick",
+            "B.Com, NMIMS Mumbai",
+        ]
+    elif role_family == "data":
+        variants = [
+            "M.Sc, IIT Madras",
+            "B.Tech, IIT Kharagpur",
+            "M.Sc, ISI Kolkata",
+            "B.Stat, Chennai Mathematical Institute",
+            "MCA, Delhi University",
+            "B.Tech, NIT Surathkal",
+        ]
+    elif role_family == "hr":
+        variants = [
+            "MBA HR, XLRI Jamshedpur",
+            "B.Com, Loyola College",
+            "MBA, TISS Mumbai",
+            "M.A. HRM, University of Delhi",
+            "BBA, Symbiosis Pune",
+            "PGDM, MDI Gurgaon",
+        ]
+    else:
+        variants = [
+            "MBA, IIM Bangalore" if mba_preferred else "BBA, Delhi University",
+            "B.Tech, VIT Vellore",
+            "B.Com, St. Xavier's College",
+            "PGDM, MICA Ahmedabad",
+            "MCA, Pune University",
+            "MBA, XLRI Jamshedpur" if mba_preferred else "B.Sc, University of Mumbai",
+        ]
+    return variants[:6]
+
+
+def _persona_current_company_style(*, role_family: str, company_stage: str, index: int) -> str:
+    styles = {
+        "sales": [
+            "Early-stage SaaS startup",
+            "Series B SaaS company",
+            "Product-led SaaS company",
+            "Enterprise software company",
+            "High-growth startup",
+            "Complex-product SaaS company",
+        ],
+        "engineering": [
+            "Startup engineering team",
+            "Product company",
+            "Platform team",
+            "Enterprise software company",
+            "Scale-up product team",
+            "Infrastructure company",
+        ],
+        "product": [
+            "Product startup",
+            "Consumer app company",
+            "B2B SaaS scale-up",
+            "Platform company",
+            "Growth product team",
+            "Strategy-led product org",
+        ],
+        "data": [
+            "Analytics startup",
+            "Product company",
+            "Data platform team",
+            "Enterprise analytics org",
+            "ML product company",
+            "AI-first startup",
+        ],
+        "hr": [
+            "Startup talent team",
+            "Hiring pod",
+            "People ops team",
+            "Enterprise TA function",
+            "Recruiting team",
+            "Employer brand team",
+        ],
+        "generic": [
+            "Startup",
+            "Mid-size company",
+            "Scale-up",
+            "Enterprise team",
+            "High-growth company",
+            "Specialist team",
+        ],
+    }
+    return styles.get(role_family, styles["generic"])[index % 6]
+
+
+def _persona_specs_for_family(*, job: Any) -> list[dict[str, Any]]:
+    role_family = _archetype_role_family(job)
+    role_label = _archetype_role_label(job)
+    company_stage = _job_text_field(job, "company_stage", "companyStage", "stage", "company_type") or "Growth stage"
+    location = _job_text_field(job, "location") or "Remote"
+    skill_groups = _persona_skill_groups(_persona_skill_pool(job))
+    education_variants = _persona_education_variants(role_family=role_family, voice_summary=_job_text_field(job, "voice_summary"))
+    years_by_family = {
+        "sales": [3, 5, 4, 6, 3, 5],
+        "engineering": [3, 5, 4, 6, 3, 5],
+        "product": [3, 5, 4, 6, 3, 5],
+        "data": [3, 5, 4, 6, 3, 5],
+        "hr": [3, 5, 4, 6, 3, 5],
+        "generic": [3, 5, 4, 6, 3, 5],
+    }.get(role_family, [3, 5, 4, 6, 3, 5])
+
+    if role_family == "sales":
+        templates = [
+            {
+                "current_role": "Account Executive",
+                "works_best_at": "High-velocity inbound funnels with short cycles and fast follow-up.",
+                "career_highlight": "Closed $420K ARR from 68 inbound demos in 12 months at a seed-stage SaaS startup.",
+            },
+            {
+                "current_role": "Senior Account Executive",
+                "works_best_at": "Outbound enterprise accounts with multi-threaded buying committees and long approvals.",
+                "career_highlight": "Won 118% of quota and closed 7 enterprise deals worth $1.4M ARR at a Series B company.",
+            },
+            {
+                "current_role": "Revenue Executive",
+                "works_best_at": "Product-led growth motions where usage signals turn into clean opportunity creation.",
+                "career_highlight": "Converted 1,200 product trials into 84 qualified opportunities and added $510K ARR in one year.",
+            },
+            {
+                "current_role": "Account Manager",
+                "works_best_at": "Expansion-heavy books with renewal pressure, customer advocacy, and account mapping.",
+                "career_highlight": "Expanded 32 accounts, lifted net revenue retention to 132%, and protected $900K in renewals.",
+            },
+            {
+                "current_role": "Business Development Manager",
+                "works_best_at": "High-growth startup teams that need prospecting discipline and a fast path from SDR to AE.",
+                "career_highlight": "Booked 180 meetings, generated 96 SQLs, and earned AE promotion in 14 months.",
+            },
+            {
+                "current_role": "Solutions Sales Executive",
+                "works_best_at": "Complex product evaluations where demos, integrations, and technical credibility shape the close.",
+                "career_highlight": "Ran 22 technical demos and closed 5 implementation-heavy deals worth $760K in new ARR.",
+            },
+        ]
+    elif role_family == "engineering":
+        templates = [
+            {
+                "current_role": "Backend Engineer",
+                "works_best_at": "Seed-stage products that need reliable APIs and rapid iteration without heavy process.",
+                "career_highlight": "Shipped 18 API endpoints and cut latency by 35% across a Python service in 10 months.",
+            },
+            {
+                "current_role": "Senior Backend Engineer",
+                "works_best_at": "Series B teams balancing service ownership, scale, and clean PostgreSQL design.",
+                "career_highlight": "Scaled a FastAPI service to 2.5M requests per day while reducing incidents by 42%.",
+            },
+            {
+                "current_role": "Full-Stack Engineer",
+                "works_best_at": "Product-led teams that want one engineer to bridge frontend, backend, and shipping speed.",
+                "career_highlight": "Delivered 24 customer-facing features and improved conversion by 19% across three release cycles.",
+            },
+            {
+                "current_role": "Platform Engineer",
+                "works_best_at": "Large engineering orgs that need dependable services, observability, and developer tooling.",
+                "career_highlight": "Raised deployment success to 99.9% and cut build times by 28% for 14 product teams.",
+            },
+            {
+                "current_role": "Software Engineer",
+                "works_best_at": "High-growth startup squads that need broad ownership and pragmatic debugging under pressure.",
+                "career_highlight": "Owned 3 core services, resolved 120 production issues, and improved uptime by 15%.",
+            },
+            {
+                "current_role": "Technical Lead",
+                "works_best_at": "Complex product teams where architecture guidance and code quality matter as much as delivery.",
+                "career_highlight": "Led 6 engineers, redesigned a monolith into services, and lifted release cadence by 2x.",
+            },
+        ]
+    elif role_family == "product":
+        templates = [
+            {
+                "current_role": "Product Manager",
+                "works_best_at": "Customer discovery loops where interviews and roadmap decisions stay tightly connected.",
+                "career_highlight": "Completed 54 customer interviews and shipped 9 roadmap bets that increased activation by 21%.",
+            },
+            {
+                "current_role": "Senior Product Manager",
+                "works_best_at": "Early-stage teams that need product clarity while requirements are still changing.",
+                "career_highlight": "Launched a zero-to-one workflow used by 18K users and lifted weekly retention by 16%.",
+            },
+            {
+                "current_role": "Growth Product Manager",
+                "works_best_at": "Metrics-driven product pods focused on activation, retention, and conversion lift.",
+                "career_highlight": "Ran 31 experiments, improved trial-to-paid conversion by 14%, and added 8% retention uplift.",
+            },
+            {
+                "current_role": "Technical Product Manager",
+                "works_best_at": "Cross-functional teams that need crisp requirements and strong engineering collaboration.",
+                "career_highlight": "Wrote 26 PRDs, coordinated 4 engineering squads, and cut delivery slippage by 33%.",
+            },
+            {
+                "current_role": "Product Strategist",
+                "works_best_at": "Insight-heavy environments where product decisions depend on data, customer feedback, and alignment.",
+                "career_highlight": "Built KPI dashboards for 3 product lines and improved prioritization accuracy by 27%.",
+            },
+            {
+                "current_role": "Associate Product Manager",
+                "works_best_at": "Fast-moving product teams that reward curiosity, synthesis, and execution support.",
+                "career_highlight": "Owned 12 backlog initiatives and shipped 7 releases that moved feature adoption by 18%.",
+            },
+        ]
+    elif role_family == "data":
+        templates = [
+            {
+                "current_role": "Data Analyst",
+                "works_best_at": "Business-facing analysis where stakeholders need fast answers and clear storytelling.",
+                "career_highlight": "Delivered 48 weekly analyses and shortened decision cycles by 25% for product and ops leaders.",
+            },
+            {
+                "current_role": "Senior Data Analyst",
+                "works_best_at": "Teams that need repeatable dashboards, stronger measurement, and careful metric definitions.",
+                "career_highlight": "Built 14 dashboards and improved reporting accuracy by 38% across two product lines.",
+            },
+            {
+                "current_role": "Data Scientist",
+                "works_best_at": "Experimentation-heavy product teams that want rigorous answers and practical modeling.",
+                "career_highlight": "Ran 19 experiments, improved forecast error by 22%, and lifted conversion by 11%.",
+            },
+            {
+                "current_role": "Machine Learning Engineer",
+                "works_best_at": "Data and engineering teams that need production-ready model deployment and pipelines.",
+                "career_highlight": "Deployed 6 production models and cut inference latency by 41% across a ML platform.",
+            },
+            {
+                "current_role": "Product Analytics Lead",
+                "works_best_at": "Product orgs that need funnel visibility, cohort thinking, and clean instrumentation.",
+                "career_highlight": "Tracked 3 core funnels, improved instrumentation coverage to 95%, and guided 10 product decisions.",
+            },
+            {
+                "current_role": "Applied AI Specialist",
+                "works_best_at": "Teams that want practical AI prototypes tied to measurable product outcomes.",
+                "career_highlight": "Shipped 4 AI prototypes, saved 320 analyst hours, and reduced manual processing time by 36%.",
+            },
+        ]
+    elif role_family == "hr":
+        templates = [
+            {
+                "current_role": "Talent Partner",
+                "works_best_at": "Hiring managers who need a sharp partner and strong candidate communication.",
+                "career_highlight": "Closed 38 roles in one quarter and lifted candidate response rates by 29%.",
+            },
+            {
+                "current_role": "Recruiter",
+                "works_best_at": "High-volume hiring lanes that need crisp prioritization and queue management.",
+                "career_highlight": "Managed 52 open roles simultaneously and reduced time-to-fill by 21 days.",
+            },
+            {
+                "current_role": "Executive Sourcer",
+                "works_best_at": "Hard-to-fill leadership searches where targeted outreach matters more than volume.",
+                "career_highlight": "Opened 74 executive conversations and placed 11 senior candidates in 9 months.",
+            },
+            {
+                "current_role": "Employer Branding Manager",
+                "works_best_at": "Growing companies that need better inbound interest and a clearer hiring story.",
+                "career_highlight": "Raised inbound applicants by 44% and improved employer brand engagement by 3.2x.",
+            },
+            {
+                "current_role": "People Operations Generalist",
+                "works_best_at": "Lean teams that need process, employee support, and steady coordination.",
+                "career_highlight": "Supported 220 employees, streamlined 12 workflows, and cut HR admin turnaround by 31%.",
+            },
+            {
+                "current_role": "Campus Hiring Lead",
+                "works_best_at": "Early talent programs that need school relationships and strong coordination.",
+                "career_highlight": "Built a campus pipeline of 140 candidates and converted 26 interns into full-time hires.",
+            },
+        ]
+    else:
+        templates = [
+            {
+                "current_role": f"{role_label}",
+                "works_best_at": "Ambiguous environments where adaptability and steady execution matter most.",
+                "career_highlight": "Delivered 12 priority projects and improved team throughput by 18% across one year.",
+            },
+            {
+                "current_role": f"Senior {role_label}",
+                "works_best_at": "Cross-functional teams that need both depth and practical judgment.",
+                "career_highlight": "Owned 5 core workflows and cut cycle time by 24% while mentoring 3 teammates.",
+            },
+            {
+                "current_role": f"Lead {role_label}",
+                "works_best_at": "Rapid-growth environments that expect fast decision-making and execution.",
+                "career_highlight": "Led 4 initiatives, increased output by 29%, and improved reliability across the workflow.",
+            },
+            {
+                "current_role": f"{role_label} Specialist",
+                "works_best_at": "Specialized teams where one strong skill can move the whole function forward.",
+                "career_highlight": "Deepened one core workflow and improved team quality metrics by 22%.",
+            },
+            {
+                "current_role": f"{role_label} Builder",
+                "works_best_at": "Hands-on teams that value shipping, learning, and quick iteration.",
+                "career_highlight": "Shipped 16 deliverables and increased stakeholder satisfaction by 17%.",
+            },
+            {
+                "current_role": f"Technical {role_label}",
+                "works_best_at": "Complex problem spaces that benefit from structured thinking and clear execution.",
+                "career_highlight": "Improved process throughput by 20% while handling 3 parallel workstreams.",
+            },
+        ]
+
+    persona_specs: list[dict[str, Any]] = []
+    for index, template in enumerate(templates[:6]):
+        years = years_by_family[index]
+        skill_group = skill_groups[index]
+        current_role = _normalize_text(template["current_role"]) or role_label
+        persona_specs.append(
+            {
+                "years_experience": _persona_years_label(years),
+                "current_role": current_role,
+                "current_company": _persona_current_company_style(role_family=role_family, company_stage=company_stage, index=index),
+                "location": location,
+                "top_skills": skill_group[:3],
+                "career_highlight": template["career_highlight"],
+                "education": education_variants[index],
+                "works_best_at": template["works_best_at"],
+                "signal_keywords": _persona_signal_keywords_from_skills(
+                    role_family=role_family,
+                    skill_group=skill_group,
+                    current_role=current_role,
+                    company_stage=company_stage,
+                    index=index,
+                ),
+                "query_bias": _persona_query_bias_from_years(years),
+                "name": current_role,
+                "description": template["career_highlight"],
+                "background": template["works_best_at"],
+                "role": current_role,
+                "title": current_role,
+                "headline_role": current_role,
+                "headlineRole": current_role,
+            }
+        )
+
+    return persona_specs
+
+
+def _archetype_fallback_specs(*, job: Any) -> list[dict[str, Any]]:
+    return _persona_specs_for_family(job=job)
 
 
 def _calibration_state_key(*, recruiter_id: str, job_id: str) -> str:
@@ -1269,22 +1790,31 @@ def _archetype_prompt(*, job: Any, voice_summary: str, voice_transcript: str, ga
     )
     experience_label = experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "experience not specified"
     return (
-        "You are generating six recruiter calibration archetypes for XRay sourcing.\n"
-        "These are NOT personas and NOT real people. They must read like grounded sourcing profiles a recruiter would actually select.\n"
+        "You are generating six ideal candidate persona cards for recruiter calibration and XRay sourcing.\n"
+        "These are NOT named archetypes and NOT real people. They must read like realistic resume snapshots a recruiter would actually select.\n"
         "Return ONLY valid JSON. Return a JSON ARRAY of exactly 6 objects and nothing else.\n"
-        "Each object must contain exactly these fields: name, description, signal_keywords, query_bias.\n"
+        "Each object must contain exactly these persona fields: years_experience, current_role, current_company, location, top_skills, career_highlight, education, works_best_at, signal_keywords, query_bias.\n"
+        "You may include compatibility aliases like name, description, background, profileTitle, headlineRole, and role, but the persona fields above must drive the card content.\n"
         "query_bias must be one of: precision, recall, balanced.\n"
-        "signal_keywords must be an array of 3-4 short phrases derived from the intake, not generic filler.\n"
-        "The six archetypes must be meaningfully different and tailored to the specific job intake and voice signal.\n"
-        "Use no more than 15-20 words in each description.\n"
-        "BANNED title words: strategist, journalist, evangelist, visionary, architect, ninja, wizard, growth hacker.\n"
-        "Generate two archetypes tied to company stage, two tied to seniority, one tied to the strongest must-have skill cluster, and one wildcard recall archetype.\n"
-        "Every archetype must stay strictly aligned to the job title, must-have skills, nice-to-have skills, stage, location, remote policy, and voice signal.\n"
-        "Prefer punchy names tied to this role, like The API Craftsman, The Scale Veteran, The Startup Builder, The Deep Specialist, The Technical Lead, The Hidden Gem.\n"
+        "Generate exactly 6 DISTINCT persona cards.\n"
+        "Each card must have a DIFFERENT current_role, career_highlight, works_best_at, education, top_skills, and signal_keywords.\n"
+        "No two cards can share the same career_highlight or works_best_at.\n"
+        "signal_keywords must be an array of 3 short keywords or short phrases, and each card's signal_keywords must be distinct.\n"
+        "Base each card on the actual job title, skills, seniority, company stage, location, remote policy, and voice signal from the intake.\n"
+        "The six cards must represent different seniority/background combinations and read like resume snapshots, not labels.\n"
+        "Use only realistic current_role titles for the role family.\n"
+        "For a SaaS Sales role, cards should span inbound SaaS, outbound enterprise, PLG motion, account expansion, SDR-to-AE progression, and technical/solutions selling.\n"
+        "Use the intake location for every card and keep the company style aligned to the company stage.\n"
+        "If the voice intake suggests a preference like MBA or IIT, reflect that naturally in the education field on one or more cards.\n"
+        f"education_level: {_text_field(job, 'education_level', 'educationLevel') or 'Any'}\n"
+        f"preferred_institutions: {(_job_list_values(job, 'preferred_institutions') or _job_list_values(job, 'preferredInstitutions') or [])}\n"
+        f"certifications: {(_job_list_values(job, 'certifications') or _job_list_values(job, 'certification') or [])}\n"
+        "If education_level or preferred_institutions are specified, reflect them in the education field of at least 2-3 persona cards.\n"
+        "If certifications are specified, include them in top_skills or career_highlight of relevant persona cards.\n"
         "- Do NOT invent real candidates, names, companies, or emails.\n"
-        "- Use the job title and seniority level directly.\n"
-        "- Include must-have skills, nice-to-have skills, company stage, remote policy, location, and voice transcript summary explicitly in the reasoning.\n"
-        "- Preserve compatibility fields when possible, but keep the primary output simple and direct.\n\n"
+        "- Keep career_highlight quantified with numbers such as ARR, quota %, deals, team size, or growth %.\n"
+        "- Keep top_skills grounded in the intake skills and distribute them across the six cards.\n"
+        "- Keep works_best_at distinct per card.\n\n"
         f"{sanitize_prompt_block('Job title', _job_text_field(job, 'title'), max_length=200)}\n"
         f"{sanitize_prompt_block('Seniority', role_seniority, max_length=160)}\n"
         f"{sanitize_prompt_block('Must-have skills', required_skills, max_length=800)}\n"
@@ -1333,92 +1863,61 @@ def _archetype_entry_description(*, job: Any, role_label: str, name: str, focus:
 
 
 def _build_fallback_archetype_entries(*, job: Any, voice_summary: str = "", gap_analysis: dict[str, Any] | None = None, intent_profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    job_title = _job_text_field(job, "title") or "the role"
-    role_label = _archetype_role_label(job)
-    company_stage = _job_text_field(job, "company_stage", "companyStage", "stage", "company_type")
-    stage_label = _archetype_stage_label(company_stage)
-    seniority = _job_text_field(job, "experience_level", "experienceRequired", "seniority")
-    job_skills = _ordered_unique(_job_list_values(job, "skills_required", "skills"))
-    required_skills = _ordered_unique(list((intent_profile or {}).get("required_skills") or []) or job_skills)
-    preferred_skills = _ordered_unique(list((intent_profile or {}).get("preferred_skills") or []) or _job_list_values(job, "nice_to_have_skills", "niceToHaveSkills", "preferred_skills"))
-    location = _job_text_field(job, "location")
-    remote_policy = _job_text_field(job, "remote_policy", "remotePolicy")
-    voice_tokens = _signal_keywords_from_values(voice_summary, _text_field(gap_analysis or {}, "summary"), _text_field(intent_profile or {}, "preference_text"), limit=4)
-    stage_focus = "startup builder" if stage_label == "startup" else "scale operator" if stage_label == "growth" else "enterprise operator"
-    stage_names = {
-        "startup": ("The Scrappy Builder", "The Founding Engineer"),
-        "growth": ("The Scale Veteran", "The Systems Builder"),
-        "enterprise": ("The Process Driver", "The Domain Integrator"),
-    }
-    seniority_names = (
-        ("The Deep Specialist", "The Technical Lead")
-        if any(token in _normalize_text(seniority).lower() for token in ("senior", "lead", "principal", "staff"))
-        else ("The Senior Practitioner", "The Delivery Lead")
-        if any(token in _normalize_text(seniority).lower() for token in ("mid", "intermediate"))
-        else ("The Core Contributor", "The Rapid Learner")
-    )
-    def _skill_archetype_name(skill_values: list[str], fallback_role: str) -> str:
-        text = " ".join(skill_values).lower()
-        if any(token in text for token in ("machine learning", "ml", "pytorch", "tensorflow", "hugging face", "llm", "nlp")):
-            return "The ML Practitioner"
-        if any(token in text for token in ("analytics", "model", "statistics", "experiment")):
-            return "The Modeling Specialist"
-        if any(token in text for token in ("data", "sql")):
-            return "The Data Modeler"
-        return _compact_archetype_label(f"The {' '.join(skill_values[:2])} Practitioner", f"The {fallback_role} Practitioner")
-
-    stage_signal_sets = [
-        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=required_skills[:3], extra=[company_stage, location, remote_policy, stage_label]),
-        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=preferred_skills[:3], extra=[company_stage, remote_policy, stage_label]),
-    ]
-    seniority_signal_sets = [
-        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=required_skills[:4], extra=[seniority, location, "experience"]),
-        _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=preferred_skills[:4], extra=[seniority, voice_summary, "delivery"]),
-    ]
-    skill_cluster = required_skills[:4] or preferred_skills[:4] or job_skills[:4] or [role_label]
-    skill_name = _skill_archetype_name(skill_cluster, role_label)
-    skill_signals = _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=skill_cluster, extra=[company_stage, location, seniority, remote_policy])
-    wildcard_signals = _derived_archetype_signal_keywords(job=job, voice_summary=voice_summary, signal_keywords=required_skills[:2] or job_skills[:2], extra=[role_label, company_stage, location, remote_policy, "hidden gem"])
-
-    entries = [
-        {
-            "name": stage_names[stage_label][0],
-            "description": _archetype_entry_description(job=job, role_label=role_label, name=stage_names[stage_label][0], focus=stage_focus, signal_keywords=stage_signal_sets[0], voice_summary=voice_summary),
-            "signal_keywords": stage_signal_sets[0],
-            "query_bias": "balanced",
-        },
-        {
-            "name": stage_names[stage_label][1],
-            "description": _archetype_entry_description(job=job, role_label=role_label, name=stage_names[stage_label][1], focus=stage_focus, signal_keywords=stage_signal_sets[1], voice_summary=voice_summary),
-            "signal_keywords": stage_signal_sets[1],
-            "query_bias": "recall",
-        },
-        {
-            "name": seniority_names[0],
-            "description": _archetype_entry_description(job=job, role_label=role_label, name=seniority_names[0], focus="deep experience", signal_keywords=seniority_signal_sets[0], voice_summary=voice_summary),
-            "signal_keywords": seniority_signal_sets[0],
-            "query_bias": "precision",
-        },
-        {
-            "name": seniority_names[1],
-            "description": _archetype_entry_description(job=job, role_label=role_label, name=seniority_names[1], focus="technical leadership", signal_keywords=seniority_signal_sets[1], voice_summary=voice_summary),
-            "signal_keywords": seniority_signal_sets[1],
-            "query_bias": "balanced",
-        },
-        {
-            "name": skill_name,
-            "description": _archetype_entry_description(job=job, role_label=role_label, name=skill_name, focus="core skill depth", signal_keywords=skill_signals, voice_summary=voice_summary),
-            "signal_keywords": skill_signals,
-            "query_bias": "precision",
-        },
-        {
-            "name": "The Hidden Gem",
-            "description": _archetype_entry_description(job=job, role_label=role_label, name="The Hidden Gem", focus="recall", signal_keywords=wildcard_signals, voice_summary=voice_summary),
-            "signal_keywords": wildcard_signals,
-            "query_bias": "recall",
-        },
-    ]
-    return entries
+    entries: list[dict[str, Any]] = []
+    for spec in _archetype_fallback_specs(job=job):
+        signal_keywords = _ordered_unique([token for token in _normalize_text_list(spec.get("signal_keywords")) if _normalize_text(token)])[:3]
+        if len(signal_keywords) < 3:
+            signal_keywords = _ordered_unique(
+                [
+                    *signal_keywords,
+                    *_signal_keywords_from_values(
+                        _job_text_field(job, "title"),
+                        _job_text_field(job, "description"),
+                        _job_text_field(job, "company_stage", "companyStage", "stage", "company_type"),
+                        _job_text_field(job, "location"),
+                        _job_text_field(job, "experience_level", "experienceRequired", "seniority"),
+                    ),
+                ]
+            )[:3]
+        top_skills = _ordered_unique([token for token in _normalize_text_list(spec.get("top_skills")) if _normalize_text(token)])[:3]
+        current_role = _normalize_text(spec.get("current_role") or spec.get("role") or spec.get("title") or spec.get("name"))
+        years_experience = _normalize_text(spec.get("years_experience") or spec.get("yearsExperience"))
+        current_company = _normalize_text(spec.get("current_company") or spec.get("currentCompany"))
+        location = _normalize_text(spec.get("location") or _job_text_field(job, "location"))
+        career_highlight = _normalize_text(spec.get("career_highlight") or spec.get("careerHighlight") or spec.get("description") or "")
+        works_best_at = _normalize_text(spec.get("works_best_at") or spec.get("worksBestAt") or spec.get("background") or "")
+        education = _normalize_text(spec.get("education") or "")
+        entries.append(
+            {
+                "name": current_role or _compact_archetype_label(str(spec.get("name") or "Candidate"), "Candidate"),
+                "description": career_highlight[:240],
+                "background": works_best_at[:240],
+                "years_experience": years_experience,
+                "current_role": current_role,
+                "current_company": current_company,
+                "location": location,
+                "top_skills": top_skills,
+                "career_highlight": career_highlight,
+                "education": education,
+                "works_best_at": works_best_at,
+                "signal_keywords": signal_keywords,
+                "query_bias": _normalize_query_bias(spec.get("query_bias"), fallback="balanced"),
+                "role": current_role,
+                "title": current_role,
+                "profileTitle": current_role,
+                "headline_role": current_role,
+                "headlineRole": current_role,
+                "currentCompany": current_company,
+                "current_company": current_company,
+                "topSkills": top_skills,
+                "top_skills": top_skills,
+                "careerHighlight": career_highlight,
+                "career_highlight": career_highlight,
+                "worksBestAt": works_best_at,
+                "works_best_at": works_best_at,
+            }
+        )
+    return entries[:6]
 
 
 def _group_archetype_entries_into_sets(entries: list[dict[str, Any]], *, job: Any) -> list[dict[str, Any]]:
@@ -1490,21 +1989,75 @@ def _parse_archetype_generation_payload(payload: Any) -> list[dict[str, Any]]:
     for item in payload:
         if not isinstance(item, dict):
             continue
-        name = _normalize_archetype_field(item.get("name") or item.get("title") or item.get("profile_title") or item.get("profileTitle"))
-        description = _normalize_archetype_field(item.get("description") or item.get("summary") or item.get("description_summary"))
+        years_experience = _normalize_archetype_field(item.get("years_experience") or item.get("yearsExperience"))
+        current_role = _normalize_archetype_field(
+            item.get("current_role")
+            or item.get("currentRole")
+            or item.get("headline_role")
+            or item.get("headlineRole")
+            or item.get("role")
+            or item.get("title")
+            or item.get("name")
+            or item.get("profile_title")
+            or item.get("profileTitle")
+        )
+        current_company = _normalize_archetype_field(item.get("current_company") or item.get("currentCompany") or item.get("company"))
+        location = _normalize_archetype_field(item.get("location") or item.get("current_location") or item.get("currentLocation"))
+        top_skills = _ordered_unique(_normalize_text_list(item.get("top_skills") or item.get("topSkills") or item.get("core_skills") or item.get("coreSkills") or item.get("skills")))
+        career_highlight = _normalize_archetype_field(
+            item.get("career_highlight")
+            or item.get("careerHighlight")
+            or item.get("description")
+            or item.get("summary")
+            or item.get("description_summary")
+        )
+        education = _normalize_archetype_field(item.get("education") or item.get("education_background") or item.get("educationBackground"))
+        works_best_at = _normalize_archetype_field(
+            item.get("works_best_at")
+            or item.get("worksBestAt")
+            or item.get("background")
+            or item.get("typical_background")
+            or item.get("typicalBackground")
+            or item.get("resume_summary")
+            or item.get("resumeSummary")
+        )
         signal_keywords = _ordered_unique(_normalize_text_list(item.get("signal_keywords") or item.get("signalKeywords") or item.get("keywords")))
         query_bias = _normalize_query_bias(item.get("query_bias") or item.get("queryBias") or item.get("bias"), fallback="balanced")
-        if not name or not description or not signal_keywords:
+        if not current_role or not career_highlight or not works_best_at or not signal_keywords:
             continue
         normalized.append(
             {
-                "name": name,
-                "description": description,
-                "signal_keywords": signal_keywords[:4],
+                "years_experience": years_experience,
+                "current_role": current_role,
+                "current_company": current_company,
+                "location": location,
+                "top_skills": top_skills[:3],
+                "career_highlight": career_highlight,
+                "education": education,
+                "works_best_at": works_best_at,
+                "signal_keywords": signal_keywords[:3],
                 "query_bias": query_bias,
+                "name": current_role,
+                "description": career_highlight,
+                "background": works_best_at,
+                "role": current_role,
+                "title": current_role,
+                "profile_title": current_role,
+                "profileTitle": current_role,
+                "headline_role": current_role,
+                "headlineRole": current_role,
+                "current_company": current_company,
+                "currentCompany": current_company,
+                "top_skills": top_skills[:3],
+                "topSkills": top_skills[:3],
+                "career_highlight": career_highlight,
+                "careerHighlight": career_highlight,
+                "works_best_at": works_best_at,
+                "worksBestAt": works_best_at,
+                "yearsExperience": years_experience,
             }
         )
-    return normalized if len(normalized) == 6 else []
+    return normalized
 
 
 def _normalize_archetype_option(
@@ -1540,30 +2093,47 @@ def _normalize_archetype_option(
     )
     if option_experience_band:
         experience_band, experience_midpoint = option_experience_band, option_experience_midpoint
-    profile_title = _normalize_archetype_field(
-        option.get("name")
-        or option.get("profile_title")
-        or option.get("profileTitle")
-        or option.get("candidate_headline")
-        or option.get("candidateHeadline")
-        or option.get("headline")
+
+    years_experience_text = _normalize_archetype_field(option.get("years_experience") or option.get("yearsExperience"))
+    years_experience_value = round(float(experience_midpoint), 1)
+    if years_experience_text:
+        years_match = re.search(r"(\d+(?:\.\d+)?)", years_experience_text)
+        if years_match:
+            years_experience_value = round(float(years_match.group(1)), 1)
+
+    current_role = _normalize_archetype_field(
+        option.get("current_role")
+        or option.get("currentRole")
+        or option.get("headline_role")
+        or option.get("headlineRole")
+        or option.get("role")
         or option.get("title")
         or option.get("name")
-        or option.get("role")
+        or option.get("profile_title")
+        or option.get("profileTitle")
     )
-    profile_title = _normalize_banned_title(profile_title or _candidate_headline_from_option(option, fallback=fallback_headline), fallback=fallback_headline)
-    resume_summary = _text_field(
+    current_role = _normalize_banned_title(current_role or _candidate_headline_from_option(option, fallback=fallback_headline), fallback=fallback_headline)
+    current_company = _normalize_archetype_field(option.get("current_company") or option.get("currentCompany") or option.get("company"))
+    location = _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote")
+    top_skills = _ordered_unique(
+        _list_field(option, "top_skills", "topSkills", "core_skills", "coreSkills", "skills", "strongest_skills", "strongestSkills")
+    )
+    career_highlight = _text_field(
         option,
+        "career_highlight",
+        "careerHighlight",
+        "description",
+        "description_summary",
+        "summary",
         "resume_summary",
         "resumeSummary",
-        "experience_snapshot",
-        "experienceSnapshot",
-        "summary",
-        "experience",
-        "background",
     )
-    typical_background = _text_field(
+    education = _text_field(option, "education", "education_background", "educationBackground")
+    works_best_at = _text_field(
         option,
+        "works_best_at",
+        "worksBestAt",
+        "background",
         "typical_background",
         "typicalBackground",
         "career_pattern",
@@ -1573,6 +2143,18 @@ def _normalize_archetype_option(
         "pattern",
         "trajectory",
     )
+    resume_summary = _text_field(
+        option,
+        "resume_summary",
+        "resumeSummary",
+        "experience_snapshot",
+        "experienceSnapshot",
+        "background",
+        "typical_background",
+        "typicalBackground",
+        "summary",
+        "experience",
+    )
     strongest_skills = _list_field(
         option,
         "strongest_skills",
@@ -1581,11 +2163,15 @@ def _normalize_archetype_option(
         "technicalStrengths",
         "strengths",
         "skills",
+        "top_skills",
+        "topSkills",
     )
     core_skills = _list_field(
         option,
         "core_skills",
         "coreSkills",
+        "top_skills",
+        "topSkills",
         "strongest_skills",
         "strongestSkills",
         "technical_strengths",
@@ -1594,50 +2180,29 @@ def _normalize_archetype_option(
         "strengths",
     )
     certifications = _list_field(option, "certifications", "certification", "certs")
-    typical_companies = _list_field(
-        option,
-        "typical_companies",
-        "typicalCompanies",
-        "current_company",
-        "currentCompany",
-        "company",
-        "companies",
-    )
-    preferred_project_type = _text_field(option, "preferred_project_type", "preferredProjectType", "project_type", "projectType")
-    optional_tools_frameworks = _list_field(
-        option,
-        "optional_tools_frameworks",
-        "optionalToolsFrameworks",
-        "tools",
-        "frameworks",
-        "tooling",
-    )
-    description = _text_field(
-        option,
-        "description",
-        "description_summary",
-        "summary",
-        "resume_summary",
-        "resumeSummary",
-        "typical_background",
-        "typicalBackground",
-    )
+    typical_companies = _list_field(option, "typical_companies", "typicalCompanies", "current_company", "currentCompany", "company", "companies")
+    if not typical_companies and current_company:
+        typical_companies = [current_company]
+    preferred_project_type = _text_field(option, "preferred_project_type", "preferredProjectType", "project_type", "projectType") or works_best_at
+    optional_tools_frameworks = _list_field(option, "optional_tools_frameworks", "optionalToolsFrameworks", "tools", "frameworks", "tooling")
     query_bias = _normalize_query_bias(option.get("query_bias") or option.get("queryBias") or option.get("bias"), fallback="balanced")
     signal_keywords = _derived_archetype_signal_keywords(
         job=job,
         voice_summary=_text_field(option, "voice_summary", "voiceSummary"),
         signal_keywords=_list_field(option, "signal_keywords", "signalKeywords", "keywords"),
-        extra=[query_bias, _text_field(option, "set_title", "setTitle"), _text_field(option, "set_theme", "setTheme")],
+        extra=[query_bias, current_role, _text_field(option, "set_title", "setTitle"), _text_field(option, "set_theme", "setTheme")],
     )
-    headline_role = _normalize_archetype_field(option.get("headline_role") or option.get("headlineRole") or option.get("role") or option.get("title") or job_title or "the role")
-    headline_role = _normalize_banned_title(headline_role, fallback=job_title)
+    headline_role = current_role or job_title
+    profile_title = current_role
 
     if not resume_summary:
-        resume_summary = f"{profile_title} aligned to {', '.join(core_skills[:4]) or job_title.lower()}."
-    if not typical_background:
-        typical_background = f"Worked on {preferred_project_type or 'small web apps and API work'} using {', '.join(core_skills[:4]) or job_title.lower()}."
+        resume_summary = career_highlight or f"{current_role} aligned to {', '.join(core_skills[:4]) or job_title.lower()}."
+    if not career_highlight:
+        career_highlight = resume_summary or works_best_at
+    if not works_best_at:
+        works_best_at = resume_summary or career_highlight
     if not core_skills:
-        core_skills = _ordered_unique([*(job_skills[:6]), job_title])
+        core_skills = _ordered_unique([*(job_skills[:6]), *top_skills[:3], job_title])
     if not strongest_skills:
         strongest_skills = _ordered_unique([*core_skills[:6]])
     if not certifications:
@@ -1646,11 +2211,10 @@ def _normalize_archetype_option(
         preferred_project_type = "CRUD apps and API integrations"
     if not optional_tools_frameworks:
         optional_tools_frameworks = _ordered_unique([skill for skill in core_skills[:4] if skill.lower() not in {job_title.lower()}])
-    if not description:
-        description = f"{profile_title} aligned to {', '.join(core_skills[:4]) or job_title.lower()}."
+    description = career_highlight
     skills = _ordered_unique([*core_skills, *strongest_skills, *optional_tools_frameworks, *job_skills[:4]])
     archetype_id = _stable_archetype_id(calibration_set_id, option_index)
-    summary = f"{profile_title} is a grounded sourcing profile for {job_title}. {description} {resume_summary} {typical_background}".strip()
+    summary = f"{current_role} is a grounded persona for {job_title}. {career_highlight} {resume_summary} {works_best_at}".strip()
     fit_score = max(3.2, min(4.8, 4.5 - (set_index * 0.05) - (option_index * 0.04)))
     explanation = CandidateExplanation(
         semanticScore=round(fit_score / 5.0, 3),
@@ -1668,7 +2232,7 @@ def _normalize_archetype_option(
         experienceMatch=experience_band,
         candidateExperience=experience_band,
         jobExperience=_job_text_field(job, "experience_level", "experienceRequired", "seniority"),
-        aiReasoning="Grounded calibration profile derived from the intake details and constrained to the requested experience band.",
+        aiReasoning="Grounded candidate persona derived from the intake details and constrained to the requested experience band.",
         sourceBreakdown={
             "vector": 0.0,
             "lexical": 0.0,
@@ -1684,35 +2248,48 @@ def _normalize_archetype_option(
         "archetype_id": archetype_id,
         "calibration_set_id": calibration_set_id,
         "calibrationSetId": calibration_set_id,
-        "name": profile_title,
-        "profile_name": profile_title,
-        "profileName": profile_title,
+        "name": current_role,
+        "profile_name": current_role,
+        "profileName": current_role,
         "description": description,
+        "background": works_best_at,
+        "years_experience": years_experience_text or _persona_years_label(years_experience_value),
+        "current_role": current_role,
+        "current_company": current_company,
+        "location": location,
+        "top_skills": top_skills[:3] if top_skills else core_skills[:3],
+        "career_highlight": career_highlight,
+        "education": education,
+        "works_best_at": works_best_at,
         "signal_keywords": signal_keywords,
         "signalKeywords": signal_keywords,
         "query_bias": query_bias,
         "queryBias": query_bias,
-        "role": headline_role or profile_title,
-        "company": _normalize_archetype_field(", ".join(typical_companies[:2]) if typical_companies else ""),
-        "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
+        "role": headline_role,
+        "company": _normalize_archetype_field(", ".join(typical_companies[:2]) if typical_companies else current_company),
+        "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else current_company),
         "email": "",
         "isMockEmail": True,
-        "headline": resume_summary or typical_background or option.get("set_title") or f"Profile for {job_title}",
-        "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
-        "yearsExperience": round(float(experience_midpoint), 1),
+        "headline": f"{years_experience_text or _persona_years_label(years_experience_value)} · {current_role}",
+        "yearsExperience": years_experience_value,
         "skills": skills,
         "summary": summary,
-        "education": [],
+        "educationText": education,
         "projects": [],
         "certifications": certifications,
         "companiesHistory": [],
         "domainExperience": [],
         "resumeText": "\n".join(
             [
-                f"Profile title: {profile_title}",
-                f"Resume summary: {resume_summary}",
-                f"Typical background: {typical_background}",
-                f"Core skills: {', '.join(core_skills)}",
+                f"Profile title: {current_role}",
+                f"Current role: {current_role}",
+                f"Years experience: {years_experience_text or _persona_years_label(years_experience_value)}",
+                f"Current company: {current_company}",
+                f"Location: {location}",
+                f"Top skills: {', '.join(top_skills or core_skills)}",
+                f"Career highlight: {career_highlight}",
+                f"Education: {education}",
+                f"Works best at: {works_best_at}",
                 f"Typical companies: {', '.join(typical_companies)}",
                 f"Experience range: {experience_band}",
                 f"Preferred project type: {preferred_project_type}",
@@ -1731,36 +2308,49 @@ def _normalize_archetype_option(
             "optionIndex": option_index + 1,
             "setTitle": _normalize_archetype_field(option.get("set_title") or option.get("setTitle") or ""),
             "setTheme": _normalize_archetype_field(option.get("set_theme") or option.get("setTheme") or ""),
-            "profileTitle": profile_title,
-            "profile_title": profile_title,
-            "profileName": profile_title,
-            "profile_name": profile_title,
+            "profileTitle": current_role,
+            "profile_title": current_role,
+            "profileName": current_role,
+            "profile_name": current_role,
+            "name": current_role,
             "description": description,
+            "background": works_best_at,
+            "years_experience": years_experience_text or _persona_years_label(years_experience_value),
+            "yearsExperience": years_experience_value,
+            "currentRole": current_role,
+            "current_role": current_role,
+            "currentCompany": _normalize_archetype_field(typical_companies[0] if typical_companies else current_company),
+            "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else current_company),
+            "typicalCompanies": typical_companies,
+            "typical_companies": typical_companies,
+            "location": location,
+            "topSkills": top_skills[:3] if top_skills else core_skills[:3],
+            "top_skills": top_skills[:3] if top_skills else core_skills[:3],
+            "careerHighlight": career_highlight,
+            "career_highlight": career_highlight,
+            "education": education,
+            "educationText": education,
+            "worksBestAt": works_best_at,
+            "works_best_at": works_best_at,
             "signalKeywords": signal_keywords,
             "signal_keywords": signal_keywords,
             "queryBias": query_bias,
             "query_bias": query_bias,
-            "candidateHeadline": profile_title,
-            "candidate_headline": profile_title,
-            "title": profile_title,
+            "candidateHeadline": current_role,
+            "candidate_headline": current_role,
+            "title": current_role,
             "headlineRole": headline_role,
             "headline_role": headline_role,
-            "currentCompany": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
-            "current_company": _normalize_archetype_field(typical_companies[0] if typical_companies else ""),
-            "typicalCompanies": typical_companies,
-            "typical_companies": typical_companies,
-            "location": _normalize_archetype_field(option.get("location") or option.get("current_location") or option.get("currentLocation") or _job_text_field(job, "location") or "Remote"),
-            "yearsExperience": round(float(experience_midpoint), 1),
             "experienceRange": experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "",
             "experience_range": experience_band or _text_field(job, "experience_level", "experienceRequired", "seniority") or "",
             "resumeSummary": resume_summary,
             "resume_summary": resume_summary,
             "experienceSnapshot": resume_summary,
             "experience_snapshot": resume_summary,
-            "typicalBackground": typical_background,
-            "typical_background": typical_background,
-            "careerPattern": typical_background,
-            "career_pattern": typical_background,
+            "typicalBackground": works_best_at,
+            "typical_background": works_best_at,
+            "careerPattern": works_best_at,
+            "career_pattern": works_best_at,
             "coreSkills": core_skills,
             "core_skills": core_skills,
             "strongestSkills": core_skills,
@@ -1797,13 +2387,25 @@ def _fallback_archetype_sets(*, job: Any, voice_summary: str = "", gap_analysis:
 
 def _generate_archetype_sets(*, job: Any, voice_summary: str, voice_transcript: str, gap_analysis: dict[str, Any], intent_profile: dict[str, Any]) -> list[dict[str, Any]]:
     prompt = _archetype_prompt(job=job, voice_summary=voice_summary, voice_transcript=voice_transcript, gap_analysis=gap_analysis, intent_profile=intent_profile)
+    logger.info("recruiter_archetype_prompt_sent\n%s", prompt)
     try:
         payload = generate(prompt, expect_json=True)
     except Exception as exc:
         logger.warning("recruiter_candidate_profile_generation_failed error=%s", str(exc))
         payload = {}
     flat_archetypes = _parse_archetype_generation_payload(payload)
-    if len(flat_archetypes) == 6:
+    if _archetype_generation_has_duplicates(flat_archetypes):
+        logger.warning("archetype_generation_duplicate_detected attempt=1 count=%s", len(flat_archetypes))
+        try:
+            payload = generate(prompt, expect_json=True)
+        except Exception as exc:
+            logger.warning("recruiter_candidate_profile_generation_failed error=%s", str(exc))
+            payload = {}
+        flat_archetypes = _parse_archetype_generation_payload(payload)
+        if _archetype_generation_has_duplicates(flat_archetypes):
+            logger.warning("archetype_generation_duplicate_detected attempt=2 count=%s", len(flat_archetypes))
+            flat_archetypes = []
+    if len(flat_archetypes) == 6 and not _archetype_generation_has_duplicates(flat_archetypes):
         sets = _group_archetype_entries_into_sets(flat_archetypes, job=job)
         logger.info("recruiter_candidate_profile_sets_generated source=%s count=%s", "groq", len(sets))
         return sets[:_CALIBRATION_SET_COUNT]

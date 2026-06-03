@@ -73,8 +73,46 @@ class SerpApiSourcingTests(unittest.TestCase):
         self.assertEqual(len(layers), 3)
         self.assertEqual(len({layer.query.lower() for layer in layers}), 3)
         self.assertTrue(any("Backend API Engineer" in layer.query or "backend engineer" in layer.query.lower() for layer in layers))
-        self.assertTrue(any("FastAPI" in layer.query or "REST API" in layer.query or "microservices" in layer.query.lower() for layer in layers))
         self.assertTrue(all("hyderabad" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("python" in layer.query.lower() or "mongodb" in layer.query.lower() for layer in layers))
+
+    def test_build_linkedin_query_layers_strips_raw_archetype_text_and_stays_short(self) -> None:
+        layers = build_linkedin_xray_query_layers(
+            role="SaaS Sales Executive",
+            seniority="Mid-level",
+            skills=["SaaS sales", "pipeline management", "CRM"],
+            location="Hyderabad",
+            company_stage="Series A",
+            hiring_preferences="startup ownership",
+            industry="b2b software",
+            leadership_expectations="quota ownership",
+            selected_archetypes=[
+                {
+                    "profile_title": "The Enterprise Hunter",
+                    "signal_keywords": [
+                        "enterprise sales",
+                        "C-suite",
+                        "quota attainment",
+                        "SaaS",
+                    ],
+                    "summary": "Preferred skills: enterprise sales | C-suite | quota attainment",
+                    "typical_background": "Preferred roles: enterprise seller | senior AE | account manager",
+                    "core_skills": ["enterprise sales", "quota attainment", "pipeline management"],
+                    "query_bias": "precision",
+                }
+            ],
+        )
+
+        self.assertEqual(len(layers), 3)
+        for layer in layers:
+            self.assertNotIn("|", layer.query)
+            self.assertNotIn("Preferred skills", layer.query)
+            self.assertNotIn("Preferred roles", layer.query)
+            self.assertNotIn("Technical Strengths", layer.query)
+            self.assertLessEqual(layer.query.upper().count(" AND ") + 1, 12)
+            self.assertTrue("hyderabad" in layer.query.lower())
+        self.assertTrue(any("enterprise sales" in layer.query.lower() or "c-suite" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("saas sales" in layer.query.lower() or "pipeline management" in layer.query.lower() for layer in layers))
 
     @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
     def test_discovery_normalizes_and_dedupes_linkedin_results(self, _mock_disabled: object) -> None:
@@ -237,13 +275,15 @@ class SerpApiSourcingTests(unittest.TestCase):
             "app.services.serpapi_sourcing_service.SERPAPI_RETRY_ATTEMPTS", 1
         ), patch(
             "app.services.serpapi_sourcing_service.SERPAPI_REQUEST_TIMEOUT_SECONDS", 1
+        ), patch(
+            "app.services.serpapi_sourcing_service.SERPAPI_RESULTS_PER_PAGE", 1
         ), patch.object(
             client._session, "get", side_effect=fake_get
         ):
             results = client.search(query='site:linkedin.com/in/ "Backend Engineer"', pages=2)
 
         self.assertEqual(len(results), 2)
-        self.assertEqual(seen_starts, [0, 10])
+        self.assertEqual(seen_starts, [0, 1])
 
 
 if __name__ == "__main__":

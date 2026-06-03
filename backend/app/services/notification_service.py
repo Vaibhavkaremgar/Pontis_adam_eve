@@ -10,10 +10,11 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
+from app.core import config as settings
 from app.db.repositories import NotificationWorkflowTokenRepository
 from app.models.entities import UserEntity
 
-BOOKING_BASE_URL = "https://interview1.pontis.one/booking.html"
+BOOKING_BASE_URL = f"{(settings.INTERVIEW_APP_URL or settings.PUBLIC_APP_URL).rstrip('/')}/booking.html"
 
 
 def _normalize_text(value: Any) -> str:

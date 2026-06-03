@@ -22,6 +22,112 @@ from app.utils.text import chunk_text
 
 logger = logging.getLogger(__name__)
 
+SENIORITY_HINTS: list[tuple[str, str]] = [
+    ("head", "leadership"),
+    ("director", "leadership"),
+    ("vp", "leadership"),
+    ("principal", "leadership"),
+    ("senior", "senior"),
+    ("lead", "senior"),
+    ("5+", "senior"),
+    ("6+", "senior"),
+    ("mid", "mid-level"),
+    ("3-5 years", "mid-level"),
+    ("intermediate", "mid-level"),
+    ("junior", "junior"),
+    ("entry", "junior"),
+    ("fresher", "junior"),
+    ("0-2 years", "junior"),
+]
+
+COMPANY_STAGE_HINTS: list[tuple[str, str]] = [
+    ("enterprise", "enterprise"),
+    ("large", "enterprise"),
+    ("mnc", "enterprise"),
+    ("fortune", "enterprise"),
+    ("growth", "growth-stage"),
+    ("scale", "growth-stage"),
+    ("series c", "growth-stage"),
+    ("series a", "series-b"),
+    ("series b", "series-b"),
+    ("seed", "early-stage"),
+    ("early stage", "early-stage"),
+    ("pre-series", "early-stage"),
+]
+
+SKILL_KEYWORD_HINTS: list[tuple[str, str]] = [
+    ("saas sales", "SaaS sales"),
+    ("pipeline management", "pipeline management"),
+    ("crm", "CRM"),
+    ("salesforce", "Salesforce"),
+    ("cold calling", "cold calling"),
+    ("enterprise sales", "enterprise sales"),
+    ("account management", "account management"),
+    ("business development", "business development"),
+    ("prospecting", "prospecting"),
+    ("qualification", "qualification"),
+    ("product-led growth", "product-led growth"),
+    ("inbound", "inbound"),
+    ("outbound", "outbound"),
+    ("python", "Python"),
+    ("fastapi", "FastAPI"),
+    ("postgresql", "PostgreSQL"),
+    ("postgres", "PostgreSQL"),
+    ("redis", "Redis"),
+    ("docker", "Docker"),
+    ("kubernetes", "Kubernetes"),
+    ("sql", "SQL"),
+    ("figma", "Figma"),
+    ("agile", "Agile"),
+    ("user research", "user research"),
+    ("roadmap", "product roadmap"),
+]
+
+
+def _detect_label_from_transcript(text: str, hints: list[tuple[str, str]], default: str = "") -> str:
+    lowered = _normalize_text(text).lower()
+    for needle, label in hints:
+        if needle in lowered:
+            return label
+    return default
+
+
+def _extract_skill_keywords_from_transcript(text: str, *, existing: list[str] | None = None) -> list[str]:
+    lowered = _normalize_text(text).lower()
+    detected: list[str] = []
+    seen: set[str] = {item.lower() for item in (existing or []) if _normalize_text(item)}
+
+    for needle, label in SKILL_KEYWORD_HINTS:
+        if needle in lowered and label.lower() not in seen:
+            detected.append(label)
+            seen.add(label.lower())
+    return detected
+
+
+def _extract_nice_to_have_skills_from_transcript(text: str, *, existing: list[str] | None = None) -> list[str]:
+    lowered = _normalize_text(text).lower()
+    candidates: list[str] = []
+    seen: set[str] = {item.lower() for item in (existing or []) if _normalize_text(item)}
+
+    marker_spans = [
+        "nice to have",
+        "preferred",
+        "bonus",
+        "would be nice",
+        "would be good to have",
+    ]
+    for marker in marker_spans:
+        start = lowered.find(marker)
+        if start < 0:
+            continue
+        window = lowered[start : start + 240]
+        for needle, label in SKILL_KEYWORD_HINTS:
+            if needle in window and label.lower() not in seen and label not in candidates:
+                candidates.append(label)
+                seen.add(label.lower())
+
+    return candidates
+
 ROLE_KEYWORDS = [
     "backend engineer",
     "backend developer",
@@ -181,6 +287,11 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
         logger.info("voice_extraction_skipped reason=LLM_PROVIDER_missing")
         return None
 
+    transcript_text = _normalize_text(transcript)
+    if len(transcript_text) > 20000:
+        logger.info("transcript_truncated original_len=%s truncated_to=20000", len(transcript_text))
+        transcript_text = transcript_text[:20000]
+
     prompt = (
         "Extract structured hiring information from the following conversation transcript.\n"
         "Return ONLY valid JSON.\n"
@@ -194,6 +305,12 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
         '    "location": "",\n'
         '    "salary_range": ""\n'
         "  },\n"
+        '  "remote_policy": "remote|hybrid|onsite",\n'
+        '  "experience_required": "",\n'
+        '  "education_level": "",\n'
+        '  "preferred_institutions": [],\n'
+        '  "certifications": [],\n'
+        '  "compensation": "",\n'
         '  "company": {\n'
         '    "name": "",\n'
         '    "industry": "",\n'
@@ -202,7 +319,7 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
         '  "confidence": 0.0\n'
         "}\n"
         "If a field is missing in transcript, use empty string or empty array.\n\n"
-        f"{sanitize_prompt_block('Transcript', transcript, max_length=12000)}\n"
+        f"{sanitize_prompt_block('Transcript', transcript_text, max_length=20000)}\n"
     )
 
     try:
@@ -325,6 +442,12 @@ def _sanitize_structured_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "location": _normalize_text(job_raw.get("location")),
             "salary_range": _normalize_text(job_raw.get("salary_range")),
         },
+        "remote_policy": _normalize_text(payload.get("remote_policy") or job_raw.get("remote_policy")),
+        "experience_required": _normalize_text(payload.get("experience_required") or job_raw.get("experience_required")),
+        "education_level": _normalize_text(payload.get("education_level") or job_raw.get("education_level")),
+        "preferred_institutions": _normalize_list(payload.get("preferred_institutions") or job_raw.get("preferred_institutions")),
+        "certifications": _normalize_list(payload.get("certifications") or job_raw.get("certifications")),
+        "compensation": _normalize_text(payload.get("compensation") or job_raw.get("compensation")),
         "company": {
             "name": _normalize_text(company_raw.get("name")),
             "industry": _normalize_text(company_raw.get("industry")),
@@ -518,6 +641,12 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     extracted_job = structured["job"]
     extracted_company = structured["company"]
     confidence = structured["confidence"]
+    extracted_remote_policy = _normalize_text(structured.get("remote_policy"))
+    extracted_experience_required = _normalize_text(structured.get("experience_required"))
+    extracted_education_level = _normalize_text(structured.get("education_level"))
+    extracted_preferred_institutions = _normalize_list(structured.get("preferred_institutions"))
+    extracted_certifications = _normalize_list(structured.get("certifications"))
+    extracted_compensation = _normalize_text(structured.get("compensation"))
 
     existing_company_name = _normalize_text(getattr(job.company, "name", "")) if getattr(job, "company", None) else ""
     existing_company_description = (
@@ -531,6 +660,13 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     merged_experience_level = job.experience_level if _normalize_text(job.experience_level) else extracted_job["experience_level"]
     merged_skills = _merge_unique(job.skills_required or [], extracted_job["skills_required"])
     merged_responsibilities = _merge_unique(job.responsibilities or [], extracted_job["responsibilities"])
+    transcript_skills = _extract_skill_keywords_from_transcript(cleaned_text, existing=merged_skills)
+    merged_skills = _merge_unique(merged_skills, transcript_skills)
+    nice_to_have_skills = _extract_nice_to_have_skills_from_transcript(cleaned_text, existing=merged_skills)
+    detected_seniority = _detect_label_from_transcript(cleaned_text, SENIORITY_HINTS, default=_normalize_text(merged_experience_level))
+    detected_company_stage = _detect_label_from_transcript(cleaned_text, COMPANY_STAGE_HINTS)
+    if detected_seniority and not _normalize_text(merged_experience_level):
+        merged_experience_level = detected_seniority
 
     merged_company_name = existing_company_name or extracted_company["name"]
     merged_company_industry = existing_company_industry or extracted_company["industry"]
@@ -576,6 +712,12 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
                 "job.experience_level": extracted_job["experience_level"],
                 "job.location": extracted_job["location"],
                 "job.salary_range": extracted_job["salary_range"],
+                "remote_policy": extracted_remote_policy,
+                "experience_required": extracted_experience_required,
+                "education_level": extracted_education_level,
+                "preferred_institutions": extracted_preferred_institutions,
+                "certifications": extracted_certifications,
+                "compensation": extracted_compensation,
                 "company.name": extracted_company["name"],
                 "company.industry": extracted_company["industry"],
                 "company.description": extracted_company["description"],
@@ -605,7 +747,19 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         experience_level=merged_experience_level,
         location=merged_location,
         compensation=merged_compensation,
+        remote_policy=extracted_remote_policy or None,
+        experience_required=extracted_experience_required or None,
         structured_data={
+            "skills": merged_skills,
+            "nice_to_have_skills": nice_to_have_skills,
+            "seniority": detected_seniority or merged_experience_level,
+            "company_stage": detected_company_stage,
+            "remote_policy": extracted_remote_policy,
+            "experience_required": extracted_experience_required,
+            "education_level": extracted_education_level,
+            "preferred_institutions": extracted_preferred_institutions,
+            "certifications": extracted_certifications,
+            "compensation": extracted_compensation,
             "voiceExtraction": {
                 "source": "fallback" if used_fallback else "openai",
                 "job": extracted_job,
@@ -637,6 +791,18 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         job_id=job_id,
         transcript=cleaned_text,
         structured_data_json={
+            "title": job.title or structured_data.get("title") or structured_data.get("job_title") or "",
+            "location": job.location or structured_data.get("location") or "",
+            "skills": merged_skills,
+            "nice_to_have_skills": nice_to_have_skills,
+            "seniority": detected_seniority or merged_experience_level,
+            "company_stage": detected_company_stage,
+            "remote_policy": extracted_remote_policy,
+            "experience_required": extracted_experience_required,
+            "education_level": extracted_education_level,
+            "preferred_institutions": extracted_preferred_institutions,
+            "certifications": extracted_certifications,
+            "compensation": extracted_compensation,
             "voiceExtraction": {
                 "source": "fallback" if used_fallback else "openai",
                 "job": extracted_job,
@@ -657,6 +823,8 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         intake_status="completed",
         completed_at=datetime.now(timezone.utc),
     )
+    if _normalize_text(getattr(updated, "job_status", "")).lower() == "draft":
+        updated = jobs.update_candidate_sourcing_state(job_id=job_id, job_status="active") or updated
     try:
         # Re-embed the enriched job and upsert to Qdrant.
         # Do NOT call fetch_ranked_candidates here — frontend triggers that separately with refresh=true.

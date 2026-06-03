@@ -76,6 +76,7 @@ from app.services.skill_normalizer import normalize_skills, parse_experience
 from app.services.qdrant_service import (
     delete_candidate_vectors,
     ensure_all_collections,
+    QdrantUnavailableError,
     is_qdrant_search_error_active,
     last_qdrant_search_error,
     search_candidate_chunks,
@@ -2561,6 +2562,7 @@ def _build_ranked_candidates_from_pdl(
         candidate_email = ensure_candidate_email(item)
         candidate_external_id = _extract_candidate_external_id(item)
         candidate_identity_key = _candidate_identity_key(item)
+        existing_profile = profile_repo.get(job_id=job.id, candidate_id=candidate_id)
         stored_raw_data = dict(item)
         if candidate_email and not _extract_candidate_email(stored_raw_data):
             stored_raw_data["email"] = candidate_email
@@ -2571,6 +2573,26 @@ def _build_ranked_candidates_from_pdl(
             stored_raw_data["email_source"] = "generated"
 
         if not candidate_name.strip() or not candidate_role.strip():
+            continue
+
+        embedding_source = dict(stored_raw_data)
+        existing_raw_data = getattr(existing_profile, "raw_data", None)
+        if isinstance(existing_raw_data, dict):
+            embedding_source = {**existing_raw_data, **embedding_source}
+        candidate_qdrant_id = str(
+            embedding_source.get("qdrant_id")
+            or embedding_source.get("qdrantPointId")
+            or embedding_source.get("qdrant_point_id")
+            or getattr(existing_profile, "qdrant_point_id", "")
+            or ""
+        ).strip()
+        candidate_last_refreshed_at = (
+            embedding_source.get("last_refreshed_at")
+            or embedding_source.get("lastRefreshedAt")
+            or getattr(existing_profile, "last_refreshed_at", None)
+        )
+        if not candidate_qdrant_id or candidate_last_refreshed_at is None:
+            logger.info("candidate_skipped reason=no_embedding candidate_id=%s", candidate_id)
             continue
 
         candidate_embed_text = _candidate_embedding_text(item)
@@ -2737,32 +2759,40 @@ def _build_ranked_candidates_from_pdl(
             role_counts=role_counts,
         )
 
-        upsert_candidate_chunks(
-            job_id=job.id,
-            candidate_id=candidate_id,
-            vectors=candidate_vectors,
-            chunks=candidate_chunks,
-            payload={
-                **({"recruiterId": recruiter_id} if recruiter_id else {}),
-                "role": candidate_role,
-                "summary": candidate_summary,
-                "name": candidate_name,
-                "company": candidate_company,
-                "location": candidate_location,
-                "skills": candidate_skills,
-                "decision": decision,
-                "finalScore": final_score,
-                "email": candidate_email,
-                "externalId": candidate_external_id,
-                "dedupeKey": candidate_identity_key,
-                "roleNorm": _normalize_identity_value(candidate_role),
-                "companyNorm": _normalize_identity_value(candidate_company),
-                "locationNorm": _normalize_identity_value(candidate_location),
-                "skillTokens": sorted(_normalized_skill_tokens(candidate_skills)),
-                "rolePattern": _normalize_identity_value(candidate_role),
-                "embeddingVersion": EMBEDDING_VERSION,
-            },
-        )
+        try:
+            upsert_candidate_chunks(
+                job_id=job.id,
+                candidate_id=candidate_id,
+                vectors=candidate_vectors,
+                chunks=candidate_chunks,
+                payload={
+                    **({"recruiterId": recruiter_id} if recruiter_id else {}),
+                    "role": candidate_role,
+                    "summary": candidate_summary,
+                    "name": candidate_name,
+                    "company": candidate_company,
+                    "location": candidate_location,
+                    "skills": candidate_skills,
+                    "decision": decision,
+                    "finalScore": final_score,
+                    "email": candidate_email,
+                    "externalId": candidate_external_id,
+                    "dedupeKey": candidate_identity_key,
+                    "roleNorm": _normalize_identity_value(candidate_role),
+                    "companyNorm": _normalize_identity_value(candidate_company),
+                    "locationNorm": _normalize_identity_value(candidate_location),
+                    "skillTokens": sorted(_normalized_skill_tokens(candidate_skills)),
+                    "rolePattern": _normalize_identity_value(candidate_role),
+                    "embeddingVersion": EMBEDDING_VERSION,
+                },
+            )
+        except QdrantUnavailableError as exc:
+            logger.warning(
+                "candidate_embedding_failed candidate_id=%s reason=qdrant_unavailable",
+                candidate_id,
+                exc_info=exc,
+            )
+            continue
 
         profile_repo.upsert(
             job_id=job.id,

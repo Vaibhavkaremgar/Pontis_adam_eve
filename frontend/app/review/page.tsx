@@ -1979,34 +1979,30 @@ export default function ReviewPage() {
                 {calibrationArchetypes.map((archetype) => {
                   const profileId = String(archetype.id || archetype.archetype_id || "").trim();
                   const profileData = (archetype.profileData && typeof archetype.profileData === "object" ? archetype.profileData : {}) as Record<string, unknown>;
-                  const title = calibrationText(
-                    profileData.profileTitle ||
+                  const yearsExperience = calibrationText(profileData.years_experience || profileData.yearsExperience || archetype.years_experience || archetype.yearsExperience);
+                  const currentRole = calibrationText(
+                    profileData.currentRole ||
+                      profileData.current_role ||
+                      profileData.profileTitle ||
                       profileData.profile_title ||
-                    profileData.candidateHeadline ||
+                      profileData.candidateHeadline ||
                       profileData.candidate_headline ||
+                      archetype.current_role ||
+                      archetype.currentRole ||
+                      archetype.role ||
                       archetype.title ||
                       archetype.name ||
-                      archetype.role ||
                       "Ideal candidate profile"
                   );
+                  const currentCompany = calibrationText(profileData.currentCompany || profileData.current_company || archetype.current_company || archetype.currentCompany || archetype.company);
                   const locationLabel = calibrationText(profileData.location || profileData.currentLocation || profileData.current_location || archetype.location);
-                  const experienceRange = calibrationText(profileData.experienceRange || profileData.experience_range || archetype.experienceRange || archetype.experience_range || "");
-                  const coreSkills = calibrationValueList(
-                    profileData.coreSkills ||
-                      profileData.core_skills ||
-                      profileData.strongestSkills ||
-                      profileData.strongest_skills ||
-                      profileData.technicalStrengths ||
-                      profileData.technical_strengths ||
-                      archetype.skills
-                  );
-                  const certifications = calibrationValueList(profileData.certifications || profileData.certification || archetype.certifications);
-                  const typicalBackground = calibrationText(profileData.typicalBackground || profileData.typical_background || archetype.summary || archetype.headline);
-                  const preferredProjectType = calibrationText(profileData.preferredProjectType || profileData.preferred_project_type);
-                  const optionalTools = calibrationValueList(profileData.optionalToolsFrameworks || profileData.optional_tools_frameworks);
+                  const topSkills = calibrationValueList(profileData.topSkills || profileData.top_skills || archetype.top_skills || archetype.skills);
+                  const careerHighlight = calibrationText(profileData.careerHighlight || profileData.career_highlight || archetype.career_highlight || archetype.description || "");
+                  const education = calibrationText(profileData.education || archetype.education || "");
+                  const worksBestAt = calibrationText(profileData.worksBestAt || profileData.works_best_at || archetype.works_best_at || archetype.background || "");
                   const isChoosing = calibrationSelectionId === profileId;
-                  const companyLabel = calibrationText(profileData.typicalCompanies || profileData.typical_companies || profileData.currentCompany || profileData.current_company || archetype.company);
-                  const profileSummary = typicalBackground || "Believable resume pattern grounded in the job details.";
+                  const headerLabel = [yearsExperience, currentRole].filter(Boolean).join(" • ") || currentRole;
+                  const subtitle = [currentCompany, locationLabel].filter(Boolean).join(" • ");
 
                   return (
                     <Card
@@ -2017,23 +2013,20 @@ export default function ReviewPage() {
                         <div className="flex items-start justify-between gap-4">
                           <div className="min-w-0 flex-1 space-y-2">
                             <CardTitle className="line-clamp-2 font-heading text-[24px] font-semibold leading-tight text-[#111827]">
-                              {title}
+                              {headerLabel}
                             </CardTitle>
                             <p className="break-words font-body text-[13px] leading-5 text-[#6B7280]">
-                              {[experienceRange, companyLabel, locationLabel].filter(Boolean).join(" Â· ")}
+                              {subtitle}
                             </p>
-                            <CardDescription className="line-clamp-3 break-words font-body text-sm leading-6 text-[#6B7280]">
-                              {profileSummary}
-                            </CardDescription>
                           </div>
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-4">
                         <div className="space-y-3 rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#4B5563]">
                           <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Core skills</p>
+                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Top skills</p>
                             <div className="mt-2 flex flex-wrap gap-2">
-                              {(coreSkills.length > 0 ? coreSkills : ["Skills from intake"]).slice(0, 6).map((skill) => (
+                              {(topSkills.length > 0 ? topSkills : ["Skills from intake"]).slice(0, 6).map((skill) => (
                                 <span
                                   key={`${profileId}-skill-${skill}`}
                                   className="max-w-full rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm break-words"
@@ -2045,30 +2038,28 @@ export default function ReviewPage() {
                           </div>
                           <div className="grid gap-3">
                             <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Typical background</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Career highlight</p>
                               <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {typicalBackground || "Grounded resume pattern tied to the intake."}
+                                {careerHighlight || "Grounded resume snapshot tied to the intake."}
                               </p>
                             </div>
                             <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Preferred project type</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Works best at</p>
                               <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {preferredProjectType || "CRUD apps, dashboards, API integrations."}
+                                {worksBestAt || "High-fit environments and operating styles from the intake."}
                               </p>
                             </div>
                           </div>
                           <div className="grid gap-3">
                             <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Certifications</p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Education</p>
                               <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {certifications.length > 0 ? certifications.join(", ") : "None required"}
+                                {education || "Varied education backgrounds from the intake"}
                               </p>
                             </div>
                             <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Optional tools/frameworks</p>
-                              <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {optionalTools.length > 0 ? optionalTools.join(", ") : "Same stack as intake"}
-                              </p>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Location</p>
+                              <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">{locationLabel || "From intake location"}</p>
                             </div>
                           </div>
                         </div>

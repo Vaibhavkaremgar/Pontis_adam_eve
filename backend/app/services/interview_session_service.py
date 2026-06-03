@@ -342,6 +342,7 @@ def create_interview_session(
     scheduling_metadata: dict[str, Any] | None = None,
     available_slots: list[str] | None = None,
     timezone_name: str | None = None,
+    candidate_email_override: str = "",
 ) -> dict[str, str | None]:
     job = JobRepository(db).get(job_id)
     if not job:
@@ -430,7 +431,7 @@ def create_interview_session(
     if not profile:
         raise APIError("Candidate not found", status_code=404)
 
-    email = ensure_candidate_email(profile)
+    email = ensure_candidate_email(profile) or str(candidate_email_override or "").strip()
     if not email:
         raise APIError("Candidate email is required", status_code=400)
 

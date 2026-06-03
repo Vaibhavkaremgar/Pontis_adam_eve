@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.core.config import APP_ENV, REFRESH_CANDIDATE_LIMIT, STALE_DAYS
+from app.core.config import APP_ENV, APIFY_TOKEN, REFRESH_CANDIDATE_LIMIT, STALE_DAYS
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
 from app.services.embedding_registry_service import get_active_embedding_version
@@ -166,7 +166,13 @@ def refresh_candidate(db: Session, candidate) -> bool:
         with db.begin_nested():
             candidate_payload = _candidate_text_payload(candidate)
             if _candidate_is_sparse(candidate_payload):
-                _refresh_candidate_with_apify_timeout(db, candidate, timeout_seconds=30.0)
+                if APIFY_TOKEN:
+                    _refresh_candidate_with_apify_timeout(db, candidate, timeout_seconds=30.0)
+                else:
+                    logger.info(
+                        "enrichment_skipped reason=no_apify_token candidate_id=%s",
+                        getattr(candidate, "candidate_id", ""),
+                    )
                 candidate_payload = _candidate_text_payload(candidate)
             recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             normalized_text = build_candidate_text(candidate_payload)

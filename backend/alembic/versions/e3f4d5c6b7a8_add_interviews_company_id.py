@@ -11,8 +11,6 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
 
-from app.models.entities import GUID
-
 
 revision = "e3f4d5c6b7a8"
 down_revision = "67925be04abf"
@@ -38,7 +36,7 @@ def upgrade() -> None:
     is_sqlite = bind.dialect.name == "sqlite"
 
     if _table_exists(inspector, "interviews") and not _column_exists(inspector, "interviews", "company_id"):
-        op.add_column("interviews", sa.Column("company_id", GUID(), nullable=True))
+        op.add_column("interviews", sa.Column("company_id", sa.String(36), nullable=True))
 
     if _table_exists(inspector, "interviews") and _table_exists(inspector, "jobs"):
         op.execute(

@@ -833,17 +833,51 @@ _GOOGLE_XRAY_NEGATIVE_FILTERS = [
     "-hiring",
 ]
 
+_XRAY_SIGNAL_BANNED_MARKERS = (
+    "preferred skills",
+    "preferred roles",
+    "preferred experience",
+    "technical strengths",
+)
+
 _FRONTEND_MARKERS = ("frontend", "ui", "ux", "html", "css", "javascript", "typescript", "react", "next.js", "vue", "angular", "svelte")
 _BACKEND_MARKERS = ("backend", "api", "fastapi", "django", "flask", "node", "express", "rest", "microservice", "microservices", "python", "go", "java")
 _DATA_MARKERS = ("data", "analytics", "etl", "pipeline", "pipelines", "warehouse", "snowflake", "dbt", "databricks")
 _FULLSTACK_MARKERS = ("full stack", "fullstack", "full-stack")
+_INDIAN_CITY_NAMES = {
+    "hyderabad",
+    "bangalore",
+    "bengaluru",
+    "mumbai",
+    "pune",
+    "chennai",
+    "delhi",
+    "noida",
+    "gurgaon",
+    "gurugram",
+    "kolkata",
+    "ahmedabad",
+    "jaipur",
+    "kochi",
+    "indore",
+    "coimbatore",
+    "chandigarh",
+    "nagpur",
+}
 
 
 def _quote_query_term(value: str) -> str:
     cleaned = _normalize_text(value)
     if not cleaned:
         return ""
-    return f'"{cleaned}"' if " " in cleaned else cleaned.lower()
+    words = cleaned.split()
+    if len(words) <= 1:
+        return cleaned.lower()
+    if len(words) == 2:
+        return f'"{cleaned}"'
+    kept = " ".join(words[:2])
+    logger.info('term_truncated original="%s" kept="%s"', cleaned, kept)
+    return f'"{kept}"'
 
 
 def _or_group(values: list[str]) -> str:
@@ -862,6 +896,230 @@ def _space_group(values: list[str]) -> str:
 
 def _negative_filters_clause() -> str:
     return " ".join(_GOOGLE_XRAY_NEGATIVE_FILTERS)
+
+
+def _normalize_location_term(location: str) -> str:
+    cleaned = _normalize_text(location)
+    lowered = cleaned.lower()
+    if not cleaned or "remote" in lowered:
+        return ""
+    city = cleaned.strip().strip(",.")
+    city_key = city.lower()
+    if city_key in _INDIAN_CITY_NAMES:
+        return f'"{city.title()}" India'
+    return f'"{city}"'
+
+
+def _clean_xray_signal_keywords(*values: Any, limit: int = 4) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        raw_items: list[str] = []
+        if isinstance(value, (list, tuple, set)):
+            raw_items.extend([_normalize_text(item) for item in value if _normalize_text(item)])
+        else:
+            normalized = _normalize_text(value)
+            if normalized:
+                raw_items.append(normalized)
+        for raw_item in raw_items:
+            for token in _split_keyword_phrases(raw_item):
+                cleaned = _normalize_text(token)
+                if not cleaned:
+                    continue
+                lowered = cleaned.lower()
+                if "|" in cleaned:
+                    continue
+                if any(marker in lowered for marker in _XRAY_SIGNAL_BANNED_MARKERS):
+                    continue
+                if ":" in cleaned:
+                    continue
+                if len(cleaned) > 40 or len(cleaned.split()) > 4:
+                    continue
+                key = lowered
+                if key in seen:
+                    continue
+                seen.add(key)
+                terms.append(cleaned)
+                if len(terms) >= limit:
+                    break
+        if len(terms) >= limit:
+            break
+    return terms[:limit]
+
+
+def _count_xray_and_terms(*, title_terms: list[str], must_terms: list[str], location_terms: list[str], signal_terms: list[str], nice_terms: list[str] | None = None, include_exclusion: bool = True) -> int:
+    count = 0
+    count += 1 if title_terms else 0
+    count += len(must_terms)
+    count += 1 if location_terms else 0
+    count += 1 if signal_terms else 0
+    count += 1 if nice_terms else 0
+    if include_exclusion:
+        count += 1
+    return count
+
+
+def _is_experience_year_term(value: str) -> bool:
+    text = _normalize_text(value).lower()
+    if not text:
+        return False
+    return bool(re.search(r"(?<!\d)\d{1,2}\s*(?:[-–—]\s*\d{1,2})?\s*\+?\s*(?:years?|yrs?|yr)\b", text))
+
+
+def _trim_xray_terms_to_limit(
+    *,
+    title_terms: list[str],
+    must_terms: list[str],
+    nice_terms: list[str],
+    signal_terms: list[str],
+    location_terms: list[str],
+    max_and_terms: int = 6,
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    cleaned_title_terms = _dedupe_preserve_order(title_terms)
+    cleaned_must_terms = _dedupe_preserve_order(must_terms)
+    cleaned_nice_terms = _dedupe_preserve_order(nice_terms)
+    cleaned_signal_terms = _dedupe_preserve_order(signal_terms)
+    cleaned_location_terms = _dedupe_preserve_order(location_terms)[:1]
+
+    def current_count() -> int:
+        return _count_xray_and_terms(
+            title_terms=cleaned_title_terms,
+            must_terms=cleaned_must_terms,
+            location_terms=cleaned_location_terms,
+            signal_terms=cleaned_signal_terms,
+            nice_terms=cleaned_nice_terms,
+        )
+
+    while current_count() > max_and_terms:
+        removed = False
+        for terms in (cleaned_must_terms, cleaned_nice_terms, cleaned_signal_terms):
+            if not terms:
+                continue
+            experience_index = next((index for index, term in enumerate(terms) if _is_experience_year_term(term)), None)
+            if experience_index is not None:
+                del terms[experience_index]
+                removed = True
+                break
+        if removed:
+            continue
+        if cleaned_nice_terms:
+            cleaned_nice_terms.pop()
+            continue
+        if len(cleaned_signal_terms) > 1:
+            cleaned_signal_terms.pop()
+            continue
+        if cleaned_must_terms:
+            cleaned_must_terms.pop()
+            continue
+        break
+
+    return cleaned_title_terms, cleaned_must_terms, cleaned_nice_terms, cleaned_signal_terms, cleaned_location_terms
+
+
+def _validate_xray_query(*, variant: int, query: str, title_terms: list[str], must_terms: list[str], nice_terms: list[str], signal_terms: list[str], location_terms: list[str]) -> tuple[str, dict[str, Any]]:
+    cleaned_title_terms = _dedupe_preserve_order([term for term in title_terms if _normalize_text(term) and "|" not in _normalize_text(term) and len(_normalize_text(term)) <= 40])[:3]
+    cleaned_must_terms = _dedupe_preserve_order([term for term in must_terms if _normalize_text(term) and "|" not in _normalize_text(term) and len(_normalize_text(term)) <= 40])
+    cleaned_nice_terms = _dedupe_preserve_order([term for term in nice_terms if _normalize_text(term) and "|" not in _normalize_text(term) and len(_normalize_text(term)) <= 40 and len(_normalize_text(term).split()) <= 4])
+    cleaned_signal_terms = _clean_xray_signal_keywords(signal_terms, limit=3)
+    cleaned_location_terms = _dedupe_preserve_order([term for term in location_terms if _normalize_text(term) and "|" not in _normalize_text(term) and len(_normalize_text(term)) <= 40])[:1]
+    cleaned_title_terms, cleaned_must_terms, cleaned_nice_terms, cleaned_signal_terms, cleaned_location_terms = _trim_xray_terms_to_limit(
+        title_terms=cleaned_title_terms,
+        must_terms=cleaned_must_terms,
+        nice_terms=cleaned_nice_terms,
+        signal_terms=cleaned_signal_terms,
+        location_terms=cleaned_location_terms,
+        max_and_terms=6,
+    )
+
+    title_clause = _or_group(cleaned_title_terms)
+    must_clause = _and_group(cleaned_must_terms)
+    nice_clause = _or_group(cleaned_nice_terms)
+    signal_clause = _or_group(cleaned_signal_terms)
+    location_clause = _or_group(cleaned_location_terms)
+    exclusion_clause = _negative_filters_clause()
+    parts = ["site:linkedin.com/in", title_clause, must_clause, nice_clause, signal_clause, location_clause, exclusion_clause]
+    cleaned_query = " AND ".join(part for part in parts if part)
+    cleaned_query = _normalize_text(cleaned_query)
+    return cleaned_query, {
+        "variant": variant,
+        "title_terms": cleaned_title_terms,
+        "must_terms": cleaned_must_terms,
+        "nice_terms": cleaned_nice_terms,
+        "signal_terms": cleaned_signal_terms,
+        "location_terms": cleaned_location_terms,
+        "and_term_count": _count_xray_and_terms(
+            title_terms=cleaned_title_terms,
+            must_terms=cleaned_must_terms,
+            location_terms=cleaned_location_terms,
+            signal_terms=cleaned_signal_terms,
+            nice_terms=cleaned_nice_terms,
+        ),
+    }
+
+
+def _sanitize_xray_query_for_send(query: str) -> str:
+    cleaned_query = _normalize_text(query)
+    if not cleaned_query:
+        return ""
+    parts = [part.strip() for part in cleaned_query.split(" AND ") if part.strip()]
+    safe_parts: list[str] = []
+    for part in parts:
+        lowered = part.lower()
+        if "|" in part:
+            continue
+        if any(marker in lowered for marker in _XRAY_SIGNAL_BANNED_MARKERS):
+            continue
+        if len(part) > 40 and not part.startswith("site:linkedin.com/in"):
+            continue
+        safe_parts.append(part)
+    return " AND ".join(safe_parts).strip()
+
+
+def _normalize_xray_query_phrases(query: str) -> str:
+    cleaned_query = _normalize_text(query)
+    if not cleaned_query:
+        return ""
+
+    def _replace(match: re.Match[str]) -> str:
+        phrase = _normalize_text(match.group(1))
+        words = phrase.split()
+        if len(words) <= 2:
+            return f'"{phrase}"'
+        kept = " ".join(words[:2])
+        logger.info('term_truncated original="%s" kept="%s"', phrase, kept)
+        return f'"{kept}"'
+
+    return re.sub(r'"([^"]+)"', _replace, cleaned_query)
+
+
+def _finalize_xray_query_for_send(*, query: str, query_terms: dict[str, Any] | None = None) -> tuple[str, int]:
+    cleaned_query = _sanitize_xray_query_for_send(query)
+    cleaned_query = _normalize_xray_query_phrases(cleaned_query)
+
+    if isinstance(query_terms, dict) and query_terms:
+        title_terms = list(query_terms.get("title_terms") or [])
+        must_terms = list(query_terms.get("must_terms") or query_terms.get("skill_terms") or [])
+        nice_terms = list(query_terms.get("nice_terms") or [])
+        signal_terms = list(query_terms.get("signal_terms") or [])
+        location_value = query_terms.get("location") or query_terms.get("location_terms") or []
+        if isinstance(location_value, (list, tuple, set)):
+            location_terms = list(location_value)
+        else:
+            location_terms = [location_value] if _normalize_text(location_value) else []
+        cleaned_query, meta = _validate_xray_query(
+            variant=int(query_terms.get("variant") or query_terms.get("layer_index") or 0),
+            query=cleaned_query,
+            title_terms=title_terms,
+            must_terms=must_terms,
+            nice_terms=nice_terms,
+            signal_terms=signal_terms,
+            location_terms=location_terms,
+        )
+        cleaned_query = _normalize_xray_query_phrases(cleaned_query)
+        and_terms = int(meta.get("and_term_count") or 0)
+    else:
+        and_terms = cleaned_query.count(" AND ")
+    return cleaned_query, and_terms
 
 
 def _experience_hints_for_query(seniority: str) -> list[str]:
@@ -885,6 +1143,10 @@ def _role_family_for_query(role: str, skills: list[str]) -> str:
     text = " ".join([role, " ".join(skills)]).lower()
     if any(token in text for token in ("sales", "account executive", "business development", "customer success", "sdr", "bdr", "ae", "quota", "pipeline")):
         return "sales"
+    if any(token in text for token in ("product manager", "product owner", "product lead", "product roadmap", "product ")):
+        return "product"
+    if any(token in text for token in ("hr", "human resources", "recruiter", "recruiting", "talent acquisition", "people ops", "talent")):
+        return "hr"
     has_frontend = any(marker in text for marker in _FRONTEND_MARKERS)
     has_backend = any(marker in text for marker in _BACKEND_MARKERS)
     has_data = any(marker in text for marker in _DATA_MARKERS)
@@ -1357,12 +1619,9 @@ def _build_boolean_xray_query_strategy(
     archetype_profiles = selected_archetypes or []
     archetype_signal_keywords: list[str] = []
     archetype_query_biases: list[str] = []
-    archetype_terms: list[str] = []
-    archetype_role = ""
-    archetype_project = ""
+    archetype_project_terms: list[str] = []
     archetype_skill_terms: list[str] = []
-    archetype_domain_terms: list[str] = []
-    archetype_experience_terms: list[str] = []
+    archetype_debug_terms: list[str] = []
     for archetype in archetype_profiles[:3]:
         if not isinstance(archetype, dict):
             continue
@@ -1375,116 +1634,107 @@ def _build_boolean_xray_query_strategy(
             or archetype.get("role")
             or "",
         )
-        if profile_title and not archetype_role:
-            archetype_role = profile_title
-        archetype_signal_keywords.extend(
-            _split_keyword_phrases(
-                ", ".join(
-                    [
-                        str(item)
-                        for item in (
-                            archetype.get("signal_keywords")
-                            or archetype.get("signalKeywords")
-                            or archetype.get("keywords")
-                            or []
-                        )
-                        if str(item).strip()
-                    ]
-                )
-            )
-        )
         query_bias = _normalize_query_bias(archetype.get("query_bias") or archetype.get("queryBias") or archetype.get("bias"), fallback="balanced")
         if query_bias:
             archetype_query_biases.append(query_bias)
-        archetype_project = archetype_project or _normalize_text(archetype.get("preferred_project_type") or archetype.get("preferredProjectType") or "")
-        archetype_skill_terms.extend(_split_keyword_phrases(
-            ", ".join([str(item) for item in (archetype.get("core_skills") or archetype.get("coreSkills") or []) if str(item).strip()]),
-            ", ".join([str(item) for item in (archetype.get("strongest_skills") or archetype.get("strongestSkills") or []) if str(item).strip()]),
-            ", ".join([str(item) for item in (archetype.get("optional_tools_frameworks") or archetype.get("optionalToolsFrameworks") or []) if str(item).strip()]),
+        archetype_signal_keywords.extend(_clean_xray_signal_keywords(
+            archetype.get("signal_keywords") or archetype.get("signalKeywords") or archetype.get("keywords") or [],
+            limit=4,
         ))
-        archetype_domain_terms.extend(_text_keywords(" ".join([
-            _normalize_text(archetype.get("typical_background") or archetype.get("typicalBackground") or ""),
-            _normalize_text(archetype.get("typical_companies") or archetype.get("typicalCompanies") or ""),
-            _normalize_text(archetype.get("summary") or archetype.get("resume_summary") or archetype.get("resumeSummary") or ""),
-        ]), limit=8))
-        archetype_experience_value = _normalize_text(
-            archetype.get("experience_range")
-            or archetype.get("experienceRange")
-            or archetype.get("candidateExperience")
-            or archetype.get("candidate_experience")
-            or archetype.get("years_experience")
-            or archetype.get("yearsExperience")
-            or ""
-        )
-        if archetype_experience_value:
-            archetype_experience_terms.extend(_text_keywords(archetype_experience_value, limit=4))
-        archetype_terms.extend(_split_keyword_phrases(profile_title, archetype_project, " ".join(archetype_skill_terms[:8]), " ".join(archetype_domain_terms[:8]), " ".join(archetype_experience_terms[:4])))
+        archetype_skill_terms.extend(_clean_xray_signal_keywords(
+            archetype.get("core_skills") or archetype.get("coreSkills") or [],
+            archetype.get("strongest_skills") or archetype.get("strongestSkills") or [],
+            archetype.get("optional_tools_frameworks") or archetype.get("optionalToolsFrameworks") or [],
+            limit=4,
+        ))
+        archetype_project_terms.extend(_clean_xray_signal_keywords(
+            archetype.get("preferred_project_type") or archetype.get("preferredProjectType") or "",
+            archetype.get("summary") or archetype.get("resume_summary") or archetype.get("resumeSummary") or "",
+            archetype.get("typical_background") or archetype.get("typicalBackground") or "",
+            archetype.get("background") or "",
+            limit=4,
+        ))
+        archetype_debug_terms.extend(_clean_xray_signal_keywords(
+            profile_title,
+            archetype.get("background") or "",
+            archetype.get("summary") or archetype.get("resume_summary") or archetype.get("resumeSummary") or "",
+            limit=4,
+        ))
 
     title_variants = _build_title_variants_for_query(role=normalized_role, seniority=seniority, skills=required_skills)
     role_anchor = title_variants[0] if title_variants else normalized_role or "software engineer"
-    title_clause = _or_group(title_variants[:8]) or _quote_query_term(role_anchor)
-    must_have_terms = _dedupe_preserve_order([*required_skills[:5], *certification_terms[:4]])
-    must_skills_clause = _and_group(must_have_terms[:8])
-    nice_skills_clause = _or_group(nice_skills[:4])
-    education_clause = _or_group(education_levels[:4])
-    institution_clause = _or_group(institution_terms[:12])
-    selected_signal_terms = _dedupe_preserve_order([
-        *archetype_signal_keywords[:8],
-        *archetype_skill_terms[:4],
-        *archetype_domain_terms[:4],
-    ])
+    title_terms = _dedupe_preserve_order([_sanitize_role_query(term) or _normalize_text(term) for term in title_variants[:3] if _normalize_text(term)])
+    if not title_terms:
+        title_terms = [_sanitize_role_query(role_anchor) or _normalize_text(role_anchor) or "software engineer"]
+    must_have_terms = _dedupe_preserve_order([*required_skills[:3], *certification_terms[:1]])
+    nice_to_have_terms = _dedupe_preserve_order(nice_skills[:3])
+    selected_signal_terms = _clean_xray_signal_keywords(*archetype_signal_keywords, *archetype_skill_terms, limit=4)
+    if not selected_signal_terms:
+        selected_signal_terms = _clean_xray_signal_keywords(*voice_keywords[:2], *description_keywords[:2], *project_terms[:2], limit=4)
     selected_query_bias = "balanced"
     for bias in archetype_query_biases:
         if bias in {"precision", "recall"}:
             selected_query_bias = bias
             break
-    context_terms = _dedupe_preserve_order([
-        company_stage,
-        hiring_preferences,
-        industry,
-        leadership_expectations,
-        preference_text,
-        *education_levels[:4],
-        *institution_terms[:6],
-        *selected_signal_terms[:4],
-        *description_keywords[:4],
-        *context_fallback_terms[:4],
-    ])
-    context_clause = _and_group(context_terms[:8]) if selected_query_bias == "precision" else _or_group(context_terms[:8])
-    archetype_clause = _or_group(_dedupe_preserve_order([
-        *selected_signal_terms[:4],
-        *archetype_terms[:8],
-        *archetype_skill_terms[:4],
-        *archetype_domain_terms[:4],
-        *archetype_experience_terms[:4],
-        *context_fallback_terms[:4],
-    ]))
-    experience_clause = _or_group(experience_hints[:4])
-    location_clause = ""
-    if normalized_remote_policy in {"remote", "fully remote", "work from home"}:
-        location_clause = _or_group([normalized_remote_policy, "remote"])
-    elif normalized_location:
-        location_clause = _quote_query_term(normalized_location)
-    exclusion_clause = _negated_terms("hiring", "recruiter", "jobs", "careers", "job", "apply", "talent acquisition")
+    location_terms = [normalized_location] if normalized_location else ([normalized_remote_policy] if normalized_remote_policy in {"remote", "fully remote", "work from home"} else [])
+    role_signal_terms = selected_signal_terms[:2]
+    stack_signal_terms = selected_signal_terms[:2]
+    archetype_signal_terms = selected_signal_terms[:2] + (nice_to_have_terms[:1] if nice_to_have_terms else [])
 
-    def _compose(*clauses: str) -> str:
-        parts = ["site:linkedin.com/in"]
-        parts.extend(clause for clause in clauses if clause)
-        parts.append(exclusion_clause)
-        return " AND ".join(part for part in parts if part).strip()
+    def _build_query(*, variant: int, title_group: list[str], must_group: list[str], nice_group: list[str], signal_group: list[str], location_group: list[str]) -> str:
+        title_clause = _or_group(title_group)
+        must_clause = _and_group(must_group)
+        nice_clause = _or_group(nice_group)
+        signal_clause = _or_group(signal_group)
+        location_clause = _or_group(location_group)
+        query = " AND ".join(
+            part
+            for part in [
+                "site:linkedin.com/in",
+                title_clause,
+                must_clause,
+                nice_clause,
+                signal_clause,
+                location_clause,
+                _negative_filters_clause(),
+            ]
+            if part
+        ).strip()
+        cleaned_query, _meta = _validate_xray_query(
+            variant=variant,
+            query=query,
+            title_terms=title_group,
+            must_terms=must_group,
+            nice_terms=nice_group,
+            signal_terms=signal_group,
+            location_terms=location_group,
+        )
+        return cleaned_query
 
-    if selected_query_bias == "precision":
-        role_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
-        stack_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
-        archetype_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, location_clause, context_clause)
-    elif selected_query_bias == "recall":
-        role_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
-        stack_query = _compose(must_skills_clause, nice_skills_clause or _or_group(selected_signal_terms[:4]), title_clause, education_clause, institution_clause, context_clause, location_clause)
-        archetype_query = _compose(title_clause, archetype_clause or context_clause, must_skills_clause, education_clause, institution_clause, location_clause)
-    else:
-        role_query = _compose(title_clause, must_skills_clause, education_clause, institution_clause, experience_clause, location_clause, context_clause)
-        stack_query = _compose(must_skills_clause, nice_skills_clause, title_clause, education_clause, institution_clause, context_clause, location_clause)
-        archetype_query = _compose(title_clause, archetype_clause or context_clause, must_skills_clause, education_clause, institution_clause, location_clause)
+    role_query = _build_query(
+        variant=1,
+        title_group=title_terms[:3],
+        must_group=must_have_terms[:2],
+        nice_group=[],
+        signal_group=role_signal_terms[:2],
+        location_group=location_terms[:1],
+    )
+    stack_query = _build_query(
+        variant=2,
+        title_group=title_terms[:2],
+        must_group=must_have_terms[:3],
+        nice_group=[],
+        signal_group=[],
+        location_group=location_terms[:1],
+    )
+    archetype_query = _build_query(
+        variant=3,
+        title_group=title_terms[:2],
+        must_group=[],
+        nice_group=[],
+        signal_group=archetype_signal_terms[:3],
+        location_group=location_terms[:1],
+    )
     queries = _dedupe_preserve_order([role_query, stack_query, archetype_query])
 
     family = _role_family_for_query(role=normalized_role, skills=required_skills)
@@ -1532,7 +1782,7 @@ def _build_boolean_xray_query_strategy(
                 "voice_keywords": voice_keywords[:4],
                 "jd_keywords": description_keywords[:4],
                 "project_terms": project_terms[:4],
-                "archetype_terms": archetype_terms[:8],
+                "archetype_terms": archetype_debug_terms[:8],
                 "education_levels": education_levels[:4],
                 "preferred_institutions": institution_terms[:6],
                 "certifications": certification_terms[:4],
@@ -1911,6 +2161,129 @@ def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: li
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _strict_xray_title_variants(*, role: str, seniority: str, skills: list[str]) -> list[str]:
+    family = _role_family_for_query(role=_normalize_text(role) or _normalize_text(seniority), skills=skills)
+    if family == "sales":
+        variants = ["sales executive", "account executive", "account manager"]
+    elif family == "backend":
+        variants = ["backend engineer", "python developer", "software engineer"]
+    elif family == "frontend":
+        variants = ["frontend engineer", "ui developer", "software engineer"]
+    elif family == "fullstack":
+        variants = ["full stack engineer", "backend engineer", "frontend engineer"]
+    elif family == "data":
+        variants = ["data engineer", "analytics engineer", "software engineer"]
+    elif family == "product":
+        variants = ["product manager", "product owner", "product lead"]
+    elif family == "hr":
+        variants = ["recruiter", "talent partner", "talent acquisition"]
+    else:
+        sanitized = _sanitize_role_query(role) or _sanitize_role_query(seniority) or "software engineer"
+        words = [word for word in sanitized.split() if word]
+        if len(words) >= 2:
+            base = " ".join(words[:2])
+        else:
+            base = sanitized
+        variants = [base, f"{base} engineer", f"{base} manager"]
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for variant in variants:
+        value = _normalize_text(variant)
+        if not value:
+            continue
+        if len(value.split()) > 2:
+            value = " ".join(value.split()[:2])
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(value)
+    return cleaned[:3]
+
+
+def _xray_single_keyword_terms(*values: Any, limit: int = 4, exclude: list[str] | None = None) -> list[str]:
+    excluded = {_normalize_lower(item) for item in (exclude or []) if _normalize_text(item)}
+    terms: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        items = value if isinstance(value, (list, tuple, set)) else [value]
+        for item in items:
+            text = _normalize_text(item)
+            if not text:
+                continue
+            for token in _tokenize_query_terms(text):
+                cleaned = _normalize_text(token)
+                if not cleaned or len(cleaned) > 40 or "|" in cleaned:
+                    continue
+                if _normalize_lower(cleaned) in excluded:
+                    continue
+                key = _normalize_lower(cleaned)
+                if key in seen:
+                    continue
+                seen.add(key)
+                terms.append(cleaned)
+                if len(terms) >= limit:
+                    return terms
+    return terms
+
+
+def _xray_signal_terms(*, selected_archetypes: list[dict[str, Any]] | None, nice_to_have_skills: list[str] | None, skills: list[str], role: str, seniority: str, limit: int) -> list[str]:
+    raw_terms: list[str] = []
+
+    def add_first_tokens(value: Any) -> None:
+        items = value if isinstance(value, (list, tuple, set)) else [value]
+        for item in items:
+            text = _normalize_text(item)
+            if not text:
+                continue
+            tokens = _tokenize_query_terms(text)
+            if tokens:
+                raw_terms.append(tokens[0])
+
+    for archetype in selected_archetypes or []:
+        if not isinstance(archetype, dict):
+            continue
+        add_first_tokens(archetype.get("signal_keywords") or archetype.get("signalKeywords") or archetype.get("keywords") or [])
+        add_first_tokens(archetype.get("background") or archetype.get("summary") or archetype.get("resume_summary") or archetype.get("resumeSummary") or "")
+
+    raw_terms.extend(_xray_single_keyword_terms(nice_to_have_skills or [], skills, role, seniority, limit=6))
+    raw_terms.extend(_xray_single_keyword_terms(skills, limit=6))
+    cleaned = _xray_single_keyword_terms(raw_terms, limit=limit)
+    if not cleaned:
+        cleaned = _xray_single_keyword_terms(role, seniority, skills, limit=limit)
+    return cleaned[:limit]
+
+
+def _strict_xray_query_for_variant(
+    *,
+    variant: int,
+    title_terms: list[str],
+    skill_terms: list[str],
+    signal_terms: list[str],
+    location: str,
+    negatives: list[str] | None = None,
+) -> str:
+    location_term = _normalize_location_term(location)
+    negative_clause = " ".join(negatives or ["-jobs", "-hiring", "-recruiter"]).strip()
+    parts: list[str] = ["site:linkedin.com/in"]
+    if title_terms:
+        parts.append(_or_group(title_terms))
+    if skill_terms:
+        if variant == 2:
+            parts.append("(" + " AND ".join(token.lower() for token in skill_terms[:3]) + ")")
+        else:
+            parts.append("(" + " AND ".join(token.lower() for token in skill_terms[:2]) + ")")
+    if signal_terms:
+        parts.append(_or_group(signal_terms))
+    if location_term:
+        parts.append(f"({location_term})")
+    if negative_clause:
+        parts.append(negative_clause)
+    query = " ".join(part for part in parts if part).strip()
+    return _normalize_text(query)
+
+
 def build_linkedin_xray_query_layers(
     *,
     role: str,
@@ -1939,111 +2312,67 @@ def build_linkedin_xray_query_layers(
     seniority = _normalize_text(seniority)
     location = _normalize_text(location)
     skill_list = _dedupe_preserve_order(skills)
+    title_variants = _strict_xray_title_variants(role=role, seniority=seniority, skills=skill_list)
+    family = _role_family_for_query(role=role or seniority, skills=skill_list)
+    title_exclude = _xray_single_keyword_terms(title_variants, limit=12)
+    context_terms = _xray_single_keyword_terms(_business_context_terms_for_query(role=role or seniority, seniority=seniority, skills=skill_list), limit=4)
 
-    strategy = _build_xray_query_strategy_v2(
+    skill_terms = _xray_single_keyword_terms(skill_list, limit=6, exclude=title_exclude)
+    if not skill_terms:
+        skill_terms = _xray_single_keyword_terms(_core_skills_for_query(skill_list, family=family), limit=6, exclude=title_exclude)
+    stack_skill_terms = _xray_single_keyword_terms(skill_list, limit=6)
+    if not stack_skill_terms:
+        stack_skill_terms = skill_terms[:]
+
+    nice_terms = _xray_single_keyword_terms(nice_to_have_skills or [], limit=3, exclude=title_exclude)
+    signal_terms = _xray_signal_terms(
+        selected_archetypes=selected_archetypes,
+        nice_to_have_skills=nice_to_have_skills,
+        skills=skill_list,
         role=role,
         seniority=seniority,
-        skills=skill_list,
-        education_level=education_level,
-        preferred_institutions=preferred_institutions,
-        certifications=certifications,
+        limit=3,
+    )
+    recall_extra_terms = nice_terms[:1] or context_terms[:1] or stack_skill_terms[:1]
+    if family == "sales":
+        combined_sales_terms = _dedupe_preserve_order([*signal_terms, *context_terms, *stack_skill_terms])
+        preferred_sales_terms = [
+            term
+            for term in ["enterprise", "quota", "pipeline", "c-suite", "revenue", "b2b"]
+            if term in {_normalize_lower(item) for item in combined_sales_terms}
+        ]
+        if preferred_sales_terms:
+            signal_terms = preferred_sales_terms[:3]
+        else:
+            signal_terms = signal_terms[:2] or ["enterprise", "quota"]
+        recall_extra_terms = [term for term in ["pipeline", "revenue", "b2b", "enterprise"] if term in {_normalize_lower(item) for item in combined_sales_terms}][:1] or recall_extra_terms
+
+    role_query = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=title_variants[:3],
+        skill_terms=skill_terms[:2] or skill_list[:2],
+        signal_terms=signal_terms[:2],
         location=location,
-        company_stage=company_stage,
-        hiring_preferences=hiring_preferences,
-        industry=industry,
-        leadership_expectations=leadership_expectations,
-        remote_policy=remote_policy,
-        compensation=compensation,
-        work_authorization=work_authorization,
-        recruiter_preferences=recruiter_preferences,
-        job_description=job_description,
-        voice_summary=voice_summary,
-        voice_transcript=voice_transcript,
-        nice_to_have_skills=nice_to_have_skills,
-        job_description_keywords=job_description_keywords,
-        selected_archetypes=selected_archetypes,
+    )
+    stack_query = _strict_xray_query_for_variant(
+        variant=2,
+        title_terms=title_variants[:2],
+        skill_terms=stack_skill_terms[:3] or skill_list[:3],
+        signal_terms=[],
+        location=location,
+    )
+    archetype_query = _strict_xray_query_for_variant(
+        variant=3,
+        title_terms=title_variants[:2],
+        skill_terms=[],
+        signal_terms=(signal_terms[:2] + recall_extra_terms)[:3],
+        location=location,
     )
 
-    def _pick_unique_query(*families: list[str], used: set[str]) -> str:
-        for family in families:
-            for query in family or []:
-                normalized = _normalize_lower(_normalize_text(query))
-                if not normalized or normalized in used:
-                    continue
-                used.add(normalized)
-                return _normalize_text(query)
-        return ""
-
-    used_queries: set[str] = set()
-    role_query = _pick_unique_query(strategy.get("role_queries") or [], strategy.get("stack_queries") or [], strategy.get("project_queries") or [], used=used_queries)
-    stack_query = _pick_unique_query(strategy.get("stack_queries") or [], strategy.get("project_queries") or [], strategy.get("framework_queries") or [], used=used_queries)
-    archetype_query = _pick_unique_query(strategy.get("project_queries") or [], strategy.get("framework_queries") or [], strategy.get("role_queries") or [], used=used_queries)
-
-    fallback_queries = list(strategy.get("queries") or [])
-    query_bias = _normalize_lower(strategy.get("query_bias") or "balanced")
-    if not role_query:
-        role_query = _pick_unique_query(fallback_queries, used=used_queries)
-    if not stack_query:
-        stack_query = _pick_unique_query(fallback_queries, used=used_queries)
-    if not archetype_query:
-        archetype_query = _pick_unique_query(fallback_queries, used=used_queries)
-
-    if not role_query:
-        role_query = " ".join(
-            part
-            for part in [
-                "site:linkedin.com/in",
-                _query_clause(_sanitize_role_query(role) or _sanitize_role_query(seniority) or _normalize_text(role) or "software engineer", _normalize_text(location)),
-                _negative_filters_clause(),
-            ]
-            if part
-        ).strip()
-    if not stack_query:
-        fallback_stack_terms = _dedupe_preserve_order(
-            [
-                *skill_list[:4],
-                *_core_skills_for_query(
-                    skill_list,
-                    family=_role_family_for_query(role=_normalize_text(role) or _sanitize_role_query(seniority) or "software engineer", skills=skill_list),
-                )[:4],
-                _normalize_text(location),
-            ]
-        )
-        stack_query = " ".join(
-            part
-            for part in [
-                "site:linkedin.com/in",
-                _query_clause(*fallback_stack_terms),
-                _negative_filters_clause(),
-            ]
-            if part
-        ).strip()
-    if not archetype_query:
-        archetype_terms = _dedupe_preserve_order(
-            [
-                *(strategy.get("selected_archetype_signal_keywords") or []),
-                *(strategy.get("selected_archetypes") or []),
-                *strategy.get("voice_keywords", [])[:4],
-                *strategy.get("description_keywords", [])[:4],
-                *strategy.get("project_terms", [])[:4],
-                *strategy.get("core_skills", [])[:4],
-                _normalize_text(location),
-            ]
-        )
-        archetype_query = " ".join(
-            part
-            for part in [
-                "site:linkedin.com/in",
-                _query_clause(*archetype_terms),
-                _negative_filters_clause(),
-            ]
-            if part
-        ).strip()
-
     layers = [
-        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", **(strategy.get("family_signals", {}).get("role", {}))}),
-        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", **(strategy.get("family_signals", {}).get("stack", {}))}),
-        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", **(strategy.get("family_signals", {}).get("archetype", {}))}),
+        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location}),
+        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location}),
+        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location}),
     ]
     return [layer for layer in layers if layer.query]
 
@@ -2238,6 +2567,16 @@ class SerpApiClient:
         query = _normalize_text(query)
         if not query:
             return results
+        variant = None
+        layer_type = ""
+        query_terms: dict[str, Any] | None = None
+        if isinstance(context, dict):
+            variant = context.get("layer_index") or context.get("variant")
+            layer_type = _normalize_text(context.get("layer_type") or context.get("family") or "")
+            query_terms = context.get("query_terms") if isinstance(context.get("query_terms"), dict) else None
+        query, and_terms = _finalize_xray_query_for_send(query=query, query_terms=query_terms)
+        logger.info('xray_query_final query="%s" and_terms=%s', query, and_terms)
+        logger.info('xray_query_sent variant=%s layer_type=%s query="%s"', variant or "", layer_type, query)
         page_count = max(1, int(pages or 1))
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
@@ -2952,6 +3291,7 @@ def discover_linkedin_xray_candidates(
                         "layer_index": index,
                         "layer_type": layer.layer_type,
                         "num_requested": SERPAPI_RESULTS_PER_PAGE,
+                        "query_terms": dict(layer.signals or {}),
                     },
                 )
                 future_map[future] = (layer, pages_to_fetch)

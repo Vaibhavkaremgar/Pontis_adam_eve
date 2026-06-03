@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.core.config import OUTREACH_REPLY_TO_EMAIL
+from app.core.config import OUTREACH_REPLY_TO_EMAIL, TEST_INVITE_EMAIL
 from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, JobIntakeRepository, JobRepository
 from app.db.session import SessionLocal
 from app.services.email_service import send_email
@@ -290,8 +290,11 @@ def _send_interview_invite(
     candidate_name = (profile.name or "").strip() or "there"
     role = (job.title or "").strip() or "the role"
     candidate_email = _extract_candidate_email(profile)
-    if not candidate_email:
-        raise APIError("Candidate email is required", status_code=400)
+    using_test_email = not candidate_email and bool(TEST_INVITE_EMAIL)
+    recipient_email = candidate_email or TEST_INVITE_EMAIL
+    if not recipient_email:
+        logger.info("invite_skipped reason=no_email candidate_id=%s", candidate_id)
+        return {"success": False, "reason": "no_email"}
 
     company = CompanyRepository(db).get_by_id(job.company_id)
     company_name = str(getattr(company, "name", "") or "").strip() or "the company"
@@ -307,6 +310,7 @@ def _send_interview_invite(
         resume_text=resume_text,
         available_slots=normalized_slots,
         timezone_name=normalized_timezone,
+        candidate_email_override=recipient_email,
     )
     booking_link = str(session.get("slot_link") or session.get("slotLink") or session.get("bookingLink") or session.get("bookingUrl") or "")
     workflow_token = str(session.get("workflowToken") or session.get("workflow_token") or session.get("token") or "").strip()
@@ -319,6 +323,8 @@ def _send_interview_invite(
         booking_link=booking_link,
         timezone_name=normalized_timezone,
     )
+    if using_test_email:
+        subject = f"[TEST] {subject}"
     html_body = _build_invite_html(
         candidate_name=candidate_name,
         role=role,
@@ -340,7 +346,7 @@ def _send_interview_invite(
     for attempt in range(1, 4):
         try:
             send_email(
-                to_email=candidate_email,
+                to_email=recipient_email,
                 subject=subject,
                 body=body,
                 html=html_body,
@@ -353,13 +359,15 @@ def _send_interview_invite(
                 "interview_invite_sent job_id=%s candidate_id=%s to_email=%s",
                 job_id,
                 candidate_id,
-                candidate_email,
+                recipient_email,
             )
+            if using_test_email:
+                logger.info("test_invite_sent candidate_id=%s to=%s", candidate_id, TEST_INVITE_EMAIL)
             return {
                 "success": True,
                 "jobId": job_id,
                 "candidateId": candidate_id,
-                "candidateEmail": candidate_email,
+                "candidateEmail": recipient_email,
                 "subject": subject,
                 "body": body,
                 "bookingLink": booking_link,
@@ -399,7 +407,7 @@ def _send_interview_invite(
         "success": False,
         "jobId": job_id,
         "candidateId": candidate_id,
-        "candidateEmail": candidate_email,
+        "candidateEmail": recipient_email,
         "subject": subject,
         "body": body,
         "bookingLink": booking_link,
