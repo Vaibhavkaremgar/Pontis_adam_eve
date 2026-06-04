@@ -12,6 +12,8 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade"
 ]);
 
+const STRIP_RESPONSE_HEADERS = new Set(["content-encoding", "content-length"]);
+
 function getBackendBaseUrl() {
   const url = process.env.BACKEND_API_URL?.trim();
   if (!url) {
@@ -44,16 +46,36 @@ async function proxyRequest(request: Request, pathParts: string[]) {
   }
 
   const response = await fetch(targetUrl, init);
-  const responseHeaders = new Headers(response.headers);
-  for (const header of HOP_BY_HOP_HEADERS) {
-    responseHeaders.delete(header);
-  }
+  const responseHeaders = new Headers();
+  response.headers.forEach((value, name) => {
+    const lower = name.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(lower) || STRIP_RESPONSE_HEADERS.has(lower) || lower === "set-cookie") {
+      return;
+    }
+    responseHeaders.append(name, value);
+  });
 
-  return new NextResponse(response.body, {
+  const getSetCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const setCookieHeaders =
+    typeof getSetCookie === "function"
+      ? getSetCookie.call(response.headers)
+      : response.headers
+          .get("set-cookie")
+          ?.split(/,(?=[^;]+=[^;]+)/g)
+          .map((cookie) => cookie.trim())
+          .filter(Boolean) ?? [];
+
+  const proxiedResponse = new NextResponse(await response.arrayBuffer(), {
     status: response.status,
     statusText: response.statusText,
     headers: responseHeaders
   });
+
+  for (const cookie of setCookieHeaders) {
+    proxiedResponse.headers.append("set-cookie", cookie);
+  }
+
+  return proxiedResponse;
 }
 
 export async function GET(request: Request, context: { params: Promise<{ path: string[] }> }) {
