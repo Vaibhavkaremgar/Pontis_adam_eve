@@ -2499,28 +2499,12 @@ def build_linkedin_xray_query_layers(
         signal_terms=signal_terms[:2],
         location=location,
     )
-    role_query_fallback = _strict_xray_query_for_variant(
-        variant=1,
-        title_terms=title_variants[:3],
-        skill_terms=skill_terms[:2] or skill_list[:2],
-        signal_terms=signal_terms[:2],
-        location=location,
-        include_location=False,
-    )
     stack_query = _strict_xray_query_for_variant(
         variant=2,
         title_terms=title_variants[:2],
         skill_terms=stack_skill_terms[:3] or skill_list[:3],
         signal_terms=[],
         location=location,
-    )
-    stack_query_fallback = _strict_xray_query_for_variant(
-        variant=2,
-        title_terms=title_variants[:2],
-        skill_terms=stack_skill_terms[:3] or skill_list[:3],
-        signal_terms=[],
-        location=location,
-        include_location=False,
     )
     archetype_query = _strict_xray_query_for_variant(
         variant=3,
@@ -2529,23 +2513,12 @@ def build_linkedin_xray_query_layers(
         signal_terms=(signal_terms[:2] + recall_extra_terms)[:3],
         location=location,
     )
-    archetype_query_fallback = _strict_xray_query_for_variant(
-        variant=3,
-        title_terms=title_variants[:2],
-        skill_terms=[],
-        signal_terms=(signal_terms[:2] + recall_extra_terms)[:3],
-        location=location,
-        include_location=False,
-    )
 
     location_term = _normalize_location_term(location)
     layers = [
         XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "variant": "primary", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="role_query_2", query=role_query_fallback, signals={"family": "role", "variant": "fallback", "fallback_for": "role_query_1", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": "", "location_term": ""}),
         XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "variant": "primary", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="stack_query_2", query=stack_query_fallback, signals={"family": "stack", "variant": "fallback", "fallback_for": "stack_query_1", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": "", "location_term": ""}),
         XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "variant": "primary", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="project_query_2", query=archetype_query_fallback, signals={"family": "archetype", "variant": "fallback", "fallback_for": "project_query_1", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": "", "location_term": ""}),
     ]
     return [layer for layer in layers if layer.query]
 
@@ -2740,16 +2713,14 @@ class SerpApiClient:
         query = _normalize_text(query)
         if not query:
             return results
-        variant = None
         layer_type = ""
         query_terms: dict[str, Any] | None = None
         if isinstance(context, dict):
-            variant = context.get("layer_index") or context.get("variant")
             layer_type = _normalize_text(context.get("layer_type") or context.get("family") or "")
             query_terms = context.get("query_terms") if isinstance(context.get("query_terms"), dict) else None
         query, and_terms = _finalize_xray_query_for_send(query=query, query_terms=query_terms)
         logger.info('xray_query_final query="%s" and_terms=%s', query, and_terms)
-        logger.info('xray_query_sent variant=%s layer_type=%s query="%s"', variant or "", layer_type, query)
+        logger.info('xray_query_sent layer_type=%s query="%s"', layer_type, query)
         page_count = max(1, int(pages or 1))
         for page in range(page_count):
             start = page * max(1, SERPAPI_RESULTS_PER_PAGE)
@@ -3076,7 +3047,7 @@ def discover_linkedin_xray_candidates(
         return []
 
     resolved_intake = _normalize_intake(job, intake)
-    search_pages = max(1, int(pages_per_query or 1))
+    search_pages = 1
     resolved_job_id = _normalize_text(getattr(job, "id", ""))
     resolved_company_id = _normalize_text(company_id or getattr(job, "company_id", ""))
     resolved_recruiter_id = _normalize_text(recruiter_id)
@@ -3255,7 +3226,7 @@ def discover_linkedin_xray_candidates(
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
-    limited_layers = _select_primary_query_layers(query_layers, max_layers=6)
+    limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
     quota_before = _quota_snapshot()
@@ -3435,24 +3406,17 @@ def discover_linkedin_xray_candidates(
         for family_key in family_order:
             family_layers = grouped_layers.get(family_key, {})
             primary = family_layers.get("1")
-            fallback = family_layers.get("2")
             if not primary:
                 continue
-            chosen_layer = primary
-            if _linkedin_in_hit_count(mock_raw_results) == 0 and fallback and fallback.query and fallback.query != primary.query:
-                chosen_layer = fallback
-            layer_results.append((chosen_layer, mock_raw_results, search_pages))
+            layer_results.append((primary, mock_raw_results, search_pages))
         serpapi_calls_executed = 0
     else:
-        family_index = 0
         for family_key in family_order:
             family_layers = grouped_layers.get(family_key, {})
             primary = family_layers.get("1")
-            fallback = family_layers.get("2")
             if not primary:
                 continue
-            family_index += 1
-            pages_to_fetch = search_pages
+            pages_to_fetch = 1
             if not _reserve_serpapi_call(role=job_role, layer_type=primary.layer_type, query=primary.query):
                 continue
             fingerprint = _query_fingerprint(
@@ -3475,44 +3439,13 @@ def discover_linkedin_xray_candidates(
                     "company_id": resolved_company_id,
                     "job_id": resolved_job_id,
                     "workflow_token": resolved_workflow_token,
-                    "layer_index": family_index,
+                    "layer_index": len(layer_results) + 1,
                     "layer_type": primary.layer_type,
                     "num_requested": SERPAPI_RESULTS_PER_PAGE,
                     "query_terms": dict(primary.signals or {}),
                 },
             )
-            chosen_layer = primary
-            if _linkedin_in_hit_count(raw) == 0 and fallback and fallback.query and fallback.query != primary.query:
-                if _reserve_serpapi_call(role=job_role, layer_type=fallback.layer_type, query=fallback.query):
-                    fallback_fingerprint = _query_fingerprint(
-                        layer_type=fallback.layer_type,
-                        query=fallback.query,
-                        page=1,
-                        num_requested=SERPAPI_RESULTS_PER_PAGE,
-                        search_engine=SERPAPI_ENGINE or "google",
-                    )
-                    if _is_duplicate_query(fingerprint=fallback_fingerprint):
-                        duplicate_query_count += 1
-                        logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, fallback.layer_type, fallback_fingerprint[:12])
-                    else:
-                        fallback_raw = client.search(
-                            query=fallback.query,
-                            pages=pages_to_fetch,
-                            context={
-                                "role_search_id": resolved_role_search_id,
-                                "recruiter_id": resolved_recruiter_id,
-                                "company_id": resolved_company_id,
-                                "job_id": resolved_job_id,
-                                "workflow_token": resolved_workflow_token,
-                                "layer_index": family_index,
-                                "layer_type": fallback.layer_type,
-                                "num_requested": SERPAPI_RESULTS_PER_PAGE,
-                                "query_terms": dict(fallback.signals or {}),
-                            },
-                        )
-                        raw = fallback_raw
-                        chosen_layer = fallback
-            layer_results.append((chosen_layer, raw, pages_to_fetch))
+            layer_results.append((primary, raw, pages_to_fetch))
 
         serpapi_calls_executed = _serpapi_request_total() - serpapi_calls_before
 
