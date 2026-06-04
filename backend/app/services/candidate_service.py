@@ -531,7 +531,8 @@ def _candidate_profile_url(candidate: Any) -> str:
     url = direct_url or nested_url
     if not url:
         return ""
-    if "/in/" not in url.lower() or "/jobs/" in url.lower():
+    lowered = url.lower()
+    if "linkedin.com/" not in lowered or any(blocked in lowered for blocked in ("/jobs/", "/search/", "/posts/", "/feed/")):
         return ""
     return url
 

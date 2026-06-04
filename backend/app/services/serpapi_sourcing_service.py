@@ -643,9 +643,7 @@ def _extract_linkedin_url(link: str) -> str:
     lowered = url.lower()
     if "linkedin.com/" not in lowered:
         return ""
-    if "/in/" not in lowered:
-        return ""
-    if any(blocked in lowered for blocked in ("/jobs/", "/search/", "/company/", "/posts/", "/feed/")):
+    if any(blocked in lowered for blocked in ("/jobs/", "/search/", "/posts/", "/feed/")):
         return ""
     return url.rstrip("/")
 
@@ -707,7 +705,7 @@ def _extract_name_from_result(*, result: dict[str, Any], title: str, displayed_l
     return "Unknown", "fallback"
 
 
-def _extract_company_from_result(*, result: dict[str, Any], title: str, displayed_link: str) -> tuple[str, str]:
+def _extract_company_from_result(*, result: dict[str, Any], title: str, snippet: str, displayed_link: str) -> tuple[str, str]:
     company_field = _normalize_text(result.get("company") or "")
     if company_field:
         logger.info('xray_company_extracted method="company_field" value="%s"', company_field)
@@ -725,6 +723,20 @@ def _extract_company_from_result(*, result: dict[str, Any], title: str, displaye
         if company_from_title:
             logger.info('xray_company_extracted method="title_split" value="%s"', company_from_title)
             return company_from_title, "title_split"
+
+    snippet_text = _normalize_text(snippet)
+    if snippet_text:
+        snippet_match = re.search(
+            r"\b(?:works?|working|currently|presently)?\s*at\s+(?P<company>.+?)(?=\s+\b(?:as|in|with|for|from|on)\b|[.,;|]|$)",
+            snippet_text,
+            flags=re.IGNORECASE,
+        )
+        if snippet_match:
+            company_from_snippet = _normalize_text(snippet_match.group("company"))
+            company_from_snippet = re.split(r"\s*(?:\||,|;|:)\s*", company_from_snippet, maxsplit=1)[0].strip(" ,;:-|")
+            if company_from_snippet:
+                logger.info('xray_company_extracted method="snippet" value="%s"', company_from_snippet)
+                return company_from_snippet, "snippet"
 
     displayed_text = _normalize_text(displayed_link)
     if displayed_text and "linkedin.com/" in displayed_text.lower():
@@ -2256,6 +2268,23 @@ def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: in
     return selected
 
 
+def _linkedin_in_hit_count(results: list[dict[str, Any]]) -> int:
+    count = 0
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        link = _normalize_text(item.get("link") or "")
+        displayed_link = _normalize_text(item.get("displayed_link") or "")
+        combined = f"{link} {displayed_link}".lower()
+        if "linkedin.com/in/" in combined:
+            count += 1
+    return count
+
+
+def _linkedin_profile_anchor_clause() -> str:
+    return '("linkedin.com/in/" OR "linkedin.com/company/" OR "View profile") AND ("about" OR "experience" OR "skills")'
+
+
 def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: list[str], layers: list[XRayQueryLayer], limit: int) -> str:
     payload = {
         "role_search_id": _normalize_text(role_search_id),
@@ -2372,9 +2401,10 @@ def _strict_xray_query_for_variant(
     skill_terms: list[str],
     signal_terms: list[str],
     location: str,
+    include_location: bool = True,
     negatives: list[str] | None = None,
 ) -> str:
-    location_term = _normalize_location_term(location)
+    location_term = _normalize_location_term(location) if include_location else ""
     logger.info('xray_location_normalized input="%s" output="%s"', location, location_term)
     negative_clause = " ".join(negatives or ["-jobs", "-hiring", "-recruiter"]).strip()
     parts: list[str] = ["site:linkedin.com/in"]
@@ -2392,6 +2422,10 @@ def _strict_xray_query_for_variant(
     if negative_clause:
         parts.append(negative_clause)
     query = " ".join(part for part in parts if part).strip()
+    query = _normalize_text(query)
+    anchor_clause = _linkedin_profile_anchor_clause()
+    if query:
+        query = f"{query} AND ({anchor_clause})"
     return _normalize_text(query)
 
 
@@ -2465,12 +2499,28 @@ def build_linkedin_xray_query_layers(
         signal_terms=signal_terms[:2],
         location=location,
     )
+    role_query_fallback = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=title_variants[:3],
+        skill_terms=skill_terms[:2] or skill_list[:2],
+        signal_terms=signal_terms[:2],
+        location=location,
+        include_location=False,
+    )
     stack_query = _strict_xray_query_for_variant(
         variant=2,
         title_terms=title_variants[:2],
         skill_terms=stack_skill_terms[:3] or skill_list[:3],
         signal_terms=[],
         location=location,
+    )
+    stack_query_fallback = _strict_xray_query_for_variant(
+        variant=2,
+        title_terms=title_variants[:2],
+        skill_terms=stack_skill_terms[:3] or skill_list[:3],
+        signal_terms=[],
+        location=location,
+        include_location=False,
     )
     archetype_query = _strict_xray_query_for_variant(
         variant=3,
@@ -2479,12 +2529,23 @@ def build_linkedin_xray_query_layers(
         signal_terms=(signal_terms[:2] + recall_extra_terms)[:3],
         location=location,
     )
+    archetype_query_fallback = _strict_xray_query_for_variant(
+        variant=3,
+        title_terms=title_variants[:2],
+        skill_terms=[],
+        signal_terms=(signal_terms[:2] + recall_extra_terms)[:3],
+        location=location,
+        include_location=False,
+    )
 
     location_term = _normalize_location_term(location)
     layers = [
-        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location, "location_term": location_term}),
+        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "variant": "primary", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location, "location_term": location_term}),
+        XRayQueryLayer(layer_type="role_query_2", query=role_query_fallback, signals={"family": "role", "variant": "fallback", "fallback_for": "role_query_1", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": "", "location_term": ""}),
+        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "variant": "primary", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location, "location_term": location_term}),
+        XRayQueryLayer(layer_type="stack_query_2", query=stack_query_fallback, signals={"family": "stack", "variant": "fallback", "fallback_for": "stack_query_1", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": "", "location_term": ""}),
+        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "variant": "primary", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location, "location_term": location_term}),
+        XRayQueryLayer(layer_type="project_query_2", query=archetype_query_fallback, signals={"family": "archetype", "variant": "fallback", "fallback_for": "project_query_1", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": "", "location_term": ""}),
     ]
     return [layer for layer in layers if layer.query]
 
@@ -2821,7 +2882,7 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     displayed_link = _normalize_text(result.get("displayed_link") or "")
     query_context = query_context or {}
     name, _name_method = _extract_name_from_result(result=result, title=title, displayed_link=displayed_link, link=link)
-    company, _company_method = _extract_company_from_result(result=result, title=title, displayed_link=displayed_link)
+    company, _company_method = _extract_company_from_result(result=result, title=title, snippet=snippet, displayed_link=displayed_link)
     linkedin_url = _extract_linkedin_url(link)
     if not linkedin_url and "linkedin.com" in (link.lower() + " " + displayed_link.lower()):
         linkedin_url = _construct_linkedin_profile_url(displayed_link=displayed_link, link=link)
@@ -3194,7 +3255,7 @@ def discover_linkedin_xray_candidates(
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
-    limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
+    limited_layers = _select_primary_query_layers(query_layers, max_layers=6)
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
     quota_before = _quota_snapshot()
@@ -3361,69 +3422,99 @@ def discover_linkedin_xray_candidates(
     serpapi_latency_started = perf_counter()
     duplicate_query_count = 0
     effective_workers = 1 if LOCAL_DEV_MODE else max(1, len(limited_layers))
+    grouped_layers: dict[str, dict[str, XRayQueryLayer]] = {}
+    for layer in limited_layers:
+        family_key = layer.layer_type.rsplit("_", 1)[0]
+        suffix = layer.layer_type.rsplit("_", 1)[-1]
+        grouped_layers.setdefault(family_key, {})[suffix] = layer
+
+    family_order = ("role_query", "stack_query", "project_query", "framework_query")
+
     if mock_mode_active:
         mock_raw_results = _load_mock_xray_raw_results(role=job_role)
-        for index, layer in enumerate(limited_layers, start=1):
+        for family_key in family_order:
+            family_layers = grouped_layers.get(family_key, {})
+            primary = family_layers.get("1")
+            fallback = family_layers.get("2")
+            if not primary:
+                continue
+            chosen_layer = primary
+            if _linkedin_in_hit_count(mock_raw_results) == 0 and fallback and fallback.query and fallback.query != primary.query:
+                chosen_layer = fallback
+            layer_results.append((chosen_layer, mock_raw_results, search_pages))
+        serpapi_calls_executed = 0
+    else:
+        family_index = 0
+        for family_key in family_order:
+            family_layers = grouped_layers.get(family_key, {})
+            primary = family_layers.get("1")
+            fallback = family_layers.get("2")
+            if not primary:
+                continue
+            family_index += 1
+            pages_to_fetch = search_pages
+            if not _reserve_serpapi_call(role=job_role, layer_type=primary.layer_type, query=primary.query):
+                continue
             fingerprint = _query_fingerprint(
-                layer_type=layer.layer_type,
-                query=layer.query,
+                layer_type=primary.layer_type,
+                query=primary.query,
                 page=1,
                 num_requested=SERPAPI_RESULTS_PER_PAGE,
                 search_engine=SERPAPI_ENGINE or "google",
             )
             if _is_duplicate_query(fingerprint=fingerprint):
                 duplicate_query_count += 1
-                logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
+                logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, primary.layer_type, fingerprint[:12])
                 continue
-            layer_results.append((layer, mock_raw_results, search_pages))
-        serpapi_calls_executed = 0
-    else:
-        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-            future_map: dict[Any, tuple[XRayQueryLayer, int]] = {}
-            for index, layer in enumerate(limited_layers, start=1):
-                pages_to_fetch = search_pages
-                if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
-                    continue
-                fingerprint = _query_fingerprint(
-                    layer_type=layer.layer_type,
-                    query=layer.query,
-                    page=1,
-                    num_requested=SERPAPI_RESULTS_PER_PAGE,
-                    search_engine=SERPAPI_ENGINE or "google",
-                )
-                if _is_duplicate_query(fingerprint=fingerprint):
-                    duplicate_query_count += 1
-                    logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
-                    continue
-                future = executor.submit(
-                    client.search,
-                    query=layer.query,
-                    pages=pages_to_fetch,
-                    context={
-                        "role_search_id": resolved_role_search_id,
-                        "recruiter_id": resolved_recruiter_id,
-                        "company_id": resolved_company_id,
-                        "job_id": resolved_job_id,
-                        "workflow_token": resolved_workflow_token,
-                        "layer_index": index,
-                        "layer_type": layer.layer_type,
-                        "num_requested": SERPAPI_RESULTS_PER_PAGE,
-                        "query_terms": dict(layer.signals or {}),
-                    },
-                )
-                future_map[future] = (layer, pages_to_fetch)
+            raw = client.search(
+                query=primary.query,
+                pages=pages_to_fetch,
+                context={
+                    "role_search_id": resolved_role_search_id,
+                    "recruiter_id": resolved_recruiter_id,
+                    "company_id": resolved_company_id,
+                    "job_id": resolved_job_id,
+                    "workflow_token": resolved_workflow_token,
+                    "layer_index": family_index,
+                    "layer_type": primary.layer_type,
+                    "num_requested": SERPAPI_RESULTS_PER_PAGE,
+                    "query_terms": dict(primary.signals or {}),
+                },
+            )
+            chosen_layer = primary
+            if _linkedin_in_hit_count(raw) == 0 and fallback and fallback.query and fallback.query != primary.query:
+                if _reserve_serpapi_call(role=job_role, layer_type=fallback.layer_type, query=fallback.query):
+                    fallback_fingerprint = _query_fingerprint(
+                        layer_type=fallback.layer_type,
+                        query=fallback.query,
+                        page=1,
+                        num_requested=SERPAPI_RESULTS_PER_PAGE,
+                        search_engine=SERPAPI_ENGINE or "google",
+                    )
+                    if _is_duplicate_query(fingerprint=fallback_fingerprint):
+                        duplicate_query_count += 1
+                        logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, fallback.layer_type, fallback_fingerprint[:12])
+                    else:
+                        fallback_raw = client.search(
+                            query=fallback.query,
+                            pages=pages_to_fetch,
+                            context={
+                                "role_search_id": resolved_role_search_id,
+                                "recruiter_id": resolved_recruiter_id,
+                                "company_id": resolved_company_id,
+                                "job_id": resolved_job_id,
+                                "workflow_token": resolved_workflow_token,
+                                "layer_index": family_index,
+                                "layer_type": fallback.layer_type,
+                                "num_requested": SERPAPI_RESULTS_PER_PAGE,
+                                "query_terms": dict(fallback.signals or {}),
+                            },
+                        )
+                        raw = fallback_raw
+                        chosen_layer = fallback
+            layer_results.append((chosen_layer, raw, pages_to_fetch))
 
-            for future in as_completed(future_map):
-                layer, pages_to_fetch = future_map[future]
-                try:
-                    raw = future.result()
-                except Exception as exc:
-                    logger.warning("serpapi_layer_failed role=%s layer_type=%s error=%s", job_role, layer.layer_type, str(exc))
-                    log_metric("serpapi_layer_error", role=job_role, layer_type=layer.layer_type, error_type=type(exc).__name__)
-                    raw = []
-                layer_results.append((layer, raw, pages_to_fetch))
-
-            serpapi_calls_executed = _serpapi_request_total() - serpapi_calls_before
+        serpapi_calls_executed = _serpapi_request_total() - serpapi_calls_before
 
     serpapi_latency_ms = round((perf_counter() - serpapi_latency_started) * 1000.0, 2)
 

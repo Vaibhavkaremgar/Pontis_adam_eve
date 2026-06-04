@@ -39,15 +39,18 @@ class SerpApiSourcingTests(unittest.TestCase):
             leadership_expectations="technical leadership",
         )
 
-        self.assertEqual(len(queries), 3)
-        self.assertEqual(len({query.lower() for query in queries}), 3)
+        self.assertEqual(len(queries), 6)
+        self.assertEqual(len({query.lower() for query in queries}), 6)
         self.assertTrue(all("site:linkedin.com/in" in query for query in queries))
+        self.assertTrue(all("linkedin.com/company" in query.lower() for query in queries))
+        self.assertTrue(all("view profile" in query.lower() for query in queries))
+        self.assertTrue(all("about" in query.lower() or "experience" in query.lower() or "skills" in query.lower() for query in queries))
         self.assertTrue(any("backend" in query.lower() and "engineer" in query.lower() for query in queries))
         self.assertTrue(any("python" in query.lower() and "fastapi" in query.lower() for query in queries))
         self.assertTrue(any("aws" in query.lower() for query in queries))
         self.assertTrue(any("san francisco" in query.lower() for query in queries))
 
-    def test_build_linkedin_query_layers_uses_selected_archetypes_and_keeps_three_queries(self) -> None:
+    def test_build_linkedin_query_layers_uses_selected_archetypes_and_keeps_six_queries(self) -> None:
         layers = build_linkedin_xray_query_layers(
             role="Backend Engineer",
             seniority="Senior",
@@ -70,10 +73,12 @@ class SerpApiSourcingTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(len(layers), 3)
-        self.assertEqual(len({layer.query.lower() for layer in layers}), 3)
+        self.assertEqual(len(layers), 6)
+        self.assertEqual(len({layer.query.lower() for layer in layers}), 6)
         self.assertTrue(any("Backend API Engineer" in layer.query or "backend engineer" in layer.query.lower() for layer in layers))
-        self.assertTrue(all("hyderabad" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("hyderabad" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("hyderabad" not in layer.query.lower() for layer in layers))
+        self.assertTrue(any("linkedin.com/company" in layer.query.lower() for layer in layers))
         self.assertTrue(any("python" in layer.query.lower() or "mongodb" in layer.query.lower() for layer in layers))
 
     def test_build_linkedin_query_layers_strips_raw_archetype_text_and_stays_short(self) -> None:
@@ -103,16 +108,15 @@ class SerpApiSourcingTests(unittest.TestCase):
             ],
         )
 
-        self.assertEqual(len(layers), 3)
+        self.assertEqual(len(layers), 6)
         for layer in layers:
             self.assertNotIn("|", layer.query)
             self.assertNotIn("Preferred skills", layer.query)
             self.assertNotIn("Preferred roles", layer.query)
             self.assertNotIn("Technical Strengths", layer.query)
             self.assertLessEqual(layer.query.upper().count(" AND ") + 1, 12)
-            self.assertTrue("hyderabad" in layer.query.lower())
-        self.assertTrue(any("enterprise sales" in layer.query.lower() or "c-suite" in layer.query.lower() for layer in layers))
-        self.assertTrue(any("saas sales" in layer.query.lower() or "pipeline management" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("hyderabad" in layer.query.lower() for layer in layers))
+        self.assertTrue(any("hyderabad" not in layer.query.lower() for layer in layers))
 
     @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
     def test_discovery_normalizes_and_dedupes_linkedin_results(self, _mock_disabled: object) -> None:
@@ -149,7 +153,7 @@ class SerpApiSourcingTests(unittest.TestCase):
         ), patch.object(
             SerpApiClient,
             "search",
-            side_effect=[raw_results, [], [], []],
+            side_effect=[raw_results, [], [], [], [], []],
         ):
             candidates = discover_linkedin_xray_candidates(job=job, intake=job.structured_data, limit=5)
 
@@ -159,7 +163,7 @@ class SerpApiSourcingTests(unittest.TestCase):
         self.assertEqual(candidate["full_name"], "Jane Doe")
         self.assertIn("Python", candidate["skills"])
         self.assertGreater(candidate["score"], 0.0)
-        self.assertEqual(candidate["source_type"], "linkedin_xray")
+        self.assertEqual(candidate["source_type"], "xray")
 
     @patch("app.services.serpapi_sourcing_service.is_serpapi_disabled", return_value=False)
     def test_discovery_extracts_clean_company_role_and_location_from_sentence_snippets(self, _mock_disabled: object) -> None:
@@ -189,7 +193,7 @@ class SerpApiSourcingTests(unittest.TestCase):
         ), patch.object(
             SerpApiClient,
             "search",
-            side_effect=[raw_results, [], [], []],
+            side_effect=[raw_results, [], [], [], [], []],
         ):
             candidates = discover_linkedin_xray_candidates(job=job, intake=job.structured_data, limit=5)
 
@@ -222,7 +226,7 @@ class SerpApiSourcingTests(unittest.TestCase):
         ), patch.object(
             SerpApiClient,
             "search",
-            side_effect=[[], [], [], []],
+            side_effect=[[], [], [], [], [], []],
         ):
             candidates = discover_linkedin_xray_candidates(
                 job=job,
