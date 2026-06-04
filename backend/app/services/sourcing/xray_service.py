@@ -194,7 +194,8 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
     linkedin_url = normalize_linkedin_url(candidate.get("linkedin_url") or candidate.get("linkedinUrl") or "")
     source_query = _normalize_text(candidate.get("source_query") or candidate.get("sourceQuery") or candidate.get("search_query") or "")
     source_timestamp = _normalize_text(candidate.get("source_timestamp") or candidate.get("sourceTimestamp") or datetime.now(timezone.utc).isoformat())
-    source_provider = _normalize_text(candidate.get("source_provider") or candidate.get("sourceProvider") or "xray_apollo") or "xray_apollo"
+    source_provider = _normalize_text(candidate.get("source_provider") or candidate.get("sourceProvider") or "serpapi") or "serpapi"
+    source = _normalize_text(candidate.get("source") or candidate.get("sourceType") or "xray") or "xray"
     location = _normalize_text(candidate.get("location") or "")
     summary = _normalize_text(candidate.get("summary") or candidate.get("snippet") or "")
     experience = _normalize_text(candidate.get("experience") or candidate.get("inferred_experience") or "")
@@ -250,7 +251,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
             "identity": identity.to_dict(),
             "id": candidate_id,
             "source_provider": source_provider,
-            "source_provider_label": "xray_apollo",
+            "source_provider_label": source_provider,
             "source_query": source_query,
             "source_timestamp": source_timestamp,
             "current_company": company or None,
@@ -273,11 +274,11 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         contactPhone="",
         exportStatus="pending",
         ats_export_status="not_sent",
-        source="linkedin_xray",
+        source=source,
         sourceProvider=source_provider,
         sourceQuery=source_query,
         sourceTimestamp=source_timestamp,
-        sourceType="linkedin_xray",
+        sourceType=source,
         linkedinUrl=linkedin_url,
         githubUrl=None,
         portfolioUrl=None,

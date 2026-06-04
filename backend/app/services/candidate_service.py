@@ -556,29 +556,38 @@ def _is_reviewable_candidate(candidate: Any) -> bool:
     is_mock_email = False
     source_provider = ""
     source_type = ""
+    source = ""
     linkedin_url = ""
+    has_linkedin_url = False
     display_name = _candidate_display_name(candidate)
     if isinstance(candidate, dict):
         email = _extract_candidate_email(candidate)
         is_mock_email = bool(candidate.get("isMockEmail"))
         source_provider = _normalize_text(candidate.get("sourceProvider") or candidate.get("source_provider") or "").lower()
         source_type = _normalize_text(candidate.get("sourceType") or candidate.get("source_type") or "").lower()
+        source = _normalize_text(candidate.get("source") or "").lower()
         linkedin_url = _candidate_profile_url(candidate)
+        has_linkedin_url = candidate.get("linkedin_url") is not None or candidate.get("linkedinUrl") is not None
     else:
         email = str(getattr(candidate, "email", "") or "").strip().lower()
         is_mock_email = bool(getattr(candidate, "isMockEmail", False))
         source_provider = str(getattr(candidate, "sourceProvider", "") or getattr(candidate, "source_provider", "") or "").strip().lower()
         source_type = str(getattr(candidate, "sourceType", "") or getattr(candidate, "source_type", "") or "").strip().lower()
+        source = str(getattr(candidate, "source", "") or "").strip().lower()
         linkedin_url = _candidate_profile_url(candidate)
+        has_linkedin_url = getattr(candidate, "linkedin_url", None) is not None or getattr(candidate, "linkedinUrl", None) is not None
     if is_mock_email:
         return False
     if email.endswith("@test.local"):
         return False
-    if source_provider == "xray_apollo" or source_type == "linkedin_xray":
+    if source == "xray" or has_linkedin_url:
         # X-Ray candidates are reviewable as long as we have a valid LinkedIn profile URL.
         # Some valid search hits do not carry a stable display name in the upstream payload,
         # and we do not want to drop the full deck because of that.
-        return bool(linkedin_url)
+        if linkedin_url:
+            logger.info("xray_candidate_kept reason=xray_source candidate_id=%s", getattr(candidate, "id", "") if not isinstance(candidate, dict) else str(candidate.get("id") or candidate.get("candidate_id") or ""))
+            return True
+        return False
     if not email:
         return False
     return True
@@ -3449,11 +3458,26 @@ def fetch_ranked_candidates(
             )
             profile_repo = CandidateProfileRepository(db)
             refresh_queue_jobs: list[dict[str, str]] = []
+            persisted_count = 0
             for candidate in xray_results:
+                candidate_id = str(candidate.id or "").strip()
                 existing_profile = profile_repo.get(job_id=job.id, candidate_id=candidate.id)
                 existing_raw_data = dict(getattr(existing_profile, "raw_data", {}) or {}) if existing_profile else {}
-                new_raw_data = candidate.model_dump()
+                new_raw_data = dict(candidate.model_dump())
+                new_raw_data["source"] = "xray"
+                new_raw_data["linkedin_url"] = str(
+                    getattr(candidate, "linkedinUrl", "")
+                    or getattr(candidate, "linkedin_url", "")
+                    or candidate.profileData.get("linkedin_url")
+                    or ""
+                ).strip()
                 raw_data_changed = not existing_profile or _candidate_refresh_fingerprint(existing_raw_data) != _candidate_refresh_fingerprint(new_raw_data)
+                logger.info(
+                    'xray_dedup_check candidate_id="%s" is_new=%s fingerprint_changed=%s',
+                    candidate_id,
+                    not bool(existing_profile),
+                    raw_data_changed,
+                )
                 profile_repo.upsert(
                     job_id=job.id,
                     candidate_id=candidate.id,
@@ -3462,18 +3486,27 @@ def fetch_ranked_candidates(
                     company=candidate.company,
                     summary=candidate.summary,
                     skills=list(candidate.skills or []),
-                    raw_data=candidate.model_dump(),
+                    raw_data=new_raw_data,
                     fit_score=float(candidate.fitScore or 0.0),
                     decision=candidate.decision or "potential",
                     strategy=candidate.strategy or "MEDIUM",
                 )
+                persisted_count += 1
+                logger.info(
+                    'xray_upsert_result candidate_id="%s" status="%s"',
+                    candidate_id,
+                    "inserted" if not existing_profile else ("updated" if raw_data_changed else "skipped"),
+                )
                 if raw_data_changed:
                     refresh_queue_jobs.append({"job_id": job.id, "candidate_id": candidate.id})
+                    logger.info('xray_queue_decision candidate_id="%s" action="enqueue"', candidate_id)
+                else:
+                    logger.info('xray_queue_decision candidate_id="%s" action="skip"', candidate_id)
             _safe_commit(db, context="candidate_fetch_xray_refresh_queue_commit", job_id=job.id)
+            queued_count = 0
             if refresh_queue_jobs:
                 from app.services.job_queue_service import enqueue_job
 
-                queued_count = 0
                 for payload in refresh_queue_jobs:
                     try:
                         enqueue_job(
@@ -3495,6 +3528,20 @@ def fetch_ranked_candidates(
                     job.id,
                     queued_count,
                 )
+            logger.info(
+                'xray_sourcing_complete total_found=%s total_persisted=%s total_queued=%s',
+                len(xray_results),
+                persisted_count,
+                queued_count,
+            )
+            if persisted_count == 0:
+                if not xray_results:
+                    empty_reason = "no_results"
+                elif not refresh_queue_jobs:
+                    empty_reason = "all_duplicates"
+                else:
+                    empty_reason = "upsert_failed"
+                logger.info('xray_sourcing_empty reason="%s"', empty_reason)
             raw_xray_count = len(xray_results)
             reviewable_seed_candidates = list(xray_results)
             display_limit = 20  # Recruiter view always gets the top 20 from the ranked X-Ray pool.
@@ -3570,6 +3617,11 @@ def fetch_ranked_candidates(
                 reviewable_count=len(xray_results),
             )
             record_candidate_fetch(job_id=job.id, candidates=xray_results)
+            returned_candidates = xray_results[:display_limit]
+            logger.info('candidate_fetch_result job_id="%s" count=%s', job.id, len(returned_candidates))
+            if not returned_candidates:
+                fetch_reason = "no_profiles" if not reviewable_seed_candidates else "all_filtered"
+                logger.info('candidate_fetch_empty job_id="%s" reason="%s"', job.id, fetch_reason)
             logger.info(
                 "[xray_candidates] job_id=%s recruiter_id=%s candidate_count=%s rerank_status=%s",
                 job.id,
@@ -3577,7 +3629,7 @@ def fetch_ranked_candidates(
                 len(xray_results),
                 "applied" if xray_results else "empty",
             )
-            return xray_results[:display_limit]
+            return returned_candidates
         except Exception as exc:
             logger.warning("xray_candidate_retrieval_failed job_id=%s error=%s", job.id, str(exc))
             log_metric("candidate_retrieval_error", job_id=job.id, mode=resolved_mode, source="xray", error_type=type(exc).__name__)

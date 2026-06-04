@@ -650,6 +650,96 @@ def _extract_linkedin_url(link: str) -> str:
     return url.rstrip("/")
 
 
+def _extract_linkedin_slug_name(link: str) -> str:
+    url = _normalize_text(link)
+    if "linkedin.com/" not in url.lower():
+        return ""
+    match = re.search(r"linkedin\.com/(?:in|company)/([^/?#]+)", url, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    slug = _normalize_text(match.group(1)).strip("-_.")
+    if not slug:
+        return ""
+    words = [part for part in re.split(r"[-_.]+", slug) if part]
+    if not words:
+        return ""
+    return _normalize_text(" ".join(word if len(word) <= 2 else word.title() for word in words[:4]))
+
+
+def _construct_linkedin_profile_url(*, displayed_link: str, link: str) -> str:
+    for value in (link, displayed_link):
+        url = _normalize_text(value)
+        if "linkedin.com/" not in url.lower():
+            continue
+        match = re.search(r"linkedin\.com/(?:in|company)/([^/?#]+)", url, flags=re.IGNORECASE)
+        if match:
+            slug = _normalize_text(match.group(1)).strip("-_.")
+            if slug:
+                return f"https://www.linkedin.com/in/{slug}"
+        fallback_slug = _normalize_text(url.split("linkedin.com", 1)[-1]).strip(" /›>:-_.")
+        if fallback_slug:
+            fallback_slug = re.sub(r"^(?:in|company)/", "", fallback_slug, flags=re.IGNORECASE)
+            fallback_slug = re.split(r"\s+", fallback_slug, maxsplit=1)[0].strip("-_.")
+            if fallback_slug and "/" not in fallback_slug and "linkedin" not in fallback_slug.lower():
+                return f"https://www.linkedin.com/in/{fallback_slug}"
+    return ""
+
+
+def _extract_name_from_result(*, result: dict[str, Any], title: str, displayed_link: str, link: str) -> tuple[str, str]:
+    title_text = _normalize_text(title)
+    if title_text:
+        title_name = _normalize_text(title_text.split(" - ", 1)[0].strip())
+        if title_name and title_name.lower() != "linkedin":
+            logger.info('xray_name_extracted method="title_split" value="%s"', title_name)
+            return title_name, "title_split"
+
+    raw_name = _normalize_text(result.get("name") or "")
+    if raw_name:
+        logger.info('xray_name_extracted method="name_field" value="%s"', raw_name)
+        return raw_name, "name_field"
+
+    slug_name = _extract_linkedin_slug_name(displayed_link) or _extract_linkedin_slug_name(link)
+    if slug_name:
+        logger.info('xray_name_extracted method="url_slug" value="%s"', slug_name)
+        return slug_name, "url_slug"
+
+    logger.info('xray_name_extracted method="fallback" value="Unknown"')
+    return "Unknown", "fallback"
+
+
+def _extract_company_from_result(*, result: dict[str, Any], title: str, displayed_link: str) -> tuple[str, str]:
+    company_field = _normalize_text(result.get("company") or "")
+    if company_field:
+        logger.info('xray_company_extracted method="company_field" value="%s"', company_field)
+        return company_field, "company_field"
+
+    title_text = _normalize_text(title)
+    company_from_title = ""
+    for marker in (" at ", " @ "):
+        if marker in title_text.lower():
+            company_match = re.search(r"\s+(?:at|@)\s+(.+)$", title_text, flags=re.IGNORECASE)
+            company_from_title = _normalize_text(company_match.group(1) if company_match else "")
+            break
+    if company_from_title:
+        company_from_title = re.split(r"\s*(?:-|\||,|;)\s*", company_from_title, maxsplit=1)[0].strip()
+        if company_from_title:
+            logger.info('xray_company_extracted method="title_split" value="%s"', company_from_title)
+            return company_from_title, "title_split"
+
+    displayed_text = _normalize_text(displayed_link)
+    if displayed_text and "linkedin.com/" in displayed_text.lower():
+        slug = _normalize_text(displayed_text.split("linkedin.com", 1)[-1]).strip(" /›>:-_.")
+        slug = re.sub(r"^(?:in|company)/", "", slug, flags=re.IGNORECASE)
+        slug = re.split(r"\s+", slug, maxsplit=1)[0].strip("-_.")
+        if slug:
+            company_from_display = _normalize_text(slug.replace("-", " ").replace("_", " ").title())
+            logger.info('xray_company_extracted method="displayed_link" value="%s"', company_from_display)
+            return company_from_display, "displayed_link"
+
+    logger.info('xray_company_extracted method="fallback" value=""')
+    return "", "fallback"
+
+
 def _extract_github_url(link: str) -> str:
     url = _normalize_text(link)
     if "github.com/" not in url.lower():
@@ -701,6 +791,14 @@ def _profile_fragments(text: str) -> list[str]:
 
 
 def _extract_clean_role(text: str) -> str:
+    title_like = _normalize_text(text)
+    if " - " in title_like and (" at " in title_like.lower() or " @ " in title_like.lower()):
+        after_dash = _normalize_text(title_like.split(" - ", 1)[1])
+        role_segment = re.split(r"\s+(?:at|@)\s+", after_dash, maxsplit=1)[0]
+        role_segment = _normalize_text(role_segment)
+        role_segment = re.split(r"\s*(?:[.,;|]| - )\s*", role_segment, maxsplit=1)[0].strip(" ,;:-|")
+        if role_segment and 1 < len(role_segment.split()) <= 8 and role_segment.lower() not in _TITLE_ROLE_STOPWORDS:
+            return role_segment
     for fragment in _profile_fragments(text):
         lowered = fragment.lower()
         if "linkedin" in lowered or lowered.startswith("http"):
@@ -784,6 +882,10 @@ def _extract_clean_location(text: str) -> str:
     for token in ("remote", "hybrid", "on-site", "onsite"):
         if token in lowered:
             return token.replace("-", " ").title()
+
+    for city in sorted(_INDIAN_CITY_NAMES, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(city)}\b", lowered):
+            return city.title()
 
     location_match = re.search(r"(?:\bbased in\b|\blocated in\b|\bin\b)\s+([A-Za-z0-9 ,.&-]{2,80}?)(?=(?:[.,;|]|$|\s+\b(?:at|with|for|from|since|as)\b))", text, flags=re.IGNORECASE)
     if location_match:
@@ -1093,8 +1195,15 @@ def _normalize_xray_query_phrases(query: str) -> str:
 
 
 def _finalize_xray_query_for_send(*, query: str, query_terms: dict[str, Any] | None = None) -> tuple[str, int]:
+    if isinstance(query_terms, dict) and query_terms:
+        if _normalize_text(query_terms.get("location_term") or ""):
+            cleaned_query = _normalize_text(query).rstrip(",").strip()
+            logger.info('xray_query_cleaned query="%s"', cleaned_query)
+            return cleaned_query, cleaned_query.count(" AND ")
+
     cleaned_query = _sanitize_xray_query_for_send(query)
     cleaned_query = _normalize_xray_query_phrases(cleaned_query)
+    cleaned_query = cleaned_query.rstrip(",").strip()
 
     if isinstance(query_terms, dict) and query_terms:
         title_terms = list(query_terms.get("title_terms") or [])
@@ -1119,6 +1228,7 @@ def _finalize_xray_query_for_send(*, query: str, query_terms: dict[str, Any] | N
         and_terms = int(meta.get("and_term_count") or 0)
     else:
         and_terms = cleaned_query.count(" AND ")
+    logger.info('xray_query_cleaned query="%s"', cleaned_query)
     return cleaned_query, and_terms
 
 
@@ -2265,6 +2375,7 @@ def _strict_xray_query_for_variant(
     negatives: list[str] | None = None,
 ) -> str:
     location_term = _normalize_location_term(location)
+    logger.info('xray_location_normalized input="%s" output="%s"', location, location_term)
     negative_clause = " ".join(negatives or ["-jobs", "-hiring", "-recruiter"]).strip()
     parts: list[str] = ["site:linkedin.com/in"]
     if title_terms:
@@ -2369,10 +2480,11 @@ def build_linkedin_xray_query_layers(
         location=location,
     )
 
+    location_term = _normalize_location_term(location)
     layers = [
-        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location}),
-        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location}),
-        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location}),
+        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location, "location_term": location_term}),
+        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location, "location_term": location_term}),
+        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location, "location_term": location_term}),
     ]
     return [layer for layer in layers if layer.query]
 
@@ -2583,7 +2695,8 @@ class SerpApiClient:
             payload = self._request(query=query, start=start, context={**(context or {}), "page": page + 1, "num_requested": SERPAPI_RESULTS_PER_PAGE})
             organic_results = payload.get("organic_results", []) if isinstance(payload, dict) else []
             if not isinstance(organic_results, list) or not organic_results:
-                break
+                logger.info("xray_page_empty page=%s reason=no_organic_results", page + 1)
+                continue
             for item in organic_results:
                 if isinstance(item, dict):
                     results.append(item)
@@ -2591,6 +2704,7 @@ class SerpApiClient:
                 break
             if page < page_count - 1:
                 time.sleep(1.0)
+        logger.info("xray_raw_results_count count=%s query_variant=%s", len(results), variant or "")
         return results
 
     def search_many(self, queries: list[str], *, pages: int = 1, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -2706,8 +2820,15 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
     snippet = _normalize_text(result.get("snippet") or "")
     displayed_link = _normalize_text(result.get("displayed_link") or "")
     query_context = query_context or {}
+    name, _name_method = _extract_name_from_result(result=result, title=title, displayed_link=displayed_link, link=link)
+    company, _company_method = _extract_company_from_result(result=result, title=title, displayed_link=displayed_link)
     linkedin_url = _extract_linkedin_url(link)
+    if not linkedin_url and "linkedin.com" in (link.lower() + " " + displayed_link.lower()):
+        linkedin_url = _construct_linkedin_profile_url(displayed_link=displayed_link, link=link)
+        if linkedin_url:
+            logger.info('xray_url_fallback original="%s" constructed="%s"', link or displayed_link or "", linkedin_url)
     if not linkedin_url:
+        logger.info('xray_candidate_dropped reason=no_linkedin_url name="%s"', name or "Unknown")
         logger.info(
             "xray_candidate_rejected reason=missing_linkedin_profile_url query=%s page=%s position=%s link=%s displayed_link=%s",
             query,
@@ -2719,9 +2840,7 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         return None
 
     text = " ".join([title, snippet, displayed_link])
-    name = _candidate_name_from_title(title) or _candidate_name_from_title(displayed_link) or _candidate_name_from_title(snippet)
     role = _extract_clean_role(snippet) or _extract_clean_role(title) or ""
-    company = _extract_clean_company(snippet) or _extract_clean_company(title) or ""
     location = _extract_clean_location(snippet) or _extract_clean_location(title) or ""
     skills = _extract_skills_from_text(text, [skill.strip() for skill in intake.get("skills", "").split(",") if skill.strip()])
     snippet_quality = _snippet_quality(title=title, snippet=snippet, displayed_link=displayed_link, company=company, location=location)
@@ -2731,8 +2850,8 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
 
     normalized = {
         "id": linkedin_url or link,
-        "full_name": name or "Unknown Candidate",
-        "name": name or "Unknown Candidate",
+        "full_name": name or "Unknown",
+        "name": name or "Unknown",
         "job_title": role or None,
         "title": role or None,
         "role": role or None,
@@ -2756,15 +2875,16 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         "source_url": link or displayed_link,
         "score": _score_result(query=query, result=result, page=page, position=position, intake=intake),
         "last_updated": datetime.now(timezone.utc).isoformat(),
-        "source_provider": "xray_apollo",
-        "sourceProvider": "xray_apollo",
-        "source": "linkedin_xray",
-        "source_type": "linkedin_xray",
-        "sourceType": "linkedin_xray",
+        "source_provider": "serpapi",
+        "sourceProvider": "serpapi",
+        "source": "xray",
+        "source_type": "xray",
+        "sourceType": "xray",
         "source_query": query,
         "sourceQuery": query,
         "source_timestamp": datetime.now(timezone.utc).isoformat(),
         "sourceTimestamp": datetime.now(timezone.utc).isoformat(),
+        "current_role": role or None,
         "current_company": company or None,
         "currentCompany": company or None,
         "inferred_experience": experience or None,
@@ -2793,13 +2913,10 @@ def _normalize_candidate_result(*, result: dict[str, Any], query: str, page: int
         },
     }
     logger.info(
-        "xray_candidate_normalized linkedin_url=%s source_url=%s query=%s page=%s position=%s snippet_quality=%s",
+        'xray_candidate_normalized name="%s" linkedin_url="%s" role="%s"',
+        name or "Unknown",
         linkedin_url,
-        _normalize_text(result.get("link") or ""),
-        query,
-        page,
-        position,
-        snippet_quality,
+        role or "",
     )
     return normalized
 
@@ -3344,6 +3461,7 @@ def discover_linkedin_xray_candidates(
             prefiltered_results.append(normalized)
 
     prefilter_ms = round((perf_counter() - prefilter_started) * 1000.0, 2)
+    logger.info("xray_normalized_count count=%s", len(prefiltered_results))
 
     dedupe_started = perf_counter()
     normalized_results: list[dict[str, Any]] = []
