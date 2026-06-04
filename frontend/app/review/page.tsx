@@ -2010,7 +2010,7 @@ export default function ReviewPage() {
                     Ideal candidate profile set {calibrationRoundLabel}
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Pick the closer resume profile. Each set has 2 profiles, and Adam uses your choice to guide X-Ray sourcing.
+                    Pick the closer resume profile. Each set has 2 profiles, and Adam uses your choice to guide candidate scanning.
                   </p>
                 </div>
                 <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
@@ -2044,7 +2044,8 @@ export default function ReviewPage() {
                   const education = calibrationText(profileData.education || archetype.education || "");
                   const worksBestAt = calibrationText(profileData.worksBestAt || profileData.works_best_at || archetype.works_best_at || archetype.background || "");
                   const isChoosing = calibrationSelectionId === profileId;
-                  const headerLabel = [yearsExperience, currentRole].filter(Boolean).join(" • ") || currentRole;
+                  const headerLabel = currentRole || yearsExperience || "Ideal candidate profile";
+                  const experienceLabel = yearsExperience ? `Exp: ${yearsExperience}` : "";
                   const subtitle = [currentCompany, locationLabel].filter(Boolean).join(" • ");
 
                   return (
@@ -2058,6 +2059,9 @@ export default function ReviewPage() {
                             <CardTitle className="line-clamp-2 font-heading text-[24px] font-semibold leading-tight text-[#111827]">
                               {headerLabel}
                             </CardTitle>
+                            {experienceLabel && (
+                              <p className="font-body text-[13px] font-medium text-[#6B7280]">{experienceLabel}</p>
+                            )}
                             <p className="break-words font-body text-[13px] leading-5 text-[#6B7280]">
                               {subtitle}
                             </p>

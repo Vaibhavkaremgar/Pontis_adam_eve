@@ -568,7 +568,7 @@ function ReadyPageContent() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Profile</p>
                 <div className="mt-2 space-y-1">
                   <p>Name: {resolveCandidateName(activeCandidate)}</p>
-                  <p>Source: {activeCandidateDetail?.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : String(activeCandidateDetail?.sourceProvider || activeCandidateDetail?.ats_status_source || "system")}</p>
+                  <p>Source: {activeCandidateDetail?.sourceProvider === "xray_apollo" ? "Candidate source" : String(activeCandidateDetail?.sourceProvider || activeCandidateDetail?.ats_status_source || "system")}</p>
                   <p>Updated: {String(activeCandidateDetail?.ats_status_updated_at || "n/a")}</p>
                 </div>
               </div>
