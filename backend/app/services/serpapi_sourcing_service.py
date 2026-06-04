@@ -1018,6 +1018,10 @@ def _normalize_location_term(location: str) -> str:
     if not cleaned or "remote" in lowered:
         return ""
     city = cleaned.strip().strip(",.")
+    if "," in city:
+        city = city.split(",")[0].strip()
+    if "/" in city:
+        city = city.split("/")[0].strip()
     city_key = city.lower()
     if city_key in _INDIAN_CITY_NAMES:
         return f'"{city.title()}" India'
@@ -2282,7 +2286,14 @@ def _linkedin_in_hit_count(results: list[dict[str, Any]]) -> int:
 
 
 def _linkedin_profile_anchor_clause() -> str:
-    return '("linkedin.com/in/" OR "linkedin.com/company/" OR "View profile") AND ("about" OR "experience" OR "skills")'
+    return _or_group([
+        "linkedin.com/in/",
+        "linkedin.com/company/",
+        "View profile",
+        "about",
+        "experience",
+        "skills",
+    ])
 
 
 def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: list[str], layers: list[XRayQueryLayer], limit: int) -> str:
@@ -2408,24 +2419,40 @@ def _strict_xray_query_for_variant(
     logger.info('xray_location_normalized input="%s" output="%s"', location, location_term)
     negative_clause = " ".join(negatives or ["-jobs", "-hiring", "-recruiter"]).strip()
     parts: list[str] = ["site:linkedin.com/in"]
-    if title_terms:
-        parts.append(_or_group(title_terms))
-    if skill_terms:
-        if variant == 2:
-            parts.append("(" + " AND ".join(token.lower() for token in skill_terms[:3]) + ")")
-        else:
-            parts.append("(" + " AND ".join(token.lower() for token in skill_terms[:2]) + ")")
-    if signal_terms:
-        parts.append(_or_group(signal_terms))
+    title_clause = _or_group(title_terms[:3]) if title_terms else ""
+    skill_clause = _or_group(skill_terms[:4]) if skill_terms else ""
+    signal_clause = _or_group(signal_terms[:4]) if signal_terms else ""
+
+    if variant == 1:
+        if title_clause:
+            parts.append(title_clause)
+        if skill_clause:
+            parts.append(skill_clause)
+        elif signal_clause:
+            parts.append(signal_clause)
+    elif variant == 2:
+        if skill_clause:
+            parts.append(skill_clause)
+        if title_clause:
+            parts.append(title_clause)
+        elif signal_clause:
+            parts.append(signal_clause)
+    else:
+        if signal_clause:
+            parts.append(signal_clause)
+        elif skill_clause:
+            parts.append(skill_clause)
+        if title_clause:
+            parts.append(title_clause)
     if location_term:
         parts.append(f"({location_term})")
+    anchor_clause = _linkedin_profile_anchor_clause()
+    if anchor_clause:
+        parts.append(anchor_clause)
     if negative_clause:
         parts.append(negative_clause)
     query = " ".join(part for part in parts if part).strip()
     query = _normalize_text(query)
-    anchor_clause = _linkedin_profile_anchor_clause()
-    if query:
-        query = f"{query} AND ({anchor_clause})"
     return _normalize_text(query)
 
 
@@ -2461,6 +2488,7 @@ def build_linkedin_xray_query_layers(
     family = _role_family_for_query(role=role or seniority, skills=skill_list)
     title_exclude = _xray_single_keyword_terms(title_variants, limit=12)
     context_terms = _xray_single_keyword_terms(_business_context_terms_for_query(role=role or seniority, seniority=seniority, skills=skill_list), limit=4)
+    project_terms = _dedupe_preserve_order(_project_terms_for_query(family=family, skills=skill_list))[:4]
 
     skill_terms = _xray_single_keyword_terms(skill_list, limit=6, exclude=title_exclude)
     if not skill_terms:
@@ -2495,22 +2523,22 @@ def build_linkedin_xray_query_layers(
     role_query = _strict_xray_query_for_variant(
         variant=1,
         title_terms=title_variants[:3],
-        skill_terms=skill_terms[:2] or skill_list[:2],
-        signal_terms=signal_terms[:2],
+        skill_terms=skill_list[:3],
+        signal_terms=(signal_terms[:2] + project_terms[:1] + context_terms[:1])[:3],
         location=location,
     )
     stack_query = _strict_xray_query_for_variant(
         variant=2,
         title_terms=title_variants[:2],
-        skill_terms=stack_skill_terms[:3] or skill_list[:3],
-        signal_terms=[],
+        skill_terms=skill_list[:4],
+        signal_terms=(project_terms[:2] + context_terms[:1])[:3],
         location=location,
     )
     archetype_query = _strict_xray_query_for_variant(
         variant=3,
-        title_terms=title_variants[:2],
+        title_terms=title_variants[:3],
         skill_terms=[],
-        signal_terms=(signal_terms[:2] + recall_extra_terms)[:3],
+        signal_terms=(project_terms[:3] + signal_terms[:2] + recall_extra_terms + skill_list[:1])[:4],
         location=location,
     )
 
@@ -2736,7 +2764,7 @@ class SerpApiClient:
                 break
             if page < page_count - 1:
                 time.sleep(1.0)
-        logger.info("xray_raw_results_count count=%s query_variant=%s", len(results), variant or "")
+        logger.info("xray_raw_results_count count=%s", len(results))
         return results
 
     def search_many(self, queries: list[str], *, pages: int = 1, context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -3393,45 +3421,29 @@ def discover_linkedin_xray_candidates(
     serpapi_latency_started = perf_counter()
     duplicate_query_count = 0
     effective_workers = 1 if LOCAL_DEV_MODE else max(1, len(limited_layers))
-    grouped_layers: dict[str, dict[str, XRayQueryLayer]] = {}
-    for layer in limited_layers:
-        family_key = layer.layer_type.rsplit("_", 1)[0]
-        suffix = layer.layer_type.rsplit("_", 1)[-1]
-        grouped_layers.setdefault(family_key, {})[suffix] = layer
-
-    family_order = ("role_query", "stack_query", "project_query", "framework_query")
-
     if mock_mode_active:
         mock_raw_results = _load_mock_xray_raw_results(role=job_role)
-        for family_key in family_order:
-            family_layers = grouped_layers.get(family_key, {})
-            primary = family_layers.get("1")
-            if not primary:
-                continue
-            layer_results.append((primary, mock_raw_results, search_pages))
+        for layer in limited_layers:
+            layer_results.append((layer, mock_raw_results, search_pages))
         serpapi_calls_executed = 0
     else:
-        for family_key in family_order:
-            family_layers = grouped_layers.get(family_key, {})
-            primary = family_layers.get("1")
-            if not primary:
-                continue
+        for layer in limited_layers:
             pages_to_fetch = 1
-            if not _reserve_serpapi_call(role=job_role, layer_type=primary.layer_type, query=primary.query):
+            if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
                 continue
             fingerprint = _query_fingerprint(
-                layer_type=primary.layer_type,
-                query=primary.query,
+                layer_type=layer.layer_type,
+                query=layer.query,
                 page=1,
                 num_requested=SERPAPI_RESULTS_PER_PAGE,
                 search_engine=SERPAPI_ENGINE or "google",
             )
             if _is_duplicate_query(fingerprint=fingerprint):
                 duplicate_query_count += 1
-                logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, primary.layer_type, fingerprint[:12])
+                logger.info("serpapi_duplicate_query_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
                 continue
             raw = client.search(
-                query=primary.query,
+                query=layer.query,
                 pages=pages_to_fetch,
                 context={
                     "role_search_id": resolved_role_search_id,
@@ -3440,12 +3452,12 @@ def discover_linkedin_xray_candidates(
                     "job_id": resolved_job_id,
                     "workflow_token": resolved_workflow_token,
                     "layer_index": len(layer_results) + 1,
-                    "layer_type": primary.layer_type,
+                    "layer_type": layer.layer_type,
                     "num_requested": SERPAPI_RESULTS_PER_PAGE,
-                    "query_terms": dict(primary.signals or {}),
+                    "query_terms": dict(layer.signals or {}),
                 },
             )
-            layer_results.append((primary, raw, pages_to_fetch))
+            layer_results.append((layer, raw, pages_to_fetch))
 
         serpapi_calls_executed = _serpapi_request_total() - serpapi_calls_before
 
