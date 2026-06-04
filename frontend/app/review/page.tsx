@@ -556,7 +556,7 @@ function CandidateCard({
             {statusLabel(candidate)}
           </span>
           <span className="inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 font-body text-[11px] font-semibold text-[#1D4ED8]">
-            {candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider || "Source pending"}
+            {candidate.sourceProvider === "xray_apollo" ? "Candidate source" : candidate.sourceProvider || "Source pending"}
           </span>
           <span className="inline-flex rounded-full bg-[#F4FBF7] px-3 py-1 font-body text-[11px] font-semibold text-[#0F6B3A]">
             {candidate.enrichmentStatus === "pending"
@@ -594,7 +594,7 @@ function CandidateCard({
             <Sparkles className="h-4 w-4 shrink-0 text-[#6B7280]" />
             <span className="font-body text-[14px] text-[#4B5563]">Source</span>
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
-              {candidate.sourceProvider === "xray_apollo" ? "LinkedIn x-ray" : candidate.sourceProvider || "Pending"}
+              {candidate.sourceProvider === "xray_apollo" ? "Candidate source" : candidate.sourceProvider || "Pending"}
             </span>
           </div>
         </div>
@@ -1543,8 +1543,8 @@ export default function ReviewPage() {
       const likelyReason = typeof debugPayload?.likelyReason === "string" ? debugPayload.likelyReason : "";
       setFeedbackMessage(
         rankedCandidates.length > 0
-          ? `X-Ray sourcing loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
-          : `X-Ray sourcing completed, but no candidates were returned${likelyReason ? ` (${likelyReason.replace(/_/g, " ")})` : ""}.`
+          ? `Scanning loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
+          : `Scanning completed, but no candidates were returned${likelyReason ? ` (${likelyReason.replace(/_/g, " ")})` : ""}.`
       );
     } finally {
       setReviewLoading(false);
@@ -1979,7 +1979,7 @@ export default function ReviewPage() {
 
           {isRefined && (
             <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Voice intake completed. Candidate profiles and X-Ray sourcing are now ready.
+              Voice intake completed. Candidate scanning is now ready.
             </div>
           )}
 
@@ -1991,8 +1991,8 @@ export default function ReviewPage() {
                 <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
                   {sourcingError.includes("409") || sourcingError.toLowerCase().includes("conflict")
                     ? "Sourcing orchestration conflict. The recruiter state should be refreshed before trying again."
-                    : sourcingError.toLowerCase().includes("no candidates")
-                      ? "X-Ray sourcing completed, but no external candidates were returned."
+                  : sourcingError.toLowerCase().includes("no candidates")
+                      ? "Scanning completed, but no external candidates were returned."
                       : sourcingError}
                 </p>
               )}
@@ -2132,7 +2132,7 @@ export default function ReviewPage() {
 
           {!isLoading && calibrationComplete && reviewLoading && (
             <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-3 text-sm text-[#6B7280]">
-              X-Ray sourcing is running now. Candidate cards will appear as soon as the backend returns ranked results.
+              Candidate scanning is running now. Results will appear as soon as the backend returns ranked candidates.
             </div>
           )}
 
@@ -2141,10 +2141,10 @@ export default function ReviewPage() {
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    X-Ray candidate review
+                    Candidate review
                   </p>
                   <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Review the externally sourced candidates. Each card is ranked from X-Ray signals and reranked with recruiter memory.
+                    Review the externally sourced candidates. Each card is ranked from scanning signals and reranked with recruiter memory.
                   </p>
                 </div>
               </div>
@@ -2184,12 +2184,12 @@ export default function ReviewPage() {
             <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm text-[#6B7280]">
               <p>
                 {sourcingError
-                  ? "X-Ray sourcing did not return candidates. Check the sourcing error above."
-                  : "X-Ray sourcing finished, but no candidates were returned yet."}
+                  ? "Scanning did not return candidates. Check the sourcing error above."
+                  : "Scanning finished, but no candidates were returned yet."}
               </p>
               <div className="flex flex-wrap gap-3">
                 <Button variant="outline" onClick={() => void refreshFinalResults()}>
-                  Retry X-Ray sourcing
+                  Retry scanning
                 </Button>
                 <Button variant="outline" onClick={() => router.push("/voice")}>
                   Back to Voice

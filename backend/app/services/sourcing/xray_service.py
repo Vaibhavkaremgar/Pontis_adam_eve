@@ -226,6 +226,21 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         },
     )
 
+    years_experience = None
+    if experience:
+        years_match = re.search(r"\d+(?:\.\d+)?", experience)
+        if years_match:
+            try:
+                years_experience = float(years_match.group(0))
+            except Exception as exc:
+                logger.warning(
+                    "xray_preview_years_parse_failed candidate_id=%s index=%s experience=%s error=%s",
+                    candidate_id,
+                    index,
+                    experience,
+                    str(exc),
+                )
+
     return CandidateResult(
         id=candidate_id,
         name=candidate_name or "Unknown Candidate",
@@ -235,7 +250,7 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
         isMockEmail=False,
         headline=role or None,
         location=location or None,
-        yearsExperience=float(match.group(1)) if experience and (match := re.search(r"\d+(?:\.\d+)?", experience)) else None,
+        yearsExperience=years_experience,
         skills=skills,
         summary=summary or None,
         education=None,
@@ -504,6 +519,25 @@ def build_xray_candidate_results(
     candidates: list[dict[str, Any]],
     limit: int = 12,
 ) -> list[CandidateResult]:
-    ranked = [_build_preview_result(job=job, candidate=candidate, index=index) for index, candidate in enumerate(candidates, start=1)]
+    ranked: list[CandidateResult] = []
+    for index, candidate in enumerate(candidates, start=1):
+        candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or candidate.get("linkedin_url") or candidate.get("link") or "").strip()
+        try:
+            ranked.append(_build_preview_result(job=job, candidate=candidate, index=index))
+        except Exception as exc:
+            logger.exception(
+                "xray_preview_build_failed job_id=%s candidate_id=%s index=%s error=%s",
+                getattr(job, "id", ""),
+                candidate_id,
+                index,
+                str(exc),
+            )
+            continue
     ranked.sort(key=ranked_candidate_sort_key)
+    logger.info(
+        "xray_preview_build_completed job_id=%s input_count=%s output_count=%s",
+        getattr(job, "id", ""),
+        len(candidates),
+        len(ranked),
+    )
     return ranked[: max(1, limit)]
