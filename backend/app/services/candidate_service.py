@@ -560,6 +560,7 @@ def _is_reviewable_candidate(candidate: Any) -> bool:
     source = ""
     linkedin_url = ""
     has_linkedin_url = False
+    candidate_id = ""
     display_name = _candidate_display_name(candidate)
     if isinstance(candidate, dict):
         email = _extract_candidate_email(candidate)
@@ -569,6 +570,7 @@ def _is_reviewable_candidate(candidate: Any) -> bool:
         source = _normalize_text(candidate.get("source") or "").lower()
         linkedin_url = _candidate_profile_url(candidate)
         has_linkedin_url = candidate.get("linkedin_url") is not None or candidate.get("linkedinUrl") is not None
+        candidate_id = str(candidate.get("id") or candidate.get("candidate_id") or "").strip()
     else:
         email = str(getattr(candidate, "email", "") or "").strip().lower()
         is_mock_email = bool(getattr(candidate, "isMockEmail", False))
@@ -577,18 +579,26 @@ def _is_reviewable_candidate(candidate: Any) -> bool:
         source = str(getattr(candidate, "source", "") or "").strip().lower()
         linkedin_url = _candidate_profile_url(candidate)
         has_linkedin_url = getattr(candidate, "linkedin_url", None) is not None or getattr(candidate, "linkedinUrl", None) is not None
+        candidate_id = str(getattr(candidate, "id", "") or getattr(candidate, "candidate_id", "") or "").strip()
     if is_mock_email:
         return False
     if email.endswith("@test.local"):
         return False
-    if source == "xray" or has_linkedin_url:
-        # X-Ray candidates are reviewable as long as we have a valid LinkedIn profile URL.
-        # Some valid search hits do not carry a stable display name in the upstream payload,
-        # and we do not want to drop the full deck because of that.
+    if source == "xray" or source_provider == "xray_apollo" or source_type == "linkedin_xray" or has_linkedin_url:
         if linkedin_url:
-            logger.info("xray_candidate_kept reason=xray_source candidate_id=%s", getattr(candidate, "id", "") if not isinstance(candidate, dict) else str(candidate.get("id") or candidate.get("candidate_id") or ""))
-            return True
-        return False
+            logger.info(
+                "xray_candidate_reviewable candidate_id=%s reason=linked_profile url_present=true",
+                candidate_id,
+            )
+        else:
+            logger.warning(
+                "xray_candidate_reviewable candidate_id=%s reason=unstructured_linkedin_url url_present=false source=%s source_provider=%s source_type=%s",
+                candidate_id,
+                source,
+                source_provider,
+                source_type,
+            )
+        return True
     if not email:
         return False
     return True
@@ -2986,7 +2996,7 @@ def _candidate_reviewability_debug(row: Any) -> dict[str, Any]:
     if is_mock_email:
         reason = "mock_email"
     elif source_provider == "xray_apollo" or source_type == "linkedin_xray":
-        reason = "reviewable_xray" if linkedin_url else "missing_linkedin_url"
+        reason = "reviewable_xray" if linkedin_url else "reviewable_xray_unstructured"
     elif not email:
         reason = "missing_email"
     else:
@@ -3024,7 +3034,7 @@ def build_candidate_fetch_debug(
         reason = str(row.get("reason") or "unknown")
         reason_counts[reason] = reason_counts.get(reason, 0) + 1
 
-    reviewable_count = sum(1 for row in reviewability_rows if row.get("reason") in {"reviewable", "reviewable_xray"})
+    reviewable_count = sum(1 for row in reviewability_rows if row.get("reason") in {"reviewable", "reviewable_xray", "reviewable_xray_unstructured"})
     swiped_profile_count = sum(1 for row in profiles if getattr(row, "candidate_id", "") in swiped_ids)
     removed_count = max(0, len(reviewability_rows) - reviewable_count)
     current_job_status = str(getattr(job, "job_status", "") or "").strip().lower() if job else ""
@@ -3033,8 +3043,8 @@ def build_candidate_fetch_debug(
         if not profiles:
             likely_reason = "no_candidate_profiles_persisted"
         elif reviewable_count <= 0:
-            if reason_counts.get("missing_linkedin_url", 0) > 0:
-                likely_reason = "all_xray_hits_missing_linkedin_url"
+            if reason_counts.get("reviewable_xray_unstructured", 0) > 0:
+                likely_reason = "xray_hits_have_unstructured_linkedin_url"
             elif reason_counts.get("mock_email", 0) == len(reviewability_rows) and reviewability_rows:
                 likely_reason = "all_candidates_are_mock_emails"
             elif reason_counts.get("missing_email", 0) == len(reviewability_rows) and reviewability_rows:
@@ -3553,8 +3563,18 @@ def fetch_ranked_candidates(
             )
             unswiped_xray_count = len(xray_results)
             xray_results = [candidate for candidate in xray_results if _is_reviewable_candidate(candidate)]
+            missing_linkedin_url_count = sum(1 for candidate in reviewable_seed_candidates if not _candidate_profile_url(candidate))
             already_swiped_count = max(0, unswiped_xray_count - len(xray_results))
             removed_reviewability_count = max(0, unswiped_xray_count - len(xray_results))
+            logger.info(
+                "xray_reviewability_gate job_id=%s raw_count=%s unswiped_count=%s reviewable_count=%s missing_linkedin_url_count=%s display_limit=%s",
+                job.id,
+                raw_xray_count,
+                unswiped_xray_count,
+                len(xray_results),
+                missing_linkedin_url_count,
+                display_limit,
+            )
             logger.info(
                 "candidate_retrieval_diagnostics job_id=%s source=xray raw_candidate_count=%s normalized_count=%s duplicate_count=%s invalid_url_count=%s already_swiped_count=%s reviewable_count=%s",
                 job.id,
@@ -3577,11 +3597,21 @@ def fetch_ranked_candidates(
                 reviewable_count=len(xray_results),
             )
             if not xray_results:
+                if unswiped_xray_count <= 0:
+                    empty_reason = "all_candidates_already_swiped"
+                elif reviewable_seed_candidates:
+                    empty_reason = "all_candidates_filtered_or_unstructured"
+                else:
+                    empty_reason = "no_ranked_candidates"
                 logger.warning(
-                    "xray_reviewable_candidates_missing job_id=%s raw_count=%s unswiped_count=%s reason=using_raw_xray_pool likely_reason=all_candidates_filtered_by_reviewability",
+                    "xray_reviewable_candidates_missing job_id=%s raw_count=%s unswiped_count=%s reviewable_count=%s missing_linkedin_url_count=%s reason=%s likely_reason=%s",
                     job.id,
                     raw_xray_count,
                     unswiped_xray_count,
+                    len(xray_results),
+                    missing_linkedin_url_count,
+                    "using_raw_xray_pool",
+                    empty_reason,
                 )
                 return reviewable_seed_candidates[:display_limit]
             logger.info(

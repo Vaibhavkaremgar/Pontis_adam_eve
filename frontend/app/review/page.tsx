@@ -1389,6 +1389,7 @@ export default function ReviewPage() {
   const sourcingRefreshCycleRef = useRef(0);
   const sourcingInFlightRef = useRef(false);
   const candidateStateVersionRef = useRef(0);
+  const reviewDeckLogRef = useRef("");
 
   useEffect(() => {
     if (!jobId) return;
@@ -1520,6 +1521,16 @@ export default function ReviewPage() {
       storeReviewCandidates(jobId, normalizedRankedCandidates);
       storeShortlistedCandidateIds(jobId, mergedShortlistedIds);
       const debugPayload = result.debug && typeof result.debug === "object" ? (result.debug as Record<string, unknown>) : null;
+      console.info("[review:candidates-loaded]", {
+        jobId,
+        source,
+        forceRefresh,
+        rankedCount: rankedCandidates.length,
+        reviewableCount: normalizedRankedCandidates.length,
+        calibrationComplete,
+        likelyReason: typeof debugPayload?.likelyReason === "string" ? debugPayload.likelyReason : "",
+        reviewabilityReasons: debugPayload?.reviewabilityReasons ?? null,
+      });
       if (rankedCandidates.length === 0) {
         console.warn("[review:candidates-empty]", {
           jobId,
@@ -1678,6 +1689,38 @@ export default function ReviewPage() {
       ),
     [finalShortlistedIds, reviewCandidates]
   );
+
+  useEffect(() => {
+    if (!jobId || isLoading || reviewLoading) {
+      return;
+    }
+    const logKey = `${jobId}:${calibrationComplete ? "calibrated" : "uncalibrated"}:${reviewCandidates.length}:${swipeCandidates.length}`;
+    if (reviewDeckLogRef.current === logKey) {
+      return;
+    }
+    reviewDeckLogRef.current = logKey;
+    if (!calibrationComplete) {
+      console.warn("[review:deck-hidden]", {
+        jobId,
+        reason: "calibration_not_ready",
+        calibrationStage: calibration?.stage ?? "",
+        reviewCandidateCount: reviewCandidates.length,
+        swipeCandidateCount: swipeCandidates.length,
+      });
+      return;
+    }
+    if (reviewCandidates.length > 0 && swipeCandidates.length === 0) {
+      console.warn("[review:deck-empty]", {
+        jobId,
+        reason: "frontend_filters_removed_all_candidates",
+        reviewCandidateCount: reviewCandidates.length,
+        swipeCandidateCount: swipeCandidates.length,
+        shortlistedCount: finalShortlistedIds.length,
+        rejectedCount: reviewCandidates.filter((candidate) => candidate.status === "rejected" || candidate.ats_status === "rejected").length,
+      });
+    }
+  }, [calibration?.stage, calibrationComplete, finalShortlistedIds.length, isLoading, jobId, reviewCandidates, reviewLoading, swipeCandidates.length]);
+
   const visibleShortlistedCandidates = useMemo(
     () =>
       reviewCandidates.filter(
