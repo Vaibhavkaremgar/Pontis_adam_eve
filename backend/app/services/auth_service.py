@@ -7,12 +7,15 @@ import re
 import string
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import GOOGLE_OAUTH_CLIENT_ID
 from app.core.config import AUTH_REQUIRE_OTP, ADMIN_EMAILS, OPS_EMAILS
 from app.core.security import create_access_token
 from app.db.repositories import OtpRepository, UserRepository
+from app.models.entities import AllowedUserEntity
 from app.services.email_service import send_email
 from app.schemas.user import LoginData, UserProfile
 from app.utils.exceptions import APIError
@@ -52,10 +55,25 @@ def _resolve_user_role(email: str) -> str:
     return "recruiter"
 
 
+def _ensure_email_allowed(*, db: Session, email: str) -> None:
+    allowed = db.scalar(
+        select(AllowedUserEntity)
+        .where(AllowedUserEntity.email == email)
+        .where(AllowedUserEntity.is_active == True)  # noqa: E712
+    )
+    if not allowed:
+        logger.warning("login_blocked email=%s reason=not_in_allowlist", email)
+        raise HTTPException(
+            status_code=403,
+            detail="Access restricted. Contact your administrator to request access.",
+        )
+
+
 def request_otp(*, db: Session, email: str) -> dict:
     normalized = _normalize_email(email)
     if not normalized:
         raise APIError("Valid email is required", status_code=400)
+    _ensure_email_allowed(db=db, email=normalized)
 
     otp = _generate_otp()
     otp_hash = _hash_otp(otp)
@@ -85,6 +103,7 @@ def verify_otp(*, db: Session, email: str, otp: str) -> LoginData:
 
     if not normalized_email or not normalized_otp:
         raise APIError("Valid email and OTP are required", status_code=400)
+    _ensure_email_allowed(db=db, email=normalized_email)
 
     otp_hash = _hash_otp(normalized_otp)
     now = datetime.now(timezone.utc)
@@ -143,6 +162,7 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
     email = str(idinfo.get("email") or "").strip().lower()
     if not email:
         raise APIError("Google account email is missing", status_code=401)
+    _ensure_email_allowed(db=db, email=email)
 
     users = UserRepository(db)
     user = users.get_by_email(email)

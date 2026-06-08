@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from uuid import UUID, uuid4
+
 from fastapi import APIRouter, Depends, Query
+from fastapi import HTTPException, Request
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.security import require_role
 from app.core.config import config_diagnostics
 from app.db.session import get_db
+from app.models.entities import AllowedUserEntity
 from app.services.audit_service import record_audit_event
 from app.services.platform_ops_service import (
     force_embedding_migration,
@@ -29,6 +35,124 @@ from app.utils.responses import success_response
 router = APIRouter(prefix="/admin", tags=["admin"])
 ops_access = Depends(require_role("admin", "internal_ops"))
 admin_access = Depends(require_role("admin"))
+
+
+class AllowlistUpsertPayload(BaseModel):
+    email: str
+    note: str | None = None
+
+
+def _require_admin_request(request: Request) -> dict:
+    user = getattr(request.state, "user", None) or {}
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return user
+
+
+@router.post("/allowlist")
+def add_allowlisted_user(
+    payload: AllowlistUpsertPayload,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    admin_user = _require_admin_request(request)
+    email = (payload.email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+    admin_id = UUID(str(admin_user.get("id"))) if admin_user.get("id") else None
+
+    row = db.scalar(select(AllowedUserEntity).where(AllowedUserEntity.email == email))
+    now_note = (payload.note or "").strip() or None
+    if not row:
+        row = AllowedUserEntity(
+            id=uuid4(),
+            email=email,
+            added_by=admin_id,
+            note=now_note,
+            is_active=True,
+        )
+        db.add(row)
+    else:
+        row.added_by = admin_id
+        row.note = now_note if now_note is not None else row.note
+        row.is_active = True
+
+    db.flush()
+    db.refresh(row)
+    record_audit_event(
+        db=db,
+        actor_id=admin_user.get("id"),
+        action="admin_allowlist_add",
+        entity_type="allowed_user",
+        entity_id=email,
+        metadata={"email": email, "note": row.note, "isActive": row.is_active},
+    )
+    db.commit()
+    return success_response(
+        {
+            "id": str(row.id),
+            "email": row.email,
+            "addedBy": str(row.added_by or ""),
+            "note": row.note,
+            "isActive": row.is_active,
+            "createdAt": row.created_at.isoformat() if row.created_at else None,
+        }
+    )
+
+
+@router.delete("/allowlist/{email}")
+def deactivate_allowlisted_user(
+    email: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    admin_user = _require_admin_request(request)
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    row = db.scalar(select(AllowedUserEntity).where(AllowedUserEntity.email == normalized))
+    if row:
+        row.is_active = False
+        db.flush()
+        record_audit_event(
+            db=db,
+            actor_id=admin_user.get("id"),
+            action="admin_allowlist_deactivate",
+            entity_type="allowed_user",
+            entity_id=normalized,
+            metadata={"email": normalized, "isActive": row.is_active},
+        )
+        db.commit()
+    return success_response(
+        {
+            "updated": bool(row),
+            "email": normalized,
+            "isActive": bool(row.is_active) if row else False,
+        }
+    )
+
+
+@router.get("/allowlist")
+def list_allowlisted_users(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _require_admin_request(request)
+    rows = db.scalars(select(AllowedUserEntity).order_by(AllowedUserEntity.created_at.desc())).all()
+    return success_response(
+        [
+            {
+                "id": str(row.id),
+                "email": row.email,
+                "addedBy": str(row.added_by or ""),
+                "note": row.note,
+                "isActive": row.is_active,
+                "createdAt": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+    )
 
 
 @router.get("/diagnostics")
