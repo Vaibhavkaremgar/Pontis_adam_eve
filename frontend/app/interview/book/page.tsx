@@ -19,6 +19,28 @@ function openExternalLink(href: string) {
   window.open(href, "_blank", "noopener,noreferrer");
 }
 
+function formatSlotLabel(slotIso: string, timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: timezone || "UTC",
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(new Date(slotIso));
+  } catch {
+    return new Date(slotIso).toLocaleString();
+  }
+}
+
+function toUtcIsoFromDateTimeLocal(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
 function InterviewBookingContent() {
   const searchParams = useSearchParams();
   const token = useMemo(() => searchParams.get("token") || "", [searchParams]);
@@ -27,6 +49,17 @@ function InterviewBookingContent() {
   const [booking, setBooking] = useState(false);
   const [status, setStatus] = useState("");
   const [scheduledAt, setScheduledAt] = useState("");
+  const availableSlots = useMemo(() => session?.availableSlots || [], [session]);
+  const sessionTimezone = session?.timezone || "UTC";
+  const useSlotPicker = availableSlots.length > 0;
+  const formattedSlots = useMemo(
+    () =>
+      availableSlots.map((slotIso) => ({
+        iso: slotIso,
+        label: formatSlotLabel(slotIso, sessionTimezone),
+      })),
+    [availableSlots, sessionTimezone]
+  );
 
   useEffect(() => {
     if (!token) return;
@@ -34,6 +67,7 @@ function InterviewBookingContent() {
     getSession(token).then((result) => {
       if (result.success && result.data) {
         setSession(result.data);
+        setScheduledAt("");
         setStatus("");
       } else {
         setStatus(result.error || "Could not load interview session.");
@@ -46,12 +80,17 @@ function InterviewBookingContent() {
   const bookingLink = resolveBookingLink(session);
   const canOpenBookingLink = bookingLink !== "#";
   const canJoinInterview = Boolean(session?.meetingLink && session.meetingLink !== "#");
+  const resolvedScheduledAt = useMemo(() => {
+    if (!scheduledAt) return null;
+    if (useSlotPicker) return scheduledAt;
+    return toUtcIsoFromDateTimeLocal(scheduledAt) || null;
+  }, [scheduledAt, useSlotPicker]);
 
   const handleBook = async () => {
     if (!canBook) return;
     setBooking(true);
     setStatus("");
-    const result = await bookSession({ token, scheduledAt: scheduledAt || null });
+    const result = await bookSession({ token, scheduledAt: resolvedScheduledAt });
     if (!result.success || !result.data) {
       setStatus(result.error || "Could not book interview.");
       setBooking(false);
@@ -90,15 +129,48 @@ function InterviewBookingContent() {
                 <p className="text-sm text-gray-600">Job: {session.jobId}</p>
                 <Badge variant={session.status === "interview_scheduled" ? "high" : "medium"}>{session.status}</Badge>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-900">Preferred interview time</label>
-                <Input
-                  type="datetime-local"
-                  value={scheduledAt}
-                  onChange={(e) => setScheduledAt(e.target.value)}
-                  disabled={!canBook}
-                />
-              </div>
+              {useSlotPicker ? (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-gray-900">Available interview slots</label>
+                    <p className="text-xs text-gray-500">Times shown in {sessionTimezone}.</p>
+                  </div>
+                  <div className="grid gap-2">
+                    {formattedSlots.map((slot) => {
+                      const selected = scheduledAt === slot.iso;
+                      return (
+                        <button
+                          key={slot.iso}
+                          type="button"
+                          className={[
+                            "rounded-2xl border px-4 py-3 text-left transition",
+                            selected
+                              ? "border-[#0F6B3A] bg-[#E8F3EB] shadow-sm"
+                              : "border-[rgba(120,100,80,0.12)] bg-white hover:border-[#0F6B3A]/40 hover:bg-[#FAFCFA]",
+                          ].join(" ")}
+                          onClick={() => setScheduledAt(slot.iso)}
+                          disabled={!canBook}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-medium text-gray-900">{slot.label}</span>
+                            <span className="text-xs text-gray-500">{selected ? "Selected" : "Choose"}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-900">Preferred interview time</label>
+                  <Input
+                    type="datetime-local"
+                    value={scheduledAt}
+                    onChange={(e) => setScheduledAt(e.target.value)}
+                    disabled={!canBook}
+                  />
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-2">
                 <Button className="justify-center" onClick={handleBook} disabled={!canBook}>
                   {booking ? "Booking..." : "Confirm Interview"}

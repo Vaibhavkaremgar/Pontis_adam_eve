@@ -57,7 +57,8 @@ function statusLabel(candidate: Candidate): string {
   const atsStatus = String(candidate.ats_status || "").trim().toLowerCase();
   const pipelineStatus = enrichmentStatus || outreachStatus || atsStatus;
 
-  if (pipelineStatus === "enriching") return "Enriching";
+  if (pipelineStatus === "enriching" || pipelineStatus === "enrichment_pending") return "Enriching";
+  if (pipelineStatus === "enrichment_no_email") return "Enriched, fallback email";
   if (pipelineStatus === "high_confidence" || pipelineStatus === "enriched") return "Enriched";
   if (pipelineStatus === "outreach_pending") return "Outreach pending";
   if (pipelineStatus === "outreach_sent") return "Outreach sent";
@@ -65,7 +66,8 @@ function statusLabel(candidate: Candidate): string {
   if (normalizedStatus === "sourced") return "LinkedIn sourced";
   if (normalizedStatus === "reviewed") return "Reviewed";
   if (normalizedStatus === "selected" || normalizedStatus === "shortlisted") return "Shortlisted";
-  if (normalizedStatus === "enriching") return "Enriching";
+  if (normalizedStatus === "enriching" || normalizedStatus === "enrichment_pending") return "Enriching";
+  if (normalizedStatus === "enrichment_no_email") return "Enriched, fallback email";
   if (normalizedStatus === "enriched") return "Enriched";
   if (normalizedStatus === "outreach_pending") return "Outreach pending";
   if (normalizedStatus === "outreach_sent") return "Outreach sent";
@@ -85,9 +87,9 @@ function selectionPipelineLabel(update: {
   const replyStatus = String(update.replyStatus || "").trim().toLowerCase();
   const hasContactEmail = Boolean(String(update.contactEmail || "").trim());
 
-  if (enrichmentStatus === "queued") return "Enriching candidate data from LinkedIn...";
+  if (enrichmentStatus === "queued" || enrichmentStatus === "enrichment_pending") return "Enriching candidate data from LinkedIn...";
   if (enrichmentStatus === "failed") return "Enrichment failed. The record was updated, but outreach may need a retry.";
-  if (enrichmentStatus === "missing_email") return "Enriched, but no email was found.";
+  if (enrichmentStatus === "missing_email" || enrichmentStatus === "enrichment_no_email") return "Enriched, but no email was found. Using fallback outreach.";
   if (outreachStatus === "sent") return replyStatus === "waiting_for_reply" ? "Outreach sent. Waiting for reply." : "Outreach sent.";
   if (outreachStatus === "dry_run" || outreachStatus === "simulated") return "Outreach prepared in dry-run mode.";
   if (outreachStatus === "queued") return hasContactEmail ? "Outreach queued. Waiting for send." : "Outreach is waiting on enrichment.";
@@ -1853,14 +1855,16 @@ export default function ReviewPage() {
             ats_status:
               outreachStatus === "sent"
                 ? "outreach_sent"
-                : enrichmentStatus === "enriching"
+                : ["enriching", "enrichment_pending", "enrichment_no_email"].includes(enrichmentStatus)
                   ? "enriching"
                   : candidate.ats_status,
             ats_status_reason:
               outreachStatus === "sent"
                 ? "Outreach sent. Waiting for reply."
-                : enrichmentStatus === "enriching"
-                  ? "Enriching candidate data from LinkedIn."
+                : enrichmentStatus === "enrichment_no_email"
+                  ? "Enrichment completed. Using fallback outreach email."
+                  : ["enriching", "enrichment_pending"].includes(enrichmentStatus)
+                    ? "Enriching candidate data from LinkedIn."
                   : candidate.ats_status_reason,
           }
         : candidate;

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.config import GROQ_API_KEY, OPEN_ROUTER_API
 from app.db.repositories import (
     CompanyRepository,
+    JobIntakeRepository,
     JobRepository,
     OrchestrationEventRepository,
     OrchestrationSessionRepository,
@@ -1024,6 +1025,22 @@ def _compose_job_payload(intake: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_slack_intake_transcript(raw_conversation: list[dict[str, Any]]) -> str:
+    transcript_lines: list[str] = []
+    for entry in raw_conversation or []:
+        if not isinstance(entry, dict):
+            continue
+        question = _normalize_text(entry.get("question"))
+        answer = _normalize_text(entry.get("answer"))
+        if question and answer:
+            transcript_lines.append(f"Q: {question}\nA: {answer}")
+        elif question:
+            transcript_lines.append(f"Q: {question}")
+        elif answer:
+            transcript_lines.append(f"A: {answer}")
+    return "\n\n".join(transcript_lines).strip()
+
+
 def _build_question_blocks(*, session_id: str, question_key: str, question: str, include_actions: bool = True, voice_token: str = "") -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = [
         {
@@ -1481,6 +1498,16 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found after creation", status_code=404)
+
+    if _normalize_text(session_row.selected_path) == "slack":
+        try:
+            JobIntakeRepository(db).upsert_completed_intake(
+                job_id=job.id,
+                transcript=_build_slack_intake_transcript(list(session_row.raw_conversation or [])),
+                structured_data_json={**job_payload, "source": "slack"},
+            )
+        except Exception as exc:
+            logger.error("slack_intake_persist_failed job_id=%s error=%s", job.id, str(exc), exc_info=exc)
 
     session_row.company_id = job.company_id
     session_row.job_id = job.id

@@ -6,6 +6,9 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
+
+from sqlalchemy import text
 
 os.environ.setdefault("DATABASE_URL", "sqlite:///./test_selection_flow.db")
 os.environ.setdefault("JWT_SECRET", "test-secret")
@@ -587,6 +590,20 @@ class SelectionFlowTests(unittest.TestCase):
         self.assertEqual(result["to_email"], "candidate@example.com")
         self.assertFalse(result["manual_required"])
 
+    def test_apify_missing_email_uses_test_fallback_recipient(self) -> None:
+        result = outreach_service._resolve_outreach_recipient(
+            raw_data={
+                "enrichment": {
+                    "enrichment_provider": "apify",
+                    "status": "missing_email",
+                }
+            }
+        )
+
+        self.assertEqual(result["to_email"], "vaibhavkar0009@gmail.com")
+        self.assertFalse(result["manual_required"])
+        self.assertEqual(result["reason"], "apify_test_fallback_missing_email")
+
     def test_nested_candidate_email_values_are_extracted(self) -> None:
         nested_payload = {
             "contact": {
@@ -603,6 +620,78 @@ class SelectionFlowTests(unittest.TestCase):
         }
 
         self.assertEqual(_candidate_email_value(nested_payload), "candidate@example.com")
+
+    def test_shortlist_outreach_uses_test_fallback_when_apify_email_missing(self) -> None:
+        db = SessionLocal()
+        try:
+            user_email = f"fallback-test-{uuid4().hex}@example.com"
+            user = UserRepository(db).create(user_email, role="admin")
+            company = CompanyRepository(db).create(
+                user_id=user.id,
+                name="Fallback Co",
+                website="https://fallback.example",
+                description="Fallback outreach test company",
+            )
+            job = JobRepository(db).create(
+                company_id=company.id,
+                created_by=user.id,
+                title="Backend Engineer",
+                description="Build backend systems.",
+                location="Remote",
+                compensation="$180k",
+                work_authorization="required",
+                remote_policy="remote",
+                experience_required="5+ years",
+                skills_required=["Python", "FastAPI"],
+                responsibilities=["Ship backend features"],
+            )
+
+            candidate_id = "candidate-apify-missing-email"
+            CandidateProfileRepository(db).upsert(
+                job_id=job.id,
+                candidate_id=candidate_id,
+                name="Fallback Candidate",
+                role="Backend Engineer",
+                company="Fallback Systems",
+                summary="Profile without an extracted email.",
+                skills=["Python", "FastAPI"],
+                raw_data={
+                    "name": "Fallback Candidate",
+                    "enrichment": {
+                        "enrichment_provider": "apify",
+                        "status": "missing_email",
+                    },
+                },
+                fit_score=4.0,
+                decision="shortlisted",
+                strategy="HIGH",
+            )
+            db.commit()
+
+            fake_send_calls: list[dict] = []
+
+            def fake_send(**payload):
+                fake_send_calls.append(payload)
+                return True, "", "msg-apify-fallback"
+
+            with patch.object(outreach_service, "_send_shortlist_outreach_email", side_effect=fake_send):
+                result = outreach_service._trigger_candidate_outreach_sync(candidate_id=candidate_id, job_id=job.id)
+            self.assertEqual(result["status"], "sent")
+            self.assertFalse(result["manualRequired"])
+            self.assertEqual(len(fake_send_calls), 1)
+            self.assertEqual(fake_send_calls[0]["to_email"], "vaibhavkar0009@gmail.com")
+            outreach_row = db.execute(
+                text(
+                    "SELECT to_email, status, last_error FROM outreach_events WHERE job_id = :job_id AND candidate_id = :candidate_id"
+                ),
+                {"job_id": job.id, "candidate_id": candidate_id},
+            ).fetchone()
+            self.assertIsNotNone(outreach_row)
+            self.assertEqual(outreach_row[0], "vaibhavkar0009@gmail.com")
+            self.assertEqual(outreach_row[1], "sent")
+            self.assertEqual(outreach_row[2], "")
+        finally:
+            db.close()
 
 
 class SelectionReactivationTests(unittest.TestCase):
@@ -721,14 +810,7 @@ class SelectionReactivationTests(unittest.TestCase):
         ), patch.object(
             candidate_selection_service, "get_preference_session", return_value={}
         ), patch.object(
-            candidate_selection_service, "enrich_selected_candidate",
-            return_value={
-                "status": "high_confidence",
-                "shouldOutreach": True,
-                "contactEmail": "reactivate@example.com",
-            },
-        ) as mock_enrich, patch.object(
-            candidate_selection_service, "trigger_outreach_after_enrichment",
+            candidate_selection_service, "process_outreach",
             return_value={"status": "sent", "outreachStatus": "sent"},
         ) as mock_outreach, patch.object(
             candidate_selection_service, "enqueue_job", return_value=None
@@ -740,14 +822,11 @@ class SelectionReactivationTests(unittest.TestCase):
             )
 
         self.assertIn(candidate_id, result["selectedCandidateIds"])
-        self.assertTrue(mock_enrich.called)
         self.assertTrue(mock_outreach.called)
-        self.assertFalse(mock_enqueue.called)
-        enrich_kwargs = mock_enrich.call_args.kwargs
-        self.assertEqual(enrich_kwargs["job_id"], self.job.id)
-        self.assertEqual(enrich_kwargs["candidate_id"], candidate_id)
-        self.assertEqual(enrich_kwargs["source_type"], "linkedin_xray")
-        self.assertEqual(enrich_kwargs["linkedin_url"], "https://www.linkedin.com/in/reactivate-candidate")
+        outreach_kwargs = mock_outreach.call_args.kwargs
+        self.assertEqual(outreach_kwargs["job_id"], self.job.id)
+        self.assertEqual(outreach_kwargs["selected_candidates"], [candidate_id])
+        self.assertEqual(outreach_kwargs["recipient_email"], "reactivate@example.com")
         self.assertEqual(get_candidate_ats_state(db=self.db, job_id=self.job.id, candidate_id=candidate_id), "selected")
 
     def test_selected_candidate_can_be_explicitly_rejected(self) -> None:
@@ -786,7 +865,7 @@ class SelectionReactivationTests(unittest.TestCase):
         self.assertIsNotNone(feedback_row)
         self.assertEqual(feedback_row.feedback, "reject")
 
-    def test_selection_choice_without_email_skips_outreach_without_crash(self) -> None:
+    def test_selection_choice_without_email_sends_fallback_outreach(self) -> None:
         candidate_id = "candidate-no-email"
         selected_candidate = CandidateResult(
             id=candidate_id,
@@ -837,10 +916,8 @@ class SelectionReactivationTests(unittest.TestCase):
         ), patch.object(
             candidate_selection_service, "get_preference_session", return_value={}
         ), patch.object(
-            candidate_selection_service, "enrich_selected_candidate",
-            return_value={"status": "enriched", "shouldOutreach": True},
-        ), patch.object(
-            candidate_selection_service, "trigger_outreach_after_enrichment",
+            candidate_selection_service, "process_outreach",
+            return_value={"status": "sent", "outreachStatus": "sent"},
         ) as mock_outreach:
             result = candidate_selection_service.submit_selection_choice(
                 db=self.db,
@@ -848,8 +925,9 @@ class SelectionReactivationTests(unittest.TestCase):
                 candidate_id=candidate_id,
             )
 
-        self.assertEqual(result["outreachStatus"], "skipped")
-        self.assertFalse(mock_outreach.called)
+        self.assertEqual(result["outreachStatus"], "sent")
+        self.assertTrue(mock_outreach.called)
+        self.assertEqual(mock_outreach.call_args.kwargs["recipient_email"], candidate_selection_service.TEST_OUTREACH_FALLBACK_EMAIL)
 
     def test_selection_choice_does_not_bulk_reject_other_candidates(self) -> None:
         selected_id = "candidate-selected-one"
@@ -925,18 +1003,17 @@ class SelectionReactivationTests(unittest.TestCase):
         ), patch.object(
             candidate_selection_service, "get_preference_session", return_value={}
         ), patch.object(
-            candidate_selection_service, "enrich_selected_candidate",
-            return_value={"status": "enriched", "shouldOutreach": True, "contactEmail": "selected@example.com"},
-        ), patch.object(
-            candidate_selection_service, "trigger_outreach_after_enrichment",
+            candidate_selection_service, "process_outreach",
             return_value={"status": "sent", "outreachStatus": "sent"},
-        ):
+        ) as mock_outreach:
             candidate_selection_service.submit_selection_choice(
                 db=self.db,
                 job_id=self.job.id,
                 candidate_id=selected_id,
             )
 
+        self.assertTrue(mock_outreach.called)
+        self.assertEqual(mock_outreach.call_args.kwargs["recipient_email"], "selected@example.com")
         self.assertEqual(
             InterviewRepository(self.db).get_by_job_and_candidate(self.job.id, other_id),
             None,

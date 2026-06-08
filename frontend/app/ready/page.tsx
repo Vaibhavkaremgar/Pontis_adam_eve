@@ -36,12 +36,14 @@ import type { Candidate, InterviewStatus } from "@/types";
 
 type ReadyCandidate = Candidate & {
   candidateId: string;
-  status: InterviewStatus["status"];
+  status: InterviewStatus["status"] | "enrichment_pending" | "enrichment_no_email";
 };
 
 const STATUS_LABELS: Record<string, string> = {
   reviewed: "Reviewed",
   selected: "Selected",
+  enrichment_pending: "Enrichment Pending",
+  enrichment_no_email: "Enrichment No Email",
   interview_scheduled: "Interview Scheduled",
   interview_requested: "Interview Requested",
   interview_completed: "Interview Completed",
@@ -74,6 +76,8 @@ function normalizeReadyStatus(status: string | null | undefined): ReadyCandidate
   const normalized = (status || "selected").toString().trim().toLowerCase();
   const allowed: ReadonlySet<string> = new Set([
     "selected",
+    "enrichment_pending",
+    "enrichment_no_email",
     "outreach_pending",
     "outreach_sent",
     "interview_requested",
@@ -101,10 +105,11 @@ function normalizeReadyStatus(status: string | null | undefined): ReadyCandidate
   return (allowed.has(normalized) ? normalized : "selected") as ReadyCandidate["status"];
 }
 
-function statusVariant(status: InterviewStatus["status"]) {
+function statusVariant(status: ReadyCandidate["status"]) {
   if (["interview_scheduled", "advanced", "final_round", "hired"].includes(status)) return "high";
   if (["interview_requested", "offer_sent"].includes(status)) return "info";
-  if (["outreach_sent", "selected", "interview_completed"].includes(status)) return "medium";
+  if (["outreach_sent", "selected", "interview_completed", "outreach_pending"].includes(status)) return "medium";
+  if (["enrichment_pending", "enrichment_no_email"].includes(status)) return "neutral";
   if (["rejected", "archived", "interview_no_show", "no_show"].includes(status)) return "low";
   return "neutral";
 }
@@ -146,16 +151,19 @@ function ReadyPageContent() {
 
   const orderedItems = useMemo(() => {
     const priority: Record<string, number> = {
-      outreach_sent: 0,
-      interview_requested: 1,
-      interview_scheduled: 2,
-      advanced: 4,
-      final_round: 5,
-      offer_sent: 6,
-      hired: 7,
-      selected: 8,
-      rejected: 9,
-      archived: 10,
+      enrichment_pending: 0,
+      enrichment_no_email: 1,
+      outreach_pending: 2,
+      outreach_sent: 3,
+      interview_requested: 4,
+      interview_scheduled: 5,
+      advanced: 6,
+      final_round: 7,
+      offer_sent: 8,
+      hired: 9,
+      selected: 10,
+      rejected: 11,
+      archived: 12,
     };
 
     return [...items].sort((a, b) => {
@@ -178,6 +186,15 @@ function ReadyPageContent() {
   const itemByCandidateId = useMemo(() => {
     return new Map(orderedItems.map((item) => [item.candidateId, item]));
   }, [orderedItems]);
+
+  const enrichmentPendingItems = useMemo(
+    () => orderedItems.filter((item) => ["enrichment_pending", "enrichment_no_email"].includes(item.status)),
+    [orderedItems],
+  );
+  const primaryReadyItems = useMemo(
+    () => orderedItems.filter((item) => !["enrichment_pending", "enrichment_no_email", "outreach_sent"].includes(item.status)),
+    [orderedItems],
+  );
 
   const loadReady = async () => {
     if (!effectiveJobId || !user) return;
@@ -212,16 +229,20 @@ function ReadyPageContent() {
             const candidateId = candidate.id;
             const interviewStatus = normalizeReadyStatus(statusMap.get(candidateId) || candidate.status || "selected");
             const outreachStatus = outreachStatusMap.get(candidateId);
+            const enrichmentStatus = String(candidate.enrichmentStatus || "").trim().toLowerCase();
+            let status: ReadyCandidate["status"] = normalizeReadyStatus(interviewStatus);
+            if (outreachStatus === "sent") {
+              status = "outreach_sent";
+            } else if (["enrichment_pending", "enrichment_no_email"].includes(enrichmentStatus)) {
+              status = enrichmentStatus as ReadyCandidate["status"];
+            } else if (outreachStatus === "queued" || outreachStatus === "pending") {
+              status = "outreach_pending";
+            }
             return {
               ...candidate,
               name: resolveCandidateName(candidate),
               candidateId,
-              status:
-                outreachStatus === "sent"
-                  ? "outreach_sent"
-                  : outreachStatus === "failed"
-                    ? "rejected"
-                    : normalizeReadyStatus(interviewStatus),
+              status: outreachStatus === "failed" ? "rejected" : status,
             };
           })
           .filter((candidate, index, array) => array.findIndex((item) => item.candidateId === candidate.candidateId) === index)
@@ -421,7 +442,7 @@ function ReadyPageContent() {
             </div>
           )}
 
-          {orderedItems.map((item) => (
+          {primaryReadyItems.map((item) => (
             <div key={item.candidateId} className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-4">
               <div className="flex items-center justify-between gap-2">
                 <div>
@@ -434,6 +455,29 @@ function ReadyPageContent() {
               </Button>
             </div>
           ))}
+
+          {enrichmentPendingItems.length > 0 && (
+            <div className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EEF7F0] p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="font-semibold text-gray-900">Enrichment pending</p>
+                  <p className="text-xs text-gray-500">Waiting for LinkedIn enrichment before outreach is queued.</p>
+                </div>
+                <Badge variant="neutral">{enrichmentPendingItems.length} pending</Badge>
+              </div>
+
+              {enrichmentPendingItems.map((item) => (
+                <div key={item.candidateId} className="space-y-2 rounded-xl border border-white/70 bg-white/80 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium text-gray-900">{resolveCandidateName(item)}</p>
+                    <Badge variant={statusVariant(item.status)}>{formatStatus(item.status)}</Badge>
+                  </div>
+                  <p className="text-xs text-gray-500">Email: {item.contactEmail || "pending"}</p>
+                  <p className="text-xs text-gray-500">Enrichment source: {item.enrichmentSource || "pending"}</p>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="space-y-3 rounded-2xl border border-[rgba(120,100,80,0.08)] bg-[#EFE6D8] p-4">
             <div className="flex items-center justify-between gap-2">

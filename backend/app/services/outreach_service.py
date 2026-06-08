@@ -54,6 +54,8 @@ from app.services.outreach_intelligence_service import (
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.prompt_sanitizer import sanitize_prompt_block, sanitize_prompt_text
 from app.services.recruiter_preference_service import update_recruiter_preferences
+from app.services.slack_tenant_service import SlackCompanyResolver
+from app.services.notification_intelligence_service import route_recruiter_notification
 from app.services.slack_integration import post_slack_message
 from app.services.slack_service import notify_slack
 from app.services.state_machine import assert_valid_transition
@@ -78,6 +80,10 @@ _SPAM_RISK_THRESHOLD = 0.8
 _DEFAULT_DAILY_OUTREACH_QUOTA = 50
 _DEFAULT_DOMAIN_DAILY_QUOTA = 20
 _INVALID_EMAIL_BLOCK_REASONS = {"invalid_email", "invalid_email_domain", "missing_email"}
+# INTENTIONAL TEST FALLBACK: Used when Apify enrichment returns no email.
+# This is for testing only. Replace with real email or remove when Apify Premium is available.
+# Log: outreach_service.py line 1707 and 2227 show when this fallback is used.
+APIFY_ENRICHMENT_TEST_FALLBACK_EMAIL = "vaibhavkar0009@gmail.com"
 
 
 def _notification_key(*, job_id: str, candidate_id: str, notification_type: str, suffix: str = "") -> str:
@@ -736,6 +742,30 @@ def _candidate_raw_data(candidate_profile) -> dict[str, Any]:
     return raw_data if isinstance(raw_data, dict) else {}
 
 
+def _is_apify_enriched_raw_data(raw_data: dict[str, Any]) -> bool:
+    enrichment_state = raw_data.get("enrichment") if isinstance(raw_data, dict) else {}
+    if not isinstance(enrichment_state, dict):
+        enrichment_state = {}
+    provider = str(
+        enrichment_state.get("enrichment_provider")
+        or enrichment_state.get("enrichmentProvider")
+        or raw_data.get("enrichment_provider")
+        or raw_data.get("enrichmentProvider")
+        or raw_data.get("enrichmentSource")
+        or raw_data.get("sourceType")
+        or ""
+    ).strip().lower()
+    return provider == "apify"
+
+
+def _should_use_apify_test_fallback(*, raw_data: dict[str, Any], recipient_email: str = "") -> bool:
+    if recipient_email.strip():
+        return False
+    if _extract_email(raw_data):
+        return False
+    return _is_apify_enriched_raw_data(raw_data)
+
+
 def _extract_candidate_email(candidate_profile) -> str:
     raw_data = _candidate_raw_data(candidate_profile)
     if bool(raw_data.get("is_mock_email")) or str(raw_data.get("email_source") or "").strip().lower() == "generated":
@@ -810,6 +840,15 @@ def _resolve_outreach_recipient(*, raw_data: dict[str, Any], recipient_email: st
             "reason": manual_reason or "invalid_manual_email",
         }
 
+    if _should_use_apify_test_fallback(raw_data=raw_data, recipient_email=recipient_email):
+        return {
+            "to_email": APIFY_ENRICHMENT_TEST_FALLBACK_EMAIL,
+            "original_email": candidate_email_display or candidate_email or "",
+            "manual_required": False,
+            "reason": "apify_test_fallback_missing_email",
+            "override_used": True,
+        }
+
     return {
         "to_email": "",
         "original_email": candidate_email_display or candidate_email,
@@ -868,12 +907,27 @@ def _send_shortlist_outreach_email(*, to_email: str, subject: str, html_body: st
         return False, error, ""
 
 
-async def _safe_post_slack_message(*, channel_id: str, text: str) -> bool:
+async def _safe_post_slack_message(*, channel_id: str, text: str, bot_token: str | None = None) -> bool:
     try:
-        return await post_slack_message(channel_id=channel_id, text=text)
+        if not bot_token:
+            return False
+        return await post_slack_message(channel_id=channel_id, text=text, bot_token=bot_token)
     except Exception as exc:
         logger.error("slack_message_post_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
         return False
+
+
+def _resolve_slack_bot_token_for_job(job_id: str) -> tuple[str, str]:
+    company_id = ""
+    bot_token = ""
+    with SessionLocal() as db:
+        job = JobRepository(db).get(job_id)
+        if not job:
+            return bot_token, company_id
+        company_id = str(getattr(job, "company_id", "") or "").strip()
+        if company_id:
+            bot_token = SlackCompanyResolver(db).resolve_bot_token(company_id=company_id)
+    return bot_token, company_id
 
 
 # ── Email sending ────────────────────────────────────────────────────────────
@@ -991,8 +1045,8 @@ def _send_outreach_email(*, to_email: str, subject: str, body: str, html_body: s
 
 
 def _follow_up_time() -> datetime:
-    # Day 0 -> 48 hour reminder cadence.
-    return datetime.now(timezone.utc) + timedelta(days=2)
+    # Day 0 -> Day 5 reminder cadence.
+    return datetime.now(timezone.utc) + timedelta(days=5)
 
 
 def _next_follow_up_time(*, follow_up_count_after_send: int, base_time: datetime | None = None) -> datetime | None:
@@ -1463,8 +1517,16 @@ def record_outreach_open(*, db: Session, event_id: str, token: str) -> dict[str,
 # ── Main outreach process ────────────────────────────────────────────────────
 
 def process_outreach(
-    *, db: Session, job_id: str, selected_candidates: list[str], custom_body: str = "", recipient_email: str = ""
+    *,
+    db: Session,
+    job_id: str,
+    selected_candidates: list[str],
+    custom_body: str = "",
+    recipient_email: str = "",
+    email_override: str = "",
 ) -> dict:
+    if email_override.strip():
+        recipient_email = email_override.strip()
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
@@ -1583,13 +1645,21 @@ def process_outreach(
     enrichment_state = raw_data.get("enrichment") if isinstance(raw_data.get("enrichment"), dict) else {}
     enrichment_status = str(enrichment_state.get("status") or getattr(selected_profile, "ats_status", "") or "").strip().lower()
     if enrichment_status not in {"verified", "high_confidence"}:
-        logger.warning(
-            "outreach_enrichment_gate_blocked job_id=%s candidate_id=%s status=%s",
-            job_id,
-            valid_candidates[0],
-            enrichment_status or "missing",
-        )
-        raise APIError("Outreach is only allowed after verified or high-confidence candidate enrichment.", status_code=409)
+        if enrichment_status in {"missing_email", "enrichment_no_email"}:
+            logger.info(
+                "outreach_enrichment_missing_email_override_allowed job_id=%s candidate_id=%s recipient_email=%s",
+                job_id,
+                valid_candidates[0],
+                recipient_email or "missing",
+            )
+        elif not _should_use_apify_test_fallback(raw_data=raw_data):
+            logger.warning(
+                "outreach_enrichment_gate_blocked job_id=%s candidate_id=%s status=%s",
+                job_id,
+                valid_candidates[0],
+                enrichment_status or "missing",
+            )
+            raise APIError("Outreach is only allowed after verified or high-confidence candidate enrichment.", status_code=409)
 
     logger.info(
         "outreach_candidates job_id=%s selected=%s rejected_non_selected=%s",
@@ -1657,7 +1727,7 @@ def process_outreach(
         raw_data = profile.raw_data or {}
         enrichment_state = dict(raw_data.get("enrichment") or {})
         enrichment_status = str(enrichment_state.get("status") or "").strip().lower()
-        if enrichment_status not in {"verified", "high_confidence"}:
+        if enrichment_status not in {"verified", "high_confidence"} and enrichment_status not in {"missing_email", "enrichment_no_email"}:
             raise APIError(
                 "Candidate must be verified or high-confidence enriched before outreach can be sent.",
                 status_code=409,
@@ -1670,6 +1740,13 @@ def process_outreach(
         to_email = str(delivery_target.get("to_email") or "").strip()
         manual_required = bool(delivery_target.get("manual_required"))
         reason = str(delivery_target.get("reason") or "").strip()
+        if reason == "apify_test_fallback_missing_email":
+            logger.warning(
+                "outreach_apify_test_fallback_used job_id=%s candidate_id=%s to_email=%s",
+                job_id,
+                candidate_id,
+                to_email,
+            )
 
         if not to_email:
             skipped += 1
@@ -2183,6 +2260,13 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
         to_email = str(delivery_target.get("to_email") or "").strip()
         manual_required = bool(delivery_target.get("manual_required"))
         fallback_reason = str(delivery_target.get("reason") or "").strip()
+        if fallback_reason == "apify_test_fallback_missing_email":
+            logger.warning(
+                "outreach_apify_test_fallback_used job_id=%s candidate_id=%s to_email=%s",
+                job_id,
+                candidate_id,
+                to_email,
+            )
         outreach_repo = OutreachEventRepository(db)
         recruiter_id = JobRepository(db).get_recruiter_id(job_id)
 
@@ -2215,20 +2299,21 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
                 "providerMessageId": "",
             }
 
-        blocked, block_reason = _is_blocked_outbound_email(original_to_email)
+        block_check_email = original_to_email or to_email
+        blocked, block_reason = _is_blocked_outbound_email(block_check_email)
         if blocked:
             logger.warning(
                 "outreach_email_blocked job_id=%s candidate_id=%s reason=%s to_email=%s",
                 job_id,
                 candidate_id,
                 block_reason or "missing_email",
-                original_to_email,
+                block_check_email,
             )
             outreach_repo.upsert(
                 job_id=job_id,
                 candidate_id=candidate_id,
                 provider=OUTREACH_PROVIDER,
-                to_email=original_to_email,
+                to_email=block_check_email,
                 subject=subject,
                 body=email_template,
                 status="failed",
@@ -2352,20 +2437,25 @@ def _trigger_candidate_outreach_sync(*, candidate_id: str, job_id: str) -> dict[
 
 
 async def trigger_candidate_outreach(candidate_id: str, job_id: str, channel_id: str) -> dict[str, Any]:
+    bot_token = ""
     try:
         result = await asyncio.to_thread(_trigger_candidate_outreach_sync, candidate_id=candidate_id, job_id=job_id)
         candidate_name = str(result.get("candidateName") or candidate_id).strip() or candidate_id
         status = str(result.get("status") or "").strip().lower()
+        bot_token, company_id = _resolve_slack_bot_token_for_job(job_id)
+        if not bot_token:
+            logger.warning("slack_token_missing company_id=%s", company_id)
 
         if status == "sent":
             await _safe_post_slack_message(
                 channel_id=channel_id,
                 text=f"📩 Outreach email sent to {candidate_name}",
+                bot_token=bot_token,
             )
         elif status == "manual_required":
             linkedin_url = str(result.get("linkedinUrl") or "").strip()
             message = f"⚠️ No email available for {candidate_name}. Reach out via LinkedIn: {linkedin_url}"
-            await _safe_post_slack_message(channel_id=channel_id, text=message)
+            await _safe_post_slack_message(channel_id=channel_id, text=message, bot_token=bot_token)
         return result
     except APIError as exc:
         logger.error(
@@ -2375,7 +2465,7 @@ async def trigger_candidate_outreach(candidate_id: str, job_id: str, channel_id:
             exc.message,
             exc_info=exc,
         )
-        await _safe_post_slack_message(channel_id=channel_id, text="⚠️ Failed to send outreach email")
+        await _safe_post_slack_message(channel_id=channel_id, text="⚠️ Failed to send outreach email", bot_token=bot_token)
         raise
     except Exception as exc:
         logger.error(
@@ -2385,7 +2475,7 @@ async def trigger_candidate_outreach(candidate_id: str, job_id: str, channel_id:
             _error_debug_string(exc),
             exc_info=exc,
         )
-        await _safe_post_slack_message(channel_id=channel_id, text="⚠️ Failed to send outreach email")
+        await _safe_post_slack_message(channel_id=channel_id, text="⚠️ Failed to send outreach email", bot_token=bot_token)
         raise APIError("Failed to send outreach email", status_code=502) from exc
 
 
@@ -2478,7 +2568,7 @@ def run_followup_cycle(db: Session) -> dict:
                 continue
 
             follow_up_number = int(event.follow_up_count or 0) + 1
-            if int(event.follow_up_count or 0) >= 3:
+            if int(event.follow_up_count or 0) >= 2:
                 event.status = "archived"
                 event.next_follow_up_at = None
                 event.last_error = "no_response_archive"
@@ -2507,6 +2597,7 @@ def run_followup_cycle(db: Session) -> dict:
                     reason="no_response_14_days",
                     metadata={"followUpCount": int(event.follow_up_count or 0), "status": "archived"},
                 )
+                archive_name = profile.name or profile.candidate_id or event.candidate_id
                 _record_notification(
                     db=db,
                     job_id=event.job_id,
@@ -2516,10 +2607,38 @@ def run_followup_cycle(db: Session) -> dict:
                     recipient=str(job_repo.get_recruiter_id(event.job_id) or ""),
                     channel="slack",
                     title="No response after final follow-up",
-                    body=f"Candidate {event.candidate_id} was archived after no response.",
+                    body=f"{archive_name} auto-archived after no reply",
                     status="delivered",
                     metadata={"followUpCount": int(event.follow_up_count or 0), "replyState": event.reply_state},
                 )
+                try:
+                    from app.services.candidate_service import fetch_ranked_candidates
+
+                    next_candidates = fetch_ranked_candidates(db=db, job_id=event.job_id, refresh=False, request_source="api")
+                    next_candidate = next((candidate for candidate in next_candidates if candidate.id != event.candidate_id), None)
+                    if next_candidate:
+                        route_recruiter_notification(
+                            db=db,
+                            job_id=event.job_id,
+                            candidate_id=getattr(next_candidate, "id", "") or None,
+                            notification_key=_key("outreach", "next_candidate", event.job_id or "", event.candidate_id or "", str(event.follow_up_count)),
+                            notification_type="candidate_next",
+                            title="Next candidate surfaced",
+                            body=f"{str(getattr(next_candidate, 'name', '') or '').strip() or next_candidate.id} - {str(getattr(next_candidate, 'role', '') or '').strip() or 'Unknown role'} at {str(getattr(next_candidate, 'company', '') or '').strip() or 'Unknown company'}",
+                            metadata={
+                                "sourceCandidateId": event.candidate_id,
+                                "nextCandidateId": getattr(next_candidate, "id", ""),
+                                "reason": "no_response_archive",
+                            },
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "next_candidate_surface_failed job_id=%s candidate_id=%s error=%s",
+                        event.job_id,
+                        event.candidate_id,
+                        str(exc),
+                        exc_info=exc,
+                    )
                 db.commit()
                 skipped += 1
                 logger.info(
@@ -2567,6 +2686,18 @@ def run_followup_cycle(db: Session) -> dict:
                     metadata={"followUpCount": follow_up_number, "dryRun": True},
                 )
                 sent += 1
+                candidate_name = profile.name or profile.candidate_id or event.candidate_id
+                followup_label = "Day 5" if follow_up_number == 1 else "Day 12"
+                route_recruiter_notification(
+                    db=db,
+                    job_id=event.job_id,
+                    candidate_id=event.candidate_id,
+                    notification_key=_key("outreach", "followup_nudge", event.job_id or "", event.candidate_id or "", str(follow_up_number)),
+                    notification_type="outreach_followup",
+                    title=f"{followup_label} candidate nudge sent",
+                    body=f"{candidate_name} was nudged on {followup_label.lower()}.",
+                    metadata={"followUpCount": follow_up_number, "replyState": event.reply_state},
+                )
                 logger.info(
                     "outreach_followup_sent job_id=%s candidate_id=%s follow_up_count=%s dry_run=%s",
                     event.job_id, event.candidate_id, follow_up_number,
@@ -2642,6 +2773,18 @@ def run_followup_cycle(db: Session) -> dict:
                         skipped += 1
                         continue
                     sent += 1
+                    candidate_name = profile.name or profile.candidate_id or event.candidate_id
+                    followup_label = "Day 5" if follow_up_number == 1 else "Day 12"
+                    route_recruiter_notification(
+                        db=db,
+                        job_id=event.job_id,
+                        candidate_id=event.candidate_id,
+                        notification_key=_key("outreach", "followup_nudge", event.job_id or "", event.candidate_id or "", str(follow_up_number)),
+                        notification_type="outreach_followup",
+                        title=f"{followup_label} candidate nudge sent",
+                        body=f"{candidate_name} was nudged on {followup_label.lower()}.",
+                        metadata={"followUpCount": follow_up_number, "replyState": event.reply_state},
+                    )
                     logger.info(
                         "outreach_followup_sent job_id=%s candidate_id=%s follow_up_count=%s provider_id=%s",
                         event.job_id, event.candidate_id, follow_up_number, msg_id,

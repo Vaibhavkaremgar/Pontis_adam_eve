@@ -224,35 +224,17 @@ def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[di
                 "elements": [
                     {
                         "type": "button",
-                        "action_id": "select",
-                        "text": {"type": "plain_text", "text": "Select"},
+                        "action_id": "like",
+                        "text": {"type": "plain_text", "text": "Like"},
                         "style": "primary",
-                        "value": f"select:{candidate_id}:{job_id}",
+                        "value": f"like:{candidate_id}:{job_id}",
                     },
                     {
                         "type": "button",
-                        "action_id": "save",
-                        "text": {"type": "plain_text", "text": "Save"},
-                        "value": f"save:{candidate_id}:{job_id}",
-                    },
-                    {
-                        "type": "button",
-                        "action_id": "reject",
-                        "text": {"type": "plain_text", "text": "Reject"},
+                        "action_id": "pass",
+                        "text": {"type": "plain_text", "text": "Pass"},
                         "style": "danger",
-                        "value": f"reject:{candidate_id}:{job_id}",
-                    },
-                    {
-                        "type": "button",
-                        "action_id": "advance",
-                        "text": {"type": "plain_text", "text": "Advance"},
-                        "value": f"advance:{candidate_id}:{job_id}",
-                    },
-                    {
-                        "type": "button",
-                        "action_id": "archive",
-                        "text": {"type": "plain_text", "text": "Archive"},
-                        "value": f"archive:{candidate_id}:{job_id}",
+                        "value": f"pass:{candidate_id}:{job_id}",
                     },
                 ],
             }

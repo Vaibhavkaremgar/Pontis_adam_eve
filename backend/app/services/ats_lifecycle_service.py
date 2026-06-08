@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from datetime import datetime, timezone
@@ -18,7 +19,10 @@ from app.db.repositories import (
     InboundEmailRepository,
     NotificationEventRepository,
     OutreachEventRepository,
+    OrchestrationSessionRepository,
 )
+from app.services.slack_integration import post_slack_message
+from app.services.slack_tenant_service import SlackCompanyResolver
 from app.utils.observability import emit_trace
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,8 @@ CANONICAL_ATS_STATES: tuple[str, ...] = (
     "offer_sent",
     "placed",
     "hired",
+    "warm",
+    "disqualified",
     "rejected",
     "search_closed",
     "archived",
@@ -77,17 +83,18 @@ _LEGACY_TO_CANONICAL: dict[str, str] = {
     "qualified": "replied_interested",
     "awaiting_resume": "replied_interested",
     "declined": "replied_not_interested",
+    "offer_accepted": "placed",
     "do_not_contact": "archived",
 }
 
 _TRANSITION_ORDER: dict[str, set[str]] = {
-    "reviewed": {"sourced", "enriched", "selected", "rejected", "archived"},
-    "sourced": {"enriched", "reviewed", "selected", "rejected", "archived"},
-    "selected": {"enriching", "rejected", "archived"},
-    "enriching": {"enriched", "enrichment_failed", "selected", "rejected", "archived"},
+    "reviewed": {"sourced", "enriched", "selected", "rejected", "disqualified", "warm", "archived"},
+    "sourced": {"enriched", "reviewed", "selected", "rejected", "disqualified", "warm", "archived"},
+    "selected": {"enriching", "rejected", "disqualified", "warm", "archived"},
+    "enriching": {"enriched", "enrichment_failed", "selected", "rejected", "disqualified", "warm", "archived"},
     "enrichment_failed": {"selected", "reviewed", "archived"},
-    "enriched": {"reviewed", "outreach_pending", "outreach_sent", "rejected", "archived"},
-    "outreach_pending": {"outreach_sent", "rejected", "archived"},
+    "enriched": {"reviewed", "outreach_pending", "outreach_sent", "rejected", "disqualified", "warm", "archived"},
+    "outreach_pending": {"outreach_sent", "rejected", "disqualified", "warm", "archived"},
     "outreach_sent": {"replied_interested", "replied_not_interested", "archived", "interview_requested"},
     "replied_interested": {"interview_requested", "interview_scheduled", "advanced", "final_round", "offer_sent", "rejected"},
     "replied_not_interested": {"archived", "rejected"},
@@ -104,6 +111,8 @@ _TRANSITION_ORDER: dict[str, set[str]] = {
     "final_round": {"offer_sent", "hired", "rejected", "archived"},
     "offer_stage": {"placed", "search_closed", "offer_sent", "hired", "rejected", "archived"},
     "offer_sent": {"placed", "hired", "rejected", "search_closed", "archived"},
+    "warm": {"reviewed", "archived"},
+    "disqualified": {"archived"},
     "placed": {"search_closed", "archived"},
     "search_closed": {"archived"},
     "hired": {"archived"},
@@ -117,6 +126,39 @@ def normalize_ats_status(value: str | None) -> str:
     if normalized in _CANONICAL_SET:
         return normalized
     return _LEGACY_TO_CANONICAL.get(normalized, normalized or "reviewed")
+
+
+async def _post_search_closed_slack_message(*, db: Session, job_id: str, candidate_id: str) -> None:
+    job = JobRepository(db).get(job_id)
+    profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    session = OrchestrationSessionRepository(db).get_by_job(job_id)
+    slack_context = dict(getattr(session, "slack_context", {}) or {}) if session else {}
+    channel_id = str(slack_context.get("channelId") or slack_context.get("channel_id") or "").strip()
+    company_id = str(slack_context.get("companyId") or slack_context.get("company_id") or getattr(session, "company_id", "") or getattr(job, "company_id", "") or "").strip()
+    if not job or not profile or not channel_id or not company_id:
+        return
+
+    try:
+        bot_token = SlackCompanyResolver(db).resolve_bot_token(company_id=company_id)
+    except Exception as exc:
+        logger.warning("search_closed_slack_token_failed job_id=%s error=%s", job_id, str(exc), exc_info=exc)
+        return
+    if not bot_token:
+        return
+
+    candidate_name = str(getattr(profile, "name", "") or candidate_id).strip()
+    job_title = str(getattr(job, "title", "") or "").strip()
+    try:
+        await post_slack_message(
+            channel_id=channel_id,
+            text=f"Search complete. 1 placement confirmed - {candidate_name} for {job_title}",
+            bot_token=bot_token,
+        )
+    except Exception as exc:
+        logger.warning("search_closed_slack_post_failed job_id=%s error=%s", job_id, str(exc), exc_info=exc)
+        return
+
+    logger.info("search_closed_slack_posted job_id=%s", job_id)
 
 
 def _transition_key(*, job_id: str, candidate_id: str, to_status: str, source: str, actor_id: str | None, metadata: dict[str, Any]) -> str:
@@ -257,6 +299,13 @@ def transition_candidate_ats_state(
         to_status=target_status,
         source=source,
     )
+    if target_status == "placed":
+        try:
+            asyncio.run(_post_search_closed_slack_message(db=db, job_id=job_id, candidate_id=candidate_id))
+        except RuntimeError:
+            pass
+        except Exception as exc:
+            logger.warning("search_closed_slack_post_error job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc), exc_info=exc)
     return {
         "jobId": job_id,
         "candidateId": candidate_id,

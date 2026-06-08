@@ -123,7 +123,8 @@ class InterviewItem(BaseModel):
 class SwipeFeedbackRequest(BaseModel):
     jobId: str
     candidateId: str
-    action: Literal["accept", "reject"]
+    action: Literal["accept", "reject", "maybe", "not_now", "pass"]
+    reactivateAt: str = ""
 
 
 class SwipeFeedbackData(BaseModel):

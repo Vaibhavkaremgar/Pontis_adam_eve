@@ -1,111 +1,289 @@
 from __future__ import annotations
 
+# Interview project writes directly to Adam's DB (shared DATABASE_URL).
+# It writes to: interviews.transcript, interview_score, technical_score,
+# communication_score, culture_fit_score, ai_summary, feedback,
+# interviewer_notes, video_url, completed_at, status="completed"
+# Adam only serves the data — it never pulls or receives a push.
+# Video is streamed from interview project volume via:
+# GET {INTERVIEW_APP_URL}/api/video/{video_url} with X-Internal-API-Key
+
+import asyncio
 import logging
-import os
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import requests
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import (
     INTERNAL_API_KEY,
     HTTP_TIMEOUT_SECONDS,
-    PONTIS_API_BASE_URL,
-    PONTIS_INTERNAL_API_KEY,
-    PONTIS_INTERVIEW_RECORDING_PATH,
-    PONTIS_INTERVIEW_RESULT_PATH,
-    PONTIS_REQUEST_TIMEOUT_SECONDS,
+    INTERVIEW_APP_URL,
+    PUBLIC_APP_URL,
 )
 from app.db.repositories import (
     CandidateProfileRepository,
     InterviewEvaluationRepository,
     InterviewSessionRepository,
     JobRepository,
+    NotificationEventRepository,
     NotificationWorkflowTokenRepository,
+    OrchestrationSessionRepository,
 )
 from app.services.ats_lifecycle_service import candidate_timeline, normalize_ats_status
 from app.services.interview_stage_service import get_interview_insights
+from app.services.slack_integration import post_slack_message
+from app.services.slack_tenant_service import SlackCompanyResolver
 from app.utils.exceptions import APIError
 from app.utils.observability import emit_trace
 
 logger = logging.getLogger(__name__)
 
-# Base directory where the interview project stores recordings on disk.
-# Must be the same mounted volume path accessible to Adam's backend.
-RECORDING_STORAGE_DIR = os.getenv("RECORDING_STORAGE_DIR", "").strip().rstrip("/")
-
-_RESULT_STATUSES = {
-    "interview_completed",
-    "evaluation_processing",
-    "results_ready",
-    "advanced",
-    "second_round_requested",
-    "second_round_scheduled",
-    "final_round",
-    "offer_stage",
-    "offer_sent",
-    "placed",
-    "search_closed",
-    "rejected",
-    "hired",
-}
-
-
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _fetch_interview_session_by_workflow_token(db: Session, workflow_token: str) -> dict[str, Any]:
-    """
-    Query interview_sessions directly using workflow_token column.
-    Returns all result fields: ai_summary, transcript, scores, recording_path, session_token.
-    Also joins interviews table (source_app='adam') for score columns.
-    """
-    if not workflow_token:
+def _format_score(value: Any) -> str:
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return "0.0"
+
+
+def _summary_paragraphs(summary: str) -> list[str]:
+    text = _normalize_text(summary)
+    if not text:
+        return [""]
+    paragraphs = [part.strip() for part in text.split("\n\n") if part.strip()]
+    if len(paragraphs) >= 3:
+        return paragraphs[:3]
+    if len(paragraphs) == 1:
+        sentences = [part.strip() for part in text.replace("\n", " ").split(". ") if part.strip()]
+        if len(sentences) >= 3:
+            chunk_size = max(1, len(sentences) // 3)
+            paragraphs = [
+                ". ".join(sentences[0:chunk_size]),
+                ". ".join(sentences[chunk_size : chunk_size * 2]),
+                ". ".join(sentences[chunk_size * 2 :]),
+            ]
+            cleaned = []
+            for part in paragraphs:
+                normalized = part.strip()
+                if normalized and not normalized.endswith("."):
+                    normalized += "."
+                if normalized:
+                    cleaned.append(normalized)
+            return cleaned[:3]
+        words = text.split()
+        if len(words) > 1:
+            chunk_size = max(1, len(words) // 3)
+            paragraphs = [
+                " ".join(words[0:chunk_size]),
+                " ".join(words[chunk_size : chunk_size * 2]),
+                " ".join(words[chunk_size * 2 :]),
+            ]
+            return [part.strip() for part in paragraphs if part.strip()]
+        return [text]
+    return paragraphs[:3]
+
+
+def _candidate_resume_url(profile: Any) -> str:
+    parsed_resume_json = getattr(profile, "parsed_resume_json", {})
+    raw_data = getattr(profile, "raw_data", {})
+    for source in (parsed_resume_json, raw_data):
+        if not isinstance(source, dict):
+            continue
+        for key in ("resume_url", "resumeUrl", "resume_link", "resumeLink", "source_path", "sourcePath"):
+            value = _normalize_text(source.get(key) or "")
+            if value and (value.startswith("http://") or value.startswith("https://")):
+                return value
+    return ""
+
+
+async def _post_full_profile_card_to_slack(
+    *,
+    db: Session,
+    job_id: str,
+    candidate_id: str,
+    workflow_token: str,
+    result: dict[str, Any],
+) -> None:
+    orchestration_session = OrchestrationSessionRepository(db).get_by_job(job_id)
+    slack_context = dict(getattr(orchestration_session, "slack_context", {}) or {}) if orchestration_session else {}
+    if not slack_context:
+        return
+
+    channel_id = _normalize_text(slack_context.get("channelId") or slack_context.get("channel_id") or "")
+    company_id = _normalize_text(slack_context.get("companyId") or slack_context.get("company_id") or getattr(orchestration_session, "company_id", "") or "")
+    if not channel_id or not company_id:
+        return
+
+    notification_key = f"results-profile-card:{job_id}:{candidate_id}"
+    notification_repo = NotificationEventRepository(db)
+    existing_notification = notification_repo.get_by_key(notification_key)
+    if existing_notification and _normalize_text(getattr(existing_notification, "status", "")).lower() == "delivered":
+        return
+
+    job = JobRepository(db).get(job_id)
+    profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    if not job or not profile:
+        return
+
+    try:
+        bot_token = SlackCompanyResolver(db).resolve_bot_token(company_id=company_id)
+    except Exception as exc:
+        logger.warning("results_profile_card_slack_token_failed job_id=%s error=%s", job_id, str(exc), exc_info=exc)
+        return
+    if not bot_token:
+        return
+
+    candidate_name = _normalize_text(result.get("candidate", {}).get("name") or getattr(profile, "name", "") or candidate_id)
+    current_role = _normalize_text(result.get("candidate", {}).get("headline") or result.get("candidate", {}).get("role") or getattr(profile, "current_title", "") or getattr(profile, "role", ""))
+    job_title = _normalize_text(getattr(job, "title", ""))
+    summary_text = _normalize_text(result.get("summary") or getattr(profile, "summary", ""))
+    summary_body = "\n\n".join(part for part in _summary_paragraphs(summary_text) if part) or "No ai_summary available."
+    scores = result.get("scores") or {}
+    video_link = f"{PUBLIC_APP_URL.rstrip('/')}/results/{_normalize_text(workflow_token)}" if _normalize_text(workflow_token) else ""
+    resume_url = _candidate_resume_url(profile)
+
+    blocks: list[dict[str, Any]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{candidate_name} - {current_role or job_title or 'Interview profile'}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*{candidate_name}*\n{current_role or job_title or 'Current role not set'}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*AI Summary*\n{summary_body}"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Interview Score*\n{_format_score(scores.get('overall'))}"},
+                {"type": "mrkdwn", "text": f"*Technical Score*\n{_format_score(scores.get('technical'))}"},
+                {"type": "mrkdwn", "text": f"*Communication Score*\n{_format_score(scores.get('communication'))}"},
+                {"type": "mrkdwn", "text": f"*Culture Fit Score*\n{_format_score(scores.get('cultureFit'))}"},
+            ],
+        },
+    ]
+    link_lines = []
+    if video_link:
+        link_lines.append(f"*Video Link*\n<{video_link}|Open results>")
+    if resume_url:
+        link_lines.append(f"*Resume Link*\n<{resume_url}|Open resume>")
+    if link_lines:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n\n".join(link_lines)}})
+    blocks.append(
+        {
+            "type": "actions",
+            "block_id": f"result-profile:{job_id}:{candidate_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": "like",
+                    "text": {"type": "plain_text", "text": "LIKE -> 2nd round"},
+                    "style": "primary",
+                    "value": f"like:{candidate_id}:{job_id}",
+                },
+                {
+                    "type": "button",
+                    "action_id": "pass",
+                    "text": {"type": "plain_text", "text": "PASS -> Disqualify"},
+                    "style": "danger",
+                    "value": f"pass:{candidate_id}:{job_id}",
+                },
+            ],
+        }
+    )
+
+    try:
+        await post_slack_message(
+            channel_id=channel_id,
+            text=f"{candidate_name} - {current_role or job_title or 'Interview profile'}",
+            blocks=blocks,
+            bot_token=bot_token,
+        )
+    except Exception as exc:
+        logger.warning("results_profile_card_slack_post_failed job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc), exc_info=exc)
+        return
+
+    notification_repo.upsert(
+        notification_key=notification_key,
+        job_id=job_id,
+        company_id=company_id,
+        candidate_id=candidate_id,
+        recipient_type="recruiter",
+        recipient=channel_id,
+        channel="slack",
+        title="Interview profile posted",
+        body=f"Profile card posted for {candidate_name}",
+        status="delivered",
+        notification_type="results_profile_card",
+        notification_metadata={"workflowToken": workflow_token, "channelId": channel_id},
+        delivery_reference=notification_key,
+    )
+    db.commit()
+    logger.info("results_profile_card_slack_posted job_id=%s candidate_id=%s", job_id, candidate_id)
+
+
+def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) -> dict[str, Any]:
+    if not job_id or not candidate_id:
         return {}
     try:
         result = db.execute(
             text("""
                 SELECT
-                    s.id                        AS session_id,
-                    s.session_token,
-                    s.recording_path,
-                    s.vapi_recording_url,
-                    s.ai_summary,
-                    s.last_transcript_snapshot   AS transcript,
-                    s.status                     AS session_status,
-                    s.scheduled_at,
-                    s.candidate_id               AS session_candidate_id,
                     i.id                         AS interview_id,
+                    i.job_id,
+                    i.company_id,
+                    i.candidate_id,
+                    i.status,
                     i.interview_score,
                     i.technical_score,
                     i.communication_score,
                     i.culture_fit_score,
-                    i.ai_summary                 AS interview_ai_summary,
-                    i.transcript                 AS interview_transcript,
-                    i.video_url,
-                    i.status                     AS interview_status,
+                    i.ai_summary,
+                    i.transcript,
                     i.feedback,
-                    i.interviewer_notes
-                FROM interview_sessions s
-                LEFT JOIN interviews i
-                    ON i.candidate_id = s.candidate_id
-                    AND i.source_app = 'adam'
-                WHERE s.workflow_token = :wt
-                   OR s.token = :wt
-                ORDER BY s.created_at DESC
+                    i.interviewer_notes,
+                    i.video_url,
+                    i.completed_at,
+                    i.created_at,
+                    cp.name                    AS candidate_name,
+                    cp.role                    AS candidate_role,
+                    cp.company                 AS candidate_company,
+                    cp.summary                 AS candidate_summary,
+                    cp.skills                  AS candidate_skills,
+                    cp.raw_data                AS candidate_raw_data,
+                    nt.token                   AS workflow_token
+                FROM interviews i
+                LEFT JOIN candidate_profiles cp
+                    ON cp.job_id = i.job_id
+                   AND cp.candidate_id = i.candidate_id
+                LEFT JOIN notification_workflow_tokens nt
+                    ON nt.job_id = i.job_id
+                   AND nt.candidate_id = i.candidate_id
+                   AND nt.source_app = 'adam'
+                   AND nt.is_active = 1
+                WHERE i.job_id = :job_id
+                  AND i.candidate_id = :candidate_id
+                  AND i.source_app = 'adam'
+                ORDER BY i.created_at DESC
                 LIMIT 1
             """),
-            {"wt": workflow_token},
+            {"job_id": job_id, "candidate_id": candidate_id},
         ).mappings().first()
         if result:
             return dict(result)
-    except Exception as exc:
-        logger.warning("interview_session_fetch_failed workflow_token=%s error=%s", workflow_token, str(exc))
+    except Exception as e:
+        logger.error("results_read_failed error=%s", str(e))
+        raise
     return {}
 
 
@@ -138,7 +316,6 @@ def _build_candidate_snapshot(
     candidate_id: str,
     workflow_token: str,
     recruiter_id: str,
-    remote_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
@@ -146,32 +323,20 @@ def _build_candidate_snapshot(
     evaluations = InterviewEvaluationRepository(db).list_for_candidate(job_id=job_id, candidate_id=candidate_id, limit=20)
     timeline = candidate_timeline(db=db, job_id=job_id, candidate_id=candidate_id, limit=100)
 
-    # ── Primary source: interview_sessions joined with interviews via workflow_token ──
-    interview_row = _fetch_interview_session_by_workflow_token(db, workflow_token)
+    # ── Primary source: interviews row keyed by job_id + candidate_id ─────────
+    interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)
+    transcript = _normalize_text(interview_row.get("transcript") or "")
+    if not transcript:
+        return {"status": "pending"}
 
     # ── AI Summary ────────────────────────────────────────────────────────────
-    # Priority: interviews.ai_summary > interview_sessions.ai_summary > evaluations
     summary = _normalize_text(
-        interview_row.get("interview_ai_summary")
-        or interview_row.get("ai_summary")
+        interview_row.get("ai_summary")
         or (evaluations[0].summary if evaluations else "")
         or insights.get("intelligence", {}).get("summary") or ""
     )
 
-    # ── Transcript ────────────────────────────────────────────────────────────
-    # Priority: interviews.transcript > interview_sessions.last_transcript_snapshot > evaluations
-    transcript = _normalize_text(
-        interview_row.get("interview_transcript")
-        or interview_row.get("transcript")
-        or ""
-    )
-    if not transcript and evaluations:
-        transcript = "\n".join(
-            f"{ev.stage_name}: {ev.summary}" for ev in evaluations if _normalize_text(ev.summary)
-        ).strip()
-
     # ── Scores ────────────────────────────────────────────────────────────────
-    # Priority: interviews score columns > candidate fit_score fallback
     def _f(val: Any, fallback: float = 0.0) -> float:
         try:
             return float(val) if val is not None else fallback
@@ -184,24 +349,14 @@ def _build_candidate_snapshot(
     culture_fit_score = _f(interview_row.get("culture_fit_score"), 0.0)
 
     # ── Video ─────────────────────────────────────────────────────────────────
-    # Priority: interviews.video_url > interview_sessions.recording_path > vapi_recording_url
-    recording_path = _normalize_text(
-        interview_row.get("video_url")
-        or interview_row.get("recording_path")
-        or ""
-    )
-    session_token = _normalize_text(
-        interview_row.get("session_token")
-        or getattr(session, "token", "") or ""
-    )
-    vapi_url = _normalize_text(interview_row.get("vapi_recording_url") or "")
-    video_available = bool(recording_path or vapi_url)
+    recording_path = _normalize_text(interview_row.get("video_url") or "")
+    video_available = bool(recording_path)
 
     # ── Status ────────────────────────────────────────────────────────────────
     raw_data = getattr(profile, "raw_data", {}) if isinstance(getattr(profile, "raw_data", {}), dict) else {}
     current_status = normalize_ats_status(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", ""))
     ats_metadata = getattr(profile, "ats_metadata", {}) if isinstance(getattr(profile, "ats_metadata", {}), dict) else {}
-    interview_status = _normalize_text(interview_row.get("interview_status") or interview_row.get("session_status") or "")
+    interview_status = _normalize_text(interview_row.get("status") or "")
     status = interview_status or current_status or getattr(session, "status", "") or "interview_completed"
     evaluation_ready = bool(interview_row.get("interview_score") or (session and (session.evaluation_status or "").strip().lower() == "completed"))
     recommendation = _normalize_text(
@@ -224,8 +379,7 @@ def _build_candidate_snapshot(
             "source": "interviews_table",
         },
         "recording": {
-            "sessionToken": session_token,
-            # recordingPath hidden from frontend — video served via /results/video/{workflowToken}
+            "sessionToken": _normalize_text(interview_row.get("workflow_token") or workflow_token),
             "recordingPath": "",
             "videoAvailable": video_available,
         },
@@ -254,10 +408,10 @@ def _build_candidate_snapshot(
             "candidateId": candidate_id,
             "recruiterId": recruiter_id,
             "evaluationReady": evaluation_ready,
-            "sessionToken": session_token,
+            "sessionToken": _normalize_text(interview_row.get("workflow_token") or workflow_token),
             "scheduledAt": (
-                interview_row["scheduled_at"].isoformat()
-                if interview_row.get("scheduled_at") else
+                interview_row["completed_at"].isoformat()
+                if interview_row.get("completed_at") else
                 (session.scheduled_at.isoformat() if session and session.scheduled_at else None)
             ),
             "insights": insights,
@@ -286,66 +440,58 @@ def _build_candidate_snapshot(
     return response
 
 
-def _pontis_headers() -> dict[str, str]:
-    headers = {
-        "Accept": "application/json",
-        "X-Request-Source": "adam",
-    }
-    internal_key = (PONTIS_INTERNAL_API_KEY or INTERNAL_API_KEY or "").strip()
-    if internal_key:
-        headers["X-Internal-API-Key"] = internal_key
-    return headers
-
-
-def _pontis_base_url() -> str:
-    return PONTIS_API_BASE_URL.rstrip("/")
-
-
-def _call_pontis_json(*, workflow_token: str, route_template: str) -> dict[str, Any]:
-    if not PONTIS_API_BASE_URL:
-        return {}
-    target_path = route_template.format(workflowToken=quote(workflow_token, safe=""))
-    url = f"{_pontis_base_url()}{target_path}"
-    emit_trace(logger, "results_pontis_proxy_start", workflow_token=workflow_token, candidate_id="", recruiter_id="", url=url)
-    response = requests.get(url, headers=_pontis_headers(), timeout=PONTIS_REQUEST_TIMEOUT_SECONDS or HTTP_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    payload = response.json()
-    if isinstance(payload, dict) and "data" in payload and isinstance(payload.get("data"), dict):
-        return dict(payload["data"])
-    return payload if isinstance(payload, dict) else {}
-
-
 def _candidate_result_rows(db: Session, job_id: str) -> list[dict[str, Any]]:
-    profiles = CandidateProfileRepository(db).list_for_job(job_id)
+    try:
+        results = db.execute(
+            text("""
+                SELECT
+                    i.candidate_id,
+                    i.status,
+                    i.interview_score,
+                    i.transcript,
+                    i.video_url,
+                    i.feedback,
+                    i.completed_at,
+                    cp.name,
+                    cp.fit_score,
+                    cp.decision,
+                    nt.token AS workflow_token
+                FROM interviews i
+                LEFT JOIN candidate_profiles cp
+                    ON cp.job_id = i.job_id
+                   AND cp.candidate_id = i.candidate_id
+                LEFT JOIN notification_workflow_tokens nt
+                    ON nt.job_id = i.job_id
+                   AND nt.candidate_id = i.candidate_id
+                   AND nt.source_app = 'adam'
+                   AND nt.is_active = 1
+                WHERE i.job_id = :job_id
+                  AND i.source_app = 'adam'
+                ORDER BY COALESCE(i.interview_score, 0) DESC, COALESCE(cp.fit_score, 0) DESC, cp.name ASC
+            """),
+            {"job_id": job_id},
+        ).mappings().all()
+    except Exception as exc:
+        logger.warning("results_list_fetch_failed job_id=%s error=%s", job_id, str(exc))
+        return []
+
     rows: list[dict[str, Any]] = []
-    for profile in profiles:
-        workflow_row = NotificationWorkflowTokenRepository(db).get_active_by_candidate(
-            job_id=job_id,
-            candidate_id=profile.candidate_id,
-            source_app="adam",
-            token_type="slot_booking",
-        )
-        if not workflow_row:
-            continue
-        interview_session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=profile.candidate_id)
-        ats_status = normalize_ats_status(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", ""))
-        evaluation_ready = bool(interview_session and (interview_session.evaluation_status or "").strip().lower() == "completed")
-        result_status = (interview_session.status if interview_session else ats_status).strip().lower()
-        if result_status not in _RESULT_STATUSES and not evaluation_ready:
-            continue
+    for row in results:
+        transcript = _normalize_text(row.get("transcript") or "")
+        status = _normalize_text(row.get("status") or "")
+        score = float(row.get("interview_score") or row.get("fit_score") or 0.0)
         rows.append(
             {
-                "candidateId": profile.candidate_id,
-                "name": profile.name or profile.candidate_id,
-                "status": result_status or "results_ready",
-                "workflowToken": workflow_row.token,
-                "score": float(getattr(profile, "fit_score", 0.0) or 0.0),
-                "recommendation": getattr(profile, "decision", "") or "review",
-                "completionState": "results_ready" if evaluation_ready or result_status == "results_ready" else result_status,
-                "videoAvailable": bool(interview_session and (interview_session.evaluation_status or "").strip().lower() == "completed"),
+                "candidateId": _normalize_text(row.get("candidate_id") or ""),
+                "name": _normalize_text(row.get("name") or row.get("candidate_id") or ""),
+                "status": "pending" if not transcript else (status or "completed"),
+                "workflowToken": _normalize_text(row.get("workflow_token") or ""),
+                "score": score,
+                "recommendation": _normalize_text(row.get("feedback") or row.get("decision") or "review"),
+                "completionState": "pending" if not transcript else ("results_ready" if status == "completed" else status or "results_ready"),
+                "videoAvailable": bool(transcript and _normalize_text(row.get("video_url") or "")),
             }
         )
-    rows.sort(key=lambda item: (-float(item.get("score") or 0.0), item.get("name", "")))
     return rows
 
 
@@ -376,21 +522,6 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
     if not job:
         raise APIError("Job not found", status_code=404)
 
-    remote_result: dict[str, Any] = {}
-    if PONTIS_API_BASE_URL:
-        try:
-            remote_result = _call_pontis_json(workflow_token=resolved_workflow_token, route_template=PONTIS_INTERVIEW_RESULT_PATH)
-        except requests.RequestException as exc:
-            emit_trace(
-                logger,
-                "results_pontis_proxy_failed",
-                workflow_token=resolved_workflow_token,
-                candidate_id=candidate_id,
-                recruiter_id=recruiter_id,
-                error=str(exc),
-            )
-            remote_result = {}
-
     emit_trace(
         logger,
         "results_fetch",
@@ -399,14 +530,28 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
         recruiter_id=recruiter_id,
         job_id=job_id,
     )
-    return _build_candidate_snapshot(
+    result = _build_candidate_snapshot(
         db=db,
         job_id=job_id,
         candidate_id=candidate_id,
         workflow_token=resolved_workflow_token,
         recruiter_id=recruiter_id,
-        remote_result=remote_result or payload or {},
     )
+    try:
+        asyncio.run(
+            _post_full_profile_card_to_slack(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                workflow_token=resolved_workflow_token,
+                result=result,
+            )
+        )
+    except RuntimeError as exc:
+        logger.error("slack_post_failed error=%s", str(exc))
+    except Exception as exc:
+        logger.error("slack_post_failed error=%s", str(exc))
+    return result
 
 
 def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, range_header: str = ""):
@@ -418,15 +563,8 @@ def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, 
     if not job:
         raise APIError("Job not found", status_code=404)
 
-    # ── Get recording_path from interview_sessions / interviews table ──────────
-    interview_row = _fetch_interview_session_by_workflow_token(db, resolved_workflow_token)
-    recording_path = _normalize_text(
-        interview_row.get("video_url")
-        or interview_row.get("recording_path")
-        or ""
-    )
-    vapi_url = _normalize_text(interview_row.get("vapi_recording_url") or "")
-    session_token = _normalize_text(interview_row.get("session_token") or "")
+    interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)
+    recording_path = _normalize_text(interview_row.get("video_url") or "")
 
     emit_trace(
         logger,
@@ -434,111 +572,37 @@ def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, 
         workflow_token=resolved_workflow_token,
         candidate_id=candidate_id,
         recruiter_id=recruiter_id,
-        video_url=recording_path or vapi_url or "none",
+        video_url=recording_path or "none",
     )
 
-    # ── Option 1: vapi_recording_url — proxy from external URL ─────────────────
-    if vapi_url and vapi_url.startswith("http"):
-        headers: dict[str, str] = {}
-        if range_header.strip():
-            headers["Range"] = range_header.strip()
-        try:
-            upstream = requests.get(vapi_url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, stream=True)
-            if upstream.status_code < 400:
-                resp_headers = {}
-                for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
-                    if upstream.headers.get(h):
-                        resp_headers[h] = upstream.headers[h]
-                return StreamingResponse(
-                    upstream.iter_content(chunk_size=65536),
-                    status_code=upstream.status_code,
-                    media_type=upstream.headers.get("Content-Type") or "video/webm",
-                    headers=resp_headers,
-                )
-        except Exception as exc:
-            logger.warning("vapi_video_proxy_failed url=%s error=%s", vapi_url, str(exc))
+    if not recording_path:
+        raise APIError("Video is not available yet", status_code=404)
 
-    # ── Option 2: recording_path on shared filesystem ────────────────────────
-    if recording_path:
-        # recording_path may be just a filename like "72b494ee-...mp4"
-        # or a full path. Try RECORDING_STORAGE_DIR prefix first.
-        candidate_paths = []
-        if RECORDING_STORAGE_DIR:
-            candidate_paths.append(Path(RECORDING_STORAGE_DIR) / recording_path)
-        candidate_paths.append(Path(recording_path))
+    interview_app_url = (INTERVIEW_APP_URL or "").rstrip("/")
+    if not interview_app_url:
+        raise APIError("Video is not available yet", status_code=404)
 
-        for file_path in candidate_paths:
-            if file_path.exists() and file_path.is_file():
-                file_size = file_path.stat().st_size
-                content_type = "video/mp4" if str(file_path).endswith(".mp4") else "video/webm"
-
-                # Handle Range requests for video seeking
-                start = 0
-                end = file_size - 1
-                status_code = 200
-                resp_headers: dict[str, str] = {
-                    "Accept-Ranges": "bytes",
-                    "Content-Type": content_type,
-                }
-
-                if range_header.strip():
-                    try:
-                        range_val = range_header.strip().replace("bytes=", "")
-                        parts = range_val.split("-")
-                        start = int(parts[0]) if parts[0] else 0
-                        end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
-                        end = min(end, file_size - 1)
-                        status_code = 206
-                        resp_headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-                        resp_headers["Content-Length"] = str(end - start + 1)
-                    except Exception:
-                        start = 0
-                        end = file_size - 1
-                else:
-                    resp_headers["Content-Length"] = str(file_size)
-
-                def _iter_file(path: Path, s: int, e: int):
-                    with open(path, "rb") as f:
-                        f.seek(s)
-                        remaining = e - s + 1
-                        chunk_size = 65536
-                        while remaining > 0:
-                            chunk = f.read(min(chunk_size, remaining))
-                            if not chunk:
-                                break
-                            yield chunk
-                            remaining -= len(chunk)
-
-                return StreamingResponse(
-                    _iter_file(file_path, start, end),
-                    status_code=status_code,
-                    media_type=content_type,
-                    headers=resp_headers,
-                )
-
-    # ── Option 3: Pontis API proxy (legacy fallback) ───────────────────────
-    if PONTIS_API_BASE_URL and session_token:
-        target_path = PONTIS_INTERVIEW_RECORDING_PATH.format(workflowToken=quote(session_token, safe=""))
-        video_url = f"{PONTIS_API_BASE_URL.rstrip('/')}{target_path}"
-        proxy_headers = {"Accept": "video/*,application/octet-stream;q=0.9,*/*;q=0.8"}
-        if PONTIS_INTERNAL_API_KEY:
-            proxy_headers["X-Internal-API-Key"] = PONTIS_INTERNAL_API_KEY
-        if range_header.strip():
-            proxy_headers["Range"] = range_header.strip()
-        try:
-            upstream = requests.get(video_url, headers=proxy_headers, timeout=PONTIS_REQUEST_TIMEOUT_SECONDS or HTTP_TIMEOUT_SECONDS, stream=True)
-            if upstream.status_code < 400:
-                resp_headers = {}
-                for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control"):
-                    if upstream.headers.get(h):
-                        resp_headers[h] = upstream.headers[h]
-                return StreamingResponse(
-                    upstream.iter_content(chunk_size=65536),
-                    status_code=upstream.status_code,
-                    media_type=upstream.headers.get("Content-Type") or "video/mp4",
-                    headers=resp_headers,
-                )
-        except Exception as exc:
-            logger.warning("pontis_video_proxy_failed url=%s error=%s", video_url, str(exc))
+    video_url = f"{interview_app_url}/api/video/{quote(recording_path, safe='/')}"
+    headers = {
+        "Accept": "video/*,application/octet-stream;q=0.9,*/*;q=0.8",
+        "X-Internal-API-Key": INTERNAL_API_KEY,
+    }
+    if range_header.strip():
+        headers["Range"] = range_header.strip()
+    try:
+        upstream = requests.get(video_url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, stream=True)
+        if upstream.status_code < 400:
+            resp_headers = {}
+            for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control"):
+                if upstream.headers.get(h):
+                    resp_headers[h] = upstream.headers[h]
+            return StreamingResponse(
+                upstream.iter_content(chunk_size=65536),
+                status_code=upstream.status_code,
+                media_type=upstream.headers.get("Content-Type") or "video/mp4",
+                headers=resp_headers,
+            )
+    except Exception as exc:
+        logger.warning("interview_video_proxy_failed url=%s error=%s", video_url, str(exc))
 
     raise APIError("Video is not available yet", status_code=404)

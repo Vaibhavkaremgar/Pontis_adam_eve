@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session
 from app.core.config import APP_ENV, APIFY_TOKEN, REFRESH_CANDIDATE_LIMIT, STALE_DAYS
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
-from app.services.embedding_registry_service import get_active_embedding_version
 from app.services.apify_enrichment_service import enrich_candidate_with_apify
+from app.services.embedding_registry_service import get_active_embedding_version
 from app.services.candidate_text import build_candidate_text
 from app.services.embedding_service import embed
 from app.services.metrics_service import log_metric
+from app.services.job_queue_service import enqueue_job
+from app.services.outreach_service import APIFY_ENRICHMENT_TEST_FALLBACK_EMAIL
 from app.services.qdrant_service import QdrantUnavailableError, ensure_all_collections, upsert_candidate_chunks
 from app.utils.text import average_vectors, chunk_text
 
@@ -84,6 +86,87 @@ def _extract_candidate_linkedin_url(candidate) -> str:
     if isinstance(value, str) and "linkedin.com/in/" in value.lower():
         return value.strip()
     return ""
+
+
+def _extract_candidate_email(candidate) -> str:
+    raw_data = dict(getattr(candidate, "raw_data", {}) or {})
+    enrichment = raw_data.get("enrichment") if isinstance(raw_data.get("enrichment"), dict) else {}
+    for value in (
+        enrichment.get("contactEmail"),
+        raw_data.get("contactEmail"),
+        raw_data.get("email"),
+        raw_data.get("work_email"),
+        raw_data.get("personal_email"),
+        raw_data.get("candidateEmail"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _queue_outreach_after_enrichment(*, db: Session, candidate) -> dict[str, Any] | None:
+    decision = str(getattr(candidate, "decision", "") or "").strip().lower()
+    if decision != "selected":
+        logger.info(
+            "candidate_refresh_outreach_skipped job_id=%s candidate_id=%s reason=not_selected decision=%s",
+            getattr(candidate, "job_id", ""),
+            getattr(candidate, "candidate_id", ""),
+            decision or "missing",
+        )
+        return None
+
+    raw_data = dict(getattr(candidate, "raw_data", {}) or {})
+    enrichment = dict(raw_data.get("enrichment") or {})
+    enrichment_status = str(enrichment.get("status") or "").strip().lower()
+    real_email = _extract_candidate_email(candidate)
+    email_used = real_email or APIFY_ENRICHMENT_TEST_FALLBACK_EMAIL
+    email_source = "real" if real_email else "fallback"
+
+    if real_email:
+        logger.info(
+            "candidate_refresh_enrichment_email_found job_id=%s candidate_id=%s email=%s",
+            getattr(candidate, "job_id", ""),
+            getattr(candidate, "candidate_id", ""),
+            real_email,
+        )
+    else:
+        logger.warning(
+            "enrichment_no_email_using_fallback candidate_id=%s email=%s",
+            getattr(candidate, "candidate_id", ""),
+            email_used,
+        )
+        enrichment["status"] = "enrichment_no_email"
+        enrichment["emailStatus"] = "missing"
+        enrichment["shouldOutreach"] = True
+        enrichment["contactEmail"] = email_used
+
+    raw_data["enrichment"] = enrichment
+    candidate.raw_data = raw_data
+    db.flush()
+
+    queue_result = enqueue_job(
+        "outreach_send_after_enrichment",
+        {
+            "job_id": getattr(candidate, "job_id", ""),
+            "candidate_id": getattr(candidate, "candidate_id", ""),
+            "email": email_used,
+            "email_source": email_source,
+            "selection_session_id": str(enrichment.get("selectionSessionId") or enrichment.get("selection_session_id") or ""),
+            "source_type": str(enrichment.get("sourceType") or "candidate_refresh"),
+        },
+        idempotency_key=f"outreach-after-enrichment:{getattr(candidate, 'job_id', '')}:{getattr(candidate, 'candidate_id', '')}:{email_used}",
+        delay_seconds=1,
+    )
+    logger.info(
+        "candidate_refresh_outreach_queued job_id=%s candidate_id=%s enrichment_status=%s email_source=%s email=%s queue_job_id=%s",
+        getattr(candidate, "job_id", ""),
+        getattr(candidate, "candidate_id", ""),
+        enrichment_status or "missing",
+        email_source,
+        email_used,
+        queue_result.get("job_id") or "",
+    )
+    return queue_result
 
 
 def _refresh_candidate_with_apify_timeout(db: Session, candidate, *, timeout_seconds: float = 30.0) -> bool:
@@ -165,15 +248,24 @@ def refresh_candidate(db: Session, candidate) -> bool:
     try:
         with db.begin_nested():
             candidate_payload = _candidate_text_payload(candidate)
-            if _candidate_is_sparse(candidate_payload):
+            decision = str(getattr(candidate, "decision", "") or candidate_payload.get("decision") or "").strip().lower()
+            if decision == "selected":
                 if APIFY_TOKEN:
                     _refresh_candidate_with_apify_timeout(db, candidate, timeout_seconds=30.0)
                 else:
                     logger.info(
-                        "enrichment_skipped reason=no_apify_token candidate_id=%s",
+                        "candidate_refresh_enrichment_skipped job_id=%s candidate_id=%s reason=no_apify_token",
+                        getattr(candidate, "job_id", ""),
                         getattr(candidate, "candidate_id", ""),
                     )
                 candidate_payload = _candidate_text_payload(candidate)
+            else:
+                logger.info(
+                    "candidate_refresh_enrichment_skipped job_id=%s candidate_id=%s reason=not_selected decision=%s",
+                    getattr(candidate, "job_id", ""),
+                    getattr(candidate, "candidate_id", ""),
+                    decision or "missing",
+                )
             recruiter_id = JobRepository(db).get_recruiter_id(candidate.job_id)
             normalized_text = build_candidate_text(candidate_payload)
             chunks = chunk_text(normalized_text)
@@ -236,6 +328,8 @@ def refresh_candidate(db: Session, candidate) -> bool:
                 candidate_id=candidate.candidate_id,
                 embedding_version=active_embedding_version,
             )
+            if decision == "selected":
+                _queue_outreach_after_enrichment(db=db, candidate=candidate)
             return True
     except Exception as exc:
         if embedding_failed:

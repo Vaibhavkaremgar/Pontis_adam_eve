@@ -4143,6 +4143,11 @@ def fetch_ranked_candidates(
     )
     unswiped_final_count = len(final_candidates)
     final_candidates = [candidate for candidate in final_candidates if _is_reviewable_candidate(candidate)]
+    final_candidates = [
+        candidate
+        for candidate in final_candidates
+        if _normalize_text(getattr(candidate, "status", "") or "").lower() not in {"warm", "disqualified"}
+    ]
     logger.info(
         "candidate_filter_counts job_id=%s source=%s raw_count=%s unswiped_count=%s reviewable_count=%s",
         job.id,
@@ -4240,6 +4245,7 @@ def apply_feedback(
     job_id: str,
     candidate_id: str,
     action: str,
+    reactivate_at: str = "",
     actor_id: str | None = None,
     company_id: str | None = None,
     slack_team_id: str = "",
@@ -4252,8 +4258,10 @@ def apply_feedback(
         raise APIError("Job not found", status_code=404)
 
     action = action.strip().lower()
-    if action not in {"accept", "reject"}:
-        raise APIError("action must be accept or reject", status_code=400)
+    if action == "pass":
+        action = "reject"
+    if action not in {"accept", "reject", "maybe", "not_now"}:
+        raise APIError("action must be accept, reject, maybe, not_now, or pass", status_code=400)
 
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
@@ -4264,6 +4272,8 @@ def apply_feedback(
     existing_interview = interview_repo.get_by_job_and_candidate(job_id, candidate_id)
     current_status = (existing_interview.status if existing_interview else None) or "new"
     target_status = swipe_to_status(action)
+    record_feedback = action in {"accept", "reject"}
+    warm_action = action in {"maybe", "not_now"}
 
     # ── Idempotency: same action already applied → return success immediately ──
     if current_status == target_status:
@@ -4305,8 +4315,8 @@ def apply_feedback(
     )
 
     # ── Persist feedback (idempotent upsert) ───────────────────────────────────
-    existing_feedback = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id)
-    is_new_feedback = existing_feedback is None
+    existing_feedback = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id) if record_feedback else None
+    is_new_feedback = record_feedback and existing_feedback is None
 
     scoring_repo = ScoringProfileRepository(db)
     before_profile = scoring_repo.get_or_create(job_id=job_id)
@@ -4321,14 +4331,16 @@ def apply_feedback(
         "feedback_bias": round(float(before_profile.feedback_bias), 6),
     }
 
-    CandidateFeedbackRepository(db).upsert(
-        job_id=job_id,
-        candidate_id=candidate_id,
-        feedback=action,
-        recruiter_id=recruiter_id,
-        session_id=session_id,
-    )
-    feedback_row = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    feedback_row = None
+    if record_feedback:
+        CandidateFeedbackRepository(db).upsert(
+            job_id=job_id,
+            candidate_id=candidate_id,
+            feedback=action,
+            recruiter_id=recruiter_id,
+            session_id=session_id,
+        )
+        feedback_row = CandidateFeedbackRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if feedback_row:
         feedback_row.company_id = (company_id or getattr(feedback_row, "company_id", None) or job.company_id or "").strip() or None
         feedback_row.recruiter_id = (actor_id or recruiter_id or feedback_row.recruiter_id or "").strip() or None
@@ -4336,7 +4348,7 @@ def apply_feedback(
         feedback_row.slack_user_id = (slack_user_id or getattr(feedback_row, "slack_user_id", "") or "").strip()
         feedback_row.slack_installation_id = (slack_installation_id or getattr(feedback_row, "slack_installation_id", None) or "").strip() or None
         db.flush()
-    if is_new_feedback and recruiter_id:
+    if is_new_feedback and recruiter_id and record_feedback:
         update_recruiter_preferences(
             db,
             recruiter_id,
@@ -4344,8 +4356,8 @@ def apply_feedback(
             [] if action == "accept" else [profile],
             signal_multiplier=2.0 if action == "accept" else 0.5,
         )
-    if is_new_feedback:
-        lifecycle_event_type = "CANDIDATE_SAVED" if action == "accept" else "CANDIDATE_REJECTED"
+    if is_new_feedback or warm_action:
+        lifecycle_event_type = "CANDIDATE_SAVED" if action == "accept" else "CANDIDATE_REJECTED" if action == "reject" else "CANDIDATE_WARMED"
         record_job_lifecycle_event(
             db=db,
             job_id=job_id,
@@ -4362,7 +4374,7 @@ def apply_feedback(
             db=db,
             job_id=job_id,
             candidate_id=candidate_id,
-            to_status="selected" if action == "accept" else "rejected",
+            to_status=target_status,
             source="candidate_feedback",
             actor_id=actor_id or recruiter_id,
             slack_team_id=slack_team_id,
@@ -4378,12 +4390,57 @@ def apply_feedback(
             },
         )
 
+    if warm_action and is_new_feedback:
+        reactivate_source = str(reactivate_at or "").strip()
+        reactivate_at_value = None
+        if reactivate_source:
+            try:
+                reactivate_at_value = datetime.fromisoformat(reactivate_source.replace("Z", "+00:00"))
+            except ValueError:
+                reactivate_at_value = None
+        if reactivate_at_value is None:
+            reactivate_at_value = datetime.now(timezone.utc) + timedelta(days=30)
+        if reactivate_at_value.tzinfo is None:
+            reactivate_at_value = reactivate_at_value.replace(tzinfo=timezone.utc)
+        reactivate_at_value = reactivate_at_value.astimezone(timezone.utc)
+        profile.ats_metadata = {
+            **dict(getattr(profile, "ats_metadata", {}) or {}),
+            "decision": "warm",
+            "reactivateAt": reactivate_at_value.isoformat(),
+            "warmReason": action,
+        }
+        profile.decision = "warm"
+        profile.candidate_status = "warm"
+        profile.ats_status = "warm"
+        profile.ats_status_source = "candidate_feedback"
+        profile.ats_status_reason = action
+        profile.ats_status_updated_at = datetime.now(timezone.utc)
+        try:
+            from app.services.automation_service import schedule_automation_job
+
+            schedule_automation_job(
+                db=db,
+                automation_type="candidate_reactivation",
+                job_id=job_id,
+                candidate_id=candidate_id,
+                run_at=reactivate_at_value,
+                payload={
+                    "reactivateAt": reactivate_at_value.isoformat(),
+                    "feedbackAction": action,
+                    "decision": "warm",
+                    "sourceType": "dashboard",
+                },
+                automation_key=f"candidate-reactivation:{job_id}:{candidate_id}:{reactivate_at_value.isoformat()}",
+            )
+        except Exception as exc:
+            logger.error("automation_failed step=%s error=%s", "candidate_reactivation_schedule", str(exc))
+
     # Only run RLHF weight update for genuinely new feedback signals.
     # Re-submitting the same action is already handled by idempotency above.
     # A changed action (accept→reject) is blocked by state machine above.
     # So reaching here always means is_new_feedback=True in practice,
     # but we guard explicitly for safety.
-    if is_new_feedback:
+    if is_new_feedback and record_feedback:
         after_profile = scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback=action)
     else:
         after_profile = before_profile
@@ -4441,17 +4498,11 @@ def apply_feedback(
                 automation_key=f"candidate-enrichment:{job_id}:{candidate_id}",
             )
         except Exception as exc:
-            logger.warning(
-                "auto_enrichment_failed job_id=%s candidate_id=%s error=%s",
-                job_id,
-                candidate_id,
-                str(exc),
-                exc_info=exc,
-            )
+            logger.error("automation_failed step=%s error=%s", "auto_enrichment", str(exc))
 
     # ── Observability ──────────────────────────────────────────────────────────
     feedback_count = CandidateFeedbackRepository(db).count_for_job(job_id)
-    rlhf_direction = "positive" if action == "accept" else "negative"
+    rlhf_direction = "positive" if action == "accept" else "negative" if action == "reject" else "neutral"
     weight_deltas = {
         k: round(after_weights[k] - before_weights[k], 6)
         for k in before_weights
@@ -4495,10 +4546,11 @@ def apply_feedback(
         ],
     )
 
-    return {
+    result: dict[str, Any] = {
         "jobId": job_id,
         "candidateId": candidate_id,
         "action": action,
+        "decision": target_status,
         "previousState": current_status,
         "newState": target_status,
         "exportStatus": export_status,
@@ -4506,6 +4558,52 @@ def apply_feedback(
         "enrichment": enrichment_result or {},
         "message": "Feedback recorded and ranking weights updated",
     }
+
+    if warm_action:
+        reactivate_display = ""
+        if isinstance(getattr(profile, "ats_metadata", {}), dict):
+            reactivate_display = str(profile.ats_metadata.get("reactivateAt") or "").strip()
+        result["reactivateAt"] = reactivate_display or (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+        result["message"] = "Candidate marked warm and scheduled for reactivation."
+
+    if action == "reject":
+        try:
+            next_candidates = fetch_ranked_candidates(db=db, job_id=job_id, refresh=False, request_source="api")
+            next_candidate = next((candidate for candidate in next_candidates if candidate.id != candidate_id), None)
+            if next_candidate:
+                next_name = _normalize_text(getattr(next_candidate, "name", "") or "")
+                next_role = _normalize_text(getattr(next_candidate, "role", "") or "")
+                next_company = _normalize_text(getattr(next_candidate, "company", "") or "")
+                next_candidate_id = _normalize_text(getattr(next_candidate, "id", "") or "")
+                try:
+                    from app.services.notification_intelligence_service import route_recruiter_notification
+
+                    route_recruiter_notification(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=next_candidate_id or None,
+                        notification_key=f"candidate-next:{job_id}:{candidate_id}:{next_candidate_id}",
+                        notification_type="candidate_next",
+                        title="Next candidate surfaced",
+                        body=f"{next_name or next_candidate_id} - {next_role or 'Unknown role'} at {next_company or 'Unknown company'}",
+                        metadata={
+                            "sourceCandidateId": candidate_id,
+                            "nextCandidateId": next_candidate_id,
+                            "action": action,
+                        },
+                    )
+                except Exception as exc:
+                    logger.error("automation_failed step=%s error=%s", "next_candidate_notification", str(exc))
+                result["nextCandidate"] = {
+                    "id": next_candidate_id,
+                    "name": next_name,
+                    "role": next_role,
+                    "company": next_company,
+                }
+        except Exception as exc:
+            logger.error("automation_failed step=%s error=%s", "next_candidate_fetch", str(exc))
+
+    return result
 
 
 def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateResult]:
@@ -4715,6 +4813,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
         )
     if updated_workflow_tokens:
         db.commit()
+    results = [c for c in results if c.fitScore and c.fitScore > 0]
     sorted_results = sorted(results, key=lambda r: r.fitScore, reverse=True)
     emit_trace(
         logger,

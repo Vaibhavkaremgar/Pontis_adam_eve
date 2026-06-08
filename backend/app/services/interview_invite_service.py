@@ -10,12 +10,13 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.core.config import OUTREACH_REPLY_TO_EMAIL, TEST_INVITE_EMAIL
-from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, JobIntakeRepository, JobRepository
+from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, JobIntakeRepository, JobRepository, OrchestrationSessionRepository
 from app.db.session import SessionLocal
 from app.services.email_service import send_email
 from app.services.interview_session_service import create_interview_session
 from app.services.job_queue_service import enqueue_job
 from app.services.slack_integration import post_slack_message
+from app.services.slack_tenant_service import SlackCompanyResolver
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -233,12 +234,12 @@ def _build_invite_html(
     )
 
 
-async def _post_slack_warning(channel_id: str | None, text: str) -> None:
+async def _post_slack_warning(channel_id: str | None, text: str, bot_token: str | None = None) -> None:
     target = (channel_id or "").strip()
-    if not target:
+    if not target or not bot_token:
         return
     try:
-        await post_slack_message(channel_id=target, text=text)
+        await post_slack_message(channel_id=target, text=text, bot_token=bot_token)
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.error("interview_invite_slack_warning_failed channel_id=%s error=%s", target, str(exc), exc_info=exc)
 
@@ -342,6 +343,18 @@ def _send_interview_invite(
     )
     db.commit()
 
+    slack_context = {}
+    orchestration_session = OrchestrationSessionRepository(db).get_by_job(job_id)
+    if orchestration_session and isinstance(getattr(orchestration_session, "slack_context", None), dict):
+        slack_context = dict(orchestration_session.slack_context or {})
+    slack_channel_id = str(slack_context.get("channelId") or slack_context.get("channel_id") or "").strip()
+    company_id = str(slack_context.get("companyId") or slack_context.get("company_id") or "").strip()
+    bot_token = ""
+    if company_id:
+        bot_token = SlackCompanyResolver(db).resolve_bot_token(company_id=company_id)
+        if not bot_token:
+            logger.warning("slack_token_missing company_id=%s", company_id)
+
     last_error = ""
     for attempt in range(1, 4):
         try:
@@ -363,6 +376,17 @@ def _send_interview_invite(
             )
             if using_test_email:
                 logger.info("test_invite_sent candidate_id=%s to=%s", candidate_id, TEST_INVITE_EMAIL)
+            if slack_channel_id and bot_token:
+                try:
+                    asyncio.run(
+                        post_slack_message(
+                            channel_id=slack_channel_id,
+                            text=f"Interview invite sent to {candidate_name}. Booking link: {booking_link}",
+                            bot_token=bot_token,
+                        )
+                    )
+                except Exception as exc:
+                    logger.error("slack_post_failed error=%s", str(exc))
             return {
                 "success": True,
                 "jobId": job_id,
@@ -402,7 +426,7 @@ def _send_interview_invite(
             str(exc),
             exc_info=exc,
         )
-    asyncio.run(_post_slack_warning(channel_id, "\u26a0\ufe0f Failed to send interview invite"))
+    asyncio.run(_post_slack_warning(channel_id, "\u26a0\ufe0f Failed to send interview invite", bot_token=bot_token))
     return {
         "success": False,
         "jobId": job_id,

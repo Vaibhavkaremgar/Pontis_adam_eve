@@ -40,6 +40,8 @@ VALID_STATES: frozenset[str] = frozenset(
         "offer_sent",
         "placed",
         "hired",
+        "warm",
+        "disqualified",
         "rejected",
         "search_closed",
         "archived",
@@ -51,11 +53,13 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("reviewed", "sourced"),
         ("reviewed", "selected"),
-        ("reviewed", "rejected"),
+        ("reviewed", "disqualified"),
+        ("reviewed", "warm"),
         ("reviewed", "archived"),
         ("sourced", "reviewed"),
         ("selected", "enriching"),
-        ("selected", "rejected"),
+        ("selected", "disqualified"),
+        ("selected", "warm"),
         ("selected", "archived"),
         ("enriching", "enriched"),
         ("enriching", "enrichment_failed"),
@@ -127,6 +131,8 @@ _ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         ("offer_sent", "placed"),
         ("offer_sent", "search_closed"),
         ("offer_sent", "archived"),
+        ("warm", "reviewed"),
+        ("disqualified", "archived"),
         ("rejected", "selected"),
         ("placed", "search_closed"),
         ("placed", "archived"),
@@ -160,6 +166,8 @@ _SWIPE_LOCKED_STATES: frozenset[str] = frozenset(
         "offer_sent",
         "placed",
         "hired",
+        "warm",
+        "disqualified",
         "rejected",
         "search_closed",
         "archived",
@@ -242,8 +250,11 @@ def is_swipe_locked(status: str | None) -> bool:
 
 def swipe_to_status(action: str) -> str:
     """Map swipe action to the resulting interview status."""
-    if action == "accept":
+    normalized_action = (action or "").strip().lower()
+    if normalized_action in {"accept", "like", "select", "save"}:
         return "selected"
-    if action == "reject":
-        return "rejected"
+    if normalized_action in {"reject", "pass"}:
+        return "disqualified"
+    if normalized_action in {"maybe", "not_now"}:
+        return "warm"
     raise APIError(f"Unknown swipe action '{action}'", status_code=400)

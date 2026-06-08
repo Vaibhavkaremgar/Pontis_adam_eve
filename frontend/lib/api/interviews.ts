@@ -29,6 +29,8 @@ export type InterviewSession = {
   expiresAt: string;
   bookedAt: string | null;
   scheduledAt?: string | null;
+  timezone?: string;
+  availableSlots?: string[];
   bookingLink?: string;
   bookingUrl?: string;
   meetingLink?: string;

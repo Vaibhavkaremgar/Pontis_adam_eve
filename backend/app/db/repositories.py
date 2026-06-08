@@ -1046,6 +1046,59 @@ class InterviewRepository:
         self.db.flush()
         return row
 
+    def upsert_interview_results(self, *, job_id: str, candidate_id: str, result_data: dict) -> None:
+        row = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+        if not row:
+            raise APIError("Interview not found", status_code=404)
+
+        completed_at = result_data.get("completed_at")
+        if isinstance(completed_at, str):
+            try:
+                completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+            except ValueError:
+                completed_at = None
+        if isinstance(completed_at, datetime) and completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+
+        self.db.execute(
+            text(
+                """
+                UPDATE interviews
+                SET
+                    interview_score = :interview_score,
+                    technical_score = :technical_score,
+                    communication_score = :communication_score,
+                    culture_fit_score = :culture_fit_score,
+                    transcript = :transcript,
+                    ai_summary = :ai_summary,
+                    feedback = :feedback,
+                    interviewer_notes = :interviewer_notes,
+                    video_url = :video_url,
+                    completed_at = :completed_at,
+                    status = 'completed'
+                WHERE job_id = :job_id
+                  AND candidate_id = :candidate_id
+                  AND source_app = :source_app
+                """
+            ),
+            {
+                "job_id": job_id,
+                "candidate_id": candidate_id,
+                "source_app": ADAM_SOURCE_APP,
+                "interview_score": result_data.get("interview_score"),
+                "technical_score": result_data.get("technical_score"),
+                "communication_score": result_data.get("communication_score"),
+                "culture_fit_score": result_data.get("culture_fit_score"),
+                "transcript": result_data.get("transcript") or "",
+                "ai_summary": result_data.get("ai_summary") or "",
+                "feedback": result_data.get("feedback") or "",
+                "interviewer_notes": result_data.get("interviewer_notes") or "",
+                "video_url": result_data.get("video_url") or None,
+                "completed_at": completed_at,
+            },
+        )
+        self.db.flush()
+
     def list_for_job(self, job_id: str) -> list[InterviewEntity]:
         rows = self.db.scalars(
             select(InterviewEntity)

@@ -177,6 +177,127 @@ def _score_candidate(job: Any, candidate: dict[str, Any]) -> tuple[float, float,
     return title_signal, skill_signal, location_signal, company_signal
 
 
+def _match_skills(job_skills: list[str], candidate_skills: list[str]) -> list[str]:
+    matched: list[str] = []
+    candidate_lookup = {skill.strip().lower(): skill.strip() for skill in candidate_skills if str(skill).strip()}
+    normalized_candidate_skills = [skill.strip().lower() for skill in candidate_skills if str(skill).strip()]
+
+    for skill in job_skills:
+        normalized_skill = skill.strip().lower()
+        if not normalized_skill:
+            continue
+        if normalized_skill in candidate_lookup:
+            matched.append(candidate_lookup[normalized_skill])
+            continue
+        if any(normalized_skill in candidate_skill or candidate_skill in normalized_skill for candidate_skill in normalized_candidate_skills):
+            matched.append(skill.strip())
+    if matched:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for skill in matched:
+            key = skill.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(skill)
+        return ordered
+    return [skill for skill in candidate_skills if str(skill).strip()]
+
+
+def _experience_display_text(*, experience: str, years_experience: float | None) -> str:
+    if experience:
+        return experience
+    if years_experience is None:
+        return ""
+    if float(years_experience).is_integer():
+        return f"{int(years_experience)} years"
+    return f"{years_experience:g} years"
+
+
+def _build_profile_summary(
+    *,
+    candidate_name: str,
+    role: str,
+    company: str,
+    location: str,
+    experience_label: str,
+    skills: list[str],
+    snippet: str,
+) -> str:
+    subject = candidate_name or role or "Candidate"
+    intro_parts: list[str] = []
+    if role:
+        intro_parts.append(f"is a {role}")
+    if company:
+        intro_parts.append(f"currently at {company}")
+    if location:
+        intro_parts.append(f"based in {location}")
+    intro = f"{subject} {' '.join(intro_parts)}".strip()
+    if intro and not intro.endswith("."):
+        intro += "."
+
+    detail_parts: list[str] = []
+    if experience_label:
+        detail_parts.append(f"Experience signal: {experience_label}.")
+    if skills:
+        detail_parts.append(f"Core skills surfaced: {', '.join(skills[:4])}.")
+    if snippet:
+        detail_parts.append(f"Source snippet: {snippet}.")
+
+    parts = [part.strip() for part in [intro, " ".join(detail_parts).strip()] if part.strip()]
+    return " ".join(parts).strip()
+
+
+def _build_match_reason(
+    *,
+    job: Any,
+    role: str,
+    company: str,
+    location: str,
+    experience_label: str,
+    matched_skills: list[str],
+    title_signal: float,
+    skill_signal: float,
+    location_signal: float,
+    company_signal: float,
+    snippet: str,
+) -> str:
+    job_title = _normalize_text(getattr(job, "title", "") or getattr(job, "role", "") or "")
+    job_location = _normalize_text(getattr(job, "location", "") or "")
+    reasons: list[str] = []
+
+    if title_signal >= 0.15 or (job_title and role):
+        if job_title and role:
+            reasons.append(f"their title aligns with {job_title}")
+        elif role:
+            reasons.append(f"their current title is {role}")
+
+    if matched_skills:
+        reasons.append(f"skill overlap includes {', '.join(matched_skills[:4])}")
+    elif skill_signal > 0:
+        reasons.append("their skills overlap with the job requirements")
+
+    if location_signal > 0.05:
+        if job_location and location:
+            reasons.append(f"location matches {location} against the job location {job_location}")
+        elif location:
+            reasons.append(f"location signal points to {location}")
+
+    if experience_label:
+        reasons.append(f"experience signal points to {experience_label}")
+
+    if company and company_signal > 0:
+        reasons.append(f"current company signal includes {company}")
+
+    if snippet:
+        reasons.append(f"the source snippet mentions {snippet}")
+
+    if not reasons:
+        return "Matched because the profile has enough title and skill overlap to stay in the XRay shortlist."
+
+    return "Matched because " + "; ".join(reasons) + "."
+
+
 def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) -> CandidateResult:
     identity = build_candidate_identity(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
     candidate_id = build_candidate_id(candidate=candidate, source_provider="xray_apollo", source_query=_normalize_text(candidate.get("source_query") or candidate.get("search_query") or ""))
@@ -197,35 +318,16 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
     source_provider = _normalize_text(candidate.get("source_provider") or candidate.get("sourceProvider") or "serpapi") or "serpapi"
     source = _normalize_text(candidate.get("source") or candidate.get("sourceType") or "xray") or "xray"
     location = _normalize_text(candidate.get("location") or "")
-    summary = _normalize_text(candidate.get("summary") or candidate.get("snippet") or "")
-    experience = _normalize_text(candidate.get("experience") or candidate.get("inferred_experience") or "")
+    job_skills = _job_skills(job)
+    experience = _normalize_text(
+        candidate.get("experience")
+        or candidate.get("inferred_experience")
+        or candidate.get("years_experience")
+        or candidate.get("yearsExperience")
+        or ""
+    )
     if experience and not re.search(r"\b\d{1,2}\s*[-–—]\s*(?:\d{1,2})\s*(?:years?|yrs?|yr)\b|\b\d{1,2}\+?\s*(?:years?|yrs?|yr)\b", experience, flags=re.IGNORECASE):
         experience = ""
-    query_family = _normalize_text(candidate.get("query_family") or candidate.get("queryFamily") or "")
-    query_signals = candidate.get("query_signals") if isinstance(candidate.get("query_signals"), dict) else candidate.get("querySignals") if isinstance(candidate.get("querySignals"), dict) else {}
-
-    explanation = CandidateExplanation(
-        semanticScore=round(title_signal, 4),
-        skillOverlap=round(skill_signal, 4),
-        finalScore=round(final_score, 4),
-        pdlRelevance=0.0,
-        recencyScore=0.0,
-        engineeringScore=round(min(1.0, (title_signal * 0.6) + (skill_signal * 0.4)), 4),
-        penalties={},
-        skillsMatched=[skill for skill in skills[:5] if skill],
-        experienceMatch=experience,
-        candidateExperience=experience,
-        jobExperience=_normalize_text(getattr(job, "experience_required", "") or getattr(job, "experience_level", "") or ""),
-        aiReasoning="LinkedIn X-Ray preview derived from semantic title, skill, location, and snippet quality signals.",
-        sourceBreakdown={
-            "title": round(title_signal, 4),
-            "skills": round(skill_signal, 4),
-            "location": round(location_signal, 4),
-            "company": round(company_signal, 4),
-            "snippetQuality": snippet_quality,
-        },
-    )
-
     years_experience = None
     if experience:
         years_match = re.search(r"\d+(?:\.\d+)?", experience)
@@ -240,6 +342,62 @@ def _build_preview_result(*, job: Any, candidate: dict[str, Any], index: int) ->
                     experience,
                     str(exc),
                 )
+    if years_experience is None:
+        candidate_years = candidate.get("years_experience") or candidate.get("yearsExperience")
+        try:
+            if candidate_years not in (None, ""):
+                years_experience = float(candidate_years)
+        except (TypeError, ValueError):
+            years_experience = None
+    experience_label = _experience_display_text(experience=experience, years_experience=years_experience)
+    matched_skills = _match_skills(job_skills, skills)
+    raw_snippet = _normalize_text(candidate.get("summary") or candidate.get("snippet") or "")
+    trimmed_snippet = raw_snippet[:220].rstrip(" ,;:.-") if raw_snippet else ""
+    summary = _build_profile_summary(
+        candidate_name=candidate_name,
+        role=role,
+        company=company,
+        location=location,
+        experience_label=experience_label,
+        skills=matched_skills or skills,
+        snippet=trimmed_snippet,
+    )
+    query_family = _normalize_text(candidate.get("query_family") or candidate.get("queryFamily") or "")
+    query_signals = candidate.get("query_signals") if isinstance(candidate.get("query_signals"), dict) else candidate.get("querySignals") if isinstance(candidate.get("querySignals"), dict) else {}
+
+    explanation = CandidateExplanation(
+        semanticScore=round(title_signal, 4),
+        skillOverlap=round(skill_signal, 4),
+        finalScore=round(final_score, 4),
+        pdlRelevance=0.0,
+        recencyScore=0.0,
+        engineeringScore=round(min(1.0, (title_signal * 0.6) + (skill_signal * 0.4)), 4),
+        penalties={},
+        skillsMatched=matched_skills[:5] if matched_skills else [skill for skill in skills[:5] if skill],
+        experienceMatch=experience,
+        candidateExperience=experience,
+        jobExperience=_normalize_text(getattr(job, "experience_required", "") or getattr(job, "experience_level", "") or ""),
+        aiReasoning=_build_match_reason(
+            job=job,
+            role=role,
+            company=company,
+            location=location,
+            experience_label=experience_label,
+            matched_skills=matched_skills,
+            title_signal=title_signal,
+            skill_signal=skill_signal,
+            location_signal=location_signal,
+            company_signal=company_signal,
+            snippet=trimmed_snippet,
+        ),
+        sourceBreakdown={
+            "title": round(title_signal, 4),
+            "skills": round(skill_signal, 4),
+            "location": round(location_signal, 4),
+            "company": round(company_signal, 4),
+            "snippetQuality": snippet_quality,
+        },
+    )
 
     return CandidateResult(
         id=candidate_id,

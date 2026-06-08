@@ -57,6 +57,7 @@ def trigger_outreach_after_enrichment(
             selected_candidates=[candidate_id],
             custom_body="",
             recipient_email=contact_email,
+            email_override=contact_email,
         )
     except Exception as exc:
         logger.exception(

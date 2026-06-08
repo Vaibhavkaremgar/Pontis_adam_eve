@@ -17,6 +17,7 @@ from app.core.config import PUBLIC_APP_URL
 from app.db.repositories import OutreachEventRepository, UserRepository
 from app.db.session import SessionLocal
 from app.services.candidate_service import apply_feedback, fetch_ranked_candidates
+from app.services.candidate_selection_service import submit_selection_choice
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.hiring_service import create_hiring_job
 from app.services.interview_invite_service import send_interview_invite
@@ -146,7 +147,7 @@ def _send_slack_message_sync(
     try:
         return asyncio.run(post_slack_message(channel_id=channel_id, text=text, blocks=blocks, thread_ts=thread_ts, bot_token=bot_token))
     except Exception as exc:  # pragma: no cover - defensive fallback
-        logger.error("slack_message_post_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
+        logger.error("slack_post_failed error=%s", str(exc))
         return False
 
 
@@ -593,21 +594,44 @@ async def slack_oauth_callback(code: str = "", state: str = ""):
     enterprise = oauth_payload.get("enterprise") or {}
     authed_user = oauth_payload.get("authed_user") or {}
     bot_info = oauth_payload.get("bot") or {}
+    installer_slack_user_id = str(authed_user.get("id") or "").strip()
+    installer_profile = (
+        fetch_slack_user_profile(
+            bot_token=str(oauth_payload.get("access_token") or "").strip(),
+            slack_user_id=installer_slack_user_id,
+        )
+        if installer_slack_user_id
+        else {"email": "", "display_name": ""}
+    )
+    installer_email = str(installer_profile.get("email") or "").strip().lower()
+    installer_display_name = str(installer_profile.get("display_name") or "").strip()
     scope_list = [
         scope.strip()
         for scope in str(oauth_payload.get("scope") or "").split(",")
         if scope.strip()
     ]
+    team_id = str(team.get("id") or oauth_payload.get("team_id") or "").strip()
+    if not team_id:
+        raise HTTPException(status_code=400, detail="Missing Slack team context")
 
     with SessionLocal() as db:
         resolver = SlackCompanyResolver(db)
+        installer_internal_user = None
         company = resolver.companies.get_by_id(company_id)
         if not company:
-            raise HTTPException(status_code=404, detail="Company not found")
-
-        team_id = str(team.get("id") or oauth_payload.get("team_id") or "").strip()
-        if not team_id:
-            raise HTTPException(status_code=400, detail="Missing Slack team context")
+            user_repo = UserRepository(db)
+            normalized_email = installer_email or f"slack-{team_id[:8]}-{installer_slack_user_id[:16]}@adam.local"
+            installer_internal_user = user_repo.get_by_email(normalized_email)
+            if not installer_internal_user:
+                installer_internal_user = user_repo.create(email=normalized_email, role="recruiter")
+            company = resolver.companies.create(
+                user_id=installer_internal_user.id,
+                name=str(team.get("name") or "").strip(),
+                website="",
+                description="",
+                industry="",
+            )
+            logger.info("slack_company_auto_created team_id=%s company_id=%s", team_id, company.id)
 
         installation = resolver.installations.upsert(
             company_id=company.id,
@@ -622,14 +646,13 @@ async def slack_oauth_callback(code: str = "", state: str = ""):
             revoked_at=None,
             is_active=True,
         )
-        installer_slack_user_id = str(authed_user.get("id") or "").strip()
-        installer_profile = fetch_slack_user_profile(bot_token=installation.bot_access_token, slack_user_id=installer_slack_user_id) if installer_slack_user_id else {"email": "", "display_name": ""}
         slack_user = resolver.users.upsert(
             company_id=company.id,
             slack_installation_id=installation.id,
             slack_user_id=installer_slack_user_id,
-            email=installer_profile.get("email", ""),
-            display_name=installer_profile.get("display_name", ""),
+            email=installer_email,
+            display_name=installer_display_name,
+            internal_user_id=installer_internal_user.id if installer_internal_user else None,
             role="recruiter",
         )
         installation.installed_by_user_id = slack_user.internal_user_id
@@ -716,27 +739,20 @@ async def slack_commands(
             )
 
         if not command.text:
-            background_tasks.add_task(
-                _run_orchestration_intake_start,
-                team_id=team_id,
-                channel_id=command.channel_id,
-                user_id=command.user_id,
-                company_id=company_id,
-                bot_token=bot_token,
-            )
             return JSONResponse(
                 status_code=200,
                 content={
                     "response_type": "ephemeral",
-                    "text": "",
+                    "text": "What role are you hiring for?",
                 },
             )
 
+        role = command.text.strip()
         background_tasks.add_task(
             _run_slack_hiring_pipeline,
             team_id=team_id,
             channel_id=command.channel_id,
-            text=command.text,
+            text=role,
             user_id=command.user_id,
             company_id=company_id,
             bot_token=bot_token,
@@ -805,7 +821,8 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks):
             bot_token = workspace.installation.bot_access_token
         except Exception as exc:
             logger.warning("slack_event_workspace_resolution_failed team_id=%s user_id=%s error=%s", team_id, user_id, str(exc))
-            return {"ok": True}
+            logger.warning("slack_workspace_not_found team_id=%s", team_id)
+            return {"ok": False, "error": "workspace_not_installed"}
 
     background_tasks.add_task(
         _run_orchestration_message_event,
@@ -933,7 +950,8 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     internal_user_id = str(workspace.internal_user.id if workspace.internal_user else workspace.slack_user.internal_user_id if workspace.slack_user else "").strip()
                 except Exception as exc:
                     logger.warning("slack_interaction_workspace_resolution_failed team_id=%s user_id=%s error=%s", team_id, user_id, str(exc))
-                    return JSONResponse(status_code=200, content={"ok": True})
+                    logger.warning("slack_workspace_not_found team_id=%s", team_id)
+                    return {"ok": False, "error": "workspace_not_installed"}
 
         try:
             action, candidate_id, job_id, calibration_set_id = extract_button_action(payload)
@@ -1046,7 +1064,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             )
             return {"ok": True}
 
-        if action in {"select", "save", "reject", "advance", "archive"}:
+        if action in {"like", "pass", "select", "save", "reject", "advance", "archive"}:
             logger.info(
                 "slack_button_action action=%s candidate_id=%s job_id=%s channel_id=%s",
                 action,
@@ -1061,7 +1079,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
             with SessionLocal() as db:
                 outreach_repo = OutreachEventRepository(db)
                 existing_outreach = outreach_repo.get(job_id=job_id, candidate_id=candidate_id)
-                if action == "select" and existing_outreach and (existing_outreach.status or "").strip().lower() in {"queued", "sending", "sent", "delivered"}:
+                if action in {"like", "select"} and existing_outreach and (existing_outreach.status or "").strip().lower() in {"queued", "sending", "sent", "delivered"}:
                     await post_slack_message(
                         channel_id=channel_id,
                         text="\u26a0\ufe0f This candidate has already been processed.",
@@ -1069,12 +1087,18 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     )
                     return {"ok": True, "duplicate": True}
 
-                if action in {"select", "save"}:
+                if action in {"like", "select", "save"}:
+                    result = submit_selection_choice(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                    )
+                elif action == "pass":
                     result = apply_feedback(
                         db=db,
                         job_id=job_id,
                         candidate_id=candidate_id,
-                        action="accept",
+                        action="reject",
                         actor_id=internal_user_id or user_id,
                         company_id=company_id,
                         slack_team_id=team_id,
@@ -1135,7 +1159,7 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                         slack_user_id=user_id,
                         slack_installation_id=workspace.installation.id,
                     )
-                audit_action = "candidate_approval" if action in {"select", "save"} else "candidate_rejection" if action == "reject" else "candidate_ats_transition"
+                audit_action = "candidate_approval" if action in {"like", "select", "save"} else "candidate_rejection" if action in {"pass", "reject"} else "candidate_ats_transition"
                 record_slack_audit_event(
                     db=db,
                     company_id=company_id,
@@ -1176,10 +1200,12 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
                     candidate_id,
                 )
 
-            if action == "select":
-                response_text = "\u2705 Candidate selected"
+            if action in {"like", "select"}:
+                response_text = "\u2705 Candidate liked"
             elif action == "save":
                 response_text = "\U0001f4be Candidate saved"
+            elif action == "pass":
+                response_text = "\u27a1\ufe0f Candidate passed"
             elif action == "advance":
                 response_text = "\u27a1\ufe0f Candidate advanced"
             elif action == "archive":
@@ -1284,6 +1310,11 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception("slack_interaction_fallback_failed")
         return JSONResponse(status_code=500, content=error_response("Failed to process Slack interaction"))
+
+
+@router.post("/actions")
+async def slack_actions_alias(request: Request, background_tasks: BackgroundTasks):
+    return await slack_interactions(request, background_tasks)
 
 
 

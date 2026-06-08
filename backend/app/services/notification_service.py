@@ -184,7 +184,7 @@ def _job_interview_questions(job: Any) -> list[Any]:
 
 
 def _build_booking_link(token: str, *, source_type: str = "dashboard") -> str:
-    params = {"token": token, "source_type": source_type or "dashboard"} if token else {}
+    params = {"token": token} if token else {}
     query = urlencode(params) if params else ""
     return f"{BOOKING_BASE_URL}?{query}" if query else BOOKING_BASE_URL
 

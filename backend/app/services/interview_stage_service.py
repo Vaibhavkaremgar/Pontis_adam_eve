@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.repositories import (
@@ -13,6 +15,7 @@ from app.db.repositories import (
     NotificationWorkflowTokenRepository,
     RecruiterNoteRepository,
     InterviewRepository,
+    OrchestrationSessionRepository,
 )
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.audit_service import record_audit_event
@@ -28,6 +31,8 @@ from app.services.interview_session_service import (
 from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.notification_intelligence_service import route_recruiter_notification
 from app.services.operational_intelligence_service import get_interview_intelligence, get_interview_stage_progression
+from app.services.slack_integration import post_slack_message
+from app.services.slack_tenant_service import SlackCompanyResolver
 from app.utils.exceptions import APIError
 
 
@@ -38,13 +43,14 @@ _STAGE_TO_ATS: dict[str, str] = {
     "final_round": "final_round",
     "offer_stage": "offer_sent",
     "placed": "hired",
+    "not_moving_forward": "closed_with_reason",
     "rejected": "rejected",
     "archived": "archived",
     "withdrawn": "archived",
     "no_show": "interview_no_show",
 }
 
-_TERMINAL_ACTIONS = {"rejected", "archived", "withdrawn", "no_show"}
+_TERMINAL_ACTIONS = {"rejected", "archived", "withdrawn", "no_show", "not_moving_forward"}
 
 
 def _utc_now_iso() -> str:
@@ -101,6 +107,36 @@ def _append_stage_history(row, *, action: str, from_stage: str, to_stage: str, n
     )
     metadata["stageHistory"] = history
     row.scheduling_metadata = metadata
+
+
+async def _post_not_moving_forward_slack_message(*, db: Session, job_id: str, candidate_id: str, reason: str) -> None:
+    job = JobRepository(db).get(job_id)
+    profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    session = OrchestrationSessionRepository(db).get_by_job(job_id)
+    slack_context = dict(getattr(session, "slack_context", {}) or {}) if session else {}
+    channel_id = str(slack_context.get("channelId") or slack_context.get("channel_id") or "").strip()
+    company_id = str(slack_context.get("companyId") or slack_context.get("company_id") or getattr(session, "company_id", "") or getattr(job, "company_id", "") or "").strip()
+    if not job or not profile or not channel_id or not company_id:
+        return
+
+    try:
+        bot_token = SlackCompanyResolver(db).resolve_bot_token(company_id=company_id)
+    except Exception as exc:
+        logger.warning("not_moving_forward_slack_token_failed job_id=%s error=%s", job_id, str(exc), exc_info=exc)
+        return
+    if not bot_token:
+        return
+
+    candidate_name = str(getattr(profile, "name", "") or candidate_id).strip()
+    try:
+        await post_slack_message(
+            channel_id=channel_id,
+            text=f"{candidate_name} marked Not Moving Forward. Reason: {reason}",
+            bot_token=bot_token,
+        )
+    except Exception as exc:
+        logger.warning("not_moving_forward_slack_post_failed job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc), exc_info=exc)
+        return
 
 
 def get_interview_insights(*, db: Session, job_id: str, candidate_id: str) -> dict[str, Any]:
@@ -180,6 +216,10 @@ def advance_interview_stage(
                 "evaluations": list_interview_evaluations(db=db, job_id=job_id, candidate_id=candidate_id),
             }
 
+        terminal_reason = (notes or recommendation or "").strip()
+        if normalized_action == "not_moving_forward" and not terminal_reason:
+            raise APIError("Reason is required", status_code=400)
+
         result = {
             "token": current_session.token if current_session else "",
             "status": normalized_action,
@@ -205,9 +245,27 @@ def advance_interview_stage(
             candidate_id=candidate_id,
             to_status=_STAGE_TO_ATS.get(normalized_action, "archived"),
             source="interview_stage",
-            reason=notes or normalized_action,
+            reason=terminal_reason or normalized_action,
             metadata={"action": normalized_action, "fromStage": current_stage, "toStage": normalized_action, "workflowToken": workflow_token},
         )
+        if normalized_action == "not_moving_forward":
+            db.execute(
+                text(
+                    """
+                    UPDATE interviews
+                    SET feedback = :feedback
+                    WHERE job_id = :job_id
+                      AND candidate_id = :candidate_id
+                      AND source_app = :source_app
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "candidate_id": candidate_id,
+                    "source_app": "adam",
+                    "feedback": terminal_reason,
+                },
+            )
         db.commit()
         route_recruiter_notification(
             db=db,
@@ -219,6 +277,21 @@ def advance_interview_stage(
             body=f"Candidate {candidate_id} moved to {normalized_action.replace('_', ' ')}.",
             metadata={"action": normalized_action, "fromStage": current_stage, "workflowToken": workflow_token},
         )
+        if normalized_action == "not_moving_forward":
+            step_name = "interview_not_moving_forward_slack_post"
+            try:
+                asyncio.run(
+                    _post_not_moving_forward_slack_message(
+                        db=db,
+                        job_id=job_id,
+                        candidate_id=candidate_id,
+                        reason=terminal_reason,
+                    )
+                )
+            except RuntimeError as exc:
+                logger.error("automation_failed step=%s error=%s", step_name, str(exc))
+            except Exception as exc:
+                logger.error("automation_failed step=%s error=%s", step_name, str(exc))
         record_audit_event(
             db=db,
             actor_id=None,

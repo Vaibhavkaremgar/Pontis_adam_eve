@@ -6,6 +6,8 @@ import secrets
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER_NAME
 from app.core.security import verify_access_token, verify_csrf_token
+from app.db.repositories import CompanyRepository
+from app.db.session import SessionLocal
 from app.utils.exceptions import APIError
 from app.utils.responses import error_response
 
@@ -34,6 +36,17 @@ CSRF_EXEMPT_PATH_PREFIXES = (
     "/api/webhooks/",
     "/api/slack/",
 )
+
+
+class _UserContext(dict):
+    def __getattr__(self, key: str):
+        try:
+            return self[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+    def __setattr__(self, key: str, value):
+        self[key] = value
 
 
 def _resolve_bearer_or_cookie_token(request: Request) -> str:
@@ -77,6 +90,9 @@ async def auth_middleware(request: Request, call_next):
         "email": claims.get("email"),
         "role": claims.get("role") or "recruiter",
     }
+    with SessionLocal() as db:
+        company = CompanyRepository(db).get_latest_for_user(user_id=claims["sub"])
+        request.state.user = _UserContext({**request.state.user, "company_id": str(getattr(company, "id", "") or "")})
 
     if request.method not in {"GET", "HEAD"} and not _csrf_exempt(path):
         csrf_header = request.headers.get(CSRF_HEADER_NAME, "").strip()

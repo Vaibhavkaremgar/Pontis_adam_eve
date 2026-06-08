@@ -83,6 +83,15 @@ class OutreachEngagementSnapshot:
     follow_up_delay_days: int | None
 
 
+CADENCE: dict[int, dict[str, bool | str]] = {
+    5: {"action": "nudge", "notify_recruiter": True},
+    12: {"action": "nudge", "notify_recruiter": True},
+    14: {"action": "auto_archive", "notify_recruiter": True},
+}
+
+_CADENCE_DAYS = tuple(sorted(CADENCE))
+
+
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip().lower()
 
@@ -152,13 +161,12 @@ def outreach_reply_state_to_notification_title(reply_state: str, *, candidate_na
 
 
 def follow_up_delay_days(*, follow_up_count_after_send: int) -> int | None:
-    mapping = {
-        0: 2,
-        1: 3,
-        2: 7,
-        3: 2,
-    }
-    return mapping.get(max(0, int(follow_up_count_after_send or 0)))
+    follow_up_index = max(0, int(follow_up_count_after_send or 0))
+    if follow_up_index >= len(_CADENCE_DAYS):
+        return None
+    target_day = _CADENCE_DAYS[follow_up_index]
+    previous_day = 0 if follow_up_index == 0 else _CADENCE_DAYS[follow_up_index - 1]
+    return target_day - previous_day
 
 
 def follow_up_due_at(*, sent_at: datetime, follow_up_count_after_send: int) -> datetime | None:

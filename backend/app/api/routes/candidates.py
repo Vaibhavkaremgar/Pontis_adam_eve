@@ -67,6 +67,7 @@ def swipe_candidate(payload: SwipeFeedbackRequest, _: dict = Depends(get_current
         job_id=payload.jobId,
         candidate_id=payload.candidateId,
         action=payload.action,
+        reactivate_at=payload.reactivateAt,
     )
     return success_response(result)
 

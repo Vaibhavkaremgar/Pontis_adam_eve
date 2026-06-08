@@ -1,21 +1,42 @@
 from __future__ import annotations
 
+import secrets
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Query
 from fastapi import Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.config import INTERNAL_API_KEY
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.schemas.candidate import InterviewBookingData, InterviewBookingRequest, InterviewDecisionData, InterviewDecisionRequest, InterviewInsightsData, InterviewRescheduleData, InterviewRescheduleRequest, InterviewSessionData, InterviewSessionRequest
+from app.db.repositories import InterviewRepository, NotificationWorkflowTokenRepository
 from app.services.audit_service import record_audit_event
 from app.services.interview_stage_service import advance_interview_stage, get_interview_insights
 from app.services.interview_service import list_interviews
 from app.services.interview_evaluation_service import list_interview_evaluations, record_interview_evaluation
 from app.services.interview_session_service import book_interview_session, create_interview_session, get_interview_session, mark_interview_no_show, reschedule_interview_session
+from app.utils.exceptions import APIError
 from app.services.ownership import assert_job_ownership
 from app.utils.responses import success_response
 
 router = APIRouter(tags=["interviews"])
+
+
+class InterviewResultsCallbackRequest(BaseModel):
+    workflow_token: str
+    transcript: str = ""
+    interview_score: float = 0.0
+    technical_score: float = 0.0
+    communication_score: float = 0.0
+    culture_fit_score: float = 0.0
+    ai_summary: str = ""
+    feedback: str = ""
+    interviewer_notes: str = ""
+    video_url: str = ""
+    completed_at: datetime | None = None
 
 
 @router.get("/interviews")
@@ -23,6 +44,43 @@ def get_interviews(jobId: str = Query(...), _: dict = Depends(get_current_user),
     assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     rows = list_interviews(db=db, job_id=jobId)
     return success_response([row.model_dump() for row in rows])
+
+
+@router.post("/interviews/results")
+def interview_results_callback(payload: InterviewResultsCallbackRequest, request: Request, db: Session = Depends(get_db)):
+    provided_key = str(request.headers.get("X-Internal-API-Key", "") or "").strip()
+    if not INTERNAL_API_KEY or not provided_key or not secrets.compare_digest(provided_key, INTERNAL_API_KEY):
+        raise APIError("Unauthorized", status_code=401)
+
+    token_row = NotificationWorkflowTokenRepository(db).get_by_token(payload.workflow_token, source_app="adam")
+    if not token_row:
+        raise APIError("Interview workflow token not found", status_code=404)
+
+    token_payload = dict(token_row.payload or {}) if isinstance(token_row.payload, dict) else {}
+    job_id = str(token_payload.get("job_id") or token_payload.get("jobId") or token_row.job_id or "").strip()
+    candidate_id = str(token_payload.get("candidate_id") or token_payload.get("candidateId") or token_row.candidate_id or "").strip()
+    if not job_id or not candidate_id:
+        raise APIError("Interview context not found", status_code=404)
+
+    completed_at = payload.completed_at or datetime.now(timezone.utc)
+    InterviewRepository(db).upsert_interview_results(
+        job_id=job_id,
+        candidate_id=candidate_id,
+        result_data={
+            "interview_score": payload.interview_score,
+            "technical_score": payload.technical_score,
+            "communication_score": payload.communication_score,
+            "culture_fit_score": payload.culture_fit_score,
+            "transcript": payload.transcript,
+            "ai_summary": payload.ai_summary,
+            "feedback": payload.feedback,
+            "interviewer_notes": payload.interviewer_notes,
+            "video_url": payload.video_url,
+            "completed_at": completed_at,
+        },
+    )
+    db.commit()
+    return {"success": True}
 
 
 @router.post("/interview/session")

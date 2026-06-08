@@ -3255,6 +3255,7 @@ def discover_linkedin_xray_candidates(
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
     limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
+    logger.info("xray_queries_selected count=%s layers=%s", len(limited_layers), [layer.layer_type for layer in limited_layers])
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
     quota_before = _quota_snapshot()

@@ -118,6 +118,8 @@ export type Candidate = {
     | "selected"
     | "enriching"
     | "enriched"
+    | "enrichment_pending"
+    | "enrichment_no_email"
     | "enrichment_failed"
     | "outreach_pending"
     | "outreach_sent"
@@ -146,7 +148,7 @@ export type Candidate = {
   ats_status_reason?: string;
   ats_status_updated_at?: string;
   outreachStatus?: "pending" | "dry_run" | "sent" | "failed" | string;
-  enrichmentStatus?: "pending" | "resolving" | "enriched" | "partial" | "failed" | "no_contact_found" | string;
+  enrichmentStatus?: "pending" | "resolving" | "enriched" | "partial" | "failed" | "no_contact_found" | "enrichment_pending" | "enrichment_no_email" | string;
   enrichmentSource?: string;
   enrichmentConfidence?: number;
   contactEmail?: string;

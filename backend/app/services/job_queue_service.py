@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 QUEUE_TYPES = (
     "outreach_send",
+    "outreach_send_after_enrichment",
     "outreach_followup",
     "candidate_enrichment",
     "embedding_generation",
@@ -278,6 +279,34 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
 
         return _handler
 
+    if queue_type == "outreach_send_after_enrichment":
+        from app.db.session import SessionLocal
+        from app.services.outreach_service import process_outreach
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            job_id = str(payload.get("job_id") or "")
+            candidate_id = str(payload.get("candidate_id") or "")
+            email_override = str(payload.get("email") or payload.get("email_override") or "").strip()
+            if not job_id or not candidate_id:
+                return {"status": "skipped", "reason": "missing_job_or_candidate"}
+            logger.info(
+                "outreach_send_after_enrichment_start job_id=%s candidate_id=%s email=%s email_source=%s",
+                job_id,
+                candidate_id,
+                email_override or "missing",
+                str(payload.get("email_source") or "unknown"),
+            )
+            with SessionLocal() as db:
+                return process_outreach(
+                    db=db,
+                    job_id=job_id,
+                    selected_candidates=[candidate_id],
+                    custom_body=str(payload.get("custom_body") or ""),
+                    email_override=email_override,
+                )
+
+        return _handler
+
     if queue_type == "outreach_followup":
         from app.db.session import SessionLocal
         from app.services.outreach_service import run_followup_cycle
@@ -290,44 +319,26 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
 
     if queue_type == "candidate_enrichment":
         from app.db.session import SessionLocal
-        from app.services.sourcing.apify_enrichment_service import enrich_selected_candidate
-        from app.services.sourcing.outreach_trigger_service import trigger_outreach_after_enrichment
+        from app.db.repositories import CandidateProfileRepository
+        from app.services.candidate_refresh_service import refresh_candidate
 
         def _handler(payload: dict[str, Any]) -> Any:
             job_id = str(payload.get("job_id") or "")
             candidate_id = str(payload.get("candidate_id") or "")
             if not job_id or not candidate_id:
                 return {"status": "skipped", "reason": "missing_job_or_candidate"}
-            candidate_snapshot = payload.get("candidateSnapshot")
-            candidate_snapshot_map = candidate_snapshot if isinstance(candidate_snapshot, dict) else {}
             with SessionLocal() as db:
-                enrichment = enrich_selected_candidate(
-                    db=db,
-                    job_id=job_id,
-                    candidate_id=candidate_id,
-                    source_type=str(payload.get("source_type") or payload.get("sourceType") or "linkedin_xray"),
-                    linkedin_url=str(
-                        payload.get("linkedin_url")
-                        or payload.get("linkedinUrl")
-                        or candidate_snapshot_map.get("linkedinUrl")
-                        or candidate_snapshot_map.get("linkedin_url")
-                        or ""
-                    ),
-                    workflow_token=str(payload.get("workflow_token") or payload.get("workflowToken") or ""),
-                    selection_session_id=str(payload.get("selection_session_id") or payload.get("selectionSessionId") or ""),
-                    automation_job_id=str(payload.get("automation_job_id") or payload.get("automationJobId") or payload.get("job_id") or ""),
-                )
-                outreach = trigger_outreach_after_enrichment(
-                    db=db,
-                    job_id=job_id,
-                    candidate_id=candidate_id,
-                    enrichment_result=enrichment,
-                    selection_session_id=str(payload.get("selection_session_id") or payload.get("selectionSessionId") or ""),
-                    automation_job_id=str(payload.get("automation_job_id") or payload.get("automationJobId") or payload.get("job_id") or ""),
-                    source_type=str(payload.get("source_type") or payload.get("sourceType") or "linkedin_xray"),
-                )
+                candidate = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+                if not candidate:
+                    return {"status": "skipped", "reason": "candidate_missing"}
+                refreshed = refresh_candidate(db, candidate)
                 db.commit()
-                return {"status": enrichment.get("status") or "completed", "enrichment": enrichment, "outreach": outreach}
+                return {
+                    "status": "completed" if refreshed else "skipped",
+                    "refreshed": int(bool(refreshed)),
+                    "job_id": job_id,
+                    "candidate_id": candidate_id,
+                }
 
         return _handler
 

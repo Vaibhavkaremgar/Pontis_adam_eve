@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import imaplib
 import logging
 import mimetypes
@@ -31,7 +32,8 @@ from app.core.config import (
 )
 from app.db.repositories import CandidateProfileRepository, OutreachEventRepository
 from app.db.session import SessionLocal
-from app.services.slack_service import notify_slack
+from app.services.slack_integration import post_slack_message
+from app.services.slack_tenant_service import SlackCompanyResolver
 
 logger = logging.getLogger(__name__)
 
@@ -252,12 +254,35 @@ def build_message_preview(message_text: str, *, limit: int = 220) -> str:
     return preview[: max(0, limit - 1)].rstrip() + "…"
 
 
-def notify_candidate_reply_slack(*, candidate_name: str, message_text: str, resume_url: str = "") -> None:
+def notify_candidate_reply_slack(
+    *,
+    company_id: str = "",
+    channel_id: str = "",
+    candidate_name: str,
+    message_text: str,
+    resume_url: str = "",
+) -> None:
     preview = build_message_preview(message_text)
     lines = [preview or "(no message body)"]
     if resume_url:
         lines.append(f"Resume: {resume_url}")
-    notify_slack(title=f"📩 Candidate {candidate_name} replied", lines=lines)
+    if not company_id or not channel_id:
+        return
+    with SessionLocal() as db:
+        bot_token = SlackCompanyResolver(db).resolve_bot_token(company_id=company_id)
+    if not bot_token:
+        logger.warning("slack_token_missing company_id=%s", company_id)
+        return
+    try:
+        asyncio.run(
+            post_slack_message(
+                channel_id=channel_id,
+                text="\n".join([f"📩 Candidate {candidate_name} replied"] + [f"- {line}" for line in lines]),
+                bot_token=bot_token,
+            )
+        )
+    except Exception as exc:
+        logger.warning("Slack notification failed", exc_info=exc)
 
 
 def _resolve_candidate_for_reply(db: Session, sender_email: str):
