@@ -519,6 +519,9 @@ async def send_slack_dm_message(
     if not target_user:
         logger.error("slack_dm_message_skipped missing_user_id")
         return False
+    if not str(target_user).startswith("U"):
+        logger.info("slack_dm_skipped not_a_slack_user user_id=%s", target_user)
+        return False
 
     try:
         response = await asyncio.to_thread(client.conversations_open, users=target_user)
