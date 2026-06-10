@@ -85,6 +85,7 @@ function SlackVoiceBridge({ token }: { token: string }) {
   } | null>(null);
 
   useEffect(() => {
+    console.log("SlackVoiceBridge bootstrap");
     previousStateRef.current = {
       jobId,
       job,
@@ -93,11 +94,31 @@ function SlackVoiceBridge({ token }: { token: string }) {
       voiceNotes,
       callStatus,
     };
+  }, []);
 
+  useEffect(() => {
+    return () => {
+      console.log("SlackVoiceBridge cleanup");
+      completeRef.current = false;
+      transcriptRef.current = [];
+      const previousState = previousStateRef.current;
+      if (previousState) {
+        setJobId(previousState.jobId);
+        setJob(previousState.job);
+        setCompany(previousState.company);
+        setIsRefined(previousState.isRefined);
+        setVoiceNotes(previousState.voiceNotes);
+        setCallStatus(previousState.callStatus);
+      }
+    };
+  }, [setCallStatus, setCompany, setIsRefined, setJob, setJobId, setVoiceNotes]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const bootstrap = async () => {
       try {
+        console.log("startOrchestrationVoice called");
         const result = await startOrchestrationVoice(token);
         if (cancelled) return;
         if (!result.success || !result.data) {
@@ -122,19 +143,8 @@ function SlackVoiceBridge({ token }: { token: string }) {
 
     return () => {
       cancelled = true;
-      completeRef.current = false;
-      transcriptRef.current = [];
-      const previousState = previousStateRef.current;
-      if (previousState) {
-        setJobId(previousState.jobId);
-        setJob(previousState.job);
-        setCompany(previousState.company);
-        setIsRefined(previousState.isRefined);
-        setVoiceNotes(previousState.voiceNotes);
-        setCallStatus(previousState.callStatus);
-      }
     };
-  }, [callStatus, company, job, jobId, setCallStatus, setCompany, setIsRefined, setJob, setJobId, setVoiceNotes, token, voiceNotes, isRefined]);
+  }, [setCallStatus, setCompany, setIsRefined, setJob, setJobId, setVoiceNotes, token]);
 
   useEffect(() => {
     if (!session) return;
