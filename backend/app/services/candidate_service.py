@@ -4428,7 +4428,7 @@ def apply_feedback(
                     "reactivateAt": reactivate_at_value.isoformat(),
                     "feedbackAction": action,
                     "decision": "warm",
-                    "sourceType": "dashboard",
+                    "sourceType": "ui",
                 },
                 automation_key=f"candidate-reactivation:{job_id}:{candidate_id}:{reactivate_at_value.isoformat()}",
             )
@@ -4493,7 +4493,7 @@ def apply_feedback(
                 run_at=datetime.now(timezone.utc),
                 payload={
                     "feedbackAction": action,
-                    "sourceType": "dashboard",
+                    "sourceType": "ui",
                 },
                 automation_key=f"candidate-enrichment:{job_id}:{candidate_id}",
             )
@@ -4747,7 +4747,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             expires_at=datetime.now(timezone.utc) + timedelta(days=7),
             token_type="slot_booking",
             is_active=True,
-            source_app="adam",
+            source_app=getattr(job, "source_app", "ui"),
             force_token=False,
         )
         updated_workflow_tokens = True

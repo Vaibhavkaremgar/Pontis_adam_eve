@@ -362,6 +362,7 @@ class SlackMultiCompanyTests(unittest.TestCase):
         job = JobRepository(self.db).create(
             company_id=self.company_a.id,
             created_by=slack_user.internal_user_id or self.owner_a.id,
+            source_app="slack",
             title="Backend Engineer",
             description="Build APIs",
             location="Remote",

@@ -269,11 +269,9 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                 LEFT JOIN notification_workflow_tokens nt
                     ON nt.job_id = i.job_id
                    AND nt.candidate_id = i.candidate_id
-                   AND nt.source_app = 'adam'
                    AND nt.is_active = 1
                 WHERE i.job_id = :job_id
                   AND i.candidate_id = :candidate_id
-                  AND i.source_app = 'adam'
                 ORDER BY i.created_at DESC
                 LIMIT 1
             """),
@@ -288,7 +286,7 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
 
 
 def _workflow_token_payload(db: Session, workflow_token: str) -> tuple[dict[str, Any] | None, str, str, str]:
-    token_row = NotificationWorkflowTokenRepository(db).get_by_token(workflow_token, source_app="adam")
+    token_row = NotificationWorkflowTokenRepository(db).get_by_token(workflow_token, source_app="ui")
     if not token_row:
         return None, "", "", ""
     job_id = str(token_row.job_id or "").strip()
@@ -305,7 +303,7 @@ def resolve_result_context(*, db: Session, workflow_token: str) -> dict[str, str
         "jobId": job_id,
         "candidateId": candidate_id,
         "workflowToken": resolved_workflow_token,
-        "sourceApp": str((payload or {}).get("sourceApp") or "adam"),
+        "sourceApp": str((payload or {}).get("sourceApp") or getattr(token_row, "source_app", "") or "ui"),
     }
 
 
@@ -463,10 +461,8 @@ def _candidate_result_rows(db: Session, job_id: str) -> list[dict[str, Any]]:
                 LEFT JOIN notification_workflow_tokens nt
                     ON nt.job_id = i.job_id
                    AND nt.candidate_id = i.candidate_id
-                   AND nt.source_app = 'adam'
                    AND nt.is_active = 1
                 WHERE i.job_id = :job_id
-                  AND i.source_app = 'adam'
                 ORDER BY COALESCE(i.interview_score, 0) DESC, COALESCE(cp.fit_score, 0) DESC, cp.name ASC
             """),
             {"job_id": job_id},

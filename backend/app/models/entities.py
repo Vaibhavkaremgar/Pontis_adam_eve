@@ -153,7 +153,7 @@ class JobEntity(Base):
     __tablename__ = "jobs"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     vetting_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="volume")
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -216,7 +216,7 @@ class InterviewEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -647,7 +647,7 @@ class OutreachEventEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -787,7 +787,7 @@ class NotificationWorkflowTokenEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
+    source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")

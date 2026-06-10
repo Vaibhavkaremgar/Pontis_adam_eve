@@ -183,7 +183,7 @@ def _job_interview_questions(job: Any) -> list[Any]:
     return []
 
 
-def _build_booking_link(token: str, *, source_type: str = "dashboard") -> str:
+def _build_booking_link(token: str, *, source_type: str = "ui") -> str:
     params = {"token": token} if token else {}
     query = urlencode(params) if params else ""
     return f"{BOOKING_BASE_URL}?{query}" if query else BOOKING_BASE_URL
@@ -249,7 +249,7 @@ def _fetch_interviewer(*, db: Session | None, recruiter_id: str) -> dict[str, st
 
 def _serialize_workflow_token(row) -> dict[str, Any]:
     payload = _metadata_map(row.payload)
-    source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "dashboard").strip() or "dashboard"
+    source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "ui").strip() or "ui"
     booking_link = _build_booking_link(row.token, source_type=source_type)
     return {
         "id": row.id,
@@ -402,7 +402,7 @@ def upsert_notification_workflow_token(
     expires_at: datetime | None = None,
     token_type: str = "",
     is_active: bool = True,
-    source_app: str = "dashboard",
+    source_app: str = "ui",
     force_token: bool = False,
     retry_attempts: int = 3,
 ) -> dict[str, Any]:
@@ -502,7 +502,7 @@ def create_notification_workflow_token(
     expires_at: datetime | None = None,
     token_type: str = "",
     is_active: bool = True,
-    source_app: str = "dashboard",
+    source_app: str = "ui",
 ) -> dict[str, Any]:
     return upsert_notification_workflow_token(
         db=db,
@@ -519,12 +519,12 @@ def create_notification_workflow_token(
     )
 
 
-def consume_notification_workflow_token(*, db: Session, token: str, source_app: str = "dashboard") -> dict[str, Any] | None:
+def consume_notification_workflow_token(*, db: Session, token: str, source_app: str = "ui") -> dict[str, Any] | None:
     row = NotificationWorkflowTokenRepository(db).mark_consumed(token, source_app=source_app)
     if not row:
         return None
     payload = _metadata_map(row.payload)
-    source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "dashboard").strip() or "dashboard"
+    source_type = str(payload.get("source_type") or payload.get("sourceType") or row.source_app or "ui").strip() or "ui"
     booking_link = _build_booking_link(row.token, source_type=source_type)
     return {
         "id": row.id,

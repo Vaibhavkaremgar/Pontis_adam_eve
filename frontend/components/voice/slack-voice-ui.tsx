@@ -29,6 +29,13 @@ type TranscriptTurn = {
   timestamp: string;
 };
 
+type IntakeSummaryItem = {
+  label: string;
+  value: string;
+};
+
+type RawConversationEntry = Record<string, unknown>;
+
 function normalize(value: string) {
   return value.trim().replace(/\s+/g, " ");
 }
@@ -83,6 +90,111 @@ function buildTranscript(turns: TranscriptTurn[]) {
     .join("\n");
 }
 
+function toText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => toText(item))
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (typeof value === "string") return normalize(value);
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object") {
+    try {
+      return normalize(JSON.stringify(value));
+    } catch {
+      return "";
+    }
+  }
+  return normalize(String(value));
+}
+
+function prettifyKey(key: string): string {
+  return key
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^./, (char) => char.toUpperCase());
+}
+
+function buildIntakeSummary(intake: Record<string, unknown> | undefined): IntakeSummaryItem[] {
+  const source = intake || {};
+  const prioritizedKeys: Array<{ key: string; label: string }> = [
+    { key: "role_title", label: "Role" },
+    { key: "seniority", label: "Experience" },
+    { key: "location", label: "Location" },
+    { key: "employment_type", label: "Employment Type" },
+    { key: "work_authorization", label: "Work Authorization" },
+    { key: "remote_policy", label: "Remote Policy" },
+    { key: "compensation", label: "Compensation" },
+    { key: "team_structure", label: "Team Structure" },
+    { key: "urgency", label: "Urgency" },
+  ];
+
+  const summary: IntakeSummaryItem[] = prioritizedKeys
+    .map(({ key, label }) => {
+      const fallbackKey = key === "employment_type" ? "employmentType" : key;
+      const value = toText(source[key] ?? source[fallbackKey]);
+      return { label, value: value || "Not specified" };
+    })
+    .filter((item): item is IntakeSummaryItem => Boolean(item));
+
+  const usedKeys = new Set([
+    ...prioritizedKeys.map((item) => item.key),
+    "employmentType",
+  ]);
+
+  for (const [key, value] of Object.entries(source)) {
+    if (!value || usedKeys.has(key)) continue;
+    const normalized = toText(value);
+    if (!normalized) continue;
+    summary.push({
+      label: prettifyKey(key),
+      value: normalized,
+    });
+  }
+
+  return summary;
+}
+
+function buildConversationHistory(rawConversation: RawConversationEntry[] | undefined): TranscriptTurn[] {
+  const history: TranscriptTurn[] = [];
+  (rawConversation || []).forEach((entry, index) => {
+    const timestamp = toText(entry.timestamp) || new Date().toISOString();
+    const question = toText(entry.question);
+    const answer = toText(entry.answer);
+
+    if (question) {
+      history.push({
+        id: `slack-question-${index}`,
+        role: "assistant",
+        speaker: "Adam",
+        finalTranscript: question,
+        liveTranscript: question,
+        isStreaming: false,
+        isFinal: true,
+        timestamp,
+      });
+    }
+
+    if (answer) {
+      history.push({
+        id: `slack-answer-${index}`,
+        role: "user",
+        speaker: "Recruiter",
+        finalTranscript: answer,
+        liveTranscript: answer,
+        isStreaming: false,
+        isFinal: true,
+        timestamp,
+      });
+    }
+  });
+  return history;
+}
+
 async function loadVapiConfig(): Promise<{ assistantId: string; publicKey: string }> {
   const response = await fetch("/api/vapi/config", { method: "GET" });
   const json = (await response.json()) as {
@@ -134,7 +246,13 @@ export function SlackVoiceUi({ token }: { token: string }) {
     };
   }, [token]);
 
+  const orchestrationSession = session?.session;
   const question = useMemo(() => session?.currentQuestion || session?.firstMessage || "Let's continue the intake.", [session]);
+  const intakeSummary = useMemo(() => buildIntakeSummary(orchestrationSession?.normalizedIntake as Record<string, unknown> | undefined), [orchestrationSession?.normalizedIntake]);
+  const conversationHistory = useMemo(
+    () => buildConversationHistory(orchestrationSession?.rawConversation as RawConversationEntry[] | undefined),
+    [orchestrationSession?.rawConversation]
+  );
 
   useEffect(() => {
     if (!session || !assistantId || !publicKey || startedRef.current) return;
@@ -294,6 +412,63 @@ export function SlackVoiceUi({ token }: { token: string }) {
         </CardHeader>
 
         <CardContent className="space-y-4 p-4 sm:p-6">
+          <div className="rounded-2xl border border-[#E7E0D4] bg-white p-4 shadow-[0_8px_22px_rgba(0,0,0,0.04)]">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Intake Summary</p>
+                <p className="mt-1 text-sm text-[#4B5563]">Captured from Slack before the voice session starts.</p>
+              </div>
+              <div className="rounded-full border border-[#D1FAE5] bg-[#ECFDF5] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#166534]">
+                {intakeSummary.length ? `${intakeSummary.length} fields` : "No fields yet"}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {intakeSummary.length > 0 ? (
+                intakeSummary.map((item) => (
+                  <div key={item.label} className="rounded-2xl border border-[rgba(120,100,80,0.10)] bg-[#FCFAF6] px-4 py-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">{item.label}</p>
+                    <p className="mt-1 text-sm leading-6 text-[#111827]">{item.value}</p>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-[#D8CCBA] bg-[#FCFAF6] px-4 py-5 text-sm text-[#6B7280] sm:col-span-2">
+                  No structured intake fields were captured yet.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-[#E7E0D4] bg-white p-4 shadow-[0_8px_22px_rgba(0,0,0,0.04)]">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#6B7280]">Conversation History</p>
+                <p className="mt-1 text-sm text-[#4B5563]">Earlier Slack answers that led into this voice session.</p>
+              </div>
+              <div className="rounded-full border border-[rgba(120,100,80,0.12)] bg-[#F3EDE3] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#5C4B36]">
+                {orchestrationSession?.rawConversation?.length || 0} turns
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-[24rem] space-y-3 overflow-y-auto rounded-[20px] border border-[rgba(120,100,80,0.08)] bg-[linear-gradient(180deg,#FFFDF9_0%,#F7F2E8_100%)] p-3">
+              {conversationHistory.length > 0 ? (
+                conversationHistory.map((message) => (
+                  <ChatBubble
+                    key={message.id}
+                    message={{
+                      ...message,
+                      content: turnText(message),
+                    }}
+                  />
+                ))
+              ) : (
+                <div className="rounded-[18px] border border-dashed border-[#D8CCBA] bg-white/75 px-4 py-6 text-center text-sm text-[#6B7280]">
+                  No Slack conversation history available yet.
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="rounded-2xl border border-[#E7E0D4] bg-white p-4 text-sm text-[#4B5563]">
             <p className="font-semibold text-[#111827]">Current prompt</p>
             <p className="mt-1 leading-6">{session?.currentQuestion || question}</p>

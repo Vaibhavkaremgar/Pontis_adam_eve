@@ -307,7 +307,7 @@ def _send_interview_invite(
         job_id=job_id,
         candidate_id=candidate_id,
         outreach_event_id=outreach_event_id,
-        source_app="adam",
+        source_app=getattr(job, "source_app", "ui"),
         resume_text=resume_text,
         available_slots=normalized_slots,
         timezone_name=normalized_timezone,

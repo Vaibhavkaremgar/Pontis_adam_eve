@@ -202,7 +202,7 @@ def _ensure_optional_schema_columns() -> None:
         if "jobs" in table_names:
             job_columns = {column["name"] for column in inspector.get_columns("jobs")}
             if "source_app" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard'"))
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'ui'"))
             if "job_status" not in job_columns:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN job_status VARCHAR(32) NOT NULL DEFAULT 'active'"))
             if "vetting_mode" not in job_columns:
@@ -312,7 +312,7 @@ def _ensure_optional_schema_columns() -> None:
         if "outreach_events" in table_names:
             outreach_columns = {column["name"] for column in inspector.get_columns("outreach_events")}
             if "source_app" not in outreach_columns:
-                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard'"))
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'ui'"))
             if "company_id" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "reply_intent" not in outreach_columns:
@@ -327,7 +327,7 @@ def _ensure_optional_schema_columns() -> None:
         if "interviews" in table_names:
             interview_columns = {column["name"] for column in inspector.get_columns("interviews")}
             if "source_app" not in interview_columns:
-                conn.execute(text("ALTER TABLE interviews ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard'"))
+                conn.execute(text("ALTER TABLE interviews ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'ui'"))
 
         if "notification_workflow_tokens" not in table_names:
             conn.execute(
@@ -335,7 +335,7 @@ def _ensure_optional_schema_columns() -> None:
                     f"""
                     CREATE TABLE notification_workflow_tokens (
                         id VARCHAR(36) PRIMARY KEY,
-                        source_app VARCHAR(32) NOT NULL DEFAULT 'dashboard',
+                        source_app VARCHAR(32) NOT NULL DEFAULT 'ui',
                         job_id VARCHAR(36) NOT NULL,
                         candidate_id VARCHAR(128) NOT NULL,
                         token_type VARCHAR(64) NOT NULL DEFAULT '',

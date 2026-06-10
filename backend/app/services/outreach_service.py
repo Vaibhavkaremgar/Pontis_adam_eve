@@ -1412,7 +1412,7 @@ def handle_email_reply(event, db: Session) -> dict[str, str]:
                     job_id=row.job_id,
                     candidate_id=row.candidate_id,
                     outreach_event_id=row.id,
-                    source_app="adam",
+                    source_app=getattr(JobRepository(db).get(row.job_id), "source_app", "ui"),
                 )
                 booking_link = session.get("slot_link", session.get("slotLink", session.get("bookingLink", session.get("bookingUrl", ""))))
                 transition_candidate_ats_state(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CompanyRepository, JobRepository
@@ -8,6 +10,9 @@ from app.services.job_text_service import build_job_text
 from app.services.qdrant_service import delete_job_vectors, ensure_all_collections, upsert_job_chunks
 from app.utils.exceptions import APIError
 from app.utils.text import chunk_text
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_or_create_company(
@@ -58,6 +63,7 @@ def create_hiring_job(
     *,
     db: Session,
     user_id: str,
+    source_app: str,
     company: dict,
     job: dict,
     company_id: str | None = None,
@@ -106,6 +112,7 @@ def create_hiring_job(
     job_row = job_repo.create(
         company_id=company_row.id,
         created_by=user_id,
+        source_app=source_app,
         title=title,
         description=job_description,
         location=location,
@@ -133,6 +140,13 @@ def create_hiring_job(
         delete_job_vectors(job_row.id)
         upsert_job_chunks(job_row.id, vectors, chunks)
         db.commit()
+        logger.info(
+            "job_created job_id=%s source_app=%s company_id=%s created_by=%s",
+            job_row.id,
+            job_row.source_app,
+            job_row.company_id,
+            user_id,
+        )
         return job_row.id
     except Exception:
         db.rollback()

@@ -147,9 +147,9 @@ def get_interview_insights(*, db: Session, job_id: str, candidate_id: str) -> di
     evaluations = list_interview_evaluations(db=db, job_id=job_id, candidate_id=candidate_id)
     workflow_token = _workflow_token(session) if session else ""
     token_row = (
-        NotificationWorkflowTokenRepository(db).get_by_token(workflow_token, source_app="adam")
+        NotificationWorkflowTokenRepository(db).get_by_token(workflow_token, source_app="ui")
         if workflow_token
-        else NotificationWorkflowTokenRepository(db).get_active_by_candidate(job_id=job_id, candidate_id=candidate_id, source_app="adam", token_type="slot_booking")
+        else NotificationWorkflowTokenRepository(db).get_active_by_candidate(job_id=job_id, candidate_id=candidate_id, source_app="ui", token_type="slot_booking")
     )
     workflow_payload = _metadata_map(token_row.payload if token_row else {})
     return {
@@ -177,11 +177,14 @@ def advance_interview_stage(
     notes: str = "",
     recommendation: str = "",
     interviewer_id: str | None = None,
-    source_app: str = "adam",
+    source_app: str = "",
 ) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
+    normalized_source_app = source_app.strip().lower() if isinstance(source_app, str) else ""
+    if normalized_source_app not in {"slack", "ui"}:
+        normalized_source_app = getattr(job, "source_app", "ui") or "ui"
 
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
@@ -225,7 +228,7 @@ def advance_interview_stage(
             "status": normalized_action,
             "jobId": job_id,
             "candidateId": candidate_id,
-            "sourceType": str((_metadata_map(getattr(current_session, "scheduling_metadata", {})).get("sourceType") or source_app or "adam")),
+            "sourceType": str((_metadata_map(getattr(current_session, "scheduling_metadata", {})).get("sourceType") or normalized_source_app or "ui")),
             "workflowToken": workflow_token,
             "stageName": current_stage,
         }
@@ -262,7 +265,7 @@ def advance_interview_stage(
                 {
                     "job_id": job_id,
                     "candidate_id": candidate_id,
-                    "source_app": "adam",
+                    "source_app": normalized_source_app,
                     "feedback": terminal_reason,
                 },
             )

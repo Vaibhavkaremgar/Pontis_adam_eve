@@ -12,7 +12,7 @@ from app.core.config import INTERNAL_API_KEY
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.schemas.candidate import InterviewBookingData, InterviewBookingRequest, InterviewDecisionData, InterviewDecisionRequest, InterviewInsightsData, InterviewRescheduleData, InterviewRescheduleRequest, InterviewSessionData, InterviewSessionRequest
-from app.db.repositories import InterviewRepository, NotificationWorkflowTokenRepository
+from app.db.repositories import InterviewRepository, JobRepository, NotificationWorkflowTokenRepository
 from app.services.audit_service import record_audit_event
 from app.services.interview_stage_service import advance_interview_stage, get_interview_insights
 from app.services.interview_service import list_interviews
@@ -52,7 +52,7 @@ def interview_results_callback(payload: InterviewResultsCallbackRequest, request
     if not INTERNAL_API_KEY or not provided_key or not secrets.compare_digest(provided_key, INTERNAL_API_KEY):
         raise APIError("Unauthorized", status_code=401)
 
-    token_row = NotificationWorkflowTokenRepository(db).get_by_token(payload.workflow_token, source_app="adam")
+    token_row = NotificationWorkflowTokenRepository(db).get_by_token(payload.workflow_token, source_app="ui")
     if not token_row:
         raise APIError("Interview workflow token not found", status_code=404)
 
@@ -143,6 +143,7 @@ def interview_insights(jobId: str = Query(...), candidateId: str = Query(...), _
 @router.post("/interview/decision")
 def interview_decision(payload: InterviewDecisionRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
+    job = JobRepository(db).get(payload.jobId)
     result = advance_interview_stage(
         db=db,
         job_id=payload.jobId,
@@ -152,7 +153,7 @@ def interview_decision(payload: InterviewDecisionRequest, request: Request, _: d
         notes=payload.notes,
         recommendation=payload.recommendation,
         interviewer_id=payload.interviewerId or None,
-        source_app=payload.sourceType or "adam",
+        source_app=payload.sourceType or (job.source_app if job else "ui"),
     )
     record_audit_event(
         db=db,

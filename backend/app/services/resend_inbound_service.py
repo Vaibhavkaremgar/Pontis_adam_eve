@@ -802,7 +802,7 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
     workflow_token_row = NotificationWorkflowTokenRepository(db).get_active_by_candidate(
         job_id=job_id or "",
         candidate_id=candidate_id or "",
-        source_app="adam",
+        source_app="ui",
         token_type="slot_booking",
     ) if job_id and candidate_id else None
     workflow_token = str(getattr(workflow_token_row, "token", "") or "").strip()

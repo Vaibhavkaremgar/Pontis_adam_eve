@@ -52,7 +52,7 @@ from app.models.entities import (
 from app.core.config import ENABLE_FAKE_EMAILS, RLHF_BASE_FEEDBACK_BIAS, RLHF_MIN_FEEDBACK_BIAS, RLHF_SMOOTHING_ALPHA
 
 logger = logging.getLogger(__name__)
-ADAM_SOURCE_APP = "adam"
+VALID_SOURCE_APPS = {"slack", "ui"}
 _EMAIL_PATTERN = re.compile(r"[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,63}", re.IGNORECASE)
 
 
@@ -62,6 +62,13 @@ def ensure_candidate_profile(db: Session, job_id: str, candidate_id: str) -> Can
 
 def _normalize_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _normalize_source_app(source_app: str | None) -> str:
+    normalized = _normalize_text(source_app).lower()
+    if normalized not in VALID_SOURCE_APPS:
+        raise APIError("source_app must be one of: slack, ui", status_code=400)
+    return normalized
 
 
 def _string_id_match(column, value: object):
@@ -145,7 +152,7 @@ def _build_dev_email(*, name: str, candidate_id: str) -> str:
 
 
 def _job_company_id(db: Session, job_id: str) -> str | None:
-    job = db.scalar(select(JobEntity).where(JobEntity.id == job_id, JobEntity.source_app == ADAM_SOURCE_APP))
+    job = db.scalar(select(JobEntity).where(JobEntity.id == job_id))
     if not job:
         return None
     return str(job.company_id or "").strip() or None
@@ -553,6 +560,7 @@ class JobRepository:
         *,
         company_id: str,
         created_by: str,
+        source_app: str,
         title: str,
         description: str,
         location: str,
@@ -568,9 +576,10 @@ class JobRepository:
         experience_level: str = "",
         structured_data: dict | None = None,
     ) -> JobEntity:
+        normalized_source_app = _normalize_source_app(source_app)
         entity = JobEntity(
             id=str(uuid4()),
-            source_app=ADAM_SOURCE_APP,
+            source_app=normalized_source_app,
             company_id=company_id,
             title=title.strip(),
             description=description.strip(),
@@ -593,12 +602,7 @@ class JobRepository:
         return entity
 
     def get(self, job_id: str) -> JobEntity | None:
-        return self.db.scalar(
-            select(JobEntity).where(
-                JobEntity.id == job_id,
-                JobEntity.source_app == ADAM_SOURCE_APP,
-            )
-        )
+        return self.db.scalar(select(JobEntity).where(JobEntity.id == job_id))
 
     def get_recruiter_id(self, job_id: str) -> str | None:
         job = self.get(job_id)
@@ -638,7 +642,6 @@ class JobRepository:
     def list_recent(self, limit: int = 50) -> list[JobEntity]:
         rows = self.db.scalars(
             select(JobEntity)
-            .where(JobEntity.source_app == ADAM_SOURCE_APP)
             .order_by(JobEntity.created_at.desc())
             .limit(limit)
         ).all()
@@ -1000,7 +1003,6 @@ class InterviewRepository:
             select(InterviewEntity).where(
                 _string_id_match(InterviewEntity.job_id, job_id),
                 InterviewEntity.candidate_id == candidate_id,
-                InterviewEntity.source_app == ADAM_SOURCE_APP,
             )
         )
 
@@ -1023,7 +1025,7 @@ class InterviewRepository:
         if not row:
             row = InterviewEntity(
                 id=str(uuid4()),
-                source_app=ADAM_SOURCE_APP,
+                source_app=job.source_app,
                 job_id=job_id,
                 company_id=job.company_id,
                 candidate_id=candidate_id,
@@ -1078,13 +1080,11 @@ class InterviewRepository:
                     status = 'completed'
                 WHERE job_id = :job_id
                   AND candidate_id = :candidate_id
-                  AND source_app = :source_app
                 """
             ),
             {
                 "job_id": job_id,
                 "candidate_id": candidate_id,
-                "source_app": ADAM_SOURCE_APP,
                 "interview_score": result_data.get("interview_score"),
                 "technical_score": result_data.get("technical_score"),
                 "communication_score": result_data.get("communication_score"),
@@ -1104,7 +1104,6 @@ class InterviewRepository:
             select(InterviewEntity)
             .where(
                 _string_id_match(InterviewEntity.job_id, job_id),
-                InterviewEntity.source_app == ADAM_SOURCE_APP,
             )
         ).all()
         return list(rows)
@@ -2422,7 +2421,6 @@ class OutreachEventRepository:
         return self.db.scalar(
             select(OutreachEventEntity).where(
                 OutreachEventEntity.id == normalized,
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
         )
 
@@ -2432,7 +2430,6 @@ class OutreachEventRepository:
             .where(
                 _string_id_match(OutreachEventEntity.job_id, job_id),
                 OutreachEventEntity.candidate_id == candidate_id,
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
             .order_by(OutreachEventEntity.created_at.desc())
         )
@@ -2449,7 +2446,6 @@ class OutreachEventRepository:
         return self.db.scalar(
             select(OutreachEventEntity).where(
                 OutreachEventEntity.provider_message_id == provider_message_id,
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
         )
 
@@ -2473,7 +2469,7 @@ class OutreachEventRepository:
         if not row:
             row = OutreachEventEntity(
                 id=str(uuid4()),
-                source_app=ADAM_SOURCE_APP,
+                source_app=job.source_app,
                 job_id=job_id,
                 company_id=job.company_id,
                 candidate_id=candidate_id,
@@ -2505,7 +2501,7 @@ class OutreachEventRepository:
                 OutreachEventEntity.status.in_(("queued", "failed")),
             )
             .values(
-                source_app=ADAM_SOURCE_APP,
+                source_app=job.source_app,
                 provider=provider or row.provider,
                 to_email=to_email or row.to_email,
                 subject=subject or row.subject,
@@ -2546,7 +2542,7 @@ class OutreachEventRepository:
         if not row:
             row = OutreachEventEntity(
                 id=str(uuid4()),
-                source_app=ADAM_SOURCE_APP,
+                source_app=job.source_app,
                 job_id=job_id,
                 company_id=job.company_id,
                 candidate_id=candidate_id,
@@ -2557,7 +2553,7 @@ class OutreachEventRepository:
             self.db.flush()
 
         row.provider = provider
-        row.source_app = ADAM_SOURCE_APP
+        row.source_app = job.source_app
         row.to_email = to_email
         row.subject = subject
         row.body = body
@@ -2601,7 +2597,7 @@ class OutreachEventRepository:
         if not row:
             row = OutreachEventEntity(
                 id=str(uuid4()),
-                source_app=ADAM_SOURCE_APP,
+                source_app=job.source_app,
                 job_id=job_id,
                 company_id=job.company_id,
                 candidate_id=candidate_id,
@@ -2613,7 +2609,7 @@ class OutreachEventRepository:
         row.company_id = job.company_id
 
         row.provider = provider
-        row.source_app = ADAM_SOURCE_APP
+        row.source_app = job.source_app
         row.message_text = message_text.strip()
         row.resume_url = resume_url.strip()
         row.status = status
@@ -2631,7 +2627,6 @@ class OutreachEventRepository:
         rows = self.db.scalars(
             select(OutreachEventEntity).where(
                 _string_id_match(OutreachEventEntity.job_id, job_id),
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
         ).all()
         return list(rows)
@@ -2644,7 +2639,6 @@ class OutreachEventRepository:
                 OutreachEventEntity.next_follow_up_at <= now,
                 OutreachEventEntity.follow_up_count < max_follow_up_count,
                 OutreachEventEntity.to_email != "",
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
         ).all()
         return list(rows)
@@ -2652,7 +2646,6 @@ class OutreachEventRepository:
     def list_replied(self, *, job_id: str | None = None) -> list[OutreachEventEntity]:
         stmt = select(OutreachEventEntity).where(
             OutreachEventEntity.status == "replied",
-            OutreachEventEntity.source_app == ADAM_SOURCE_APP,
         )
         if job_id:
             stmt = stmt.where(_string_id_match(OutreachEventEntity.job_id, job_id))
@@ -2667,7 +2660,6 @@ class OutreachEventRepository:
                 OutreachEventEntity.next_follow_up_at <= now,
                 OutreachEventEntity.follow_up_count < max_follow_up_count,
                 OutreachEventEntity.to_email != "",
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
             .with_for_update(skip_locked=True)
         )
@@ -2689,7 +2681,6 @@ class OutreachEventRepository:
                 OutreachEventEntity.responded_at.is_(None),
                 OutreachEventEntity.learning_applied.is_(False),
                 OutreachEventEntity.to_email != "",
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
                 or_(
                     OutreachEventEntity.next_follow_up_at.is_(None),
                     OutreachEventEntity.next_follow_up_at <= now,
@@ -2705,7 +2696,6 @@ class OutreachEventRepository:
     def list_recent(self, *, limit: int = 500) -> list[OutreachEventEntity]:
         rows = self.db.scalars(
             select(OutreachEventEntity)
-            .where(OutreachEventEntity.source_app == ADAM_SOURCE_APP)
             .order_by(OutreachEventEntity.updated_at.desc())
             .limit(max(1, int(limit)))
         ).all()
@@ -2719,7 +2709,6 @@ class OutreachEventRepository:
             select(OutreachEventEntity)
             .where(
                 OutreachEventEntity.to_email == normalized,
-                OutreachEventEntity.source_app == ADAM_SOURCE_APP,
             )
             .order_by(OutreachEventEntity.created_at.desc())
         )
@@ -2731,37 +2720,30 @@ class NotificationWorkflowTokenRepository:
 
     @staticmethod
     def _normalize_source_app(source_app: str | None) -> str:
-        return (source_app or "dashboard").strip().lower() or "dashboard"
+        return _normalize_source_app(source_app)
 
-    def get_by_token(self, token: str, *, source_app: str = "dashboard") -> NotificationWorkflowTokenEntity | None:
+    def get_by_token(self, token: str, *, source_app: str = "ui") -> NotificationWorkflowTokenEntity | None:
         normalized = (token or "").strip()
         if not normalized:
             return None
-        return self.db.scalar(
-            select(NotificationWorkflowTokenEntity).where(
-                NotificationWorkflowTokenEntity.token == normalized,
-                NotificationWorkflowTokenEntity.source_app == self._normalize_source_app(source_app),
-            )
-        )
+        return self.db.scalar(select(NotificationWorkflowTokenEntity).where(NotificationWorkflowTokenEntity.token == normalized))
 
     def get_active_by_candidate(
         self,
         *,
         job_id: str,
         candidate_id: str,
-        source_app: str = "dashboard",
+        source_app: str = "ui",
         token_type: str = "",
     ) -> NotificationWorkflowTokenEntity | None:
         normalized_job_id = (job_id or "").strip()
         normalized_candidate_id = (candidate_id or "").strip()
-        normalized_source_app = self._normalize_source_app(source_app)
         normalized_token_type = (token_type or "").strip().lower()
         if not normalized_job_id or not normalized_candidate_id:
             return None
         conditions = [
             _string_id_match(NotificationWorkflowTokenEntity.job_id, normalized_job_id),
             NotificationWorkflowTokenEntity.candidate_id == normalized_candidate_id,
-            NotificationWorkflowTokenEntity.source_app == normalized_source_app,
             NotificationWorkflowTokenEntity.is_active.is_(True),
         ]
         if normalized_token_type:
@@ -2786,7 +2768,7 @@ class NotificationWorkflowTokenRepository:
         is_active: bool = True,
         status: str | None = None,
         expires_at: datetime | None = None,
-        source_app: str = "dashboard",
+        source_app: str = "ui",
     ) -> NotificationWorkflowTokenEntity:
         job = JobRepository(self.db).get(job_id)
         if not job:
@@ -2794,7 +2776,7 @@ class NotificationWorkflowTokenRepository:
         token_value = (token or "").strip()
         if not token_value:
             raise APIError("token is required", status_code=400)
-        normalized_source_app = self._normalize_source_app(source_app)
+        normalized_source_app = self._normalize_source_app(source_app or getattr(job, "source_app", "ui"))
         normalized_token_type = (token_type or workflow_name or "").strip().lower()
         normalized_workflow_name = (workflow_name or normalized_token_type or "").strip()
         normalized_status = (status or "").strip().lower() or ("active" if is_active else "consumed")
@@ -2816,7 +2798,7 @@ class NotificationWorkflowTokenRepository:
         self.db.flush()
         return row
 
-    def mark_consumed(self, token: str, *, source_app: str = "dashboard") -> NotificationWorkflowTokenEntity | None:
+    def mark_consumed(self, token: str, *, source_app: str = "ui") -> NotificationWorkflowTokenEntity | None:
         row = self.get_by_token(token, source_app=source_app)
         if not row:
             return None

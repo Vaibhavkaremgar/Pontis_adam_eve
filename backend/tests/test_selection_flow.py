@@ -635,6 +635,7 @@ class SelectionFlowTests(unittest.TestCase):
             job = JobRepository(db).create(
                 company_id=company.id,
                 created_by=user.id,
+                source_app="ui",
                 title="Backend Engineer",
                 description="Build backend systems.",
                 location="Remote",
@@ -714,6 +715,7 @@ class SelectionReactivationTests(unittest.TestCase):
         self.job = JobRepository(self.db).create(
             company_id=self.company.id,
             created_by=self.user.id,
+            source_app="ui",
             title="Backend Engineer",
             description="Build backend systems.",
             location="Remote",

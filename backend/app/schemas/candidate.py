@@ -207,7 +207,7 @@ class InterviewSessionData(BaseModel):
     candidateId: str
     companyId: str | None = None
     outreachEventId: str | None = None
-    sourceType: str = "adam"
+    sourceType: str = ""
     workflowToken: str = ""
     stageName: str = "recruiter_screen"
     stageIndex: int = 0
@@ -245,7 +245,7 @@ class InterviewBookingData(BaseModel):
     status: str
     jobId: str
     candidateId: str
-    sourceType: str = "adam"
+    sourceType: str = ""
     workflowToken: str = ""
     stageName: str = "recruiter_screen"
     scheduledAt: str | None = None
@@ -261,7 +261,7 @@ class InterviewRescheduleData(BaseModel):
     status: str
     jobId: str
     candidateId: str
-    sourceType: str = "adam"
+    sourceType: str = ""
     workflowToken: str = ""
     stageName: str = "recruiter_screen"
     scheduledAt: str | None = None
@@ -280,7 +280,7 @@ class InterviewDecisionRequest(BaseModel):
     interviewerId: str = ""
     notes: str = ""
     recommendation: str = ""
-    sourceType: str = "adam"
+    sourceType: str = ""
 
 
 class InterviewDecisionData(BaseModel):

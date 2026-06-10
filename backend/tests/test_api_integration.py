@@ -187,6 +187,7 @@ class IntegrationTests(unittest.TestCase):
         self.job = JobRepository(self.db).create(
             company_id=self.company.id,
             created_by=self.user.id,
+            source_app="ui",
             title=f"Platform Engineer {suffix}",
             description="Build retrieval, queues, and AI observability.",
             location="Remote",
@@ -1673,7 +1674,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(outreach_row[0], "sent")
         self.assertEqual(outreach_row[1], "msg-789")
 
-    def test_adam_source_app_isolated_from_dashboard_rows(self) -> None:
+    def test_source_app_values_are_stored_as_ui_for_ui_flows(self) -> None:
         job_repo = JobRepository(self.db)
         interview_repo = InterviewRepository(self.db)
         outreach_repo = OutreachEventRepository(self.db)
@@ -1682,6 +1683,7 @@ class IntegrationTests(unittest.TestCase):
         adam_job = job_repo.create(
             company_id=self.company.id,
             created_by=self.user.id,
+            source_app="ui",
             title="Isolation Check",
             description="Verify source app isolation.",
             location="Remote",
@@ -1690,7 +1692,7 @@ class IntegrationTests(unittest.TestCase):
             responsibilities=[],
             skills_required=[],
         )
-        self.assertEqual(adam_job.source_app, "adam")
+        self.assertEqual(adam_job.source_app, "ui")
 
         adam_interview = interview_repo.upsert_status(
             job_id=self.job.id,
@@ -1698,7 +1700,7 @@ class IntegrationTests(unittest.TestCase):
             status="shortlisted",
             create_default="shortlisted",
         )
-        self.assertEqual(adam_interview.source_app, "adam")
+        self.assertEqual(adam_interview.source_app, "ui")
 
         adam_outreach = outreach_repo.upsert(
             job_id=self.job.id,
@@ -1712,7 +1714,7 @@ class IntegrationTests(unittest.TestCase):
             next_follow_up_at=None,
             provider_message_id="source-app-msg-1",
         )
-        self.assertEqual(adam_outreach.source_app, "adam")
+        self.assertEqual(adam_outreach.source_app, "ui")
 
         adam_token = token_repo.create(
             job_id=self.job.id,
@@ -1720,23 +1722,15 @@ class IntegrationTests(unittest.TestCase):
             workflow_name="interview_invite",
             token="token-source-app-1",
             payload={"step": "invite"},
-            source_app="adam",
+            source_app="ui",
         )
-        self.assertEqual(adam_token.source_app, "adam")
-
-        self.db.execute(text("UPDATE jobs SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_job.id})
-        self.db.execute(text("UPDATE interviews SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_interview.id})
-        self.db.execute(text("UPDATE outreach_events SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_outreach.id})
-        self.db.execute(text("UPDATE notification_workflow_tokens SET source_app = 'dashboard' WHERE id = :id"), {"id": adam_token.id})
-        self.db.commit()
-
-        self.assertIsNone(job_repo.get(adam_job.id))
-        self.assertNotIn(adam_job.id, [row.id for row in job_repo.list_recent(limit=20)])
-        self.assertEqual(interview_repo.list_for_job(self.job.id), [])
-        self.assertEqual(outreach_repo.list_for_job(self.job.id), [])
-        self.assertIsNone(outreach_repo.get_by_provider_message_id("source-app-msg-1"))
-        self.assertIsNone(token_repo.get_by_token("token-source-app-1", source_app="adam"))
-        self.assertIsNotNone(token_repo.get_by_token("token-source-app-1", source_app="dashboard"))
+        self.assertEqual(adam_token.source_app, "ui")
+        self.assertIsNotNone(job_repo.get(adam_job.id))
+        self.assertIn(adam_job.id, [row.id for row in job_repo.list_recent(limit=20)])
+        self.assertEqual(interview_repo.list_for_job(self.job.id)[0].source_app, "ui")
+        self.assertEqual(outreach_repo.list_for_job(self.job.id)[0].source_app, "ui")
+        self.assertIsNotNone(outreach_repo.get_by_provider_message_id("source-app-msg-1"))
+        self.assertIsNotNone(token_repo.get_by_token("token-source-app-1"))
 
     def test_shortlisted_candidates_create_adam_workflow_tokens(self) -> None:
         interview_repo = InterviewRepository(self.db)
@@ -1787,7 +1781,7 @@ class IntegrationTests(unittest.TestCase):
             {"job_id": self.job.id, "candidate_id": "candidate-1"},
         ).fetchone()
         self.assertIsNotNone(token_row)
-        self.assertEqual(token_row[0], "adam")
+        self.assertEqual(token_row[0], "ui")
         self.assertEqual(token_row[1], "slot_booking")
         self.assertTrue(bool(token_row[2]))
 
@@ -2067,7 +2061,7 @@ class IntegrationTests(unittest.TestCase):
             {"token": token},
         ).fetchone()
         self.assertIsNotNone(token_row)
-        self.assertEqual(token_row[0], "adam")
+        self.assertEqual(token_row[0], "ui")
         self.assertEqual(token_row[1], "slot_booking")
         self.assertTrue(bool(token_row[2]))
         payload = json.loads(token_row[3])
@@ -2081,8 +2075,7 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(payload["job_title"], self.job.title)
 
         token_repo = NotificationWorkflowTokenRepository(self.db)
-        self.assertIsNone(token_repo.get_by_token(token, source_app="dashboard"))
-        self.assertIsNotNone(token_repo.get_by_token(token, source_app="adam"))
+        self.assertIsNotNone(token_repo.get_by_token(token))
 
     def test_interview_session_refreshes_existing_token_payload_from_resume_profile(self) -> None:
         from app.services import interview_session_service as interview_session_module
@@ -2159,7 +2152,7 @@ class IntegrationTests(unittest.TestCase):
             {"token": token},
         ).fetchone()
         self.assertIsNotNone(token_row)
-        self.assertEqual(token_row[1], "adam")
+        self.assertEqual(token_row[1], "ui")
         payload = json.loads(token_row[0])
         self.assertEqual(payload["resume_text"], "Updated resume text from candidate reply.")
         self.assertEqual(payload["parsed_resume_text"], "Updated resume text from candidate reply.")

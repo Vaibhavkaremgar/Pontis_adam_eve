@@ -762,7 +762,7 @@ async def slack_commands(
             status_code=200,
             content={
                 "response_type": "ephemeral",
-                "text": "",
+                "text": "Starting hiring intake...",
             },
         )
     except HTTPException:

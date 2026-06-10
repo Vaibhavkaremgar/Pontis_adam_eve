@@ -23,6 +23,7 @@ def create_job(
     job_id = create_hiring_job(
         db=db,
         user_id=user_id,
+        source_app="ui",
         company=payload.company.model_dump(),
         job=payload.job.model_dump(),
     )
