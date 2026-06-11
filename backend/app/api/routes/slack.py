@@ -239,10 +239,11 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
                     if voice_url.startswith("/"):
                         voice_url = f"{PUBLIC_APP_URL}{voice_url}"
                     logger.info(
-                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_context_handoff_token=%s voice_url=%s",
                         session_id,
                         str(session.get("sessionToken") or "").strip(),
                         str(voice_data.get("voiceToken") or "").strip(),
+                        str((session.get("voiceContext") or {}).get("handoffToken") or "").strip(),
                         voice_url,
                     )
                 except Exception as exc:
@@ -339,10 +340,11 @@ def _run_orchestration_message_event(
                     if voice_url.startswith("/"):
                         voice_url = f"{PUBLIC_APP_URL}{voice_url}"
                     logger.info(
-                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_context_handoff_token=%s voice_url=%s",
                         str((result.get("session") or {}).get("id") or "").strip(),
                         str((result.get("session") or {}).get("sessionToken") or "").strip(),
                         str(voice_data.get("voiceToken") or "").strip(),
+                        str(((result.get("session") or {}).get("voiceContext") or {}).get("handoffToken") or "").strip(),
                         voice_url,
                     )
                 except Exception as exc:
@@ -566,10 +568,11 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                     if voice_url.startswith("/"):
                         voice_url = f"{PUBLIC_APP_URL}{voice_url}"
                     logger.info(
-                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_context_handoff_token=%s voice_url=%s",
                         session_id,
                         str(session.get("sessionToken") or "").strip(),
                         str(voice_data.get("voiceToken") or "").strip(),
+                        str((session.get("voiceContext") or {}).get("handoffToken") or "").strip(),
                         voice_url,
                     )
                 except Exception as exc:

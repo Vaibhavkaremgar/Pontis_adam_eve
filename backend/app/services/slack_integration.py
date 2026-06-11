@@ -447,6 +447,29 @@ async def post_slack_message_with_result(
         kwargs: dict[str, Any] = {"channel": target_channel, "text": text}
         if blocks is not None:
             kwargs["blocks"] = blocks
+            voice_button_url = ""
+            voice_button_value = ""
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "actions":
+                    continue
+                for element in block.get("elements") or []:
+                    if not isinstance(element, dict):
+                        continue
+                    if element.get("action_id") == "continue_with_voice":
+                        voice_button_url = str(element.get("url") or "").strip()
+                        voice_button_value = str(element.get("value") or "").strip()
+                        break
+                if voice_button_url or voice_button_value:
+                    break
+            logger.info(
+                "slack_chat_postMessage_payload channel_id=%s voice_button_url=%s voice_button_value=%s blocks=%s",
+                target_channel,
+                voice_button_url,
+                voice_button_value,
+                blocks,
+            )
         if thread_ts:
             kwargs["thread_ts"] = thread_ts
         response = await asyncio.to_thread(client.chat_postMessage, **kwargs)

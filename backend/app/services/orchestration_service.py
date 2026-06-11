@@ -1191,6 +1191,13 @@ def _generate_voice_token(db: Session, session_row) -> dict[str, Any]:
                 }
         except ValueError:
             pass
+    logger.info(
+        "voice_handoff_token_context_before_generate session_id=%s session_token=%s voice_context_handoff_token=%s voice_context=%s",
+        session_row.id,
+        session_row.session_token,
+        active_token,
+        voice_context,
+    )
 
     token = secrets.token_urlsafe(32)
     expires_at = _now() + timedelta(minutes=VOICE_TOKEN_TTL_MINUTES)
@@ -1205,10 +1212,11 @@ def _generate_voice_token(db: Session, session_row) -> dict[str, Any]:
     session_row.updated_at = _now()
     db.flush()
     logger.info(
-        "voice_handoff_token_generated session_id=%s session_token=%s voice_handoff_token=%s",
+        "voice_handoff_token_generated session_id=%s session_token=%s voice_handoff_token=%s voice_context_handoff_token=%s",
         session_row.id,
         session_row.session_token,
         token,
+        voice_context.get("handoffToken"),
     )
     return {
         "token": token,
@@ -2058,10 +2066,11 @@ def prepare_voice_handoff(*, db: Session, session_id: str) -> dict[str, Any]:
     db.commit()
     voice_url = f"/voice?token={token_data['token']}&source_type={_normalize_text(session_row.source or 'ui') or 'ui'}"
     logger.info(
-        "prepare_voice_handoff session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+        "prepare_voice_handoff session_id=%s session_token=%s voice_handoff_token=%s voice_context_handoff_token=%s voice_url=%s",
         session_row.id,
         session_row.session_token,
         token_data["token"],
+        (session_row.voice_context or {}).get("handoffToken"),
         voice_url,
     )
     return {
