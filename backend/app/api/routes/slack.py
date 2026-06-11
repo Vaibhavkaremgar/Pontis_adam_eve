@@ -578,7 +578,7 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                 except Exception as exc:
                     logger.warning("slack_voice_prep_failed session_id=%s error=%s", session_id, str(exc), exc_info=exc)
                     voice_url = ""
-            posted = _send_slack_message_sync(
+            response = _send_orchestration_message_sync(
                 channel_id=channel_id,
                 text=question or "Adam is gathering the hiring brief in Slack.",
                 blocks=_build_orchestration_blocks(
@@ -591,7 +591,29 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                 thread_ts=thread_ts,
                 bot_token=bot_token,
             )
-            if not posted:
+            posted_ts = ""
+            if isinstance(response, dict):
+                posted_ts = str(response.get("ts") or "").strip()
+                if not posted_ts and isinstance(response.get("message"), dict):
+                    posted_ts = str(response["message"].get("ts") or "").strip()
+            logger.info(
+                "slack_hire_post_response session_id=%s previous_slack_thread_ts=%s returned_slack_ts=%s",
+                session_id,
+                str(session.get("slackThreadTs") or "").strip(),
+                posted_ts,
+            )
+            if posted_ts:
+                session_row = OrchestrationSessionRepository(db).get(session_id)
+                if session_row and not str(session_row.slack_thread_ts or "").strip():
+                    session_row.slack_thread_ts = posted_ts
+                    session_row.updated_at = datetime.now(timezone.utc)
+                    db.commit()
+                    logger.info(
+                        "slack_thread_ts_persisted session_id=%s persisted_slack_thread_ts=%s",
+                        session_id,
+                        session_row.slack_thread_ts,
+                    )
+            if not response:
                 _send_slack_message_sync(channel_id=channel_id, text="?? Failed to start the intake. Please try again.", bot_token=bot_token)
     except Exception as exc:
         logger.error("slack_hiring_pipeline_failed channel_id=%s error=%s", channel_id, str(exc), exc_info=exc)
