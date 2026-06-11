@@ -1088,6 +1088,12 @@ def _build_question_blocks(*, session_id: str, question_key: str, question: str,
             },
         ]
         if voice_token:
+            logger.info(
+                "slack_voice_button_source session_id=%s voice_handoff_token=%s voice_url=%s",
+                session_id,
+                voice_token,
+                f"/voice?token={voice_token}",
+            )
             actions.insert(
                 1,
                 {
@@ -1173,6 +1179,12 @@ def _generate_voice_token(db: Session, session_row) -> dict[str, Any]:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at > _now() and not session_row.voice_token_used and not active_consumed_at:
+                logger.info(
+                    "voice_handoff_token_reused session_id=%s session_token=%s voice_handoff_token=%s",
+                    session_row.id,
+                    session_row.session_token,
+                    active_token,
+                )
                 return {
                     "token": active_token,
                     "expiresAt": expires_at,
@@ -1192,6 +1204,12 @@ def _generate_voice_token(db: Session, session_row) -> dict[str, Any]:
     session_row.voice_context = voice_context
     session_row.updated_at = _now()
     db.flush()
+    logger.info(
+        "voice_handoff_token_generated session_id=%s session_token=%s voice_handoff_token=%s",
+        session_row.id,
+        session_row.session_token,
+        token,
+    )
     return {
         "token": token,
         "expiresAt": expires_at,
@@ -2038,11 +2056,19 @@ def prepare_voice_handoff(*, db: Session, session_id: str) -> dict[str, Any]:
         raise APIError("Orchestration session not found", status_code=404)
     token_data = _generate_voice_token(db, session_row)
     db.commit()
+    voice_url = f"/voice?token={token_data['token']}&source_type={_normalize_text(session_row.source or 'ui') or 'ui'}"
+    logger.info(
+        "prepare_voice_handoff session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+        session_row.id,
+        session_row.session_token,
+        token_data["token"],
+        voice_url,
+    )
     return {
         "voiceToken": token_data["token"],
         "voiceTokenExpiresAt": token_data["expiresAt"].isoformat(),
         "session": _session_payload(session_row),
-        "voiceUrl": f"/voice?token={token_data['token']}&source_type={_normalize_text(session_row.source or 'ui') or 'ui'}",
+        "voiceUrl": voice_url,
     }
 
 

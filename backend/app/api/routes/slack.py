@@ -199,6 +199,12 @@ def _build_orchestration_blocks(
         },
     ]
     if voice_url:
+        logger.info(
+            "slack_button_url_bound session_id=%s question_key=%s voice_url=%s",
+            session_id,
+            question_key,
+            voice_url,
+        )
         actions[1]["url"] = voice_url
     blocks.append({"type": "actions", "elements": actions})
     return blocks
@@ -232,17 +238,24 @@ def _run_orchestration_intake_start(*, team_id: str, channel_id: str, user_id: s
                     voice_url = str(voice_data.get("voiceUrl") or "").strip()
                     if voice_url.startswith("/"):
                         voice_url = f"{PUBLIC_APP_URL}{voice_url}"
+                    logger.info(
+                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+                        session_id,
+                        str(session.get("sessionToken") or "").strip(),
+                        str(voice_data.get("voiceToken") or "").strip(),
+                        voice_url,
+                    )
                 except Exception as exc:
                     logger.warning("orchestration_voice_prep_failed session_id=%s error=%s", session_id, str(exc), exc_info=exc)
                     voice_url = ""
                 response = _send_orchestration_message_sync(
                     channel_id=channel_id,
                     text=question,
-                    blocks=_build_orchestration_blocks(
-                        session_id=session_id,
-                        question_key=question_key,
-                        question=question,
-                        voice_url=voice_url,
+                        blocks=_build_orchestration_blocks(
+                            session_id=session_id,
+                            question_key=question_key,
+                            question=question,
+                            voice_url=voice_url,
                         include_actions=True,
                     ),
                     thread_ts=thread_ts,
@@ -325,6 +338,13 @@ def _run_orchestration_message_event(
                     voice_url = str(voice_data.get("voiceUrl") or "").strip()
                     if voice_url.startswith("/"):
                         voice_url = f"{PUBLIC_APP_URL}{voice_url}"
+                    logger.info(
+                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+                        str((result.get("session") or {}).get("id") or "").strip(),
+                        str((result.get("session") or {}).get("sessionToken") or "").strip(),
+                        str(voice_data.get("voiceToken") or "").strip(),
+                        voice_url,
+                    )
                 except Exception as exc:
                     logger.warning("orchestration_voice_prep_failed event_session_id=%s error=%s", str((result.get("session") or {}).get("id") or "").strip(), str(exc), exc_info=exc)
                     voice_url = ""
@@ -545,6 +565,13 @@ def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user
                     voice_url = str(voice_data.get("voiceUrl") or "").strip()
                     if voice_url.startswith("/"):
                         voice_url = f"{PUBLIC_APP_URL}{voice_url}"
+                    logger.info(
+                        "slack_voice_url_received session_id=%s session_token=%s voice_handoff_token=%s voice_url=%s",
+                        session_id,
+                        str(session.get("sessionToken") or "").strip(),
+                        str(voice_data.get("voiceToken") or "").strip(),
+                        voice_url,
+                    )
                 except Exception as exc:
                     logger.warning("slack_voice_prep_failed session_id=%s error=%s", session_id, str(exc), exc_info=exc)
                     voice_url = ""
