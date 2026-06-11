@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import String, case, cast, func, or_, select, update
+from sqlalchemy import String, case, cast, func, not_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -831,6 +831,43 @@ class OrchestrationSessionRepository:
             ]
         )
         stmt = select(OrchestrationSessionEntity).where(*conditions).order_by(OrchestrationSessionEntity.updated_at.desc())
+        return self.db.scalar(stmt)
+
+    def get_resumable_slack_intake_by_context(
+        self,
+        *,
+        company_id: str = "",
+        slack_team_id: str = "",
+        slack_channel_id: str = "",
+        slack_thread_ts: str = "",
+        slack_user_id: str = "",
+        source: str = "slack",
+    ) -> OrchestrationSessionEntity | None:
+        normalized_source = (source or "slack").strip().lower() or "slack"
+        conditions = [
+            OrchestrationSessionEntity.source == normalized_source,
+            OrchestrationSessionEntity.current_stage == "slack_intake",
+            OrchestrationSessionEntity.completed_at.is_(None),
+            or_(OrchestrationSessionEntity.expires_at.is_(None), OrchestrationSessionEntity.expires_at > datetime.now(timezone.utc)),
+            OrchestrationSessionEntity.current_question_key.is_not(None),
+            OrchestrationSessionEntity.current_question_key != "",
+            not_(OrchestrationSessionEntity.current_question_key.in_(("path_selection", "final_confirmation"))),
+        ]
+        if company_id.strip():
+            conditions.append(OrchestrationSessionEntity.company_id == company_id.strip())
+        if slack_team_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_team_id == slack_team_id.strip())
+        if slack_channel_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_channel_id == slack_channel_id.strip())
+        if slack_thread_ts.strip():
+            conditions.append(OrchestrationSessionEntity.slack_thread_ts == slack_thread_ts.strip())
+        if slack_user_id.strip():
+            conditions.append(OrchestrationSessionEntity.slack_user_id == slack_user_id.strip())
+        stmt = (
+            select(OrchestrationSessionEntity)
+            .where(*conditions)
+            .order_by(OrchestrationSessionEntity.updated_at.desc(), OrchestrationSessionEntity.created_at.desc())
+        )
         return self.db.scalar(stmt)
 
     def archive_active_by_slack_context(

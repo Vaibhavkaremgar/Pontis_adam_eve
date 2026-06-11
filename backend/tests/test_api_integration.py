@@ -403,6 +403,71 @@ class IntegrationTests(unittest.TestCase):
         self.assertIsNotNone(archived_old.completed_at)
         self.assertEqual(archived_old.normalized_intake.get("role_title"), "Frontend Developer")
 
+    def test_path_selection_session_is_not_resumable_for_slack_answers(self) -> None:
+        from app.db.repositories import OrchestrationSessionRepository
+        from app.services.orchestration_service import process_slack_answer
+        from app.utils.exceptions import APIError
+
+        repo = OrchestrationSessionRepository(self.db)
+        session = repo.create(
+            session_token="path-selection-session",
+            source="slack",
+            current_stage="slack_intake",
+            slack_team_id="T-PATH",
+            slack_channel_id="C-PATH",
+            slack_thread_ts="",
+            slack_user_id=self.user.id,
+            intake_mode="slack",
+            selected_path="slack",
+            current_question="Core intake looks good. Choose whether to continue in Slack or switch to Voice.",
+            current_question_key="path_selection",
+            structured_context={"question_plan": []},
+            raw_conversation=[],
+            normalized_intake={
+                "company_name": "Acme Inc",
+                "role_title": "Backend Engineer",
+                "must_have_requirements": ["Python"],
+                "success_profile": "Should not be reused after path selection",
+                "skills": [],
+                "seniority": "",
+                "location": "",
+                "compensation": "",
+                "hiring_signals": [],
+                "tech_stack": [],
+                "hiring_priorities": [],
+                "culture_fit": "",
+                "communication_style": "",
+                "team_maturity": "",
+                "leadership_expectations": "",
+                "architecture_complexity": "",
+                "urgency": "",
+                "team_structure": "",
+                "stakeholder_management": "",
+            },
+            voice_context={},
+            slack_context={"teamId": "T-PATH", "channelId": "C-PATH", "threadTs": "", "userId": self.user.id},
+        )
+        self.db.commit()
+
+        selected = repo.get_resumable_slack_intake_by_context(
+            slack_team_id="T-PATH",
+            slack_channel_id="C-PATH",
+            slack_user_id=self.user.id,
+            source="slack",
+        )
+        self.assertIsNone(selected)
+
+        with self.assertRaises(APIError):
+            process_slack_answer(
+                db=self.db,
+                slack_team_id="T-PATH",
+                slack_channel_id="C-PATH",
+                slack_user_id=self.user.id,
+                thread_ts="1716612345.111111",
+                answer="saas sales",
+                timestamp="1716612345.111112",
+            )
+
     def test_slack_message_helper_forwards_thread_ts(self) -> None:
         from app.api.routes import slack as slack_routes
 

@@ -608,7 +608,21 @@ def _archive_superseded_slack_sessions(
             slack_channel_id,
             slack_user_id,
             len(archived),
-        )
+    )
+
+
+def _resume_status_reason(session_row) -> str:
+    if not session_row:
+        return "no_resumable_session"
+    current_stage = _normalize_text(getattr(session_row, "current_stage", ""))
+    current_question_key = _normalize_text(getattr(session_row, "current_question_key", ""))
+    if current_stage != ORCHESTRATION_STAGE_SLACK:
+        return f"current_stage={current_stage or 'empty'}"
+    if not current_question_key:
+        return "missing_current_question_key"
+    if current_question_key in {"path_selection", "final_confirmation"}:
+        return f"blocked_question_key={current_question_key}"
+    return "awaiting_next_intake_answer"
 
 
 def _initial_intake_state() -> dict[str, Any]:
@@ -1121,7 +1135,7 @@ def _ensure_session_row(
 ) -> Any:
     repo = OrchestrationSessionRepository(db)
     if reuse_existing_session:
-        existing = repo.get_active_by_slack_context(
+        existing = repo.get_resumable_slack_intake_by_context(
             slack_team_id=slack_team_id,
             slack_channel_id=slack_channel_id,
             slack_thread_ts=slack_thread_ts,
@@ -1129,6 +1143,13 @@ def _ensure_session_row(
             source=source,
         )
         if existing:
+            logger.info(
+                "orchestration_session_resumed session_id=%s current_stage=%s current_question_key=%s reason=%s",
+                existing.id,
+                existing.current_stage,
+                existing.current_question_key,
+                _resume_status_reason(existing),
+            )
             return existing
     session_token = secrets.token_urlsafe(24)
     row = repo.create(
@@ -1153,6 +1174,13 @@ def _ensure_session_row(
             "userId": slack_user_id,
         },
         job_id=None,
+        )
+    logger.info(
+        "orchestration_session_created session_id=%s current_stage=%s current_question_key=%s reason=%s",
+        row.id,
+        row.current_stage,
+        row.current_question_key,
+        "fresh_session_requested" if not reuse_existing_session else "no_resumable_session_found",
     )
     if not reuse_existing_session:
         _archive_superseded_slack_sessions(
@@ -1721,7 +1749,7 @@ def process_slack_answer(
     company_id: str = "",
 ) -> dict[str, Any]:
     session_repo = OrchestrationSessionRepository(db)
-    session_row = session_repo.get_active_by_slack_context(
+    session_row = session_repo.get_resumable_slack_intake_by_context(
         company_id=company_id,
         slack_team_id=slack_team_id,
         slack_channel_id=slack_channel_id,
@@ -1729,14 +1757,36 @@ def process_slack_answer(
         slack_user_id=slack_user_id,
         source=ORCHESTRATION_SOURCE,
     )
+    if session_row:
+        logger.info(
+            "orchestration_slack_answer_session_selected session_id=%s current_stage=%s current_question_key=%s reason=%s thread_ts=%s channel_id=%s user_id=%s",
+            session_row.id,
+            session_row.current_stage,
+            session_row.current_question_key,
+            _resume_status_reason(session_row),
+            thread_ts,
+            slack_channel_id,
+            slack_user_id,
+        )
     if not session_row:
-        session_row = session_repo.get_active_by_slack_context(
+        session_row = session_repo.get_resumable_slack_intake_by_context(
             company_id=company_id,
             slack_team_id=slack_team_id,
             slack_channel_id=slack_channel_id,
             slack_user_id=slack_user_id,
             source=ORCHESTRATION_SOURCE,
         )
+        if session_row:
+            logger.info(
+                "orchestration_slack_answer_session_selected session_id=%s current_stage=%s current_question_key=%s reason=%s thread_ts=%s channel_id=%s user_id=%s",
+                session_row.id,
+                session_row.current_stage,
+                session_row.current_question_key,
+                _resume_status_reason(session_row),
+                "",
+                slack_channel_id,
+                slack_user_id,
+            )
     if not session_row:
         raise APIError("No active orchestration session found", status_code=404)
 
