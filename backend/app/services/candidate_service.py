@@ -3372,7 +3372,7 @@ def fetch_ranked_candidates(
     request_source = (request_source or "api").strip().lower() or "api"
 
     if SOURCE_PROVIDER == "xray_apollo":
-        if request_source not in {"api", "selection"}:
+        if request_source not in {"api", "selection", "slack_calibration", "slack"}:
             logger.info(
                 "xray_retrieval_skipped job_id=%s request_source=%s reason=non_interactive",
                 job.id,

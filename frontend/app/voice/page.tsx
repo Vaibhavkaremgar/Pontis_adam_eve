@@ -17,33 +17,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { VoiceUi } from "@/components/voice/voice-ui";
 import { Button } from "@/components/ui/button";
 import { initialCompany, initialJob, useAppContext } from "@/context/AppContext";
-import { completeOrchestrationVoice, startOrchestrationVoice, type OrchestrationVoiceStartData } from "@/lib/api/orchestration";
-
-type TranscriptRole = "assistant" | "user";
-type SlackTranscriptTurn = {
-  role: TranscriptRole;
-  text: string;
-};
-
-function normalize(text: string) {
-  return text.trim().replace(/\s+/g, " ");
-}
-
-function extractTranscriptEvent(message: unknown): SlackTranscriptTurn | null {
-  if (!message || typeof message !== "object") return null;
-  const record = message as Record<string, unknown>;
-  if (record.type !== "transcript") return null;
-  const text = normalize(String(record.transcript || ""));
-  if (!text) return null;
-  return {
-    role: record.role === "assistant" ? "assistant" : "user",
-    text,
-  };
-}
-
-function buildTranscript(turns: SlackTranscriptTurn[]) {
-  return turns.map((turn) => `${turn.role === "assistant" ? "Adam" : "Recruiter"}: ${turn.text}`).join("\n");
-}
+import { startOrchestrationVoice, type OrchestrationVoiceStartData } from "@/lib/api/orchestration";
 
 function buildVoiceJob(session: OrchestrationVoiceStartData) {
   const variables = session.variableValues || {};
@@ -73,8 +47,6 @@ function SlackVoiceBridge({ token }: { token: string }) {
   const { jobId, job, company, isRefined, voiceNotes, callStatus, setJobId, setJob, setCompany, setIsRefined, setVoiceNotes, setCallStatus } = useAppContext();
   const [session, setSession] = useState<OrchestrationVoiceStartData | null>(null);
   const [error, setError] = useState("");
-  const transcriptRef = useRef<SlackTranscriptTurn[]>([]);
-  const completeRef = useRef(false);
   const previousStateRef = useRef<{
     jobId: string;
     job: typeof job;
@@ -99,8 +71,6 @@ function SlackVoiceBridge({ token }: { token: string }) {
   useEffect(() => {
     return () => {
       console.log("SlackVoiceBridge cleanup");
-      completeRef.current = false;
-      transcriptRef.current = [];
       const previousState = previousStateRef.current;
       if (previousState) {
         setJobId(previousState.jobId);
@@ -148,8 +118,6 @@ function SlackVoiceBridge({ token }: { token: string }) {
 
   useEffect(() => {
     if (!session) return;
-
-    let cancelled = false;
     const history = window.history as History & {
       pushState: History["pushState"];
       replaceState: History["replaceState"];
@@ -164,62 +132,34 @@ function SlackVoiceBridge({ token }: { token: string }) {
     };
 
     history.pushState = ((state: unknown, title: string, url?: string | URL | null) => {
-      if (shouldBlockReviewNavigation(url)) return undefined;
+      if (shouldBlockReviewNavigation(url)) {
+        console.info("dashboard_navigation_suppressed", {
+          source: "SlackVoiceBridge",
+          method: "pushState",
+          url: typeof url === "string" ? url : url?.toString() || "",
+        });
+        return undefined;
+      }
       return originalPushState(state, title, url);
     }) as History["pushState"];
 
     history.replaceState = ((state: unknown, title: string, url?: string | URL | null) => {
-      if (shouldBlockReviewNavigation(url)) return undefined;
+      if (shouldBlockReviewNavigation(url)) {
+        console.info("dashboard_navigation_suppressed", {
+          source: "SlackVoiceBridge",
+          method: "replaceState",
+          url: typeof url === "string" ? url : url?.toString() || "",
+        });
+        return undefined;
+      }
       return originalReplaceState(state, title, url);
     }) as History["replaceState"];
 
-    const attachBridge = () => {
-      if (cancelled) return false;
-      const vapi = (window as Window & { vapi?: { on: (event: string, handler: (payload: unknown) => void) => void } }).vapi;
-      if (!vapi) return false;
-
-      const handleMessage = (message: unknown) => {
-        const event = extractTranscriptEvent(message);
-        if (!event) return;
-        transcriptRef.current.push(event);
-      };
-
-      const handleCallEnd = async () => {
-        if (cancelled || completeRef.current) return;
-        completeRef.current = true;
-        const transcript = buildTranscript(transcriptRef.current);
-        const voiceNotesPayload = transcriptRef.current.map((turn) => turn.text).filter(Boolean);
-        try {
-          const completion = await completeOrchestrationVoice(token, {
-            transcript,
-            voiceNotes: voiceNotesPayload,
-          });
-          if (!completion.success) {
-            console.error("Slack voice completion failed", completion.error || "Unknown completion error");
-          }
-        } catch (err) {
-          console.error("Slack voice completion failed", err);
-        }
-      };
-
-      vapi.on("message", handleMessage);
-      vapi.on("call-end", handleCallEnd);
-      return true;
-    };
-
-    const interval = window.setInterval(() => {
-      if (attachBridge()) {
-        window.clearInterval(interval);
-      }
-    }, 100);
-
     return () => {
-      cancelled = true;
-      window.clearInterval(interval);
       history.pushState = originalPushState;
       history.replaceState = originalReplaceState;
     };
-  }, [session, token]);
+  }, [session]);
 
   if (error) {
     return <div className="mx-auto w-full max-w-2xl px-4 py-6 text-sm text-red-700">{error}</div>;
@@ -229,7 +169,7 @@ function SlackVoiceBridge({ token }: { token: string }) {
     return <div className="mx-auto w-full max-w-2xl px-4 py-6 text-sm text-gray-600">Loading voice intake...</div>;
   }
 
-  return <VoiceUi />;
+  return <VoiceUi completionMode="slack" slackToken={token} />;
 }
 
 function VoicePageContent() {

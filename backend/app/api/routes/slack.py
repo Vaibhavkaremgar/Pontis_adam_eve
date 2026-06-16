@@ -490,7 +490,7 @@ def _run_orchestration_action_event(
         logger.error("orchestration_action_event_failed session_id=%s action=%s error=%s", session_id, action, str(exc), exc_info=exc)
 
 
-def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, recruiter_id: str, bot_token: str | None = None) -> None:
+def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, recruiter_id: str, thread_ts: str | None = None, bot_token: str | None = None) -> None:
     try:
         with SessionLocal() as db:
             candidates = fetch_ranked_candidates(
@@ -512,17 +512,19 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
                     break
 
             logger.info(
-                "slack_calibrated_candidates_ready channel_id=%s job_id=%s recruiter_id=%s count=%s",
+                "slack_calibrated_candidates_ready channel_id=%s job_id=%s recruiter_id=%s count=%s thread_ts=%s",
                 channel_id,
                 job_id,
                 recruiter_id,
                 len(reachable_candidates),
+                thread_ts or "",
             )
 
             if not reachable_candidates:
                 _send_slack_message_sync(
                     channel_id=channel_id,
-                    text="?? Calibration is complete, but no reachable candidates were found yet. Adam will keep sourcing.",
+                    text="Calibration complete. No reachable candidates yet. Adam will keep sourcing.",
+                    thread_ts=thread_ts or None,
                     bot_token=bot_token,
                 )
                 return
@@ -532,13 +534,24 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
                 channel_id=channel_id,
                 text="Top candidates",
                 blocks=blocks,
+                thread_ts=thread_ts or None,
                 bot_token=bot_token,
             )
             if not posted:
-                _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.", bot_token=bot_token)
+                _send_slack_message_sync(
+                    channel_id=channel_id,
+                    text="Failed to deliver shortlist. Please try again.",
+                    thread_ts=thread_ts or None,
+                    bot_token=bot_token,
+                )
     except Exception as exc:
         logger.error("slack_calibration_delivery_failed channel_id=%s job_id=%s error=%s", channel_id, job_id, str(exc), exc_info=exc)
-        _send_slack_message_sync(channel_id=channel_id, text="?? Failed to deliver shortlist. Please try again.", bot_token=bot_token)
+        _send_slack_message_sync(
+            channel_id=channel_id,
+            text="Failed to deliver shortlist. Please try again.",
+            thread_ts=thread_ts or None,
+            bot_token=bot_token,
+        )
 
 
 def _run_slack_hiring_pipeline(*, team_id: str, channel_id: str, text: str, user_id: str, company_id: str = "", bot_token: str | None = None) -> None:
@@ -1080,11 +1093,13 @@ async def slack_interactions(request: Request, background_tasks: BackgroundTasks
 
             calibration_stage = str(calibration_result.get("stage") or "").strip()
             if calibration_stage == "real_sourcing_ready":
+                _delivery_thread_ts = str((message or {}).get("thread_ts") or message_ts or "").strip() or None
                 background_tasks.add_task(
                     _run_calibration_candidate_delivery_event,
                     channel_id=channel_id,
                     job_id=job_id,
                     recruiter_id=internal_user_id or user_id,
+                    thread_ts=_delivery_thread_ts,
                     bot_token=bot_token,
                 )
                 await post_slack_message(

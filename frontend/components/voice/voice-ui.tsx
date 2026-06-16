@@ -5,8 +5,9 @@
  * Full production voice intake UI.
  * - Starts Vapi directly with job context injected as variableValues + dynamic firstMessage
  * - Captures BOTH assistant and user turns as structured VoiceTurn[]
- * - On call-end: auto-triggers POST /voice/refine with full conversation transcript
- * - Then navigates to /review so calibration can run before sourcing
+ * - On call-end: auto-triggers the appropriate completion path for the active mode
+ * - Dashboard mode refines the job and navigates to /review
+ * - Slack mode completes orchestration and stays out of dashboard routing
  * - Shows retry on failure
  */
 import { useRouter } from "next/navigation";
@@ -19,6 +20,7 @@ import { useAppContext } from "@/context/AppContext";
 import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
+import { completeOrchestrationVoice } from "@/lib/api/orchestration";
 import { Button } from "@/components/ui/button";
 
 import { ChatBubble } from "./chat-bubble";
@@ -730,9 +732,15 @@ async function loadVapiConfig() {
 
 // ─── component ────────────────────────────────────────────────────────────────
 
-export function VoiceUi() {
+type VoiceUiProps = {
+  completionMode?: "dashboard" | "slack";
+  slackToken?: string;
+};
+
+export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: VoiceUiProps) {
   const router = useRouter();
   const { callStatus, setCallStatus, setVoiceNotes, setIsRefined, jobId, job, company, user, isSessionReady } = useAppContext();
+  const isSlackCompletionMode = completionMode === "slack" && Boolean(slackToken);
 
   const [transcriptTurns, setTranscriptTurns] = useState<TranscriptTurn[]>([]);
   const [pipelineStatus, setPipelineStatus] = useState<"idle" | "refining" | "done" | "error">("idle");
@@ -889,11 +897,55 @@ export function VoiceUi() {
       return;
     }
 
+    console.info("voice_completion_started", {
+      jobId,
+      completionMode,
+      turnsCaptured: turns.length,
+      transcriptLength: fullTranscript.length,
+    });
     console.info("[voice] pipeline_start", {
       jobId,
       durationMs: callStartedAtRef.current ? endedAt - callStartedAtRef.current : null,
       turnsCaptured: turns.length,
     });
+
+    if (isSlackCompletionMode) {
+      console.info("complete_orchestration_voice_called", {
+        jobId,
+        tokenPreview: slackToken ? `${slackToken.slice(0, 6)}...${slackToken.slice(-4)}` : null,
+        transcriptLength: fullTranscript.length,
+      });
+      console.info("dashboard_navigation_suppressed", {
+        jobId,
+        completionMode,
+        reason: "slack_completion_mode",
+      });
+
+      setPipelineStatus("refining");
+      const completionResult = await completeOrchestrationVoice(slackToken, {
+        transcript: fullTranscript,
+        voiceNotes: [fullTranscript],
+      });
+
+      if (!completionResult.success) {
+        setPipelineStatus("error");
+        setPipelineError(completionResult.error || "Could not complete Slack orchestration.");
+        return;
+      }
+
+      console.info("slack_post_voice_continuation_triggered", {
+        jobId,
+        completed: Boolean(completionResult.data?.completed),
+        nextQuestion: completionResult.data?.nextQuestion || "",
+        hasFinalization: Boolean(completionResult.data?.finalization),
+      });
+
+      setVoiceNotes([fullTranscript]);
+      setIsRefined(true);
+      setPipelineStatus("done");
+      terminalStateRef.current = "done";
+      return;
+    }
 
     // Store voiceNotes for any downstream consumers (outreach, etc.)
     setVoiceNotes([fullTranscript]);
@@ -929,7 +981,7 @@ export function VoiceUi() {
 
     // Auto-navigate to review so the calibration gate can appear before sourcing.
     setTimeout(() => router.push("/review"), 1200);
-  }, [jobId, router, setIsRefined, setVoiceNotes, user]);
+  }, [completionMode, isSlackCompletionMode, jobId, router, setIsRefined, setVoiceNotes, slackToken, user]);
 
   // ── Vapi instance (created once per session) ───────────────────────────────
   const ensureVapi = useCallback((publicKey: string) => {
