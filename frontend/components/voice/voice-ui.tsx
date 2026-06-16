@@ -14,7 +14,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Vapi from "@vapi-ai/web";
 import Image from "next/image";
-import { Mic } from "lucide-react";
+import { Mic, MicOff } from "lucide-react";
 
 import { useAppContext } from "@/context/AppContext";
 import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
@@ -747,6 +747,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
   const [pipelineError, setPipelineError] = useState("");
   const [intelligence, setIntelligence] = useState<RecruiterIntelligenceSession | null>(null);
   const [intelligenceLoading, setIntelligenceLoading] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
 
   // Refs — never cause re-renders, safe to read inside Vapi callbacks
   const vapiRef = useRef<Vapi | null>(null);
@@ -1256,6 +1257,14 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     void requestCallStop();
   };
 
+  const handleToggleMute = () => {
+    const vapi = vapiRef.current;
+    if (!vapi) return;
+    const next = !isMuted;
+    vapi.setMuted(next);
+    setIsMuted(next);
+  };
+
   // ── cleanup on unmount ─────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
@@ -1423,12 +1432,25 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
               </button>
             )}
             {isLive && (
-              <button
-                onClick={handleEndCall}
-                className="rounded-xl border border-red-500 px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50"
-              >
-                End call now
-              </button>
+              <>
+                <button
+                  onClick={handleToggleMute}
+                  className={`flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-semibold ${
+                    isMuted
+                      ? "border-yellow-400 text-yellow-600 hover:bg-yellow-50"
+                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {isMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                  {isMuted ? "Unmute" : "Mute"}
+                </button>
+                <button
+                  onClick={handleEndCall}
+                  className="rounded-xl border border-red-500 px-4 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-50"
+                >
+                  End call now
+                </button>
+              </>
             )}
           </div>
         </div>

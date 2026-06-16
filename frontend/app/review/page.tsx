@@ -2058,7 +2058,10 @@ export default function ReviewPage() {
                       className="overflow-hidden rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]"
                     >
                       <CardHeader className="space-y-3">
-                        <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-4">
+                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] font-heading text-[22px] font-bold text-[#0F6B3A]">
+                            {headerLabel.charAt(0).toUpperCase()}
+                          </div>
                           <div className="min-w-0 flex-1 space-y-2">
                             <CardTitle className="line-clamp-2 font-heading text-[24px] font-semibold leading-tight text-[#111827]">
                               {headerLabel}
