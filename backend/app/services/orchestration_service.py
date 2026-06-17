@@ -34,6 +34,7 @@ from app.services.recruiter_preference_round_service import (
 from app.services.slack_integration import build_calibration_blocks, build_candidate_blocks, post_slack_message_with_result
 from app.services.slack_tenant_service import SlackCompanyResolver, record_slack_audit_event
 from app.utils.exceptions import APIError
+from app.services.role_classifier import classify_role, get_role_followup_bank
 
 logger = logging.getLogger(__name__)
 
@@ -901,6 +902,16 @@ def _generate_adaptive_question(
     for key, question in FOLLOWUP_QUESTION_BANK:
         if key in missing:
             return key, question, 0.55
+    # Role-aware followup bank — injected after generic bank exhausted
+    role_title = _normalize_text(intake.get("role_title") or "")
+    role_family = _normalize_text(intake.get("role_family") or "")
+    if role_title and not role_family:
+        role_family = classify_role(role_title).get("family", "generic")
+    role_bank = get_role_followup_bank(role_family or "generic")
+    asked_keys: set[str] = {str(entry.get("questionKey", "")) for entry in (recent_conversation or []) if isinstance(entry, dict)}
+    for key, question in role_bank:
+        if key not in asked_keys:
+            return key, question, 0.7
     return "final_confirmation", "Is there anything important we should still capture before I lock this intake?", 0.5
 
 
@@ -1382,6 +1393,20 @@ def _update_session_after_answer(
     if accepted and field_name:
         normalized_intake = _merge_answer_into_state(normalized_intake, extracted)
         normalized_intake["summary"] = _normalize_text(extracted.get("summary")) or _normalize_text(answer)
+        # Stamp role_family as soon as role_title is answered
+        if field_name == "role_title":
+            role_title_val = _normalize_text(normalized_intake.get("role_title") or "")
+            if role_title_val:
+                classification = classify_role(role_title_val)
+                role_family = classification.get("family", "generic")
+                normalized_intake["role_family"] = role_family
+                logger.info(
+                    "role_classification role_title=%r classified_family=%s confidence=%s session_id=%s",
+                    role_title_val,
+                    role_family,
+                    classification.get("confidence", 0.0),
+                    getattr(session_row, "id", ""),
+                )
     else:
         normalized_intake["summary"] = _normalize_text(normalized_intake.get("summary")) or _normalize_text(answer)
 
@@ -1427,6 +1452,7 @@ def _update_session_after_answer(
         "lastAnswerAccepted": accepted,
         "lastAnswerConfidence": answer_confidence,
         "needsClarification": not accepted,
+        "roleFamily": _normalize_text(normalized_intake.get("role_family") or "") or None,
     }
     session_row.updated_at = _now()
     session_row.state_version = int(getattr(session_row, "state_version", 0) or 0) + 1

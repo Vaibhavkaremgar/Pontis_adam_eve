@@ -184,7 +184,7 @@ export default function CompanyPage() {
   };
 
   return (
-    <AppShell activeStep={1}>
+    <AppShell activeStep={1} loading={isSubmitting}>
       <Card className="mx-auto w-full max-w-[560px]">
         <CardHeader className="space-y-2 text-center">
           <CardTitle>Tell us about your company</CardTitle>

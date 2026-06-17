@@ -1,0 +1,586 @@
+{
+  "engineering": {
+    "keywords": [
+      "engineer", "engineering", "developer", "dev", "programmer", "coder",
+      "software", "backend", "frontend", "fullstack", "full stack", "full-stack",
+      "python", "java", "golang", "go ", "rust", "node", "nodejs", "react",
+      "angular", "vue", "typescript", "javascript", "php", "ruby", "scala",
+      "kotlin", "swift", "ios", "android", "mobile", "devops", "sre",
+      "site reliability", "platform engineer", "infrastructure", "cloud",
+      "aws ", "gcp ", "azure ", "kubernetes", "docker", "ml engineer",
+      "machine learning engineer", "ai engineer", "data engineer",
+      "embedded", "firmware", "systems engineer", "network engineer",
+      "security engineer", "devsecops", "qa engineer", "sdet", "test engineer",
+      "automation engineer", "solutions architect", "technical architect",
+      "staff engineer", "principal engineer", "vp engineering", "cto"
+    ],
+    "questions": [
+      {
+        "key": "eng_primary_stack",
+        "field": "tech_stack",
+        "prompt": "What is the primary tech stack for this role? (e.g. Python/Django, Node.js, Go, React)"
+      },
+      {
+        "key": "eng_mandatory_languages",
+        "field": "must_have_requirements",
+        "prompt": "Which programming languages are mandatory — not nice to have?"
+      },
+      {
+        "key": "eng_cloud_requirement",
+        "field": "hiring_priorities",
+        "prompt": "Is cloud experience required? If yes, which provider — AWS, GCP, or Azure?"
+      },
+      {
+        "key": "eng_system_design",
+        "field": "architecture_complexity",
+        "prompt": "Will this person be expected to own system design or architecture decisions?"
+      },
+      {
+        "key": "eng_microservices",
+        "field": "hiring_priorities",
+        "prompt": "Is microservices or distributed systems experience required?"
+      },
+      {
+        "key": "eng_team_size",
+        "field": "team_structure",
+        "prompt": "How large is the engineering team they will join, and how many direct collaborators?"
+      },
+      {
+        "key": "eng_ownership_model",
+        "field": "leadership_expectations",
+        "prompt": "Will this engineer own features end-to-end or contribute within a larger team?"
+      },
+      {
+        "key": "eng_oncall",
+        "field": "hiring_signals",
+        "prompt": "Is on-call rotation expected for this role?"
+      },
+      {
+        "key": "eng_open_source",
+        "field": "hiring_signals",
+        "prompt": "Is open-source contribution or public GitHub activity a positive signal?"
+      },
+      {
+        "key": "eng_domain",
+        "field": "hiring_priorities",
+        "prompt": "Is prior domain experience required — e.g. fintech, healthtech, e-commerce, or is it open?"
+      },
+      {
+        "key": "eng_code_review",
+        "field": "leadership_expectations",
+        "prompt": "Will they be expected to mentor junior engineers or lead code reviews?"
+      },
+      {
+        "key": "eng_speed_vs_quality",
+        "field": "culture_fit",
+        "prompt": "Does the team prioritise shipping speed or engineering quality and reliability?"
+      }
+    ]
+  },
+  "sales": {
+    "keywords": [
+      "sales", "account executive", "ae ", "account manager", "am ",
+      "business development", "bdr", "sdr", "inside sales", "field sales",
+      "relationship manager", "partnerships", "revenue", "gtm",
+      "go to market", "enterprise sales", "smb sales", "mid-market",
+      "real estate", "property sales", "insurance sales", "financial advisor",
+      "wealth management", "client success", "customer success", "cs ",
+      "sales executive", "regional sales", "sales manager", "vp sales",
+      "chief revenue officer", "cro ", "quota", "hunter", "farmer"
+    ],
+    "questions": [
+      {
+        "key": "sales_motion",
+        "field": "hiring_priorities",
+        "prompt": "Is this a B2B or B2C role? What is the primary sales motion — inbound, outbound, or both?"
+      },
+      {
+        "key": "sales_cycle",
+        "field": "hiring_priorities",
+        "prompt": "What is the typical sales cycle length — days, weeks, or months?"
+      },
+      {
+        "key": "sales_target",
+        "field": "hiring_signals",
+        "prompt": "What is the expected monthly or quarterly quota for this person?"
+      },
+      {
+        "key": "sales_territory",
+        "field": "location",
+        "prompt": "Is there a specific territory, region, or vertical they will own?"
+      },
+      {
+        "key": "sales_industry_exp",
+        "field": "must_have_requirements",
+        "prompt": "Is prior industry experience required — e.g. SaaS, real estate, insurance, fintech?"
+      },
+      {
+        "key": "sales_deal_size",
+        "field": "hiring_priorities",
+        "prompt": "What is the average deal size — SMB, mid-market, or enterprise?"
+      },
+      {
+        "key": "sales_tools",
+        "field": "tech_stack",
+        "prompt": "Which CRM or sales tools must they have used — Salesforce, HubSpot, Outreach, Apollo?"
+      },
+      {
+        "key": "sales_existing_book",
+        "field": "hiring_signals",
+        "prompt": "Should they bring an existing book of business or client relationships?"
+      },
+      {
+        "key": "sales_hunter_farmer",
+        "field": "culture_fit",
+        "prompt": "Is this a hunter role (new business), farmer role (expansion), or a blend of both?"
+      },
+      {
+        "key": "sales_compensation_structure",
+        "field": "compensation",
+        "prompt": "What is the OTE structure — base vs. variable split? Is there uncapped commission?"
+      },
+      {
+        "key": "sales_reporting",
+        "field": "team_structure",
+        "prompt": "Who does this person report to, and how large is the current sales team?"
+      },
+      {
+        "key": "sales_training",
+        "field": "hiring_priorities",
+        "prompt": "Is a structured sales methodology required — MEDDIC, Challenger, SPIN, or similar?"
+      }
+    ]
+  },
+  "marketing": {
+    "keywords": [
+      "marketing", "marketer", "growth", "performance marketing",
+      "performance marketer", "seo", "sem", "ppc", "paid media",
+      "content marketing", "content strategist", "copywriter", "social media",
+      "community manager", "brand manager", "brand marketing",
+      "product marketing", "pmm", "demand generation", "demand gen",
+      "email marketing", "crm marketing", "lifecycle marketing",
+      "affiliate marketing", "influencer", "pr ", "public relations",
+      "communications", "growth hacker", "growth manager",
+      "marketing manager", "cmo", "vp marketing", "head of marketing",
+      "digital marketing", "inbound marketing", "hubspot", "marketing ops"
+    ],
+    "questions": [
+      {
+        "key": "mktg_channel_focus",
+        "field": "hiring_priorities",
+        "prompt": "What is the primary channel focus — SEO, paid social, Google Ads, email, content, or PR?"
+      },
+      {
+        "key": "mktg_meta_ads",
+        "field": "must_have_requirements",
+        "prompt": "Is hands-on Meta Ads (Facebook/Instagram) experience required?"
+      },
+      {
+        "key": "mktg_google_ads",
+        "field": "must_have_requirements",
+        "prompt": "Is Google Ads or PPC campaign management experience required?"
+      },
+      {
+        "key": "mktg_budget",
+        "field": "hiring_signals",
+        "prompt": "What is the approximate monthly ad budget this person will manage?"
+      },
+      {
+        "key": "mktg_analytics",
+        "field": "tech_stack",
+        "prompt": "Which analytics tools must they be proficient in — GA4, Mixpanel, Amplitude, Looker?"
+      },
+      {
+        "key": "mktg_b2b_b2c",
+        "field": "hiring_priorities",
+        "prompt": "Is prior B2B or B2C marketing experience required, or is either acceptable?"
+      },
+      {
+        "key": "mktg_content_volume",
+        "field": "hiring_priorities",
+        "prompt": "Will this person produce content themselves or manage external writers and agencies?"
+      },
+      {
+        "key": "mktg_automation",
+        "field": "tech_stack",
+        "prompt": "Is experience with marketing automation platforms required — HubSpot, Marketo, Klaviyo?"
+      },
+      {
+        "key": "mktg_team_size",
+        "field": "team_structure",
+        "prompt": "Is this the first marketing hire, or will they join an existing team? How large is the team?"
+      },
+      {
+        "key": "mktg_attribution",
+        "field": "hiring_signals",
+        "prompt": "Is experience with multi-touch attribution or growth experimentation a strong signal?"
+      },
+      {
+        "key": "mktg_brand_vs_performance",
+        "field": "culture_fit",
+        "prompt": "Is this role more brand and awareness focused, or performance and ROI driven?"
+      }
+    ]
+  },
+  "design": {
+    "keywords": [
+      "designer", "design", "ux", "ui", "product designer", "ux designer",
+      "ui designer", "ux/ui", "ui/ux", "visual designer", "graphic designer",
+      "brand designer", "motion designer", "interaction designer",
+      "design system", "figma", "sketch", "user research", "ux researcher",
+      "design lead", "head of design", "vp design", "creative director",
+      "art director", "illustrator", "web designer"
+    ],
+    "questions": [
+      {
+        "key": "design_discipline",
+        "field": "hiring_priorities",
+        "prompt": "Is this primarily a UX, UI, product design, or brand/visual design role?"
+      },
+      {
+        "key": "design_tools",
+        "field": "tech_stack",
+        "prompt": "Which design tools are mandatory — Figma, Sketch, Adobe XD, Principle?"
+      },
+      {
+        "key": "design_research",
+        "field": "must_have_requirements",
+        "prompt": "Is hands-on user research experience required, or is this a purely execution-focused role?"
+      },
+      {
+        "key": "design_system_ownership",
+        "field": "hiring_priorities",
+        "prompt": "Will this person own or contribute to a design system?"
+      },
+      {
+        "key": "design_handoff",
+        "field": "hiring_signals",
+        "prompt": "How close is the collaboration with engineering — will they do detailed developer handoffs?"
+      },
+      {
+        "key": "design_portfolio",
+        "field": "hiring_signals",
+        "prompt": "Is a portfolio of shipped product work required? Any specific domain — mobile, web, SaaS?"
+      },
+      {
+        "key": "design_stage",
+        "field": "culture_fit",
+        "prompt": "Is the product early-stage and ambiguous, or are they joining a mature, well-defined product?"
+      },
+      {
+        "key": "design_embedded",
+        "field": "team_structure",
+        "prompt": "Will this designer be embedded in a product team or part of a centralised design team?"
+      },
+      {
+        "key": "design_motion",
+        "field": "hiring_priorities",
+        "prompt": "Is motion design or animation experience a nice-to-have or required?"
+      },
+      {
+        "key": "design_brand",
+        "field": "hiring_priorities",
+        "prompt": "Is brand identity or marketing design part of this role's scope?"
+      }
+    ]
+  },
+  "product": {
+    "keywords": [
+      "product manager", "pm ", "product owner", "po ", "product lead",
+      "head of product", "vp product", "chief product", "cpo",
+      "senior pm", "associate pm", "apm", "growth pm", "platform pm",
+      "technical pm", "product ops", "product operations"
+    ],
+    "questions": [
+      {
+        "key": "pm_stage",
+        "field": "culture_fit",
+        "prompt": "Is this a 0-to-1 role building new products, or owning and scaling an existing product?"
+      },
+      {
+        "key": "pm_technical_depth",
+        "field": "must_have_requirements",
+        "prompt": "How technical does this PM need to be — reading code, writing specs, or architecting solutions?"
+      },
+      {
+        "key": "pm_discovery",
+        "field": "hiring_priorities",
+        "prompt": "Will this PM own full product discovery and research, or focus on delivery and execution?"
+      },
+      {
+        "key": "pm_metrics",
+        "field": "hiring_signals",
+        "prompt": "What type of metrics ownership is expected — DAU, revenue, activation, retention?"
+      },
+      {
+        "key": "pm_team_structure",
+        "field": "team_structure",
+        "prompt": "How many engineers and designers will this PM work with directly?"
+      },
+      {
+        "key": "pm_domain",
+        "field": "hiring_priorities",
+        "prompt": "Is prior domain experience required — fintech, marketplace, enterprise SaaS, consumer?"
+      },
+      {
+        "key": "pm_stakeholders",
+        "field": "stakeholder_management",
+        "prompt": "Who are the primary stakeholders — C-suite, customers, sales, or engineering leadership?"
+      },
+      {
+        "key": "pm_roadmap",
+        "field": "leadership_expectations",
+        "prompt": "Will this PM own the roadmap independently or contribute to a roadmap led by others?"
+      },
+      {
+        "key": "pm_data",
+        "field": "hiring_signals",
+        "prompt": "Is strong data and SQL fluency expected, or is analytics more tool-based (Amplitude, Mixpanel)?"
+      },
+      {
+        "key": "pm_tools",
+        "field": "tech_stack",
+        "prompt": "Any required tools — Jira, Linear, Notion, Productboard, Figma collaboration?"
+      },
+      {
+        "key": "pm_shipping_cadence",
+        "field": "hiring_priorities",
+        "prompt": "What is the expected shipping cadence — weekly releases, monthly, or long-cycle project delivery?"
+      }
+    ]
+  },
+  "data": {
+    "keywords": [
+      "data scientist", "data science", "data analyst", "analyst",
+      "business analyst", "bi ", "business intelligence", "data engineer",
+      "analytics engineer", "ml ", "machine learning", "deep learning",
+      "nlp", "computer vision", "ai ", "artificial intelligence",
+      "research scientist", "applied scientist", "quantitative",
+      "quant ", "statistician", "data lead", "head of data",
+      "chief data", "data platform", "data infrastructure",
+      "dbt", "snowflake", "databricks", "spark", "hadoop",
+      "tableau", "looker", "power bi", "forecasting", "modelling"
+    ],
+    "questions": [
+      {
+        "key": "data_discipline",
+        "field": "hiring_priorities",
+        "prompt": "Is this a data science, data engineering, analytics, or ML/AI engineering role?"
+      },
+      {
+        "key": "data_sql",
+        "field": "must_have_requirements",
+        "prompt": "Is advanced SQL fluency required, or will they primarily work in Python and notebooks?"
+      },
+      {
+        "key": "data_stack",
+        "field": "tech_stack",
+        "prompt": "What is the data stack — Snowflake, BigQuery, Redshift, dbt, Spark, Databricks?"
+      },
+      {
+        "key": "data_ml_production",
+        "field": "hiring_priorities",
+        "prompt": "Is experience deploying ML models to production required, or is this research/experimentation only?"
+      },
+      {
+        "key": "data_stakeholder",
+        "field": "stakeholder_management",
+        "prompt": "Who are their primary stakeholders — product, finance, marketing, or engineering?"
+      },
+      {
+        "key": "data_business_acumen",
+        "field": "culture_fit",
+        "prompt": "Is strong business acumen and the ability to translate data into decisions critical?"
+      },
+      {
+        "key": "data_domain",
+        "field": "hiring_priorities",
+        "prompt": "Is domain-specific data experience required — e.g. financial data, health data, user behaviour?"
+      },
+      {
+        "key": "data_visualisation",
+        "field": "tech_stack",
+        "prompt": "Is data visualisation tool proficiency required — Tableau, Looker, Power BI, Superset?"
+      },
+      {
+        "key": "data_infra_ownership",
+        "field": "leadership_expectations",
+        "prompt": "Will they own data infrastructure and pipelines or primarily consume existing data?"
+      },
+      {
+        "key": "data_experimentation",
+        "field": "hiring_signals",
+        "prompt": "Is experience running A/B tests and statistical experimentation a strong signal?"
+      },
+      {
+        "key": "data_team_size",
+        "field": "team_structure",
+        "prompt": "How large is the data team today, and is this person an early or later hire?"
+      }
+    ]
+  },
+  "operations": {
+    "keywords": [
+      "operations", "ops ", "operator", "chief of staff", "general manager",
+      "gm ", "supply chain", "logistics", "procurement", "office manager",
+      "executive assistant", "ea ", "business operations", "revenue operations",
+      "revops", "sales ops", "marketing ops", "customer ops", "customer support",
+      "customer service", "support agent", "success operations",
+      "project manager", "program manager", "delivery manager",
+      "scrum master", "agile coach", "process manager",
+      "head of operations", "vp operations", "coo", "director of operations"
+    ],
+    "questions": [
+      {
+        "key": "ops_function",
+        "field": "hiring_priorities",
+        "prompt": "Which operational domain is this — revenue ops, supply chain, customer ops, business ops, or project delivery?"
+      },
+      {
+        "key": "ops_tools",
+        "field": "tech_stack",
+        "prompt": "Which operational tools must they be proficient in — Salesforce, HubSpot, Jira, Asana, NetSuite?"
+      },
+      {
+        "key": "ops_process_building",
+        "field": "hiring_signals",
+        "prompt": "Is experience building processes from scratch required, or optimising existing ones?"
+      },
+      {
+        "key": "ops_cross_functional",
+        "field": "stakeholder_management",
+        "prompt": "How cross-functional is this role — which teams will they work with most closely?"
+      },
+      {
+        "key": "ops_data_fluency",
+        "field": "hiring_priorities",
+        "prompt": "Is data fluency required — SQL, Excel/Sheets, BI tools, or reporting dashboards?"
+      },
+      {
+        "key": "ops_scale",
+        "field": "hiring_signals",
+        "prompt": "Have they operated in a similar scale environment — headcount, volume, geography?"
+      },
+      {
+        "key": "ops_vendor",
+        "field": "hiring_priorities",
+        "prompt": "Is vendor or third-party management experience required?"
+      },
+      {
+        "key": "ops_autonomy",
+        "field": "culture_fit",
+        "prompt": "Is this a highly autonomous role or will they work within a structured management layer?"
+      },
+      {
+        "key": "ops_reporting",
+        "field": "team_structure",
+        "prompt": "Who does this person report to and how many direct reports will they have, if any?"
+      },
+      {
+        "key": "ops_kpis",
+        "field": "hiring_signals",
+        "prompt": "What KPIs or OKRs will they be held accountable to in the first 90 days?"
+      }
+    ]
+  },
+  "hr": {
+    "keywords": [
+      "hr ", "human resources", "people ops", "people operations",
+      "talent acquisition", "recruiter", "recruiting", "headhunter",
+      "talent partner", "people partner", "hrbp", "hr business partner",
+      "compensation and benefits", "comp and ben", "payroll",
+      "learning and development", "l&d", "organisational development",
+      "od ", "employee relations", "er ", "people manager",
+      "hr manager", "hr director", "vp people", "chief people",
+      "cpo people", "culture", "dei ", "diversity equity inclusion",
+      "onboarding", "workforce planning", "hris", "workday", "bamboohr"
+    ],
+    "questions": [
+      {
+        "key": "hr_function",
+        "field": "hiring_priorities",
+        "prompt": "Which HR function is the primary focus — talent acquisition, HR ops, L&D, employee relations, or HRBP?"
+      },
+      {
+        "key": "hr_employee_count",
+        "field": "team_structure",
+        "prompt": "How many employees will this person support, and in which geographies?"
+      },
+      {
+        "key": "hr_hris",
+        "field": "tech_stack",
+        "prompt": "Which HRIS or ATS systems must they have experience with — Workday, BambooHR, Greenhouse, Lever?"
+      },
+      {
+        "key": "hr_er_experience",
+        "field": "must_have_requirements",
+        "prompt": "Is experience handling employee relations issues and complex conversations required?"
+      },
+      {
+        "key": "hr_payroll",
+        "field": "must_have_requirements",
+        "prompt": "Will this person own or administer payroll? If yes, which countries or jurisdictions?"
+      },
+      {
+        "key": "hr_recruiting_volume",
+        "field": "hiring_priorities",
+        "prompt": "If talent acquisition is in scope, what is the expected monthly or quarterly hiring volume?"
+      },
+      {
+        "key": "hr_business_partnering",
+        "field": "stakeholder_management",
+        "prompt": "Will this person act as a strategic business partner to senior leadership?"
+      },
+      {
+        "key": "hr_policy",
+        "field": "hiring_signals",
+        "prompt": "Is experience writing or overhauling HR policies and employee handbooks expected?"
+      },
+      {
+        "key": "hr_comp_ben",
+        "field": "hiring_priorities",
+        "prompt": "Is compensation benchmarking or benefits administration part of this role?"
+      },
+      {
+        "key": "hr_startup_experience",
+        "field": "hiring_signals",
+        "prompt": "Is prior experience building an HR function from scratch in a startup or scaleup important?"
+      },
+      {
+        "key": "hr_dei",
+        "field": "culture_fit",
+        "prompt": "How central is DEI programme ownership to this role?"
+      }
+    ]
+  },
+  "generic": {
+    "keywords": [],
+    "questions": [
+      {
+        "key": "gen_key_responsibilities",
+        "field": "must_have_requirements",
+        "prompt": "What are the top three responsibilities this person will own in their first 90 days?"
+      },
+      {
+        "key": "gen_non_negotiables",
+        "field": "must_have_requirements",
+        "prompt": "What experience or background is absolutely non-negotiable for this role?"
+      },
+      {
+        "key": "gen_why_hard",
+        "field": "hiring_signals",
+        "prompt": "What makes this role hard to fill — niche skills, specific background, or culture fit?"
+      },
+      {
+        "key": "gen_growth_path",
+        "field": "culture_fit",
+        "prompt": "What does the growth path look like for someone who excels in this role?"
+      },
+      {
+        "key": "gen_team_fit",
+        "field": "team_structure",
+        "prompt": "Who will this person work most closely with day to day?"
+      }
+    ]
+  }
+}

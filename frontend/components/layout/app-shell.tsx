@@ -12,16 +12,19 @@ import { Suspense, type ReactNode } from "react";
 
 import { Navbar } from "@/components/layout/navbar";
 import { Stepper } from "@/components/layout/stepper";
+import { PageTransitionBar } from "@/components/layout/page-transition-bar";
 
 type AppShellProps = {
   activeStep: number;
   children: ReactNode;
   contentClassName?: string;
+  loading?: boolean;
 };
 
-export function AppShell({ activeStep, children, contentClassName }: AppShellProps) {
+export function AppShell({ activeStep, children, contentClassName, loading }: AppShellProps) {
   return (
     <div className="min-h-screen bg-background">
+      <PageTransitionBar loading={loading} />
       <Suspense fallback={<div className="h-[64px] border-b border-[rgba(120,100,80,0.08)] bg-[#EDE5D8]" />}>
         <Navbar />
       </Suspense>

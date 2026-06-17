@@ -535,15 +535,26 @@ function assistantAskedForFinalConfirmation(turns: TranscriptTurn[]): boolean {
     .join(" ")
     .toLowerCase();
 
-  return /anything else|anything you(?:'|)d like to add|anything more to add|proceed with this info|is there anything else|final summary/.test(assistantText);
+  return /anything else|anything you(?:'|)d like to add|anything more to add|proceed with this info|is there anything else|final summary|shall i proceed|should i proceed|ready to move|want to add|like to mention|want to mention/.test(assistantText);
 }
 
 function isWrapUpConfirmation(text: string): boolean {
   const normalized = stripTranscriptNoise(text);
   if (!normalized) return false;
-  return /^(no|nope|nah|that's all|thats all|nothing else|nothing more|proceed|proceed with this info|sounds good|looks good|go ahead|all set|good to go|that's fine|thats fine|continue)$/i.test(
-    normalized,
-  );
+  if (/^(no|nope|nah|that's all|thats all|nothing else|nothing more|proceed|proceed with this info|sounds good|looks good|go ahead|all set|good to go|that's fine|thats fine|continue|yes proceed|yeah proceed|yep go ahead|done|we're good|we are good|that covers it|that's it|thats it|correct proceed)$/i.test(normalized)) return true;
+  if (/^(no (that'?s?|i think that'?s?) (all|it|enough|good|fine|complete))/i.test(normalized)) return true;
+  if (/^(i think (we'?re?|that'?s?) (good|done|all set|covered|complete))/i.test(normalized)) return true;
+  if (/^(nothing (else|more|further) (to add|comes to mind|at the moment))/i.test(normalized)) return true;
+  return false;
+}
+
+function isAdditionIntent(text: string): boolean {
+  const normalized = stripTranscriptNoise(text);
+  if (!normalized) return false;
+  if (/\b(actually|wait|hold on|one more|also|forgot|let me add|i want to add|i'd like to add|i would like to add|let me mention|i should mention|i should add|there('?s| is) (one|something|another)|before (you|we) (go|end|close)|one thing i (forgot|missed|wanted))/i.test(normalized)) return true;
+  if (/^yes[,.]?\s+(actually|but|also|and|however|wait|one|let|i |there|we )/i.test(normalized)) return true;
+  if (/^(yeah|yep|yup)[,.]?\s+(but|actually|also|wait|one|let|i |there)/i.test(normalized)) return true;
+  return false;
 }
 
 function appendCommittedTranscript(previous: string, incoming: string): string {
@@ -755,6 +766,8 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
   const autoEndTimerRef = useRef<number | null>(null);
+  const silenceEndTimerRef = useRef<number | null>(null); // fallback silence timer after adam asks confirmation
+  const awaitingConfirmationRef = useRef(false);          // true once adam has summarised and asked "anything else?"
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
 
   useEffect(() => {
@@ -846,6 +859,55 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
       preview: event.text.slice(0, 120),
     });
     upsertStreamingMessage(event.role, event.text, event.isFinal);
+
+    // Only run decision logic on finalised turns
+    if (!event.isFinal) return;
+
+    // Track whether Adam has just given a summary + asked for confirmation
+    if (event.role === "assistant") {
+      if (assistantAskedForFinalConfirmation(turnsRef.current)) {
+        awaitingConfirmationRef.current = true;
+        // Arm a silence fallback — if recruiter says nothing for 9s after Adam asks, end the call
+        if (silenceEndTimerRef.current !== null) window.clearTimeout(silenceEndTimerRef.current);
+        silenceEndTimerRef.current = window.setTimeout(() => {
+          if (terminalStateRef.current === "live" && awaitingConfirmationRef.current) {
+            debugVoice("silence_timeout_triggered");
+            void requestCallStop();
+          }
+        }, 9000);
+      }
+      return;
+    }
+
+    // From here: recruiter just spoke (event.role === "user")
+    // Clear the silence fallback since recruiter responded
+    if (silenceEndTimerRef.current !== null) {
+      window.clearTimeout(silenceEndTimerRef.current);
+      silenceEndTimerRef.current = null;
+    }
+
+    // Gate 1 — recruiter wants to add something: cancel any pending end, reset confirmation wait
+    if (awaitingConfirmationRef.current && isAdditionIntent(event.text)) {
+      debugVoice("addition_intent_detected", { text: event.text.slice(0, 120) });
+      awaitingConfirmationRef.current = false;
+      if (autoEndTimerRef.current !== null) {
+        window.clearTimeout(autoEndTimerRef.current);
+        autoEndTimerRef.current = null;
+      }
+      return;
+    }
+
+    // Gate 2 — recruiter confirmed wrap-up after Adam asked
+    if (awaitingConfirmationRef.current && isWrapUpConfirmation(event.text)) {
+      debugVoice("wrapup_confirmation_detected", { text: event.text.slice(0, 120) });
+      if (autoEndTimerRef.current !== null) window.clearTimeout(autoEndTimerRef.current);
+      autoEndTimerRef.current = window.setTimeout(() => {
+        if (terminalStateRef.current === "live") void requestCallStop();
+      }, 1200);
+      return;
+    }
+
+    // Gate 3 — coverage-based auto-end (only when not waiting on a confirmation response)
     const completion = evaluateIntakeCompletion(turnsRef.current, job as Record<string, unknown> | null | undefined);
     debugVoice("intake_completion_check", {
       ready: completion.ready,
@@ -858,25 +920,16 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
       assistantFinalTurns: completion.assistantFinalTurns,
     });
 
-    const wrapUpConfirmation = event.role === "user" && event.isFinal && assistantAskedForFinalConfirmation(turnsRef.current) && isWrapUpConfirmation(event.text);
-
-    if (completion.ready || wrapUpConfirmation) {
-      debugVoice("intake_wrapup_triggered", {
-        completionReady: completion.ready,
-        wrapUpConfirmation,
-        reason: completion.reason,
-      });
-      if (autoEndTimerRef.current !== null) {
-        window.clearTimeout(autoEndTimerRef.current);
-      }
+    if (completion.ready && !awaitingConfirmationRef.current) {
+      debugVoice("intake_wrapup_triggered", { reason: completion.reason });
+      if (autoEndTimerRef.current !== null) window.clearTimeout(autoEndTimerRef.current);
       autoEndTimerRef.current = window.setTimeout(() => {
-        if (terminalStateRef.current === "live") {
-          void requestCallStop();
-        }
+        if (terminalStateRef.current === "live") void requestCallStop();
       }, 1200);
       return;
     }
 
+    // No end condition met — cancel any pending timer
     if (autoEndTimerRef.current !== null) {
       window.clearTimeout(autoEndTimerRef.current);
       autoEndTimerRef.current = null;
@@ -1146,6 +1199,11 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     firedRef.current = false;
     callStartedAtRef.current = null;
     terminalStateRef.current = "starting";
+    awaitingConfirmationRef.current = false;
+    if (silenceEndTimerRef.current !== null) {
+      window.clearTimeout(silenceEndTimerRef.current);
+      silenceEndTimerRef.current = null;
+    }
     setPipelineStatus("idle");
     setPipelineError("");
 
@@ -1271,6 +1329,10 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
       if (autoEndTimerRef.current !== null) {
         window.clearTimeout(autoEndTimerRef.current);
         autoEndTimerRef.current = null;
+      }
+      if (silenceEndTimerRef.current !== null) {
+        window.clearTimeout(silenceEndTimerRef.current);
+        silenceEndTimerRef.current = null;
       }
       vapiRef.current?.stop().catch(() => undefined);
     };

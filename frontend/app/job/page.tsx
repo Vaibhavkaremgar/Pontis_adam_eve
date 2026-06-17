@@ -69,6 +69,7 @@ export default function JobPage() {
   const [isAtsLoading, setIsAtsLoading] = useState(true);
   const [isConnectingAts, setIsConnectingAts] = useState(false);
   const [isParsingJob, setIsParsingJob] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
   const [scoringMode, setScoringMode] = useState<"volume" | "elite">("volume");
 
   useEffect(() => {
@@ -219,6 +220,7 @@ export default function JobPage() {
     setCandidates([]);
     setVoiceNotes([]);
     setIsRefined(false);
+    setIsNavigating(true);
 
     router.push("/voice");
 
@@ -234,7 +236,7 @@ export default function JobPage() {
   };
 
   return (
-    <AppShell activeStep={2}>
+    <AppShell activeStep={2} loading={isNavigating}>
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6">
         <div className="rounded-3xl border border-[rgba(120,100,80,0.08)] bg-gradient-to-br from-[#F6F1E8] via-[#F3EDE3] to-[#EFE6D8] p-6 shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
           <div className="flex flex-col gap-2">
