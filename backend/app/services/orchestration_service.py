@@ -539,7 +539,7 @@ def _session_payload(row) -> dict[str, Any]:
         "voiceHandoffExpiresAt": row.voice_handoff_expires_at.isoformat() if row.voice_handoff_expires_at else None,
         "voiceHandoffConsumedAt": row.voice_handoff_consumed_at.isoformat() if row.voice_handoff_consumed_at else None,
         "voiceTokenUsed": bool(row.voice_token_used),
-        "entryChannel": getattr(row, "entry_channel", "ui") or "ui",
+        "entryChannel": row.source if row.source in {"slack", "ui"} else "ui",
         "lastProcessedMessageTs": getattr(row, "last_processed_message_ts", "") or "",
         "lastProcessedActionHash": getattr(row, "last_processed_action_hash", "") or "",
         "lastProcessedTranscriptHash": getattr(row, "last_processed_transcript_hash", "") or "",
@@ -1176,7 +1176,6 @@ def _ensure_session_row(
         },
         job_id=None,
         )
-    row.entry_channel = "slack" if (slack_team_id or slack_channel_id or slack_user_id) else "ui"
     logger.info(
         "orchestration_session_created session_id=%s current_stage=%s current_question_key=%s reason=%s",
         row.id,

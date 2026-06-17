@@ -589,7 +589,6 @@ class OrchestrationSessionEntity(Base):
     voice_handoff_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     voice_handoff_consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     voice_token_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    entry_channel: Mapped[str] = mapped_column(String(16), nullable=False, default="ui")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     state_version: Mapped[int] = mapped_column(nullable=False, default=0)
