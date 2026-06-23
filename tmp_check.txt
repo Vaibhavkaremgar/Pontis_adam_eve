@@ -1,0 +1,45 @@
+236	        ordered.append(normalized)
+237	    return ordered
+238	
+239	
+240	def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[dict[str, Any]]:
+241	    candidate_rows = list(candidates)
+242	    blocks: list[dict[str, Any]] = []
+243	    for index, candidate in enumerate(candidate_rows):
+244	        candidate_id = str(getattr(candidate, "id", "") or "").strip()
+245	        candidate_name = str(getattr(candidate, "name", "") or "Unnamed Candidate").strip()
+246	        candidate_role = str(getattr(candidate, "role", "") or "Unknown role").strip()
+247	        candidate_company = str(getattr(candidate, "company", "") or "Unknown company").strip()
+248	        explanation = getattr(candidate, "explanation", None)
+249	        matched_skills = _matched_skills_line(explanation) if explanation else "Not specified"
+250	        experience_line = _experience_line(explanation) if explanation else "Experience: Not specified"
+251	        candidate_text = (
+252	            f"*{candidate_name}*\n"
+253	            f"{candidate_role} at {candidate_company}\n"
+254	            f"Fit: {_candidate_fit_text(candidate)}\n"
+255	            f"Skills: {_top_skills_text(candidate)}\n"
+256	            f"Matched: {matched_skills}\n"
+257	            f"{experience_line}"
+258	        )
+259	
+260	        blocks.append(
+261	            {
+262	                "type": "section",
+263	                "text": {
+264	                    "type": "mrkdwn",
+265	                    "text": candidate_text,
+266	                },
+267	            }
+268	        )
+269	        blocks.append(
+270	            {
+271	                "type": "actions",
+272	                "block_id": f"hire:{job_id}:{candidate_id}",
+273	                "elements": [
+274	                    {
+275	                        "type": "button",
+276	                        "action_id": "like",
+277	                        "text": {"type": "plain_text", "text": "Like"},
+278	                        "style": "primary",
+279	                        "value": f"like:{candidate_id}:{job_id}",
+280	                    },

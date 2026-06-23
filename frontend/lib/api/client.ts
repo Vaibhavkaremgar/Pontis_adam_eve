@@ -42,7 +42,7 @@ async function fetchCsrfToken(url: string): Promise<string> {
   csrfTokenPromise = fetch(csrfUrl, {
     method: "GET",
     credentials: "include",
-    headers: buildApiHeaders()
+    headers: buildApiHeaders(),
   })
     .then(async (response) => {
       const parsed = (await response.json().catch(() => null)) as Partial<ApiResponse<{ token?: string }>> | null;
@@ -80,8 +80,8 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
   try {
     const headers: Record<string, string> = {
       ...buildApiHeaders({
-        ...(payload ? { "Content-Type": "application/json" } : {})
-      })
+        ...(payload ? { "Content-Type": "application/json" } : {}),
+      }),
     };
 
     if (typeof window !== "undefined" && requiresCsrf(method, url)) {
@@ -92,10 +92,11 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
       method,
       credentials: "include",
       headers,
-      ...(payload ? { body: JSON.stringify(payload) } : {})
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
     });
 
     const responseText = await response.text();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let parsed: any = null;
 
     try {
@@ -113,7 +114,7 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
       const result: ApiResponse<T> = {
         success: false,
         data: null,
-        error: "Session expired. Please log in again."
+        error: "Session expired. Please log in again.",
       };
 
       logRequest({ url, method, payload, response: result });
@@ -139,7 +140,7 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
         error:
           response.status >= 500
             ? `Server error (${response.status}): ${rawDetail || response.statusText || "Please try again in a moment."}`
-            : rawDetail || response.statusText || "Request failed"
+            : rawDetail || response.statusText || "Request failed",
       };
 
       logRequest({ url, method, payload, response: result });
@@ -150,7 +151,10 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
       success: Boolean(parsed?.success),
       data: (parsed?.data as T | null) ?? null,
       error: parsed?.error || null,
-      debug: parsed?.debug ?? null
+      debug: parsed?.debug ?? null,
+      // Forward sourcing-state metadata when present (candidates endpoint)
+      ...(parsed?.sourcingState !== undefined ? { sourcingState: String(parsed.sourcingState) } : {}),
+      ...(parsed?.noResultsReason !== undefined ? { noResultsReason: String(parsed.noResultsReason) } : {}),
     };
 
     logRequest({ url, method, payload, response: result });
@@ -159,7 +163,7 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
     const result: ApiResponse<T> = {
       success: false,
       data: null,
-      error: "Network error while calling backend API"
+      error: "Network error while calling backend API",
     };
 
     logRequest({ url, method, payload, response: result });

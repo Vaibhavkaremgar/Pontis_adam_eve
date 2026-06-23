@@ -82,6 +82,7 @@ INTERNAL_CANDIDATE_COLLECTION_NAME = os.getenv("INTERNAL_CANDIDATE_COLLECTION_NA
 XRAY_ENABLED = os.getenv("XRAY_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 RECRUITER_PREFERENCES_COLLECTION_NAME = os.getenv("RECRUITER_PREFERENCES_COLLECTION_NAME", "recruiter_preferences")
 RECRUITER_MEMORY_COLLECTION_NAME = os.getenv("RECRUITER_MEMORY_COLLECTION_NAME", "recruiter_memory")
+SOURCED_CANDIDATE_COLLECTION_NAME = os.getenv("SOURCED_CANDIDATE_COLLECTION_NAME", "sourced_candidate_memory")
 PROXYCURL_API_KEY = os.getenv("PROXYCURL_API_KEY")
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 PDL_URL = os.getenv("PDL_URL", "https://api.peopledatalabs.com/v5/person/search")

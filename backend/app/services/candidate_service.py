@@ -88,6 +88,7 @@ from app.services.state_machine import assert_valid_transition, is_swipe_locked,
 from app.utils.exceptions import APIError
 from app.utils.observability import emit_trace
 from app.utils.text import average_vectors, chunk_text, cosine_similarity
+from app.services.sourcing_diagnostics import SourcingDiagnostics, emit_sourcing_diagnostics, resolve_no_results_reason
 
 logger = logging.getLogger(__name__)
 LOCAL_SEARCH_LIMIT = 120
@@ -3429,6 +3430,34 @@ def fetch_ranked_candidates(
             rerank_ms = round((perf_counter() - rerank_started) * 1000.0, 2)
             total_pipeline_ms = round((perf_counter() - pipeline_started) * 1000.0, 2)
             xray_results = sorted(xray_results, key=ranked_candidate_sort_key)
+
+            # ── Sprint 2: persist ranked candidates into Qdrant semantic memory ──
+            # Best-effort — never blocks delivery if Qdrant is unavailable.
+            _qdrant_stats: dict[str, Any] = {
+                "qdrant_attempted": 0,
+                "qdrant_persisted": 0,
+                "qdrant_failed": 0,
+                "qdrant_skipped": True,
+                "qdrant_skip_reason": "no_candidates",
+                "qdrant_upsert_latency_ms": 0.0,
+            }
+            if xray_results:
+                try:
+                    from app.services.xray_candidate_persistence_service import persist_xray_candidates_to_qdrant
+                    _qdrant_stats = persist_xray_candidates_to_qdrant(
+                        xray_results,
+                        job_id=job.id,
+                        company_id=str(getattr(job, "company_id", "") or ""),
+                        request_source=request_source,
+                    )
+                except Exception as _persist_exc:
+                    logger.warning(
+                        "xray_qdrant_persist_step_failed job_id=%s error=%s",
+                        job.id,
+                        str(_persist_exc),
+                    )
+                    _qdrant_stats["qdrant_skipped"] = True
+                    _qdrant_stats["qdrant_skip_reason"] = "persist_step_exception"
             logger.info(
                 "[xray_timing] job_id=%s recruiter_id=%s query_generation_ms=%s serpapi_latency_ms=%s dedupe_ms=%s prefilter_ms=%s rerank_ms=%s total_pipeline_ms=%s",
                 job.id,
@@ -3648,6 +3677,35 @@ def fetch_ranked_candidates(
                 reviewable_count=len(xray_results),
             )
             record_candidate_fetch(job_id=job.id, candidates=xray_results)
+            _diag = SourcingDiagnostics(
+                job_id=job.id,
+                request_source=request_source,
+                role=getattr(job, 'title', '') or '',
+                mode=resolved_mode,
+                raw_serpapi_count=len(xray_candidates),
+                normalized_count=len(xray_candidates),
+                deduped_count=len(xray_candidates),
+                ranked_count=pre_rerank_count,
+                delivered_count=len(xray_results),
+                delivered_to='slack' if request_source in {'slack', 'slack_calibration'} else 'ui',
+                no_results_reason=resolve_no_results_reason(
+                    quota_exhausted=False,
+                    serpapi_disabled=False,
+                    raw_count=len(xray_candidates),
+                    deduped_count=len(xray_candidates),
+                    ranked_count=pre_rerank_count,
+                    delivered_count=len(xray_results),
+                ),
+                total_pipeline_ms=total_pipeline_ms,
+                rerank_ms=rerank_ms,
+                qdrant_attempted=_qdrant_stats["qdrant_attempted"],
+                qdrant_persisted=_qdrant_stats["qdrant_persisted"],
+                qdrant_failed=_qdrant_stats["qdrant_failed"],
+                qdrant_skipped=_qdrant_stats["qdrant_skipped"],
+                qdrant_skip_reason=_qdrant_stats["qdrant_skip_reason"],
+                qdrant_upsert_latency_ms=_qdrant_stats["qdrant_upsert_latency_ms"],
+            )
+            emit_sourcing_diagnostics(_diag)
             returned_candidates = xray_results[:display_limit]
             logger.info('candidate_fetch_result job_id="%s" count=%s', job.id, len(returned_candidates))
             if not returned_candidates:

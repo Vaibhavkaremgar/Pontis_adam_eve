@@ -17,6 +17,9 @@ from app.services.candidate_selection_service import (
 )
 from app.services.ownership import assert_job_ownership
 from app.utils.responses import success_response
+from app.services.candidate_presentation_service import build_candidate_view_model
+from app.services.sourcing_diagnostics import resolve_no_results_reason
+from app.services.serpapi_sourcing_service import serpapi_health_snapshot
 
 router = APIRouter(tags=["candidates"])
 
@@ -32,7 +35,20 @@ def get_candidates(
 ):
     assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     candidates = fetch_ranked_candidates(db=db, job_id=jobId, mode=mode, refresh=refresh, debug=debug)
-    payload = [candidate.model_dump(exclude_none=True) for candidate in candidates]
+
+    # Build each candidate dict enriched with the shared presentation view model
+    # so both UI and Slack derive recruiterSummary / fitScoreDisplay from the same builder.
+    payload: list[dict] = []
+    for candidate in candidates:
+        base = candidate.model_dump(exclude_none=True)
+        vm = build_candidate_view_model(candidate)
+        base["recruiterSummary"] = vm["recruiter_summary"]
+        base["recruiterSummaryLines"] = vm["summary_lines"]
+        base["fitScoreDisplay"] = vm["fit_score_display"]
+        base["matchedSkills"] = vm["matched_skills"]
+        base["linkedinUrl"] = vm["linkedin_url"] or base.get("linkedinUrl", "")
+        payload.append(base)
+
     debug_payload = build_candidate_fetch_debug(
         db=db,
         job_id=jobId,
@@ -41,8 +57,34 @@ def get_candidates(
         request_source="api",
         returned_count=len(payload),
     )
+
+    # Determine no-results reason for UI empty-state messaging
+    no_results_reason = ""
+    if not payload:
+        snap = serpapi_health_snapshot()
+        quota_exhausted = snap.get("status") == "down" and "quota" in snap.get("reason", "").lower()
+        provider_disabled = snap.get("status") == "down"
+        raw_count = int((debug_payload or {}).get("candidateProfileCount") or 0)
+        no_results_reason = resolve_no_results_reason(
+            quota_exhausted=quota_exhausted,
+            serpapi_disabled=provider_disabled,
+            raw_count=raw_count,
+            deduped_count=raw_count,
+            ranked_count=0,
+            delivered_count=0,
+        )
+
+    sourcing_state = "delivered" if payload else (no_results_reason or "zero_found")
+
     if debug or not payload:
-        return {"success": True, "data": payload, "error": None, "debug": debug_payload}
+        return {
+            "success": True,
+            "data": payload,
+            "error": None,
+            "debug": debug_payload,
+            "sourcingState": sourcing_state,
+            "noResultsReason": no_results_reason,
+        }
     return success_response(payload)
 
 

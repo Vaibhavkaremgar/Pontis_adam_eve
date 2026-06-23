@@ -223,6 +223,8 @@ function getSnippetQualityLabel(candidate: Candidate): string {
 }
 
 function getReasoningSummary(candidate: Candidate): string {
+  // Prefer the shared view-model recruiterSummary injected by candidate_presentation_service
+  if (candidate.recruiterSummary) return candidate.recruiterSummary;
   const explanation = candidate.explanation;
   if (explanation?.aiReasoning) return explanation.aiReasoning;
   const profileData = getCandidateProfileData(candidate);
@@ -1375,6 +1377,7 @@ export default function ReviewPage() {
   const [error, setError] = useState("");
   const [calibrationError, setCalibrationError] = useState("");
   const [sourcingError, setSourcingError] = useState("");
+  const [sourcingState, setSourcingState] = useState("");
   const [calibrationSelectionId, setCalibrationSelectionId] = useState("");
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
@@ -1471,6 +1474,9 @@ export default function ReviewPage() {
         refined: true,
         debug: true,
       });
+
+      // Capture sourcing state metadata for UI empty-state messaging
+      setSourcingState(result.sourcingState ?? "");
 
       if (!result.success || !result.data) {
         const message = result.error || "Could not load sourced candidates.";
@@ -2192,12 +2198,34 @@ export default function ReviewPage() {
           )}
 
           {!isLoading && calibrationComplete && swipeCandidates.length === 0 && !reviewLoading && (
-            <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm text-[#6B7280]">
-              <p>
-                {sourcingError
-                  ? "Scanning did not return candidates. Check the sourcing error above."
-                  : "Scanning finished, but no candidates were returned yet."}
-              </p>
+            <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm">
+              {sourcingState === "quota_exhausted" ? (
+                <div className="rounded-[16px] border border-amber-100 bg-amber-50 px-4 py-3">
+                  <p className="font-semibold text-amber-800">⏳ Live sourcing temporarily unavailable</p>
+                  <p className="mt-1 text-amber-700">Adam has reached the daily search quota for live LinkedIn sourcing. Sourcing will resume automatically when the quota resets. No action needed.</p>
+                </div>
+              ) : sourcingState === "provider_disabled" ? (
+                <div className="rounded-[16px] border border-red-100 bg-red-50 px-4 py-3">
+                  <p className="font-semibold text-red-800">⚠️ Sourcing provider temporarily offline</p>
+                  <p className="mt-1 text-red-700">The live sourcing provider is currently unavailable. Adam will retry automatically. If this persists, contact your admin.</p>
+                </div>
+              ) : sourcingState === "all_filtered" ? (
+                <div className="rounded-[16px] border border-[#E7E0D4] bg-[#FAFAF8] px-4 py-3">
+                  <p className="font-semibold text-[#111827]">🔍 Candidates found but none passed the ranking threshold</p>
+                  <p className="mt-1 text-[#6B7280]">Adam found profiles but none met the minimum match threshold for this role. Consider broadening the location, adjusting required skills, or updating the job description.</p>
+                </div>
+              ) : (
+                <div className="rounded-[16px] border border-[#E7E0D4] bg-[#FAFAF8] px-4 py-3">
+                  <p className="font-semibold text-[#111827]">
+                    {sourcingError ? "Scanning did not return candidates." : "No strong candidates found yet"}
+                  </p>
+                  <p className="mt-1 text-[#6B7280]">
+                    {sourcingError
+                      ? "Check the sourcing error above."
+                      : "Adam searched but could not find enough strong profile matches for the current criteria. Try broadening the location, adjusting required skills, or updating the job description."}
+                  </p>
+                </div>
+              )}
               <div className="flex flex-wrap gap-3">
                 <Button variant="outline" onClick={() => void refreshFinalResults()}>
                   Retry scanning

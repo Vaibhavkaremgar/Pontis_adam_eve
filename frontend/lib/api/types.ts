@@ -14,4 +14,7 @@ export type ApiResponse<T> = {
   data: T | null;
   error: string | null;
   debug?: unknown;
+  /** Sourcing-state metadata forwarded from the candidates endpoint */
+  sourcingState?: string;
+  noResultsReason?: string;
 };

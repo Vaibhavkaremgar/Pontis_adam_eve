@@ -845,3 +845,70 @@ def _search_chunks(
 def _stable_point_id(seed: str) -> int:
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], byteorder="big", signed=False)
+
+
+# ── sourced candidate memory (Sprint 2) ──────────────────────────────────────
+# Import here to avoid circular import at module load time.
+try:
+    from app.core.config import SOURCED_CANDIDATE_COLLECTION_NAME as _SOURCED_COLL
+except ImportError:
+    _SOURCED_COLL = "sourced_candidate_memory"
+
+# Register schema so ensure_qdrant_indexes / ensure_all_collections pick it up.
+QDRANT_SCHEMA[_SOURCED_COLL] = {
+    "vector_size": VECTOR_SIZE,
+    "distance": Distance.COSINE,
+    "indexes": {
+        "candidate_id": PayloadSchemaType.KEYWORD,
+        "job_id": PayloadSchemaType.KEYWORD,
+        "company_id": PayloadSchemaType.KEYWORD,
+        "linkedin_url": PayloadSchemaType.KEYWORD,
+        "source_provider": PayloadSchemaType.KEYWORD,
+        "request_source": PayloadSchemaType.KEYWORD,
+    },
+}
+
+
+def upsert_sourced_candidate(
+    *,
+    point_id: int,
+    vector: list[float],
+    payload: dict[str, Any],
+) -> bool:
+    """
+    Upsert a single sourced X-Ray candidate vector into sourced_candidate_memory.
+
+    Uses a profile-scoped stable point_id (from sourced_candidate_point_id())
+    so the same LinkedIn profile is never duplicated across jobs.
+
+    Returns True on success, False if Qdrant is unavailable (non-raising).
+    """
+    client = _get_client()
+    if not client:
+        logger.debug("upsert_sourced_candidate_skipped reason=qdrant_unavailable point_id=%s", point_id)
+        return False
+    if not vector:
+        logger.debug("upsert_sourced_candidate_skipped reason=empty_vector point_id=%s", point_id)
+        return False
+
+    ensure_collection(_SOURCED_COLL)
+    point = PointStruct(id=point_id, vector=vector, payload=payload)
+    try:
+        client.upsert(collection_name=_SOURCED_COLL, points=[point], wait=True)
+        logger.debug(
+            "sourced_candidate_upsert point_id=%s candidate_id=%s job_id=%s",
+            point_id,
+            payload.get("candidate_id", ""),
+            payload.get("job_id", ""),
+        )
+        return True
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        logger.warning(
+            "sourced_candidate_upsert_failed point_id=%s candidate_id=%s error=%s",
+            point_id,
+            payload.get("candidate_id", ""),
+            str(exc),
+        )
+        log_metric("error", source="qdrant", kind="sourced_candidate_upsert_failed")
+        return False

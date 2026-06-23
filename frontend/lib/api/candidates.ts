@@ -102,38 +102,39 @@ export async function getCandidates({ jobId, refined, debug }: CandidateQuery): 
   const params = new URLSearchParams({ jobId });
   if (refined) params.set("refined", "true");
   if (refined) params.set("refresh", "true");
-  if (debug) params.set("debug", "true");
+  // Always pass debug=true so the backend includes sourcingState / noResultsReason
+  params.set("debug", "true");
 
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates?${params.toString()}`,
-    method: "GET"
+    method: "GET",
   });
 }
 
 export async function getCandidatesWithMode({
   jobId,
   mode = "volume",
-  refresh = false
+  refresh = false,
 }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
   const params = new URLSearchParams({ jobId, mode });
   if (refresh) params.set("refresh", "true");
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates?${params.toString()}`,
-    method: "GET"
+    method: "GET",
   });
 }
 
 export async function getShortlistedCandidates(jobId: string): Promise<ApiResponse<Candidate[]>> {
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates/shortlisted?jobId=${encodeURIComponent(jobId)}`,
-    method: "GET"
+    method: "GET",
   });
 }
 
 export async function getFinalSelectionResults(jobId: string): Promise<ApiResponse<SelectionFinalData>> {
   return requestApi<SelectionFinalData>({
     url: `${API_BASE_URL}/candidates/selection/final?jobId=${encodeURIComponent(jobId)}`,
-    method: "GET"
+    method: "GET",
   });
 }
 
@@ -141,7 +142,7 @@ export async function swipeCandidate(payload: SwipePayload): Promise<ApiResponse
   return requestApi<SwipeData>({
     url: `${API_BASE_URL}/candidates/swipe`,
     method: "POST",
-    payload
+    payload,
   });
 }
 
@@ -149,7 +150,7 @@ export async function exportCandidates(payload: ExportPayload): Promise<ApiRespo
   return requestApi<ExportData>({
     url: `${API_BASE_URL}/candidates/export`,
     method: "POST",
-    payload: payload.provider ? payload : { jobId: payload.jobId, candidateIds: payload.candidateIds }
+    payload: payload.provider ? payload : { jobId: payload.jobId, candidateIds: payload.candidateIds },
   });
 }
 
@@ -157,6 +158,6 @@ export async function selectCandidateForEnrichment(payload: SelectionPayload): P
   return requestApi<SelectionUpdateData>({
     url: `${API_BASE_URL}/candidates/select`,
     method: "POST",
-    payload
+    payload,
   });
 }

@@ -56,6 +56,7 @@ from app.services.slack_tenant_service import (
 )
 from app.db.repositories import OrchestrationSessionRepository
 from app.utils.responses import error_response
+from app.services.serpapi_sourcing_service import serpapi_health_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -521,15 +522,24 @@ def _run_calibration_candidate_delivery_event(*, channel_id: str, job_id: str, r
             )
 
             if not reachable_candidates:
+                snap = serpapi_health_snapshot()
+                if snap.get("status") == "down" and snap.get("reason", "").startswith("SERPAPI_API_KEY"):
+                    no_results_reason = "provider_disabled"
+                elif snap.get("status") == "down":
+                    no_results_reason = "quota_exhausted"
+                else:
+                    no_results_reason = "zero_found"
+                from app.services.slack_integration import _no_results_blocks as _nrb
                 _send_slack_message_sync(
                     channel_id=channel_id,
-                    text="Calibration complete. No reachable candidates yet. Adam will keep sourcing.",
+                    text="Adam could not find strong candidates yet.",
+                    blocks=_nrb(no_results_reason),
                     thread_ts=thread_ts or None,
                     bot_token=bot_token,
                 )
                 return
 
-            blocks = build_candidate_blocks(job_id=job_id, candidates=reachable_candidates)
+            blocks = build_candidate_blocks(job_id=job_id, candidates=reachable_candidates, no_results_reason="")
             posted = _send_slack_message_sync(
                 channel_id=channel_id,
                 text="Top candidates",

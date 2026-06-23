@@ -141,7 +141,6 @@ export type Candidate = {
     | "offer_sent"
     | "placed"
     | "search_closed"
-    | "placed"
     | "hired";
   ats_status?: string;
   ats_status_source?: string;
@@ -168,6 +167,11 @@ export type Candidate = {
   inferredExperience?: string | null;
   snippetQuality?: "rich" | "partial" | "thin";
   rawDiscovery?: Record<string, unknown>;
+  // View-model fields injected by candidate_presentation_service (shared contract for UI and Slack)
+  recruiterSummary?: string;
+  recruiterSummaryLines?: string[];
+  fitScoreDisplay?: string;
+  matchedSkills?: string[];
 };
 
 /** Interview stage record shown in final ready step. */

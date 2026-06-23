@@ -104,6 +104,55 @@ def _matched_skills_line(explanation: Any) -> str:
     return ", ".join(cleaned[:5]) if cleaned else "Not specified"
 
 
+def _no_results_blocks(reason: str) -> list[dict[str, Any]]:
+    """
+    Return Slack blocks for the three no-results / failure scenarios.
+    reason: "quota_exhausted" | "provider_disabled" | "zero_found" | "all_filtered" | ""
+    """
+    if reason == "quota_exhausted":
+        icon = "\u23F3"
+        title = f"{icon} Live sourcing temporarily unavailable"
+        body = (
+            "Adam has reached the daily search quota for live LinkedIn sourcing. "
+            "Sourcing will resume automatically when the quota resets. "
+            "No action needed — candidates will be delivered once sourcing is available again."
+        )
+    elif reason == "provider_disabled":
+        icon = "\u26A0\uFE0F"
+        title = f"{icon} Sourcing provider temporarily offline"
+        body = (
+            "The live sourcing provider is currently unavailable. "
+            "Adam will retry automatically. If this persists, contact your admin."
+        )
+    elif reason == "all_filtered":
+        icon = "\U0001F50D"
+        title = f"{icon} Candidates found but none passed the ranking filter"
+        body = (
+            "Adam found profiles but none met the minimum match threshold for this role. "
+            "Consider broadening the job criteria — location, experience range, or required skills — "
+            "then re-run sourcing."
+        )
+    else:
+        # zero_found or unknown
+        icon = "\U0001F9D0"
+        title = f"{icon} No strong candidates found yet"
+        body = (
+            "Adam searched LinkedIn but could not find enough strong profile matches for the current criteria. "
+            "Try broadening the location, adjusting required skills, or updating the job description "
+            "to improve future sourcing runs."
+        )
+
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{title}*\n{body}",
+            },
+        }
+    ]
+
+
 def _decision_label(decision: str) -> str:
     normalized = (decision or "").strip().lower()
     if normalized in {"accept", "shortlist", "select", "calibration_select"}:
@@ -188,57 +237,65 @@ def _list_value(source: Any, *keys: str) -> list[str]:
     return ordered
 
 
-def build_candidate_blocks(*, job_id: str, candidates: Iterable[Any]) -> list[dict[str, Any]]:
+def build_candidate_blocks(*, job_id: str, candidates, no_results_reason: str = ""):
+    from typing import Any
+    from app.services.candidate_presentation_service import build_candidate_view_model
+
     candidate_rows = list(candidates)
-    blocks: list[dict[str, Any]] = []
+
+    if not candidate_rows:
+        return _no_results_blocks(no_results_reason or "zero_found")
+
+    blocks = []
     for index, candidate in enumerate(candidate_rows):
-        candidate_id = str(getattr(candidate, "id", "") or "").strip()
-        candidate_name = str(getattr(candidate, "name", "") or "Unnamed Candidate").strip()
-        candidate_role = str(getattr(candidate, "role", "") or "Unknown role").strip()
-        candidate_company = str(getattr(candidate, "company", "") or "Unknown company").strip()
-        explanation = getattr(candidate, "explanation", None)
-        matched_skills = _matched_skills_line(explanation) if explanation else "Not specified"
-        experience_line = _experience_line(explanation) if explanation else "Experience: Not specified"
-        candidate_text = (
-            f"*{candidate_name}*\n"
-            f"{candidate_role} at {candidate_company}\n"
-            f"Fit: {_candidate_fit_text(candidate)}\n"
-            f"Skills: {_top_skills_text(candidate)}\n"
-            f"Matched: {matched_skills}\n"
-            f"{experience_line}"
+        vm = build_candidate_view_model(candidate)
+        candidate_id = vm["candidate_id"]
+        candidate_name = vm["name"]
+        role = vm["role"] or "Unknown role"
+        company = vm["company"] or "Unknown company"
+        fit_display = vm["fit_score_display"]
+        matched_skills = vm["matched_skills"]
+        all_skills = vm["all_skills"]
+        summary_lines = vm["summary_lines"]
+        linkedin_url = vm["linkedin_url"]
+
+        skills_display = (
+            ", ".join(matched_skills[:5]) if matched_skills
+            else ", ".join(all_skills[:5]) or "Not specified"
+        )
+        matched_label = "Matched skills" if matched_skills else "Skills"
+        summary_text = "\n".join(f"\u2022 {ln}" for ln in summary_lines) if summary_lines else ""
+        linkedin_line = (
+            f"<{linkedin_url}|View LinkedIn profile>" if linkedin_url
+            else "_LinkedIn profile not available_"
         )
 
-        blocks.append(
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": candidate_text,
-                },
-            }
+        candidate_text = (
+            f"*{candidate_name}*\n"
+            f"{role} at {company}\n"
+            f"Fit score: *{fit_display}*\n"
+            f"{matched_label}: {skills_display}\n"
         )
-        blocks.append(
-            {
-                "type": "actions",
-                "block_id": f"hire:{job_id}:{candidate_id}",
-                "elements": [
-                    {
-                        "type": "button",
-                        "action_id": "like",
-                        "text": {"type": "plain_text", "text": "Like"},
-                        "style": "primary",
-                        "value": f"like:{candidate_id}:{job_id}",
-                    },
-                    {
-                        "type": "button",
-                        "action_id": "pass",
-                        "text": {"type": "plain_text", "text": "Pass"},
-                        "style": "danger",
-                        "value": f"pass:{candidate_id}:{job_id}",
-                    },
-                ],
-            }
-        )
+        if summary_text:
+            candidate_text += summary_text + "\n"
+        candidate_text += linkedin_line
+
+        approve_btn = {
+            "type": "button",
+            "action_id": "like",
+            "text": {"type": "plain_text", "text": "\U0001F44D Approve"},
+            "style": "primary",
+            "value": f"like:{candidate_id}:{job_id}",
+        }
+        pass_btn = {
+            "type": "button",
+            "action_id": "pass",
+            "text": {"type": "plain_text", "text": "Pass"},
+            "style": "danger",
+            "value": f"pass:{candidate_id}:{job_id}",
+        }
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": candidate_text}})
+        blocks.append({"type": "actions", "block_id": f"hire:{job_id}:{candidate_id}", "elements": [approve_btn, pass_btn]})
         if index < len(candidate_rows) - 1:
             blocks.append({"type": "divider"})
     return blocks
