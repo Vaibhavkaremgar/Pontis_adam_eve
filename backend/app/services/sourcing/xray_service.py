@@ -76,6 +76,109 @@ def _broaden_intake(intake: dict[str, Any] | None, *, variant: int) -> dict[str,
     return payload
 
 
+def _fallback_broadening_layers(
+    *,
+    role: str,
+    seniority: str,
+    skills: list[str],
+    location: str,
+    industry: str = "",
+    company_stage: str = "",
+    raw_result_count: int,
+    strict_layer_count: int,
+    fallback_threshold: int = 3,
+) -> list["XRayQueryLayer"]:
+    """
+    Sprint 3 — deterministic fallback broadening.
+
+    Trigger conditions:
+      - raw_result_count < fallback_threshold after strict search, OR
+      - strict_layer_count == 0 (nothing to search with)
+
+    Rules (capped at 2 additional queries):
+      FB-1: same title, no location constraint
+      FB-2: adjacent titles, no location, light skills
+    """
+    from app.services.serpapi_sourcing_service import (
+        XRayQueryLayer,
+        _strict_xray_title_variants,
+        _role_family_for_query,
+        _xray_single_keyword_terms,
+        _strict_xray_query_for_variant,
+        _normalize_text as _nt,
+        _dedupe_preserve_order,
+        _ADJACENT_TITLE_MAP,
+    )
+
+    if raw_result_count >= fallback_threshold and strict_layer_count > 0:
+        return []
+
+    role = _nt(role)
+    seniority = _nt(seniority)
+    location = _nt(location)
+    skill_list = _dedupe_preserve_order(skills)
+    title_variants = _strict_xray_title_variants(role=role, seniority=seniority, skills=skill_list)
+    family = _role_family_for_query(role=role or seniority, skills=skill_list)
+    adjacent = _xray_single_keyword_terms(
+        [t for t in _ADJACENT_TITLE_MAP.get(family, _ADJACENT_TITLE_MAP["generic"])],
+        limit=3,
+    )
+    skill_terms = _xray_single_keyword_terms(skill_list, limit=4)
+
+    fallback_layers: list[XRayQueryLayer] = []
+    reason = "raw_count_below_threshold" if raw_result_count < fallback_threshold else "no_strict_layers"
+
+    # FB-1: same primary title + skills, no location
+    fb1_query = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=title_variants[:2],
+        skill_terms=skill_list[:3],
+        signal_terms=[],
+        location="",
+        include_location=False,
+    )
+    if fb1_query:
+        fallback_layers.append(XRayQueryLayer(
+            layer_type="fallback_no_location",
+            query=fb1_query,
+            signals={
+                "family": "fallback",
+                "family_purpose": "fallback: exact title, no location constraint",
+                "fallback_rule": "FB-1",
+                "fallback_trigger": reason,
+                "is_fallback": True,
+            },
+        ))
+
+    if len(fallback_layers) >= 2:
+        return fallback_layers
+
+    # FB-2: adjacent titles + light skills, no location
+    if adjacent:
+        fb2_query = _strict_xray_query_for_variant(
+            variant=1,
+            title_terms=adjacent[:3],
+            skill_terms=skill_terms[:2],
+            signal_terms=[],
+            location="",
+            include_location=False,
+        )
+        if fb2_query and fb2_query != fb1_query:
+            fallback_layers.append(XRayQueryLayer(
+                layer_type="fallback_adjacent_title",
+                query=fb2_query,
+                signals={
+                    "family": "fallback",
+                    "family_purpose": "fallback: adjacent titles, no location",
+                    "fallback_rule": "FB-2",
+                    "fallback_trigger": reason,
+                    "is_fallback": True,
+                },
+            ))
+
+    return fallback_layers[:2]
+
+
 def _trim_recruiter_preferences(recruiter_preferences: dict[str, Any] | None, *, variant: int) -> dict[str, Any]:
     prefs = dict(recruiter_preferences or {})
     if variant <= 0:
@@ -590,7 +693,57 @@ def discover_xray_candidates(
     if not raw_candidates:
         logger.info("[xray_candidate_count] job_id=%s raw=0 deduped=0", job_id)
         log_metric("xray_candidates_found", job_id=job_id, count=0)
-        return []
+
+        # Sprint 3 — fallback broadening when strict search returns nothing
+        fallback_layers = _fallback_broadening_layers(
+            role=_normalize_text((intake or {}).get("role") or getattr(job, "title", "") or ""),
+            seniority=_normalize_text((intake or {}).get("seniority") or getattr(job, "experience_level", "") or ""),
+            skills=[
+                str(s).strip()
+                for s in ((intake or {}).get("skills") or [])
+                if str(s).strip()
+            ] if isinstance((intake or {}).get("skills"), list) else [
+                t.strip()
+                for t in _normalize_text((intake or {}).get("skills") or "").split(",")
+                if t.strip()
+            ],
+            location=_normalize_text((intake or {}).get("location") or getattr(job, "location", "") or ""),
+            industry=_normalize_text((intake or {}).get("industry") or ""),
+            company_stage=_normalize_text((intake or {}).get("company_stage") or ""),
+            raw_result_count=0,
+            strict_layer_count=0,
+        )
+        if fallback_layers:
+            logger.info(
+                "[xray_fallback] job_id=%s fallback_layer_count=%s reason=zero_raw_results",
+                job_id,
+                len(fallback_layers),
+            )
+            for fb_layer in fallback_layers:
+                fb_raw = discover_linkedin_xray_candidates(
+                    job=job,
+                    intake=intake,
+                    limit=effective_limit,
+                    pages_per_query=max_pages,
+                    recruiter_preferences=recruiter_preferences,
+                    db=db,
+                    role_search_id=role_search_id or f"{job_id}:xray_fallback",
+                    recruiter_id=recruiter_id,
+                    company_id=company_id,
+                    workflow_token=workflow_token,
+                    archetype_ids=archetype_ids or [],
+                )
+                if fb_raw:
+                    raw_candidates = fb_raw
+                    logger.info(
+                        "[xray_fallback_hit] job_id=%s layer=%s count=%s",
+                        job_id,
+                        fb_layer.layer_type,
+                        len(fb_raw),
+                    )
+                    break
+        if not raw_candidates:
+            return []
 
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()

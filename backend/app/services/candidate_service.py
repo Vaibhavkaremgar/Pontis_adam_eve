@@ -88,7 +88,7 @@ from app.services.state_machine import assert_valid_transition, is_swipe_locked,
 from app.utils.exceptions import APIError
 from app.utils.observability import emit_trace
 from app.utils.text import average_vectors, chunk_text, cosine_similarity
-from app.services.sourcing_diagnostics import SourcingDiagnostics, emit_sourcing_diagnostics, resolve_no_results_reason
+from app.services.sourcing_diagnostics import SourcingDiagnostics, emit_sourcing_diagnostics, resolve_no_results_reason, build_query_family_diagnostics
 
 logger = logging.getLogger(__name__)
 LOCAL_SEARCH_LIMIT = 120
@@ -3704,6 +3704,15 @@ def fetch_ranked_candidates(
                 qdrant_skipped=_qdrant_stats["qdrant_skipped"],
                 qdrant_skip_reason=_qdrant_stats["qdrant_skip_reason"],
                 qdrant_upsert_latency_ms=_qdrant_stats["qdrant_upsert_latency_ms"],
+                # Sprint 3: per-family diagnostics built from xray_candidates metadata
+                query_family_diagnostics=build_query_family_diagnostics(
+                    [
+                        (type('L', (), {'layer_type': c.get('query_family', ''), 'query': c.get('search_query', c.get('source_query', '')), 'signals': c.get('query_signals', {})})()
+                         , [c], 1)
+                        for c in xray_candidates if isinstance(c, dict) and c.get('query_family')
+                    ][:6],
+                    delivered_candidates=xray_results,
+                ),
             )
             emit_sourcing_diagnostics(_diag)
             returned_candidates = xray_results[:display_limit]

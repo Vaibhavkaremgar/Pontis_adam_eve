@@ -2234,11 +2234,14 @@ def _select_primary_query_layer(layers: list[XRayQueryLayer]) -> XRayQueryLayer 
     return active_layers[0]
 
 
-def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: int = 3) -> list[XRayQueryLayer]:
+def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: int = 6) -> list[XRayQueryLayer]:
     preferred_order = (
         "role_query_1",
         "stack_query_1",
         "project_query_1",
+        "adjacent_title_1",
+        "domain_query_1",
+        "recall_query_1",
         "framework_query_1",
         "role_query_2",
         "stack_query_2",
@@ -2456,6 +2459,116 @@ def _strict_xray_query_for_variant(
     return _normalize_text(query)
 
 
+# ---------------------------------------------------------------------------
+# Sprint 3: Query-family diversity helpers
+# ---------------------------------------------------------------------------
+
+
+_ADJACENT_TITLE_MAP: dict[str, list[str]] = {
+    "backend": ["Software Engineer", "Platform Engineer", "API Engineer", "Server-side Engineer"],
+    "frontend": ["UI Engineer", "Web Developer", "React Developer", "JavaScript Developer"],
+    "fullstack": ["Software Engineer", "Web Developer", "Full Stack Developer", "Product Engineer"],
+    "data": ["Analytics Engineer", "Data Platform Engineer", "Python Developer", "Software Engineer"],
+    "sales": ["Account Executive", "Sales Manager", "Business Development Manager", "Revenue Executive"],
+    "product": ["Product Lead", "Growth Product Manager", "Associate Product Manager", "Program Manager"],
+    "hr": ["Talent Partner", "People Operations", "HR Business Partner", "Recruiting Lead"],
+    "generic": ["Software Engineer", "Technical Lead", "Engineering Manager", "Developer"],
+}
+
+
+def _adjacent_titles_for_family(family: str) -> list[str]:
+    return _ADJACENT_TITLE_MAP.get(family, _ADJACENT_TITLE_MAP["generic"])
+
+
+_DOMAIN_CONTEXT_MAP: dict[str, list[str]] = {
+    "backend": ["startup", "SaaS", "product", "fintech", "platform"],
+    "frontend": ["startup", "SaaS", "product", "B2B", "consumer"],
+    "fullstack": ["startup", "product", "SaaS", "growth"],
+    "data": ["analytics", "data platform", "fintech", "marketplace"],
+    "sales": ["SaaS", "B2B", "enterprise", "revenue", "fintech"],
+    "product": ["SaaS", "consumer", "B2B", "marketplace", "growth"],
+    "hr": ["startup", "SaaS", "tech", "growth"],
+    "generic": ["startup", "SaaS", "product", "B2B"],
+}
+
+
+def _domain_terms_for_family(family: str, *, industry: str = "", company_stage: str = "") -> list[str]:
+    base = list(_DOMAIN_CONTEXT_MAP.get(family, _DOMAIN_CONTEXT_MAP["generic"]))
+    extra: list[str] = []
+    if industry:
+        extra.extend(_xray_single_keyword_terms([industry], limit=2))
+    if company_stage:
+        extra.extend(_xray_single_keyword_terms([company_stage], limit=1))
+    return _dedupe_preserve_order([*extra, *base])[:4]
+
+
+# Tokens present in every X-Ray query that carry no diversity signal
+_DIVERSITY_BOILERPLATE = {
+    "site", "linkedin", "com", "or", "and", "view",
+    "profile", "about", "experience", "skills", "company", "jobs", "hiring",
+    "recruiter",
+}
+
+
+def _meaningful_tokens_for_diversity(query: str) -> set[str]:
+    return set(_tokenize_query_terms(query)) - _DIVERSITY_BOILERPLATE
+
+
+# Layer types that are structurally different from other families even if tokens overlap
+# (e.g. recall has no location, fallbacks are deliberate broadening).
+_DIVERSITY_GUARD_EXEMPT_TYPES = {"recall_query_1", "fallback_no_location", "fallback_adjacent_title"}
+
+
+def _diversity_guard(
+    layers: list[XRayQueryLayer],
+    *,
+    max_overlap_ratio: float = 0.95,
+) -> list[XRayQueryLayer]:
+    """
+    Sprint 3 diversity enforcement.
+
+    Suppress a layer only when its meaningful-token set overlaps >= 95%
+    with an already-admitted layer (true near-duplicate).
+    Named recall/fallback families are exempt from suppression — their value
+    is structural (no location, broader net) not token-based.
+    """
+    admitted: list[tuple[XRayQueryLayer, set[str]]] = []
+    result: list[XRayQueryLayer] = []
+    for layer in layers:
+        if not layer.enabled or not layer.query:
+            result.append(layer)
+            continue
+        tokens = _meaningful_tokens_for_diversity(layer.query)
+        suppress_reason = ""
+        # Recall and fallback families are exempt — their structural value
+        # (no location constraint, broader title net) is independent of tokens.
+        if layer.layer_type not in _DIVERSITY_GUARD_EXEMPT_TYPES:
+            for _admitted_layer, admitted_tokens in admitted:
+                if not admitted_tokens or not tokens:
+                    continue
+                overlap = len(tokens & admitted_tokens)
+                smaller = min(len(tokens), len(admitted_tokens))
+                if smaller > 0 and overlap / smaller >= max_overlap_ratio:
+                    suppress_reason = (
+                        f"overlap_ratio={round(overlap / smaller, 2):.2f} "
+                        f"vs {_admitted_layer.layer_type}"
+                    )
+                    break
+        if suppress_reason:
+            logger.info("diversity_guard_suppressed layer=%s reason=%s", layer.layer_type, suppress_reason)
+            result.append(XRayQueryLayer(
+                layer_type=layer.layer_type,
+                query=layer.query,
+                enabled=False,
+                pages=layer.pages,
+                signals={**dict(layer.signals or {}), "suppressed_by_diversity_guard": True, "suppress_reason": suppress_reason},
+            ))
+        else:
+            admitted.append((layer, tokens))
+            result.append(layer)
+    return result
+
+
 def build_linkedin_xray_query_layers(
     *,
     role: str,
@@ -2487,7 +2600,9 @@ def build_linkedin_xray_query_layers(
     title_variants = _strict_xray_title_variants(role=role, seniority=seniority, skills=skill_list)
     family = _role_family_for_query(role=role or seniority, skills=skill_list)
     title_exclude = _xray_single_keyword_terms(title_variants, limit=12)
-    context_terms = _xray_single_keyword_terms(_business_context_terms_for_query(role=role or seniority, seniority=seniority, skills=skill_list), limit=4)
+    context_terms = _xray_single_keyword_terms(
+        _business_context_terms_for_query(role=role or seniority, seniority=seniority, skills=skill_list), limit=4
+    )
     project_terms = _dedupe_preserve_order(_project_terms_for_query(family=family, skills=skill_list))[:4]
 
     skill_terms = _xray_single_keyword_terms(skill_list, limit=6, exclude=title_exclude)
@@ -2518,8 +2633,14 @@ def build_linkedin_xray_query_layers(
             signal_terms = preferred_sales_terms[:3]
         else:
             signal_terms = signal_terms[:2] or ["enterprise", "quota"]
-        recall_extra_terms = [term for term in ["pipeline", "revenue", "b2b", "enterprise"] if term in {_normalize_lower(item) for item in combined_sales_terms}][:1] or recall_extra_terms
+        recall_extra_terms = [
+            term for term in ["pipeline", "revenue", "b2b", "enterprise"]
+            if term in {_normalize_lower(item) for item in combined_sales_terms}
+        ][:1] or recall_extra_terms
 
+    location_term = _normalize_location_term(location)
+
+    # ── Family A: exact title + must-have stack + location ──────────────────
     role_query = _strict_xray_query_for_variant(
         variant=1,
         title_terms=title_variants[:3],
@@ -2527,6 +2648,8 @@ def build_linkedin_xray_query_layers(
         signal_terms=(signal_terms[:2] + project_terms[:1] + context_terms[:1])[:3],
         location=location,
     )
+
+    # ── Family B: stack / architecture signals, lighter title constraint ────
     stack_query = _strict_xray_query_for_variant(
         variant=2,
         title_terms=title_variants[:2],
@@ -2534,6 +2657,8 @@ def build_linkedin_xray_query_layers(
         signal_terms=(project_terms[:2] + context_terms[:1])[:3],
         location=location,
     )
+
+    # ── Family C: archetype / signal angle, no stack constraint ─────────────
     archetype_query = _strict_xray_query_for_variant(
         variant=3,
         title_terms=title_variants[:3],
@@ -2542,13 +2667,154 @@ def build_linkedin_xray_query_layers(
         location=location,
     )
 
-    location_term = _normalize_location_term(location)
-    layers = [
-        XRayQueryLayer(layer_type="role_query_1", query=role_query, signals={"family": "role", "variant": "primary", "title_terms": title_variants[:3], "skill_terms": skill_terms[:2], "signal_terms": signal_terms[:2], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="stack_query_1", query=stack_query, signals={"family": "stack", "variant": "primary", "title_terms": title_variants[:2], "skill_terms": skill_terms[:3], "location": location, "location_term": location_term}),
-        XRayQueryLayer(layer_type="project_query_1", query=archetype_query, signals={"family": "archetype", "variant": "primary", "title_terms": title_variants[:2], "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3], "location": location, "location_term": location_term}),
+    # ── Family D: adjacent / alternate titles — not the canonical title ─────
+    adjacent_titles = _dedupe_preserve_order([
+        _sanitize_role_query(t) or _normalize_text(t)
+        for t in _adjacent_titles_for_family(family)
+        if _normalize_text(t)
+    ])[:3]
+    adjacent_query = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=adjacent_titles,
+        skill_terms=skill_list[:2],
+        signal_terms=(context_terms[:2] + project_terms[:1])[:3],
+        location=location,
+    )
+
+    # ── Family E: domain / business-context angle — domain signals only, no title ──
+    # Built without title clause so its meaningful tokens are domain words,
+    # not role/skill tokens already present in families A-D.
+    domain_terms = _domain_terms_for_family(family, industry=industry, company_stage=company_stage)
+    # Prefer the raw industry/company_stage phrase as a 2-token signal so it
+    # survives _or_group and contributes genuinely new tokens.
+    domain_raw_signals: list[str] = []
+    if industry:
+        domain_raw_signals.append(_normalize_text(industry))
+    if company_stage:
+        domain_raw_signals.append(_normalize_text(company_stage))
+    domain_raw_signals.extend(domain_terms)
+    domain_raw_signals = _dedupe_preserve_order(domain_raw_signals)[:4]
+    domain_query = _strict_xray_query_for_variant(
+        variant=3,          # signal-first variant: signal_clause leads, no title clause
+        title_terms=[],     # no title — domain angle must stand on its own tokens
+        skill_terms=skill_list[:2],
+        signal_terms=domain_raw_signals[:3],
+        location=location,
+    )
+    # Fallback: if building without a title produced an empty query, include title
+    if not domain_query:
+        domain_query = _strict_xray_query_for_variant(
+            variant=1,
+            title_terms=title_variants[:2],
+            skill_terms=[],
+            signal_terms=domain_raw_signals[:3],
+            location=location,
+        )
+
+    # ── Family F: broad recall — adjacent title, no skills, no location ───
+    # Uses a single adjacent title token not present in the canonical title list,
+    # ensuring the meaningful token set is distinct from all earlier families.
+    recall_title = adjacent_titles[1:2] or adjacent_titles[:1] or ["platform engineer"]
+    recall_query = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=recall_title,   # one adjacent title — never appears in families A/B/C
+        skill_terms=[],             # no skills constraint
+        signal_terms=[],
+        location="",                # no location — broadest possible net
+        include_location=False,
+    )
+
+    candidate_layers = [
+        XRayQueryLayer(
+            layer_type="role_query_1",
+            query=role_query,
+            signals={
+                "family": "role",
+                "family_purpose": "exact title + must-have stack + location",
+                "variant": "primary",
+                "title_terms": title_variants[:3],
+                "skill_terms": skill_terms[:2],
+                "signal_terms": signal_terms[:2],
+                "location": location,
+                "location_term": location_term,
+                "is_fallback": False,
+            },
+        ),
+        XRayQueryLayer(
+            layer_type="stack_query_1",
+            query=stack_query,
+            signals={
+                "family": "stack",
+                "family_purpose": "architecture/systems/stack signals",
+                "variant": "primary",
+                "title_terms": title_variants[:2],
+                "skill_terms": skill_terms[:3],
+                "location": location,
+                "location_term": location_term,
+                "is_fallback": False,
+            },
+        ),
+        XRayQueryLayer(
+            layer_type="project_query_1",
+            query=archetype_query,
+            signals={
+                "family": "archetype",
+                "family_purpose": "archetype/signal angle without stack constraint",
+                "variant": "primary",
+                "title_terms": title_variants[:2],
+                "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3],
+                "location": location,
+                "location_term": location_term,
+                "is_fallback": False,
+            },
+        ),
+        XRayQueryLayer(
+            layer_type="adjacent_title_1",
+            query=adjacent_query,
+            signals={
+                "family": "adjacent_title",
+                "family_purpose": "alternate titles strong candidates may use",
+                "variant": "primary",
+                "title_terms": adjacent_titles,
+                "skill_terms": skill_list[:2],
+                "location": location,
+                "location_term": location_term,
+                "is_fallback": False,
+            },
+        ),
+        XRayQueryLayer(
+            layer_type="domain_query_1",
+            query=domain_query,
+            signals={
+                "family": "domain",
+                "family_purpose": "domain/environment/business-context angle",
+                "variant": "primary",
+                "title_terms": title_variants[:2],
+                "domain_terms": domain_terms,
+                "location": location,
+                "location_term": location_term,
+                "is_fallback": False,
+            },
+        ),
+        XRayQueryLayer(
+            layer_type="recall_query_1",
+            query=recall_query,
+            signals={
+                "family": "recall",
+                "family_purpose": "broad recall without location constraint",
+                "variant": "primary",
+                "title_terms": recall_title,
+                "skill_terms": [],
+                "location": "",
+                "location_term": "",
+                "is_fallback": False,
+            },
+        ),
     ]
-    return [layer for layer in layers if layer.query]
+
+    # Apply diversity guard — suppresses near-duplicate layers in place
+    guarded = _diversity_guard([layer for layer in candidate_layers if layer.query])
+    return guarded
 
 
 def build_linkedin_xray_queries(
@@ -3254,7 +3520,7 @@ def discover_linkedin_xray_candidates(
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
-    limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
+    limited_layers = _select_primary_query_layers(query_layers, max_layers=6)
     logger.info("xray_queries_selected count=%s layers=%s", len(limited_layers), [layer.layer_type for layer in limited_layers])
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
