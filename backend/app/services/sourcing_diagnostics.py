@@ -84,6 +84,31 @@ class SourcingDiagnostics:
     qdrant_skip_reason: str = ""      # "" | "qdrant_unavailable" | "embedding_failed" | "no_candidates"
     qdrant_upsert_latency_ms: float = 0.0
 
+    # Sprint 4: semantic recall stats
+    recall_attempted: bool = False
+    recall_skipped: bool = False
+    recall_skip_reason: str = ""
+    recalled_candidate_count: int = 0
+    recalled_after_normalization: int = 0
+    duplicates_collapsed_between_live_and_recall: int = 0
+    merged_candidate_count_before_rerank: int = 0
+    merged_candidate_count_after_rerank: int = 0
+    recall_latency_ms: float = 0.0
+
+    # Sprint 5: recruiter feedback memory stats
+    feedback_lookup_attempted: bool = False
+    feedback_lookup_skipped: bool = False
+    feedback_lookup_skip_reason: str = ""
+    candidates_new: int = 0
+    candidates_seen_before: int = 0
+    candidates_passed_before: int = 0
+    candidates_approved_before: int = 0
+    candidates_shortlisted_before: int = 0
+    candidates_held_before: int = 0
+    candidates_suppressed_by_feedback: int = 0
+    candidates_boosted_by_feedback: int = 0
+    feedback_lookup_latency_ms: float = 0.0
+
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -104,6 +129,12 @@ def emit_sourcing_diagnostics(diag: SourcingDiagnostics) -> None:
         "query_generation_ms=%.1f serpapi_latency_ms=%.1f total_pipeline_ms=%.1f "
         "qdrant_attempted=%s qdrant_persisted=%s qdrant_failed=%s "
         "qdrant_skipped=%s qdrant_skip_reason=%s qdrant_upsert_latency_ms=%.1f "
+        "recall_attempted=%s recall_skipped=%s recall_skip_reason=%s "
+        "recalled_count=%s recalled_normalized=%s collapsed=%s "
+        "merged_before_rerank=%s merged_after_rerank=%s recall_latency_ms=%.1f "
+        "feedback_lookup_attempted=%s feedback_lookup_skipped=%s "
+        "candidates_new=%s candidates_passed=%s candidates_approved=%s candidates_suppressed=%s candidates_boosted=%s "
+        "feedback_latency_ms=%.1f "
         "started_at=%s",
         diag.job_id,
         diag.request_source,
@@ -130,6 +161,23 @@ def emit_sourcing_diagnostics(diag: SourcingDiagnostics) -> None:
         diag.qdrant_skipped,
         diag.qdrant_skip_reason,
         diag.qdrant_upsert_latency_ms,
+        diag.recall_attempted,
+        diag.recall_skipped,
+        diag.recall_skip_reason,
+        diag.recalled_candidate_count,
+        diag.recalled_after_normalization,
+        diag.duplicates_collapsed_between_live_and_recall,
+        diag.merged_candidate_count_before_rerank,
+        diag.merged_candidate_count_after_rerank,
+        diag.recall_latency_ms,
+        diag.feedback_lookup_attempted,
+        diag.feedback_lookup_skipped,
+        diag.candidates_new,
+        diag.candidates_passed_before,
+        diag.candidates_approved_before,
+        diag.candidates_suppressed_by_feedback,
+        diag.candidates_boosted_by_feedback,
+        diag.feedback_lookup_latency_ms,
         diag.started_at,
     )
 
@@ -205,6 +253,27 @@ def emit_sourcing_diagnostics(diag: SourcingDiagnostics) -> None:
         qdrant_skipped=diag.qdrant_skipped,
         qdrant_skip_reason=diag.qdrant_skip_reason,
         qdrant_upsert_latency_ms=round(diag.qdrant_upsert_latency_ms, 1),
+        recall_attempted=diag.recall_attempted,
+        recall_skipped=diag.recall_skipped,
+        recall_skip_reason=diag.recall_skip_reason,
+        recalled_candidate_count=diag.recalled_candidate_count,
+        recalled_after_normalization=diag.recalled_after_normalization,
+        duplicates_collapsed=diag.duplicates_collapsed_between_live_and_recall,
+        merged_before_rerank=diag.merged_candidate_count_before_rerank,
+        merged_after_rerank=diag.merged_candidate_count_after_rerank,
+        recall_latency_ms=round(diag.recall_latency_ms, 1),
+        feedback_lookup_attempted=diag.feedback_lookup_attempted,
+        feedback_lookup_skipped=diag.feedback_lookup_skipped,
+        feedback_lookup_skip_reason=diag.feedback_lookup_skip_reason,
+        candidates_new=diag.candidates_new,
+        candidates_seen_before=diag.candidates_seen_before,
+        candidates_passed_before=diag.candidates_passed_before,
+        candidates_approved_before=diag.candidates_approved_before,
+        candidates_shortlisted_before=diag.candidates_shortlisted_before,
+        candidates_held_before=diag.candidates_held_before,
+        candidates_suppressed_by_feedback=diag.candidates_suppressed_by_feedback,
+        candidates_boosted_by_feedback=diag.candidates_boosted_by_feedback,
+        feedback_lookup_latency_ms=round(diag.feedback_lookup_latency_ms, 1),
     )
 
 

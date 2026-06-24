@@ -154,6 +154,25 @@ export async function exportCandidates(payload: ExportPayload): Promise<ApiRespo
   });
 }
 
+type EnrichmentStateData = {
+  enrichment_state: string;
+  enrichment_requested_at?: string;
+  enrichment_completed_at?: string;
+  enrichment_providers_used?: string[];
+  enrichment_failed_reason?: string;
+};
+
+export async function getCandidateEnrichmentState(
+  jobId: string,
+  candidateId: string,
+): Promise<ApiResponse<EnrichmentStateData>> {
+  const params = new URLSearchParams({ jobId, candidateId });
+  return requestApi<EnrichmentStateData>({
+    url: `${API_BASE_URL}/candidates/enrichment?${params.toString()}`,
+    method: "GET",
+  });
+}
+
 export async function selectCandidateForEnrichment(payload: SelectionPayload): Promise<ApiResponse<SelectionUpdateData>> {
   return requestApi<SelectionUpdateData>({
     url: `${API_BASE_URL}/candidates/select`,

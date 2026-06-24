@@ -759,17 +759,22 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
             profile.raw_data = raw_profile_data
             db.flush()
 
-            queue_result = enqueue_job(
-                "candidate_enrichment",
-                {
-                    "job_id": job_id,
-                    "candidate_id": candidate_id,
-                    "selection_session_id": session.id,
-                    "source_type": "review_selection",
-                    "sourceType": "review_selection",
-                },
-                idempotency_key=f"candidate-enrichment:{job_id}:{candidate_id}",
+            from app.services.enrichment_orchestration_service import request_enrichment
+            _sel_enrich = request_enrichment(
+                db=db,
+                job_id=job_id,
+                candidate_id=candidate_id,
+                action="selected",
+                source_type="review_selection",
+                selection_session_id=session.id,
             )
+            queue_result = {
+                "job_id": _sel_enrich.queue_job_id,
+                "queue_type": "candidate_enrichment",
+                "triggered": _sel_enrich.triggered,
+                "skipped": _sel_enrich.skipped,
+                "skip_reason": _sel_enrich.skip_reason,
+            }
             logger.info(
                 "selection_candidate_enrichment_queued job_id=%s candidate_id=%s queue_job_id=%s queue_type=%s",
                 job_id,

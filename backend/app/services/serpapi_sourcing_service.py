@@ -2234,43 +2234,53 @@ def _select_primary_query_layer(layers: list[XRayQueryLayer]) -> XRayQueryLayer 
     return active_layers[0]
 
 
-def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: int = 6) -> list[XRayQueryLayer]:
+def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: int = 3) -> list[XRayQueryLayer]:
+    """Select the 3 core live layers in canonical budget order.
+
+    Fallback layers (is_fallback=True in signals) are excluded here;
+    the execution loop handles them separately after coverage check.
+    Hard cap: max_layers=3 enforced regardless of caller argument.
+    """
+    # Hard cap at 3 for core live queries — fallback is handled separately
+    effective_max = min(max(1, max_layers), 3)
     preferred_order = (
+        "precision_query",
+        "expansion_query",
+        "signal_query",
+        # Legacy names kept so any cached/partial layer objects still work
         "role_query_1",
         "stack_query_1",
         "project_query_1",
-        "adjacent_title_1",
-        "domain_query_1",
-        "recall_query_1",
-        "framework_query_1",
-        "role_query_2",
-        "stack_query_2",
-        "project_query_2",
-        "framework_query_2",
     )
-    active_layers = [layer for layer in layers if layer.enabled and layer.query]
-    if not active_layers:
+    # Separate core from fallback layers
+    core_layers = [
+        layer for layer in layers
+        if layer.enabled and layer.query
+        and not bool((layer.signals or {}).get("is_fallback"))
+        and layer.layer_type not in {"fallback_no_location", "fallback_adjacent_title", "recall_query_1", "domain_query_1", "adjacent_title_1"}
+    ]
+    if not core_layers:
         return []
 
     selected: list[XRayQueryLayer] = []
     seen_queries: set[str] = set()
     for layer_type in preferred_order:
-        for layer in active_layers:
+        for layer in core_layers:
             normalized_query = _normalize_lower(layer.query)
             if layer.layer_type != layer_type or not normalized_query or normalized_query in seen_queries:
                 continue
             selected.append(layer)
             seen_queries.add(normalized_query)
-            if len(selected) >= max(1, max_layers):
+            if len(selected) >= effective_max:
                 return selected
 
-    for layer in active_layers:
+    for layer in core_layers:
         normalized_query = _normalize_lower(layer.query)
         if not normalized_query or normalized_query in seen_queries:
             continue
         selected.append(layer)
         seen_queries.add(normalized_query)
-        if len(selected) >= max(1, max_layers):
+        if len(selected) >= effective_max:
             break
     return selected
 
@@ -2724,16 +2734,62 @@ def build_linkedin_xray_query_layers(
         include_location=False,
     )
 
+    # ── Sprint budget optimisation: 3 core live queries only ──────────────────
+    # Family names map to the canonical budget plan:
+    #   precision_query  = exact title + must-have skills + location  (Query 1)
+    #   expansion_query  = adjacent titles + core skills + location   (Query 2)
+    #   signal_query     = project/arch/domain signals + role phrasing (Query 3)
+    #
+    # recall_query_1 / domain_query_1 / adjacent_title_1 are NOT live hits:
+    # - Qdrant semantic recall (Sprint 4) already handles broad recall.
+    # - Domain/adjacent signals are folded into expansion and signal queries.
+    #
+    # A 4th fallback query is built here but marked is_fallback=True so the
+    # execution loop only fires it when coverage is weak (< FALLBACK_COVERAGE_THRESHOLD).
+
+    # Expansion query = adjacent titles + core skills + location
+    expansion_query = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=adjacent_titles,
+        skill_terms=skill_list[:3],
+        signal_terms=(context_terms[:2] + project_terms[:1])[:3],
+        location=location,
+    )
+
+    # Signal query = project/arch signals + domain context + soft role phrasing
+    signal_query = _strict_xray_query_for_variant(
+        variant=3,
+        title_terms=title_variants[:2],
+        skill_terms=[],
+        signal_terms=(
+            domain_raw_signals[:2]
+            + project_terms[:2]
+            + signal_terms[:1]
+            + recall_extra_terms
+        )[:4],
+        location=location,
+    )
+
+    # Fallback query = adjacent title without location (broadest net, fires only on weak coverage)
+    fallback_title = adjacent_titles[1:2] or adjacent_titles[:1] or ["software engineer"]
+    fallback_query = _strict_xray_query_for_variant(
+        variant=1,
+        title_terms=fallback_title,
+        skill_terms=skill_list[:2],
+        signal_terms=signal_terms[:1],
+        location="",
+        include_location=False,
+    )
+
     candidate_layers = [
         XRayQueryLayer(
-            layer_type="role_query_1",
+            layer_type="precision_query",
             query=role_query,
             signals={
-                "family": "role",
-                "family_purpose": "exact title + must-have stack + location",
-                "variant": "primary",
+                "family": "precision",
+                "family_purpose": "exact title + must-have skills + location (Query 1)",
                 "title_terms": title_variants[:3],
-                "skill_terms": skill_terms[:2],
+                "skill_terms": skill_terms[:3],
                 "signal_terms": signal_terms[:2],
                 "location": location,
                 "location_term": location_term,
@@ -2741,73 +2797,43 @@ def build_linkedin_xray_query_layers(
             },
         ),
         XRayQueryLayer(
-            layer_type="stack_query_1",
-            query=stack_query,
+            layer_type="expansion_query",
+            query=expansion_query,
             signals={
-                "family": "stack",
-                "family_purpose": "architecture/systems/stack signals",
-                "variant": "primary",
-                "title_terms": title_variants[:2],
-                "skill_terms": skill_terms[:3],
-                "location": location,
-                "location_term": location_term,
-                "is_fallback": False,
-            },
-        ),
-        XRayQueryLayer(
-            layer_type="project_query_1",
-            query=archetype_query,
-            signals={
-                "family": "archetype",
-                "family_purpose": "archetype/signal angle without stack constraint",
-                "variant": "primary",
-                "title_terms": title_variants[:2],
-                "signal_terms": (signal_terms[:2] + recall_extra_terms)[:3],
-                "location": location,
-                "location_term": location_term,
-                "is_fallback": False,
-            },
-        ),
-        XRayQueryLayer(
-            layer_type="adjacent_title_1",
-            query=adjacent_query,
-            signals={
-                "family": "adjacent_title",
-                "family_purpose": "alternate titles strong candidates may use",
-                "variant": "primary",
+                "family": "expansion",
+                "family_purpose": "adjacent/alternate titles + core skills + location (Query 2)",
                 "title_terms": adjacent_titles,
-                "skill_terms": skill_list[:2],
+                "skill_terms": skill_list[:3],
+                "signal_terms": context_terms[:2],
                 "location": location,
                 "location_term": location_term,
                 "is_fallback": False,
             },
         ),
         XRayQueryLayer(
-            layer_type="domain_query_1",
-            query=domain_query,
+            layer_type="signal_query",
+            query=signal_query,
             signals={
-                "family": "domain",
-                "family_purpose": "domain/environment/business-context angle",
-                "variant": "primary",
+                "family": "signal",
+                "family_purpose": "project/arch/domain signals + soft role phrasing (Query 3)",
                 "title_terms": title_variants[:2],
-                "domain_terms": domain_terms,
+                "signal_terms": (domain_raw_signals[:2] + project_terms[:2])[:4],
                 "location": location,
                 "location_term": location_term,
                 "is_fallback": False,
             },
         ),
         XRayQueryLayer(
-            layer_type="recall_query_1",
-            query=recall_query,
+            layer_type="fallback_no_location",
+            query=fallback_query,
             signals={
-                "family": "recall",
-                "family_purpose": "broad recall without location constraint",
-                "variant": "primary",
-                "title_terms": recall_title,
-                "skill_terms": [],
+                "family": "fallback",
+                "family_purpose": "adjacent title without location — fires only on weak coverage (Query 4)",
+                "title_terms": fallback_title,
+                "skill_terms": skill_list[:2],
                 "location": "",
                 "location_term": "",
-                "is_fallback": False,
+                "is_fallback": True,
             },
         ),
     ]
@@ -3520,7 +3546,7 @@ def discover_linkedin_xray_candidates(
     )
     query_generation_ms = round((perf_counter() - query_generation_started) * 1000.0, 2)
 
-    limited_layers = _select_primary_query_layers(query_layers, max_layers=6)
+    limited_layers = _select_primary_query_layers(query_layers, max_layers=3)
     logger.info("xray_queries_selected count=%s layers=%s", len(limited_layers), [layer.layer_type for layer in limited_layers])
     job_role = resolved_intake["role_title"]
     diversity_report = _query_diversity_report(layers=limited_layers, recruiter_preferences=recruiter_preferences)
@@ -3683,18 +3709,39 @@ def discover_linkedin_xray_candidates(
         except Exception as exc:
             logger.warning("xray_existing_candidate_scan_failed job_id=%s error=%s", resolved_job_id, str(exc))
 
+    # ── Budget constants ────────────────────────────────────────────────────────────────────
+    # SERPAPI_BUDGET_CORE = 3 live hits (precision + expansion + signal)
+    # SERPAPI_BUDGET_MAX  = 4 live hits (+ 1 fallback if coverage is weak)
+    # Fallback trigger: deduped pool < FALLBACK_COVERAGE_THRESHOLD after core 3 queries
+    SERPAPI_BUDGET_CORE: int = 3
+    SERPAPI_BUDGET_MAX: int = 4
+    FALLBACK_COVERAGE_THRESHOLD: int = 30  # fewer than 30 deduped candidates = weak coverage
+
+    # Resolve the fallback layer from the generated layers (tagged is_fallback=True)
+    fallback_layer: XRayQueryLayer | None = next(
+        (
+            layer for layer in query_layers
+            if layer.enabled and layer.query
+            and bool((layer.signals or {}).get("is_fallback"))
+        ),
+        None,
+    )
+
     layer_results: list[tuple[XRayQueryLayer, list[dict[str, Any]], int]] = []
     serpapi_calls_before = _serpapi_request_total()
     serpapi_latency_started = perf_counter()
     duplicate_query_count = 0
     effective_workers = 1 if LOCAL_DEV_MODE else max(1, len(limited_layers))
+    fallback_triggered = False
+    fallback_query_str = ""
     if mock_mode_active:
         mock_raw_results = _load_mock_xray_raw_results(role=job_role)
         for layer in limited_layers:
             layer_results.append((layer, mock_raw_results, search_pages))
         serpapi_calls_executed = 0
     else:
-        for layer in limited_layers:
+        # ── Phase 1: Execute the 3 core live queries ─────────────────────────────────
+        for layer in limited_layers[:SERPAPI_BUDGET_CORE]:
             pages_to_fetch = 1
             if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
                 continue
@@ -3726,7 +3773,125 @@ def discover_linkedin_xray_candidates(
             )
             layer_results.append((layer, raw, pages_to_fetch))
 
+        core_calls_executed = _serpapi_request_total() - serpapi_calls_before
+
+        # ── Phase 2: Coverage check — trigger fallback only if pool is weak ─────────
+        # Count unique linkedin URLs from core results to determine coverage
+        _core_linkedin_urls: set[str] = set()
+        for _layer, _raw, _ in layer_results:
+            for _result in _raw:
+                _link = _normalize_lower(_result.get("link") or "")
+                if "linkedin.com/in/" in _link:
+                    _core_linkedin_urls.add(_link)
+
+        _core_coverage = len(_core_linkedin_urls)
+        _budget_remaining = SERPAPI_BUDGET_MAX - core_calls_executed
+        _should_fallback = (
+            fallback_layer is not None
+            and _core_coverage < FALLBACK_COVERAGE_THRESHOLD
+            and _budget_remaining > 0
+        )
+
+        logger.info(
+            "serpapi_coverage_check role=%s core_coverage=%s threshold=%s fallback_available=%s fallback_triggered=%s",
+            job_role,
+            _core_coverage,
+            FALLBACK_COVERAGE_THRESHOLD,
+            fallback_layer is not None,
+            _should_fallback,
+        )
+        log_metric(
+            "serpapi_coverage_check",
+            role=job_role,
+            core_coverage=_core_coverage,
+            threshold=FALLBACK_COVERAGE_THRESHOLD,
+            fallback_triggered=_should_fallback,
+        )
+
+        # ── Phase 3: Single fallback query (hard cap = 4 total) ─────────────────
+        if _should_fallback:
+            fallback_triggered = True
+            fallback_query_str = fallback_layer.query
+            if _reserve_serpapi_call(role=job_role, layer_type=fallback_layer.layer_type, query=fallback_layer.query):
+                _fb_fingerprint = _query_fingerprint(
+                    layer_type=fallback_layer.layer_type,
+                    query=fallback_layer.query,
+                    page=1,
+                    num_requested=SERPAPI_RESULTS_PER_PAGE,
+                    search_engine=SERPAPI_ENGINE or "google",
+                )
+                if not _is_duplicate_query(fingerprint=_fb_fingerprint):
+                    _fb_raw = client.search(
+                        query=fallback_layer.query,
+                        pages=1,
+                        context={
+                            "role_search_id": resolved_role_search_id,
+                            "recruiter_id": resolved_recruiter_id,
+                            "company_id": resolved_company_id,
+                            "job_id": resolved_job_id,
+                            "workflow_token": resolved_workflow_token,
+                            "layer_index": len(layer_results) + 1,
+                            "layer_type": fallback_layer.layer_type,
+                            "num_requested": SERPAPI_RESULTS_PER_PAGE,
+                            "query_terms": dict(fallback_layer.signals or {}),
+                        },
+                    )
+                    layer_results.append((fallback_layer, _fb_raw, 1))
+                    logger.info(
+                        "serpapi_fallback_executed role=%s layer_type=%s query=%s core_coverage=%s",
+                        job_role,
+                        fallback_layer.layer_type,
+                        fallback_layer.query,
+                        _core_coverage,
+                    )
+                    log_metric(
+                        "serpapi_fallback_executed",
+                        role=job_role,
+                        core_coverage=_core_coverage,
+                        fallback_query=fallback_layer.query,
+                    )
+                else:
+                    logger.info("serpapi_fallback_duplicate_suppressed role=%s layer_type=%s", job_role, fallback_layer.layer_type)
+
         serpapi_calls_executed = _serpapi_request_total() - serpapi_calls_before
+
+    # ── Budget diagnostics log — one structured line per sourcing run ─────────
+    _budget_diag_layers = [
+        {"layer_type": lr[0].layer_type, "query": lr[0].query, "raw_count": len(lr[1])}
+        for lr in layer_results
+    ]
+    _budget_total_raw = sum(len(lr[1]) for lr in layer_results)
+    logger.info(
+        "serpapi_budget_report role=%s query_budget=%s hits_executed=%s "
+        "query_1_type=%s query_2_type=%s query_3_type=%s "
+        "fallback_triggered=%s fallback_query_type=%s "
+        "total_raw_results=%s",
+        job_role,
+        SERPAPI_BUDGET_MAX if fallback_triggered else SERPAPI_BUDGET_CORE,
+        serpapi_calls_executed if not mock_mode_active else 0,
+        _budget_diag_layers[0]["layer_type"] if len(_budget_diag_layers) > 0 else "",
+        _budget_diag_layers[1]["layer_type"] if len(_budget_diag_layers) > 1 else "",
+        _budget_diag_layers[2]["layer_type"] if len(_budget_diag_layers) > 2 else "",
+        fallback_triggered,
+        fallback_layer.layer_type if fallback_triggered and fallback_layer else "",
+        _budget_total_raw,
+    )
+    for _i, _bl in enumerate(_budget_diag_layers, start=1):
+        logger.info(
+            "serpapi_query_detail index=%s layer_type=%s raw_count=%s query=%s",
+            _i,
+            _bl["layer_type"],
+            _bl["raw_count"],
+            _bl["query"],
+        )
+    log_metric(
+        "serpapi_budget_report",
+        role=job_role,
+        query_budget=SERPAPI_BUDGET_MAX if fallback_triggered else SERPAPI_BUDGET_CORE,
+        hits_executed=serpapi_calls_executed if not mock_mode_active else 0,
+        fallback_triggered=fallback_triggered,
+        total_raw_results=_budget_total_raw,
+    )
 
     serpapi_latency_ms = round((perf_counter() - serpapi_latency_started) * 1000.0, 2)
 

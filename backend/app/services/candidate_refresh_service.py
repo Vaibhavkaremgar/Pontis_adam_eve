@@ -250,8 +250,20 @@ def refresh_candidate(db: Session, candidate) -> bool:
             candidate_payload = _candidate_text_payload(candidate)
             decision = str(getattr(candidate, "decision", "") or candidate_payload.get("decision") or "").strip().lower()
             if decision == "selected":
-                if APIFY_TOKEN:
+                # Sprint 6: skip enrichment if already recently completed
+                try:
+                    from app.services.enrichment_orchestration_service import is_enrichment_needed
+                    _enrich_needed = is_enrichment_needed(candidate)
+                except Exception:
+                    _enrich_needed = True
+                if _enrich_needed and APIFY_TOKEN:
                     _refresh_candidate_with_apify_timeout(db, candidate, timeout_seconds=30.0)
+                elif not _enrich_needed:
+                    logger.info(
+                        "candidate_refresh_enrichment_skipped job_id=%s candidate_id=%s reason=already_enriched_recently",
+                        getattr(candidate, "job_id", ""),
+                        getattr(candidate, "candidate_id", ""),
+                    )
                 else:
                     logger.info(
                         "candidate_refresh_enrichment_skipped job_id=%s candidate_id=%s reason=no_apify_token",

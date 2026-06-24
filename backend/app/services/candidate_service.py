@@ -3397,6 +3397,43 @@ def fetch_ranked_candidates(
                 workflow_token=workflow_token,
                 archetype_ids=archetype_ids,
             )
+
+            # ── Sprint 4: semantic recall from sourced_candidate_memory ──────
+            # Best-effort only — never blocks live sourcing or delivery.
+            _recall_diag: dict[str, Any] = {
+                "recall_attempted": False, "recall_skipped": True,
+                "recall_skip_reason": "not_run", "recalled_candidate_count": 0,
+                "recalled_after_normalization": 0, "recall_latency_ms": 0.0,
+            }
+            _recall_collapsed = 0
+            _merged_before_rerank = len(xray_candidates)
+            try:
+                from app.services.sourcing.recall_service import (
+                    run_semantic_recall, merge_live_and_recalled,
+                )
+                _recalled_raw, _recall_diag = run_semantic_recall(
+                    job, getattr(job, "structured_data", None) or {}
+                )
+                if _recalled_raw:
+                    xray_candidates, _recall_collapsed = merge_live_and_recalled(
+                        xray_candidates, _recalled_raw
+                    )
+                    _merged_before_rerank = len(xray_candidates)
+                    logger.info(
+                        "[sprint4_recall] job_id=%s live=%s recalled=%s merged=%s collapsed=%s",
+                        job.id,
+                        _merged_before_rerank - len(_recalled_raw) + _recall_collapsed,
+                        len(_recalled_raw),
+                        _merged_before_rerank,
+                        _recall_collapsed,
+                    )
+            except Exception as _recall_exc:
+                logger.warning(
+                    "[sprint4_recall] job_id=%s recall_step_failed error=%s",
+                    job.id, str(_recall_exc),
+                )
+            # ─────────────────────────────────────────────────────────────────
+
             xray_results = build_xray_candidate_results(
                 job=job,
                 candidates=xray_candidates,
@@ -3430,6 +3467,25 @@ def fetch_ranked_candidates(
             rerank_ms = round((perf_counter() - rerank_started) * 1000.0, 2)
             total_pipeline_ms = round((perf_counter() - pipeline_started) * 1000.0, 2)
             xray_results = sorted(xray_results, key=ranked_candidate_sort_key)
+            _post_rerank_count = len(xray_results)
+
+            # Sprint 5: recruiter feedback memory
+            # Best-effort only - never blocks delivery.
+            _feedback_diag = None
+            try:
+                from app.services.feedback_memory_service import apply_feedback_memory
+                _fb_company_id = str(getattr(job, 'company_id', '') or '').strip()
+                xray_results, _feedback_diag = apply_feedback_memory(
+                    xray_results,
+                    db=db,
+                    job_id=job.id,
+                    company_id=_fb_company_id,
+                )
+            except Exception as _fb_exc:
+                logger.warning(
+                    'feedback_memory_step_failed job_id=%s error=%s',
+                    job.id, str(_fb_exc),
+                )
 
             # ── Sprint 2: persist ranked candidates into Qdrant semantic memory ──
             # Best-effort — never blocks delivery if Qdrant is unavailable.
@@ -3704,6 +3760,29 @@ def fetch_ranked_candidates(
                 qdrant_skipped=_qdrant_stats["qdrant_skipped"],
                 qdrant_skip_reason=_qdrant_stats["qdrant_skip_reason"],
                 qdrant_upsert_latency_ms=_qdrant_stats["qdrant_upsert_latency_ms"],
+                # Sprint 4: recall stats
+                recall_attempted=_recall_diag.get("recall_attempted", False),
+                recall_skipped=_recall_diag.get("recall_skipped", True),
+                recall_skip_reason=_recall_diag.get("recall_skip_reason", ""),
+                recalled_candidate_count=_recall_diag.get("recalled_candidate_count", 0),
+                recalled_after_normalization=_recall_diag.get("recalled_after_normalization", 0),
+                duplicates_collapsed_between_live_and_recall=_recall_collapsed,
+                merged_candidate_count_before_rerank=_merged_before_rerank,
+                merged_candidate_count_after_rerank=_post_rerank_count,
+                recall_latency_ms=_recall_diag.get("recall_latency_ms", 0.0),
+                # Sprint 5: feedback memory stats
+                feedback_lookup_attempted=bool(_feedback_diag.feedback_lookup_attempted if _feedback_diag else False),
+                feedback_lookup_skipped=bool(_feedback_diag.feedback_lookup_skipped if _feedback_diag else False),
+                feedback_lookup_skip_reason=str(_feedback_diag.feedback_lookup_skip_reason if _feedback_diag else ''),
+                candidates_new=int(_feedback_diag.candidates_new if _feedback_diag else 0),
+                candidates_seen_before=int(_feedback_diag.candidates_seen_before if _feedback_diag else 0),
+                candidates_passed_before=int(_feedback_diag.candidates_passed_before if _feedback_diag else 0),
+                candidates_approved_before=int(_feedback_diag.candidates_approved_before if _feedback_diag else 0),
+                candidates_shortlisted_before=int(_feedback_diag.candidates_shortlisted_before if _feedback_diag else 0),
+                candidates_held_before=int(_feedback_diag.candidates_held_before if _feedback_diag else 0),
+                candidates_suppressed_by_feedback=int(_feedback_diag.candidates_suppressed if _feedback_diag else 0),
+                candidates_boosted_by_feedback=int(_feedback_diag.candidates_boosted if _feedback_diag else 0),
+                feedback_lookup_latency_ms=float(_feedback_diag.feedback_lookup_latency_ms if _feedback_diag else 0.0),
                 # Sprint 3: per-family diagnostics built from xray_candidates metadata
                 query_family_diagnostics=build_query_family_diagnostics(
                     [
@@ -4339,7 +4418,7 @@ def apply_feedback(
     existing_interview = interview_repo.get_by_job_and_candidate(job_id, candidate_id)
     current_status = (existing_interview.status if existing_interview else None) or "new"
     target_status = swipe_to_status(action)
-    record_feedback = action in {"accept", "reject"}
+    record_feedback = action in {"accept", "reject", "maybe", "not_now"}
     warm_action = action in {"maybe", "not_now"}
 
     # ── Idempotency: same action already applied → return success immediately ──
@@ -4548,24 +4627,26 @@ def apply_feedback(
     _safe_commit(db, context="candidate_feedback_commit", job_id=job_id)
 
     enrichment_result: dict[str, Any] | None = None
-    if action == "accept":
+    if action in {"accept", "maybe", "not_now"}:
         try:
-            from app.services.automation_service import schedule_automation_job
+            from app.services.enrichment_orchestration_service import request_enrichment
 
-            enrichment_result = schedule_automation_job(
+            _enrich_result = request_enrichment(
                 db=db,
-                automation_type="candidate_enrichment",
                 job_id=job_id,
                 candidate_id=candidate_id,
-                run_at=datetime.now(timezone.utc),
-                payload={
-                    "feedbackAction": action,
-                    "sourceType": "ui",
-                },
-                automation_key=f"candidate-enrichment:{job_id}:{candidate_id}",
+                action=action,
+                source_type=str("slack" if slack_team_id else "ui"),
+                selection_session_id="",
             )
+            enrichment_result = {
+                "triggered": _enrich_result.triggered,
+                "skipped": _enrich_result.skipped,
+                "skip_reason": _enrich_result.skip_reason,
+                "enrichment_state": _enrich_result.enrichment_state,
+            }
         except Exception as exc:
-            logger.error("automation_failed step=%s error=%s", "auto_enrichment", str(exc))
+            logger.warning("enrichment_orchestration_failed step=apply_feedback error=%s", str(exc))
 
     # ── Observability ──────────────────────────────────────────────────────────
     feedback_count = CandidateFeedbackRepository(db).count_for_job(job_id)

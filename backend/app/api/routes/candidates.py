@@ -18,6 +18,7 @@ from app.services.candidate_selection_service import (
 from app.services.ownership import assert_job_ownership
 from app.utils.responses import success_response
 from app.services.candidate_presentation_service import build_candidate_view_model
+from app.services.enrichment_orchestration_service import get_enrichment_state_payload
 from app.services.sourcing_diagnostics import resolve_no_results_reason
 from app.services.serpapi_sourcing_service import serpapi_health_snapshot
 
@@ -170,6 +171,19 @@ def select_candidate_for_enrichment(
     assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
     result = submit_selection_choice(db=db, job_id=payload.jobId, candidate_id=payload.candidateId)
     return success_response(result)
+
+
+@router.get("/candidates/enrichment")
+def get_candidate_enrichment_state(
+    jobId: str = Query(...),
+    candidateId: str = Query(...),
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return current enrichment state for a specific candidate — used by frontend to poll."""
+    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
+    payload = get_enrichment_state_payload(db=db, job_id=jobId, candidate_id=candidateId)
+    return success_response(payload)
 
 
 @router.get("/candidates/selection/final")

@@ -11,7 +11,7 @@
  * POST /interview/evaluations
  * POST /interview/decision
  */
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { AppShell } from "@/components/layout/app-shell";
@@ -22,7 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppContext } from "@/context/AppContext";
-import { exportCandidates, getFinalSelectionResults, getShortlistedCandidates } from "@/lib/api/candidates";
+import { exportCandidates, getCandidateEnrichmentState, getFinalSelectionResults, getShortlistedCandidates } from "@/lib/api/candidates";
 import {
   getInterviewInsights,
   getInterviewStatuses,
@@ -149,6 +149,8 @@ function ReadyPageContent() {
   const [inviteNote, setInviteNote] = useState("");
   const activeCandidateDetail = activeCandidate as Record<string, unknown> | null;
 
+  const enrichmentPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const orderedItems = useMemo(() => {
     const priority: Record<string, number> = {
       enrichment_pending: 0,
@@ -195,6 +197,61 @@ function ReadyPageContent() {
     () => orderedItems.filter((item) => !["enrichment_pending", "enrichment_no_email", "outreach_sent"].includes(item.status)),
     [orderedItems],
   );
+
+  // Poll enrichment state for any pending-enrichment candidates every 10s
+  const pollEnrichmentStates = async () => {
+    if (!effectiveJobId) return;
+    const pendingItems = items.filter((item) =>
+      ["enrichment_pending", "enrichment_no_email", "selected"].includes(item.status) &&
+      !item.contactEmail
+    );
+    if (pendingItems.length === 0) return;
+    const updates = await Promise.all(
+      pendingItems.map(async (item) => {
+        const result = await getCandidateEnrichmentState(effectiveJobId, item.candidateId);
+        if (result.success && result.data) {
+          return { candidateId: item.candidateId, enrichmentState: result.data };
+        }
+        return null;
+      })
+    );
+    const resolvedUpdates = updates.filter(Boolean) as Array<{
+      candidateId: string;
+      enrichmentState: { enrichment_state: string; enrichment_requested_at?: string; enrichment_completed_at?: string };
+    }>;
+    if (resolvedUpdates.length > 0) {
+      setItems((prev) =>
+        prev.map((item) => {
+          const update = resolvedUpdates.find((u) => u.candidateId === item.candidateId);
+          if (!update) return item;
+          const newEnrichmentState = update.enrichmentState.enrichment_state;
+          const isNowEnriched = ["enriched", "missing_email"].includes(newEnrichmentState);
+          return {
+            ...item,
+            enrichmentStatus: newEnrichmentState,
+            status: isNowEnriched ? normalizeReadyStatus("outreach_pending") : item.status,
+          };
+        })
+      );
+    }
+  };
+
+  useEffect(() => {
+    const hasPending = items.some(
+      (item) => ["enrichment_pending", "enrichment_no_email"].includes(item.status)
+    );
+    if (enrichmentPollTimerRef.current) {
+      clearTimeout(enrichmentPollTimerRef.current);
+      enrichmentPollTimerRef.current = null;
+    }
+    if (!hasPending) return;
+    enrichmentPollTimerRef.current = setTimeout(() => {
+      void pollEnrichmentStates();
+    }, 10000);
+    return () => {
+      if (enrichmentPollTimerRef.current) clearTimeout(enrichmentPollTimerRef.current);
+    };
+  }, [items, effectiveJobId]);
 
   const loadReady = async () => {
     if (!effectiveJobId || !user) return;
