@@ -112,6 +112,7 @@ def build_recruiter_summary(
     explanation_reasoning: str,
     job_location: str = "",
     job_experience: str = "",
+    raw_snippet: str = "",
 ) -> list[str]:
     """
     Build a human-sounding recruiter summary as 2–3 natural sentences.
@@ -120,37 +121,36 @@ def build_recruiter_summary(
     """
     first_name = name.split()[0] if name and name != "Unknown Candidate" else ""
     pronoun = first_name or "They"
+    verb_have = "has" if pronoun != "They" else "have"
+    verb_is = "is" if pronoun != "They" else "are"
 
     sentences: list[str] = []
 
-    # Sentence 1 — who they are: experience + role + company + location
+    # — Sentence 1: who they are, where they work, location —
     s1_parts: list[str] = []
 
-    # experience opener
     if years_experience is not None and years_experience > 0:
         yr_int = int(years_experience)
-        s1_parts.append(f"{pronoun} {'has' if pronoun != 'They' else 'have'} {yr_int} year{'s' if yr_int != 1 else ''} of experience")
+        s1_parts.append(f"{pronoun} {verb_have} {yr_int} year{'s' if yr_int != 1 else ''} of experience")
     elif experience_label:
-        s1_parts.append(f"{pronoun} {'has' if pronoun != 'They' else 'have'} {experience_label} of experience")
+        s1_parts.append(f"{pronoun} {verb_have} {experience_label} of experience")
 
-    # role + company
     if role and company:
         if s1_parts:
-            s1_parts.append(f"and is currently working as a {role} at {company}")
+            s1_parts.append(f"and {verb_is} currently working as a {role} at {company}")
         else:
-            s1_parts.append(f"{pronoun} is currently a {role} at {company}")
+            s1_parts.append(f"{pronoun} {verb_is} currently a {role} at {company}")
     elif role:
         if s1_parts:
             s1_parts.append(f"as a {role}")
         else:
-            s1_parts.append(f"{pronoun} is a {role}")
+            s1_parts.append(f"{pronoun} {verb_is} a {role}")
     elif company:
         if s1_parts:
             s1_parts.append(f"at {company}")
         else:
             s1_parts.append(f"{pronoun} works at {company}")
 
-    # location
     if location:
         s1_parts.append(f"based out of {location}")
 
@@ -158,8 +158,12 @@ def build_recruiter_summary(
         sentence = ", ".join(s1_parts)
         sentences.append(sentence[0].upper() + sentence[1:] + ".")
 
-    # Sentence 2 — skills in a natural phrasing
-    display_skills = matched_skills[:4] or all_skills[:4]
+    # — Sentence 2: skills in natural language —
+    # Filter out skills that look like locations or noise (single chars, numbers)
+    display_skills = [
+        s for s in (matched_skills[:4] or all_skills[:4])
+        if len(s) > 1 and not s.replace(" ", "").isdigit()
+    ]
     if display_skills:
         if len(display_skills) == 1:
             skill_phrase = display_skills[0]
@@ -170,17 +174,33 @@ def build_recruiter_summary(
         skill_verb = "brings hands-on experience in" if matched_skills else "has worked with"
         sentences.append(f"{pronoun} {skill_verb} {skill_phrase}.")
 
-    # Sentence 3 — location fit or experience fit note, in plain language
+    # — Sentence 3: location fit, or a clean signal from the raw snippet —
     if location and job_location and _t(location).lower() not in _t(job_location).lower():
         sentences.append(f"Currently located in {location}, while the role is based in {job_location}.")
     elif location and job_location and _t(location).lower() in _t(job_location).lower():
-        sentences.append(f"{pronoun} is locally based in {location}, which lines up well for this role.")
-    elif explanation_reasoning and len(sentences) < 2:
-        truncated = explanation_reasoning[:200].rstrip(" .,;")
+        sentences.append(f"{pronoun} {verb_is} locally based in {location}, which lines up well for this role.")
+    elif len(sentences) < 2 and raw_snippet:
+        # Clean the raw snippet — strip pipe-separated headline dumps, keep only prose
+        clean = _t(raw_snippet)
+        # If snippet is just a pipe-separated skill list, don’t show it verbatim
+        parts = [p.strip() for p in clean.split("|") if p.strip()]
+        if len(parts) >= 3:
+            # It’s a headline dump — ignore it, already covered by skills sentence
+            pass
+        elif clean and len(clean) > 30:
+            sentences.append(clean[:240].rstrip(" .,;") + ".")
+    elif len(sentences) < 2 and explanation_reasoning:
+        truncated = _t(explanation_reasoning)[:200].rstrip(" .,;")
         if truncated:
             sentences.append(truncated + ".")
 
-    return sentences[:3] if sentences else ["This candidate was sourced via LinkedIn and looks worth a closer look."]
+    # Fallback if we couldn’t build anything meaningful
+    if not sentences:
+        if first_name:
+            return [f"{first_name} was sourced via LinkedIn and looks worth a closer look."]
+        return ["This candidate was sourced via LinkedIn and looks worth a closer look."]
+
+    return sentences[:3]
 
 
 # ── shared view-model builder ─────────────────────────────────────────────────
@@ -273,6 +293,7 @@ def build_candidate_view_model(
         explanation_reasoning=ai_reasoning,
         job_location=job_location,
         job_experience=job_exp,
+        raw_snippet=summary,
     )
 
     # Source metadata
