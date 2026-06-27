@@ -766,8 +766,9 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
   const autoEndTimerRef = useRef<number | null>(null);
-  const silenceEndTimerRef = useRef<number | null>(null); // fallback silence timer after adam asks confirmation
-  const awaitingConfirmationRef = useRef(false);          // true once adam has summarised and asked "anything else?"
+  const silenceEndTimerRef = useRef<number | null>(null); // 15s silence timer after each confirmation question
+  const awaitingConfirmationRef = useRef(false);          // true while inside the confirmation loop
+  const additionInProgressRef = useRef(false);            // true after recruiter declared intent to add, waiting for content turn
   const terminalStateRef = useRef<"idle" | "starting" | "live" | "manual-stop" | "ejected" | "error" | "done">("idle");
 
   useEffect(() => {
@@ -863,33 +864,35 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     // Only run decision logic on finalised turns
     if (!event.isFinal) return;
 
-    // Track whether Adam has just given a summary + asked for confirmation
+    // ── Assistant spoke ───────────────────────────────────────────────────────
     if (event.role === "assistant") {
       if (assistantAskedForFinalConfirmation(turnsRef.current)) {
+        // Adam just asked a confirmation question — enter the loop and arm the 15s silence timer
         awaitingConfirmationRef.current = true;
-        // Arm a silence fallback — if recruiter says nothing for 9s after Adam asks, end the call
+        additionInProgressRef.current = false;
         if (silenceEndTimerRef.current !== null) window.clearTimeout(silenceEndTimerRef.current);
         silenceEndTimerRef.current = window.setTimeout(() => {
           if (terminalStateRef.current === "live" && awaitingConfirmationRef.current) {
             debugVoice("silence_timeout_triggered");
             void requestCallStop();
           }
-        }, 9000);
+        }, 15000);
       }
       return;
     }
 
-    // From here: recruiter just spoke (event.role === "user")
-    // Clear the silence fallback since recruiter responded
+    // ── Recruiter spoke ───────────────────────────────────────────────────────
+    // Any recruiter speech cancels the silence timer — they responded, so silence is no longer running
     if (silenceEndTimerRef.current !== null) {
       window.clearTimeout(silenceEndTimerRef.current);
       silenceEndTimerRef.current = null;
     }
 
-    // Gate 1 — recruiter wants to add something: cancel any pending end, reset confirmation wait
+    // Gate 1 — recruiter declared they want to add something
     if (awaitingConfirmationRef.current && isAdditionIntent(event.text)) {
       debugVoice("addition_intent_detected", { text: event.text.slice(0, 120) });
       awaitingConfirmationRef.current = false;
+      additionInProgressRef.current = true;
       if (autoEndTimerRef.current !== null) {
         window.clearTimeout(autoEndTimerRef.current);
         autoEndTimerRef.current = null;
@@ -897,39 +900,69 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
       return;
     }
 
-    // Gate 2 — recruiter confirmed wrap-up after Adam asked
+    // Gate 2 — recruiter is delivering the actual addition content (the turn after intent)
+    // We know this because additionInProgressRef is true and this is NOT another intent signal.
+    // Absorb the content, then prompt Adam to ask the next confirmation round via vapi.send().
+    if (additionInProgressRef.current && !isAdditionIntent(event.text)) {
+      debugVoice("addition_content_received", { text: event.text.slice(0, 120) });
+      additionInProgressRef.current = false;
+      // Send a system nudge so Adam asks the follow-up confirmation without us hard-ending
+      const vapi = vapiRef.current;
+      if (vapi && typeof (vapi as unknown as Record<string, unknown>).send === "function") {
+        try {
+          (vapi as unknown as { send: (msg: unknown) => void }).send({
+            type: "add-message",
+            message: {
+              role: "system",
+              content:
+                "The recruiter just added something. Acknowledge briefly and then ask: \"Are we good to go now, or is there anything else you'd like to add?\"",
+            },
+          });
+          debugVoice("vapi_send_confirmation_nudge");
+        } catch (err) {
+          debugVoice("vapi_send_failed", { err });
+        }
+      }
+      return;
+    }
+
+    // Gate 3 — recruiter confirmed wrap-up (inside the confirmation loop)
     if (awaitingConfirmationRef.current && isWrapUpConfirmation(event.text)) {
       debugVoice("wrapup_confirmation_detected", { text: event.text.slice(0, 120) });
+      awaitingConfirmationRef.current = false;
       if (autoEndTimerRef.current !== null) window.clearTimeout(autoEndTimerRef.current);
+      // Short buffer to let any in-flight audio drain, then end
       autoEndTimerRef.current = window.setTimeout(() => {
         if (terminalStateRef.current === "live") void requestCallStop();
-      }, 1200);
+      }, 800);
       return;
     }
 
-    // Gate 3 — coverage-based auto-end (only when not waiting on a confirmation response)
-    const completion = evaluateIntakeCompletion(turnsRef.current, job as Record<string, unknown> | null | undefined);
-    debugVoice("intake_completion_check", {
-      ready: completion.ready,
-      reason: completion.reason,
-      coverage: completion.coverage,
-      requiredTopics: completion.requiredTopics,
-      satisfiedTopics: completion.satisfiedTopics,
-      latestNovelty: completion.latestNovelty,
-      recruiterFinalTurns: completion.recruiterFinalTurns,
-      assistantFinalTurns: completion.assistantFinalTurns,
-    });
+    // Gate 4 — coverage-based auto-end (only when not inside the confirmation loop)
+    if (!awaitingConfirmationRef.current && !additionInProgressRef.current) {
+      const completion = evaluateIntakeCompletion(turnsRef.current, job as Record<string, unknown> | null | undefined);
+      debugVoice("intake_completion_check", {
+        ready: completion.ready,
+        reason: completion.reason,
+        coverage: completion.coverage,
+        requiredTopics: completion.requiredTopics,
+        satisfiedTopics: completion.satisfiedTopics,
+        latestNovelty: completion.latestNovelty,
+        recruiterFinalTurns: completion.recruiterFinalTurns,
+        assistantFinalTurns: completion.assistantFinalTurns,
+      });
 
-    if (completion.ready && !awaitingConfirmationRef.current) {
-      debugVoice("intake_wrapup_triggered", { reason: completion.reason });
-      if (autoEndTimerRef.current !== null) window.clearTimeout(autoEndTimerRef.current);
-      autoEndTimerRef.current = window.setTimeout(() => {
-        if (terminalStateRef.current === "live") void requestCallStop();
-      }, 1200);
-      return;
+      if (completion.ready) {
+        debugVoice("intake_wrapup_triggered", { reason: completion.reason });
+        if (autoEndTimerRef.current !== null) window.clearTimeout(autoEndTimerRef.current);
+        autoEndTimerRef.current = window.setTimeout(() => {
+          if (terminalStateRef.current === "live") void requestCallStop();
+        }, 1200);
+        return;
+      }
     }
 
-    // No end condition met — cancel any pending timer
+    // No end condition met — cancel any pending auto-end timer
     if (autoEndTimerRef.current !== null) {
       window.clearTimeout(autoEndTimerRef.current);
       autoEndTimerRef.current = null;
@@ -1200,6 +1233,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     callStartedAtRef.current = null;
     terminalStateRef.current = "starting";
     awaitingConfirmationRef.current = false;
+    additionInProgressRef.current = false;
     if (silenceEndTimerRef.current !== null) {
       window.clearTimeout(silenceEndTimerRef.current);
       silenceEndTimerRef.current = null;

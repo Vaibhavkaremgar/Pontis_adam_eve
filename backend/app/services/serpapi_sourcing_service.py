@@ -2299,14 +2299,8 @@ def _linkedin_in_hit_count(results: list[dict[str, Any]]) -> int:
 
 
 def _linkedin_profile_anchor_clause() -> str:
-    return _or_group([
-        "linkedin.com/in/",
-        "linkedin.com/company/",
-        "View profile",
-        "about",
-        "experience",
-        "skills",
-    ])
+    # Intentionally empty — do NOT inject company/view/about/experience/skills
+    return ""
 
 
 def _role_cache_key(*, role_search_id: str, role: str, location: str, skills: list[str], layers: list[XRayQueryLayer], limit: int) -> str:
@@ -2418,6 +2412,191 @@ def _xray_signal_terms(*, selected_archetypes: list[dict[str, Any]] | None, nice
     return cleaned[:limit]
 
 
+# ---------------------------------------------------------------------------
+# Role-aware X-Ray taxonomy
+# ---------------------------------------------------------------------------
+
+_ROLE_XRAY_TAXONOMY: dict[str, dict[str, list[str]]] = {
+    "backend": {
+        "titles": ["Backend Engineer", "Software Engineer", "Platform Engineer"],
+        "adjacent": ["Software Developer", "API Engineer", "Server-side Engineer", "Full Stack Engineer"],
+        "skills": ["Python", "FastAPI", "PostgreSQL", "AWS", "Node.js", "Go"],
+        "signals": ["Microservices", "REST API", "Distributed Systems", "System Design"],
+    },
+    "frontend": {
+        "titles": ["Frontend Engineer", "UI Developer", "React Developer"],
+        "adjacent": ["JavaScript Developer", "Web Developer", "UI Engineer", "Full Stack Developer"],
+        "skills": ["React", "TypeScript", "JavaScript", "Next.js", "CSS"],
+        "signals": ["Component Library", "Responsive UI", "Web Performance", "Design System"],
+    },
+    "fullstack": {
+        "titles": ["Full Stack Engineer", "Software Engineer", "Full Stack Developer"],
+        "adjacent": ["Product Engineer", "Web Developer", "Backend Engineer", "Frontend Engineer"],
+        "skills": ["React", "Node.js", "Python", "PostgreSQL", "TypeScript"],
+        "signals": ["REST API", "Microservices", "Web App", "SaaS Product"],
+    },
+    "data": {
+        "titles": ["Data Engineer", "Analytics Engineer", "Data Scientist"],
+        "adjacent": ["Data Platform Engineer", "Python Developer", "ML Engineer", "Business Intelligence"],
+        "skills": ["Python", "SQL", "dbt", "Snowflake", "Spark", "Databricks"],
+        "signals": ["Data Pipelines", "ETL", "Analytics", "Data Warehouse"],
+    },
+    "sales": {
+        "titles": ["Sales Executive", "Account Executive", "Business Development Executive"],
+        "adjacent": ["Business Development Manager", "Sales Consultant", "Sales Manager", "SDR"],
+        "skills": ["Salesforce", "Zoho CRM", "HubSpot", "CRM"],
+        "signals": ["Lead Generation", "Prospecting", "Negotiation", "Closing", "B2B Sales"],
+    },
+    "hr": {
+        "titles": ["Technical Recruiter", "Talent Acquisition Specialist", "Recruiter"],
+        "adjacent": ["HR Business Partner", "Talent Partner", "People Operations", "Sourcing Specialist"],
+        "skills": ["ATS", "Greenhouse", "Lever", "BambooHR", "Workday"],
+        "signals": ["Boolean Search", "Candidate Screening", "Stakeholder Management", "Hiring"],
+    },
+    "marketing": {
+        "titles": ["SEO Specialist", "Digital Marketing Executive", "Performance Marketer"],
+        "adjacent": ["Growth Marketer", "Content Marketer", "Demand Generation", "Marketing Manager"],
+        "skills": ["SEO", "Google Ads", "Meta Ads", "HubSpot", "GA4"],
+        "signals": ["Organic Growth", "PPC", "Content Marketing", "Lead Generation"],
+    },
+    "product": {
+        "titles": ["Product Manager", "Product Lead", "Senior Product Manager"],
+        "adjacent": ["Associate Product Manager", "Growth PM", "Product Owner", "Technical PM"],
+        "skills": ["Roadmap", "Jira", "Figma", "SQL", "A/B Testing"],
+        "signals": ["Product Strategy", "User Research", "OKRs", "0 to 1"],
+    },
+    "generic": {
+        "titles": [],
+        "adjacent": [],
+        "skills": [],
+        "signals": [],
+    },
+}
+
+
+def _role_xray_spec(family: str) -> dict[str, list[str]]:
+    return _ROLE_XRAY_TAXONOMY.get(family, _ROLE_XRAY_TAXONOMY["generic"])
+
+
+def _build_google_xray_query(
+    *,
+    title_terms: list[str],
+    skill_terms: list[str],
+    signal_terms: list[str],
+    location: str,
+    include_location: bool = True,
+) -> str:
+    """
+    Build a single clean Google X-Ray query in natural recruiter style.
+    Format: site:linkedin.com/in (TITLE OR TITLE) LOCATION (SKILL OR SKILL) -jobs -hiring
+    No AND joins. No anchor clause. No company/view/about/experience/skills.
+    """
+    parts: list[str] = ["site:linkedin.com/in"]
+
+    if title_terms:
+        quoted = [f'"{t}"' if " " in _normalize_text(t) else _normalize_text(t) for t in title_terms if _normalize_text(t)]
+        if quoted:
+            parts.append("(" + " OR ".join(quoted) + ")")
+
+    if include_location:
+        location_term = _normalize_location_term(location)
+        if location_term:
+            # Strip extra quotes added by _normalize_location_term, use plain city name
+            clean_loc = location_term.strip('"').split('"')[0].strip()
+            if clean_loc:
+                parts.append(clean_loc)
+
+    if skill_terms:
+        quoted_skills = [f'"{s}"' if " " in _normalize_text(s) else _normalize_text(s) for s in skill_terms if _normalize_text(s)]
+        if quoted_skills:
+            parts.append("(" + " OR ".join(quoted_skills) + ")")
+
+    if signal_terms:
+        quoted_signals = [f'"{s}"' if " " in _normalize_text(s) else _normalize_text(s) for s in signal_terms if _normalize_text(s)]
+        if quoted_signals:
+            parts.append("(" + " OR ".join(quoted_signals) + ")")
+
+    parts.append("-jobs -hiring")
+    return " ".join(part for part in parts if part).strip()
+
+
+def _build_role_aware_xray_queries(
+    *,
+    role: str,
+    seniority: str,
+    skills: list[str],
+    location: str,
+    family: str,
+    nice_to_have_skills: list[str] | None = None,
+) -> tuple[str, str, str]:
+    """
+    Generate exactly 3 clean Google X-Ray queries:
+      Q1 Precision  — exact primary titles + must-have skills + location
+      Q2 Expansion  — adjacent titles + core skills + location
+      Q3 Skills-first — skills + work signals + location (no title constraint)
+
+    Returns (precision_query, expansion_query, skills_query).
+    """
+    spec = _role_xray_spec(family)
+
+    # Merge taxonomy titles with caller-supplied role (caller role wins slot 0)
+    role_cleaned = _sanitize_role_query(role) or _normalize_text(role)
+    primary_titles: list[str] = _dedupe_preserve_order(
+        [role_cleaned] + spec["titles"]
+    )[:3]
+
+    adjacent_titles: list[str] = _dedupe_preserve_order(spec["adjacent"])[:3]
+
+    # Skills: caller-supplied skills override taxonomy defaults for Q1/Q2
+    caller_skills = _dedupe_preserve_order(skills)[:4]
+    taxonomy_skills = _dedupe_preserve_order(spec["skills"])[:4]
+    core_skills = _dedupe_preserve_order(caller_skills + taxonomy_skills)[:4]
+
+    taxonomy_signals = _dedupe_preserve_order(spec["signals"])[:4]
+
+    # Q1 — Precision: exact title + skills + location
+    q1 = _build_google_xray_query(
+        title_terms=primary_titles[:2],
+        skill_terms=core_skills[:3],
+        signal_terms=[],
+        location=location,
+    )
+
+    # Q2 — Expansion: adjacent titles + skills + location
+    q2 = _build_google_xray_query(
+        title_terms=adjacent_titles,
+        skill_terms=core_skills[:3],
+        signal_terms=[],
+        location=location,
+    )
+
+    # Q3 — Skills-first: no title, skills + signals + location
+    signal_skills = _dedupe_preserve_order(caller_skills[:2] + taxonomy_skills[:2])[:3]
+    q3 = _build_google_xray_query(
+        title_terms=[],
+        skill_terms=signal_skills,
+        signal_terms=taxonomy_signals[:3],
+        location=location,
+    )
+
+    return q1, q2, q3
+
+
+def _log_xray_queries(role: str, q1: str, q2: str, q3: str) -> None:
+    """Structured diagnostic log for generated X-Ray queries."""
+    separator = "-" * 33
+    logger.info(
+        "xray_queries_generated role=%s\n"
+        "Query 1 (Precision):\n%s\n\n"
+        "%s\n\n"
+        "Query 2 (Expansion):\n%s\n\n"
+        "%s\n\n"
+        "Query 3 (Skills-first):\n%s\n\n"
+        "%s",
+        role, q1, separator, q2, separator, q3, separator,
+    )
+
+
 def _strict_xray_query_for_variant(
     *,
     variant: int,
@@ -2428,45 +2607,14 @@ def _strict_xray_query_for_variant(
     include_location: bool = True,
     negatives: list[str] | None = None,
 ) -> str:
-    location_term = _normalize_location_term(location) if include_location else ""
-    logger.info('xray_location_normalized input="%s" output="%s"', location, location_term)
-    negative_clause = " ".join(negatives or ["-jobs", "-hiring", "-recruiter"]).strip()
-    parts: list[str] = ["site:linkedin.com/in"]
-    title_clause = _or_group(title_terms[:3]) if title_terms else ""
-    skill_clause = _or_group(skill_terms[:4]) if skill_terms else ""
-    signal_clause = _or_group(signal_terms[:4]) if signal_terms else ""
-
-    if variant == 1:
-        if title_clause:
-            parts.append(title_clause)
-        if skill_clause:
-            parts.append(skill_clause)
-        elif signal_clause:
-            parts.append(signal_clause)
-    elif variant == 2:
-        if skill_clause:
-            parts.append(skill_clause)
-        if title_clause:
-            parts.append(title_clause)
-        elif signal_clause:
-            parts.append(signal_clause)
-    else:
-        if signal_clause:
-            parts.append(signal_clause)
-        elif skill_clause:
-            parts.append(skill_clause)
-        if title_clause:
-            parts.append(title_clause)
-    if location_term:
-        parts.append(f"({location_term})")
-    anchor_clause = _linkedin_profile_anchor_clause()
-    if anchor_clause:
-        parts.append(anchor_clause)
-    if negative_clause:
-        parts.append(negative_clause)
-    query = " ".join(part for part in parts if part).strip()
-    query = _normalize_text(query)
-    return _normalize_text(query)
+    """Legacy shim — delegates to the new clean builder."""
+    return _build_google_xray_query(
+        title_terms=title_terms,
+        skill_terms=skill_terms,
+        signal_terms=signal_terms,
+        location=location,
+        include_location=include_location,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2650,133 +2798,27 @@ def build_linkedin_xray_query_layers(
 
     location_term = _normalize_location_term(location)
 
-    # ── Family A: exact title + must-have stack + location ──────────────────
-    role_query = _strict_xray_query_for_variant(
-        variant=1,
-        title_terms=title_variants[:3],
-        skill_terms=skill_list[:3],
-        signal_terms=(signal_terms[:2] + project_terms[:1] + context_terms[:1])[:3],
+    # ── New role-aware query generation (3 clean Google-optimised queries) ──
+    q1, q2, q3 = _build_role_aware_xray_queries(
+        role=role,
+        seniority=seniority,
+        skills=skill_list,
         location=location,
+        family=family,
+        nice_to_have_skills=nice_to_have_skills,
     )
+    _log_xray_queries(role, q1, q2, q3)
 
-    # ── Family B: stack / architecture signals, lighter title constraint ────
-    stack_query = _strict_xray_query_for_variant(
-        variant=2,
-        title_terms=title_variants[:2],
-        skill_terms=skill_list[:4],
-        signal_terms=(project_terms[:2] + context_terms[:1])[:3],
-        location=location,
-    )
-
-    # ── Family C: archetype / signal angle, no stack constraint ─────────────
-    archetype_query = _strict_xray_query_for_variant(
-        variant=3,
-        title_terms=title_variants[:3],
-        skill_terms=[],
-        signal_terms=(project_terms[:3] + signal_terms[:2] + recall_extra_terms + skill_list[:1])[:4],
-        location=location,
-    )
-
-    # ── Family D: adjacent / alternate titles — not the canonical title ─────
-    adjacent_titles = _dedupe_preserve_order([
+    # Fallback: adjacent title, no location
+    fallback_title = _dedupe_preserve_order([
         _sanitize_role_query(t) or _normalize_text(t)
-        for t in _adjacent_titles_for_family(family)
+        for t in _role_xray_spec(family)["adjacent"]
         if _normalize_text(t)
-    ])[:3]
-    adjacent_query = _strict_xray_query_for_variant(
-        variant=1,
-        title_terms=adjacent_titles,
-        skill_terms=skill_list[:2],
-        signal_terms=(context_terms[:2] + project_terms[:1])[:3],
-        location=location,
-    )
-
-    # ── Family E: domain / business-context angle — domain signals only, no title ──
-    # Built without title clause so its meaningful tokens are domain words,
-    # not role/skill tokens already present in families A-D.
-    domain_terms = _domain_terms_for_family(family, industry=industry, company_stage=company_stage)
-    # Prefer the raw industry/company_stage phrase as a 2-token signal so it
-    # survives _or_group and contributes genuinely new tokens.
-    domain_raw_signals: list[str] = []
-    if industry:
-        domain_raw_signals.append(_normalize_text(industry))
-    if company_stage:
-        domain_raw_signals.append(_normalize_text(company_stage))
-    domain_raw_signals.extend(domain_terms)
-    domain_raw_signals = _dedupe_preserve_order(domain_raw_signals)[:4]
-    domain_query = _strict_xray_query_for_variant(
-        variant=3,          # signal-first variant: signal_clause leads, no title clause
-        title_terms=[],     # no title — domain angle must stand on its own tokens
-        skill_terms=skill_list[:2],
-        signal_terms=domain_raw_signals[:3],
-        location=location,
-    )
-    # Fallback: if building without a title produced an empty query, include title
-    if not domain_query:
-        domain_query = _strict_xray_query_for_variant(
-            variant=1,
-            title_terms=title_variants[:2],
-            skill_terms=[],
-            signal_terms=domain_raw_signals[:3],
-            location=location,
-        )
-
-    # ── Family F: broad recall — adjacent title, no skills, no location ───
-    # Uses a single adjacent title token not present in the canonical title list,
-    # ensuring the meaningful token set is distinct from all earlier families.
-    recall_title = adjacent_titles[1:2] or adjacent_titles[:1] or ["platform engineer"]
-    recall_query = _strict_xray_query_for_variant(
-        variant=1,
-        title_terms=recall_title,   # one adjacent title — never appears in families A/B/C
-        skill_terms=[],             # no skills constraint
-        signal_terms=[],
-        location="",                # no location — broadest possible net
-        include_location=False,
-    )
-
-    # ── Sprint budget optimisation: 3 core live queries only ──────────────────
-    # Family names map to the canonical budget plan:
-    #   precision_query  = exact title + must-have skills + location  (Query 1)
-    #   expansion_query  = adjacent titles + core skills + location   (Query 2)
-    #   signal_query     = project/arch/domain signals + role phrasing (Query 3)
-    #
-    # recall_query_1 / domain_query_1 / adjacent_title_1 are NOT live hits:
-    # - Qdrant semantic recall (Sprint 4) already handles broad recall.
-    # - Domain/adjacent signals are folded into expansion and signal queries.
-    #
-    # A 4th fallback query is built here but marked is_fallback=True so the
-    # execution loop only fires it when coverage is weak (< FALLBACK_COVERAGE_THRESHOLD).
-
-    # Expansion query = adjacent titles + core skills + location
-    expansion_query = _strict_xray_query_for_variant(
-        variant=1,
-        title_terms=adjacent_titles,
-        skill_terms=skill_list[:3],
-        signal_terms=(context_terms[:2] + project_terms[:1])[:3],
-        location=location,
-    )
-
-    # Signal query = project/arch signals + domain context + soft role phrasing
-    signal_query = _strict_xray_query_for_variant(
-        variant=3,
-        title_terms=title_variants[:2],
-        skill_terms=[],
-        signal_terms=(
-            domain_raw_signals[:2]
-            + project_terms[:2]
-            + signal_terms[:1]
-            + recall_extra_terms
-        )[:4],
-        location=location,
-    )
-
-    # Fallback query = adjacent title without location (broadest net, fires only on weak coverage)
-    fallback_title = adjacent_titles[1:2] or adjacent_titles[:1] or ["software engineer"]
-    fallback_query = _strict_xray_query_for_variant(
-        variant=1,
+    ])[:1] or ["software engineer"]
+    fallback_q = _build_google_xray_query(
         title_terms=fallback_title,
         skill_terms=skill_list[:2],
-        signal_terms=signal_terms[:1],
+        signal_terms=[],
         location="",
         include_location=False,
     )
@@ -2784,13 +2826,12 @@ def build_linkedin_xray_query_layers(
     candidate_layers = [
         XRayQueryLayer(
             layer_type="precision_query",
-            query=role_query,
+            query=q1,
             signals={
                 "family": "precision",
                 "family_purpose": "exact title + must-have skills + location (Query 1)",
                 "title_terms": title_variants[:3],
-                "skill_terms": skill_terms[:3],
-                "signal_terms": signal_terms[:2],
+                "skill_terms": skill_list[:3],
                 "location": location,
                 "location_term": location_term,
                 "is_fallback": False,
@@ -2798,13 +2839,12 @@ def build_linkedin_xray_query_layers(
         ),
         XRayQueryLayer(
             layer_type="expansion_query",
-            query=expansion_query,
+            query=q2,
             signals={
                 "family": "expansion",
-                "family_purpose": "adjacent/alternate titles + core skills + location (Query 2)",
-                "title_terms": adjacent_titles,
+                "family_purpose": "adjacent titles + core skills + location (Query 2)",
+                "title_terms": _role_xray_spec(family)["adjacent"][:3],
                 "skill_terms": skill_list[:3],
-                "signal_terms": context_terms[:2],
                 "location": location,
                 "location_term": location_term,
                 "is_fallback": False,
@@ -2812,12 +2852,12 @@ def build_linkedin_xray_query_layers(
         ),
         XRayQueryLayer(
             layer_type="signal_query",
-            query=signal_query,
+            query=q3,
             signals={
                 "family": "signal",
-                "family_purpose": "project/arch/domain signals + soft role phrasing (Query 3)",
-                "title_terms": title_variants[:2],
-                "signal_terms": (domain_raw_signals[:2] + project_terms[:2])[:4],
+                "family_purpose": "skills + work signals, no title constraint (Query 3)",
+                "skill_terms": skill_list[:3],
+                "signal_terms": _role_xray_spec(family)["signals"][:3],
                 "location": location,
                 "location_term": location_term,
                 "is_fallback": False,
@@ -2825,10 +2865,10 @@ def build_linkedin_xray_query_layers(
         ),
         XRayQueryLayer(
             layer_type="fallback_no_location",
-            query=fallback_query,
+            query=fallback_q,
             signals={
                 "family": "fallback",
-                "family_purpose": "adjacent title without location — fires only on weak coverage (Query 4)",
+                "family_purpose": "adjacent title without location — fires only on weak coverage",
                 "title_terms": fallback_title,
                 "skill_terms": skill_list[:2],
                 "location": "",

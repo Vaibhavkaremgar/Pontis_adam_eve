@@ -275,6 +275,19 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
     setExpandedById((prev) => ({ ...prev, [candidateId]: !prev[candidateId] }));
   };
 
+  const renderSummary = (candidate: Candidate) => {
+    const lines = candidate.recruiterSummaryLines ?? [];
+    const paragraph = lines.length > 0
+      ? lines.join(" ")
+      : candidate.recruiterSummary ?? candidate.summary ?? "";
+    if (!paragraph) return null;
+    return (
+      <p className="text-sm leading-relaxed text-gray-700">
+        {paragraph}
+      </p>
+    );
+  };
+
   const renderExplanation = (candidate: Candidate) => {
     if (!candidate.explanation) {
       return null;
@@ -362,6 +375,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
               : candidate.enrichmentStatus || "Pending"}
         </span>
       </div>
+      {renderSummary(candidate)}
       {renderExplanation(candidate)}
       <div className="flex flex-wrap gap-2 text-xs text-gray-500">
         <span>Status: {statusLabel(candidate.status)}</span>
@@ -456,6 +470,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
                           ⭐ {currentReviewCandidate.fitScore}
                         </Badge>
                       </div>
+                      {renderSummary(currentReviewCandidate)}
                       {renderExplanation(currentReviewCandidate)}
                       <Separator />
                       <div className="grid grid-cols-2 gap-2">

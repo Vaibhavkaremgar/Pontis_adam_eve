@@ -114,62 +114,73 @@ def build_recruiter_summary(
     job_experience: str = "",
 ) -> list[str]:
     """
-    Build a deterministic 2–4 line recruiter summary.
-
-    Returns a list of bullet strings — no LLM, no invented claims.
-    Each line uses only fields already present in the ranked candidate object.
+    Build a human-sounding recruiter summary as 2–3 natural sentences.
+    Reads like a recruiter describing the candidate in a team standup —
+    no bullet labels, no robotic field dumps.
     """
-    lines: list[str] = []
+    first_name = name.split()[0] if name and name != "Unknown Candidate" else ""
+    pronoun = first_name or "They"
 
-    # Line 1 — who they are and where
-    intro_parts: list[str] = []
+    sentences: list[str] = []
+
+    # Sentence 1 — who they are: experience + role + company + location
+    s1_parts: list[str] = []
+
+    # experience opener
     if years_experience is not None and years_experience > 0:
         yr_int = int(years_experience)
-        intro_parts.append(f"{yr_int} year{'s' if yr_int != 1 else ''}")
+        s1_parts.append(f"{pronoun} {'has' if pronoun != 'They' else 'have'} {yr_int} year{'s' if yr_int != 1 else ''} of experience")
     elif experience_label:
-        intro_parts.append(experience_label)
+        s1_parts.append(f"{pronoun} {'has' if pronoun != 'They' else 'have'} {experience_label} of experience")
 
-    if role:
-        intro_parts.append(f"in {role}" if intro_parts else role)
-    if company:
-        intro_parts.append(f"currently at {company}")
-    if location:
-        intro_parts.append(f"based in {location}")
-
-    if intro_parts:
-        line1 = ", ".join(intro_parts[:4]).strip()
-        if line1:
-            lines.append(line1[0].upper() + line1[1:] + ".")
-
-    # Line 2 — skill overlap
-    display_skills = matched_skills[:5] or all_skills[:5]
-    if display_skills:
-        skill_text = ", ".join(display_skills)
-        if matched_skills:
-            lines.append(f"Matched skills: {skill_text}.")
+    # role + company
+    if role and company:
+        if s1_parts:
+            s1_parts.append(f"and is currently working as a {role} at {company}")
         else:
-            lines.append(f"Surfaced skills: {skill_text}.")
+            s1_parts.append(f"{pronoun} is currently a {role} at {company}")
+    elif role:
+        if s1_parts:
+            s1_parts.append(f"as a {role}")
+        else:
+            s1_parts.append(f"{pronoun} is a {role}")
+    elif company:
+        if s1_parts:
+            s1_parts.append(f"at {company}")
+        else:
+            s1_parts.append(f"{pronoun} works at {company}")
 
-    # Line 3 — experience / location fit
-    fit_lines: list[str] = []
-    if experience_label and job_experience:
-        fit_lines.append(f"Experience ({experience_label}) aligns with the {job_experience} requirement.")
-    elif experience_label:
-        fit_lines.append(f"Experience signal: {experience_label}.")
-    if location and job_location and location.lower() != job_location.lower():
-        fit_lines.append(f"Location: {location} vs. required {job_location}.")
+    # location
+    if location:
+        s1_parts.append(f"based out of {location}")
+
+    if s1_parts:
+        sentence = ", ".join(s1_parts)
+        sentences.append(sentence[0].upper() + sentence[1:] + ".")
+
+    # Sentence 2 — skills in a natural phrasing
+    display_skills = matched_skills[:4] or all_skills[:4]
+    if display_skills:
+        if len(display_skills) == 1:
+            skill_phrase = display_skills[0]
+        elif len(display_skills) == 2:
+            skill_phrase = f"{display_skills[0]} and {display_skills[1]}"
+        else:
+            skill_phrase = ", ".join(display_skills[:-1]) + f", and {display_skills[-1]}"
+        skill_verb = "brings hands-on experience in" if matched_skills else "has worked with"
+        sentences.append(f"{pronoun} {skill_verb} {skill_phrase}.")
+
+    # Sentence 3 — location fit or experience fit note, in plain language
+    if location and job_location and _t(location).lower() not in _t(job_location).lower():
+        sentences.append(f"Currently located in {location}, while the role is based in {job_location}.")
     elif location and job_location and _t(location).lower() in _t(job_location).lower():
-        fit_lines.append(f"Location match: {location}.")
-    if fit_lines:
-        lines.append(" ".join(fit_lines))
-
-    # Line 4 — AI reasoning fallback (already deterministic — built in xray_service)
-    if len(lines) < 2 and explanation_reasoning:
-        truncated = explanation_reasoning[:280].rstrip(" .,;")
+        sentences.append(f"{pronoun} is locally based in {location}, which lines up well for this role.")
+    elif explanation_reasoning and len(sentences) < 2:
+        truncated = explanation_reasoning[:200].rstrip(" .,;")
         if truncated:
-            lines.append(truncated + ".")
+            sentences.append(truncated + ".")
 
-    return lines[:4] if lines else ["Profile sourced via LinkedIn X-Ray search."]
+    return sentences[:3] if sentences else ["This candidate was sourced via LinkedIn and looks worth a closer look."]
 
 
 # ── shared view-model builder ─────────────────────────────────────────────────
