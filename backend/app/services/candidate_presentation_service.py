@@ -73,6 +73,59 @@ def _resolve_float(source: Any, *keys: str) -> float | None:
     return None
 
 
+def _split_headline_dump(text: str) -> list[str]:
+    clean = _t(text)
+    if not clean:
+        return []
+    parts = [part.strip(" -–—:") for part in re.split(r"\s*\|\s*|\s*•\s*|\s*[\n\r]+\s*", clean) if part.strip(" -–—:")]
+    if len(parts) >= 3:
+        return parts
+    return [clean]
+
+
+def _humanize_snippet(snippet: str, *, name: str = "", role: str = "", company: str = "", location: str = "") -> str:
+    """
+    Convert terse LinkedIn-style snippets into a more human-sounding recap.
+    This stays deterministic so the UI and Slack remain aligned.
+    """
+    clean = _t(snippet)
+    if not clean:
+        return ""
+
+    lower = clean.lower()
+    if "|" in clean or clean.count("•") >= 2:
+        parts = _split_headline_dump(clean)
+        if len(parts) >= 3:
+            headline = parts[0]
+            skills_text = ", ".join(parts[1:4])
+            intro_name = name.split()[0] if name and name != "Unknown Candidate" else "This candidate"
+            pieces = [f"{intro_name} appears to be a {headline.lower()}"]
+            if company and location:
+                pieces.append(f"based at {company} in {location}")
+            elif company:
+                pieces.append(f"based at {company}")
+            elif location:
+                pieces.append(f"based in {location}")
+            if skills_text:
+                pieces.append(f"with a profile centered on {skills_text.lower()}")
+            return ", ".join(pieces).strip(" ,") + "."
+
+    normalized = clean[:-1] if clean.endswith(".") else clean
+    normalized = re.sub(r"\s*\|\s*", ", ", normalized)
+
+    if role and role.lower() not in lower:
+        intro_name = name.split()[0] if name and name != "Unknown Candidate" else "This candidate"
+        if company and company.lower() not in lower:
+            return f"{intro_name} is a {role} at {company}. {normalized[:220].rstrip(' .,;')}."
+        return f"{intro_name} is a {role}. {normalized[:220].rstrip(' .,;')}."
+
+    if location and location.lower() not in lower and company and company.lower() not in lower:
+        intro_name = name.split()[0] if name and name != "Unknown Candidate" else "This candidate"
+        return f"{intro_name} is based in {location}. {normalized[:220].rstrip(' .,;')}."
+
+    return normalized[:260].rstrip(" .,;") + "."
+
+
 def _linkedin_url(candidate: Any) -> str:
     """Extract LinkedIn URL from CandidateResult or dict, normalizing fallbacks."""
     direct = _resolve(
@@ -180,15 +233,9 @@ def build_recruiter_summary(
     elif location and job_location and _t(location).lower() in _t(job_location).lower():
         sentences.append(f"{pronoun} {verb_is} locally based in {location}, which lines up well for this role.")
     elif len(sentences) < 2 and raw_snippet:
-        # Clean the raw snippet — strip pipe-separated headline dumps, keep only prose
-        clean = _t(raw_snippet)
-        # If snippet is just a pipe-separated skill list, don’t show it verbatim
-        parts = [p.strip() for p in clean.split("|") if p.strip()]
-        if len(parts) >= 3:
-            # It’s a headline dump — ignore it, already covered by skills sentence
-            pass
-        elif clean and len(clean) > 30:
-            sentences.append(clean[:240].rstrip(" .,;") + ".")
+        humanized = _humanize_snippet(raw_snippet, name=name, role=role, company=company, location=location)
+        if humanized:
+            sentences.append(humanized)
     elif len(sentences) < 2 and explanation_reasoning:
         truncated = _t(explanation_reasoning)[:200].rstrip(" .,;")
         if truncated:

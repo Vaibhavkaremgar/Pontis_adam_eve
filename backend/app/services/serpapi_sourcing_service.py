@@ -3971,6 +3971,8 @@ def discover_linkedin_xray_candidates(
     prefilter_ms = round((perf_counter() - prefilter_started) * 1000.0, 2)
     logger.info("xray_normalized_count count=%s", len(prefiltered_results))
 
+    target_min_profiles = min(MAX_TOTAL_PROFILES, max(20, int(limit)))
+
     dedupe_started = perf_counter()
     normalized_results: list[dict[str, Any]] = []
     seen_linkedin_urls: set[str] = set()
@@ -4020,6 +4022,103 @@ def discover_linkedin_xray_candidates(
             # Company-level repetition is allowed, but we still count it for observability.
             duplicate_companies += 1 if any(_normalize_lower(item.get("current_company") or item.get("company") or "") == company for item in normalized_results) else 0
         normalized_results.append(candidate)
+
+    if len(normalized_results) < target_min_profiles and not mock_mode_active:
+        # Top up with additional enabled layers until we reach the minimum unique profile target.
+        exhausted_queries = {
+            _normalize_lower(layer.query)
+            for layer in limited_layers
+            if layer.enabled and layer.query
+        }
+        remaining_layers = [
+            layer
+            for layer in query_layers
+            if layer.enabled
+            and layer.query
+            and _normalize_lower(layer.query) not in exhausted_queries
+        ]
+        for layer in remaining_layers:
+            if len(normalized_results) >= target_min_profiles:
+                break
+            if not _reserve_serpapi_call(role=job_role, layer_type=layer.layer_type, query=layer.query):
+                continue
+            fingerprint = _query_fingerprint(
+                layer_type=layer.layer_type,
+                query=layer.query,
+                page=1,
+                num_requested=SERPAPI_RESULTS_PER_PAGE,
+                search_engine=SERPAPI_ENGINE or "google",
+            )
+            if _is_duplicate_query(fingerprint=fingerprint):
+                duplicate_query_count += 1
+                logger.info("serpapi_topup_duplicate_suppressed role=%s layer_type=%s fingerprint=%s", job_role, layer.layer_type, fingerprint[:12])
+                continue
+            raw_results = client.search(
+                query=layer.query,
+                pages=1,
+                context={
+                    "role_search_id": resolved_role_search_id,
+                    "recruiter_id": resolved_recruiter_id,
+                    "company_id": resolved_company_id,
+                    "job_id": resolved_job_id,
+                    "workflow_token": resolved_workflow_token,
+                    "layer_index": len(layer_results) + 1,
+                    "layer_type": layer.layer_type,
+                    "num_requested": SERPAPI_RESULTS_PER_PAGE,
+                    "query_terms": dict(layer.signals or {}),
+                },
+            )
+            layer_results.append((layer, raw_results, 1))
+            for result in raw_results:
+                if len(normalized_results) >= target_min_profiles:
+                    break
+                normalized = _normalize_candidate_result(
+                    result=result,
+                    query=layer.query,
+                    page=1,
+                    position=1,
+                    intake=resolved_intake,
+                    source="serpapi",
+                    query_context=layer.signals,
+                )
+                if not normalized:
+                    rejected_count += 1
+                    continue
+                linkedin_url = _normalize_lower(normalized.get("linkedin_url") or "")
+                candidate_id = _normalize_lower(normalized.get("candidate_id") or normalized.get("id") or "")
+                name_company = _normalize_lower(f"{normalized.get('full_name') or normalized.get('name') or ''}|{normalized.get('current_company') or normalized.get('company') or ''}")
+                company = _normalize_lower(normalized.get("current_company") or normalized.get("company") or "")
+
+                duplicate_reason = ""
+                if linkedin_url and linkedin_url in seen_linkedin_urls:
+                    duplicate_linkedin_urls += 1
+                    duplicate_reason = "linkedin_url"
+                elif candidate_id and candidate_id in seen_candidate_ids:
+                    duplicate_candidate_ids += 1
+                    duplicate_reason = "candidate_id"
+                elif name_company and name_company in seen_name_company:
+                    duplicate_candidate_names += 1
+                    duplicate_reason = "name_company"
+                elif linkedin_url and linkedin_url in existing_memory_keys:
+                    duplicate_memory_candidates += 1
+                    duplicate_reason = "recruiter_memory"
+                elif candidate_id and candidate_id in existing_memory_keys:
+                    duplicate_memory_candidates += 1
+                    duplicate_reason = "recruiter_memory"
+                elif name_company and name_company in existing_memory_keys:
+                    duplicate_memory_candidates += 1
+                    duplicate_reason = "recruiter_memory"
+                if duplicate_reason:
+                    continue
+                if linkedin_url:
+                    seen_linkedin_urls.add(linkedin_url)
+                if candidate_id:
+                    seen_candidate_ids.add(candidate_id)
+                if name_company:
+                    seen_name_company.add(name_company)
+                if company:
+                    duplicate_companies += 1 if any(_normalize_lower(item.get("current_company") or item.get("company") or "") == company for item in normalized_results) else 0
+                normalized_results.append(normalized)
 
     dedupe_ms = round((perf_counter() - dedupe_started) * 1000.0, 2)
     total_pipeline_ms = round(query_generation_ms + serpapi_latency_ms + prefilter_ms + dedupe_ms, 2)
