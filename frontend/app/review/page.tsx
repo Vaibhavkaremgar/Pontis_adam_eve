@@ -1681,6 +1681,17 @@ export default function ReviewPage() {
   const calibrationArchetypes = useMemo(() => getCalibrationCurrentProfiles(calibration), [calibration]);
   const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
   const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
+  const voiceIntakeSummary = useMemo(
+    () =>
+      trimText(
+        intelligence?.calibration?.voice_summary ||
+          intelligence?.selection?.voice_summary ||
+          intelligence?.interview?.voice_summary ||
+          "",
+        1200
+      ),
+    [intelligence]
+  );
   const calibrationComplete = calibration?.stage === "real_sourcing_ready";
   const interviewProgression = activeInterviewInsights?.progression || [];
   const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
@@ -2155,6 +2166,12 @@ export default function ReviewPage() {
 
           {!isLoading && calibrationComplete && swipeCandidates.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
+              {voiceIntakeSummary && (
+                <div className="rounded-[24px] border border-[#DDF5E6] bg-[#F4FBF7] p-5 shadow-[0_4px_16px_rgba(15,107,58,0.06)]">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">Voice intake summary</p>
+                  <p className="mt-3 max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[#374151]">{voiceIntakeSummary}</p>
+                </div>
+              )}
               <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
                 <div className="space-y-2 md:pr-4">
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">

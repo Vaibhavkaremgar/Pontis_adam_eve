@@ -98,6 +98,10 @@ async function installReviewFixtures(page) {
             current_round_index: 3,
             archetype_sets: [],
             current_pair: null,
+            voice_summary: 'Looking for a senior backend engineer with strong API design, AWS, and PostgreSQL experience.',
+          },
+          interview: {
+            voice_summary: 'Looking for a senior backend engineer with strong API design, AWS, and PostgreSQL experience.',
           },
         },
         error: null,
@@ -213,6 +217,7 @@ async function openReviewPage(page) {
   await page.goto('/review');
   await expect(page.getByText('Review Candidates')).toBeVisible();
   await expect(page.getByText('Swipe to shortlist')).toBeVisible();
+  await expect(page.getByText('Voice intake summary')).toBeVisible();
 }
 
 async function getCounts(page) {
