@@ -51,6 +51,35 @@ def _save_state(*, recruiter_id: str, job_id: str, state: dict[str, Any]) -> dic
     return state
 
 
+def _load_job_recruiter_intelligence(*, db: Session, job_id: str) -> dict[str, Any]:
+    job = JobRepository(db).get(job_id)
+    if not job:
+        return {}
+    structured = getattr(job, "structured_data", None)
+    if not isinstance(structured, dict):
+        return {}
+    intelligence = structured.get("recruiterIntelligence")
+    if not isinstance(intelligence, dict):
+        return {}
+    return intelligence
+
+
+def _hydrate_voice_fields(*, state: dict[str, Any], job_intelligence: dict[str, Any]) -> dict[str, Any]:
+    hydrated = dict(state)
+    stored_transcript = _normalize_text(job_intelligence.get("transcript", ""))
+    stored_summary = _normalize_text(job_intelligence.get("voiceSummary", ""))
+
+    if stored_transcript and not _normalize_text(hydrated.get("transcript", "")):
+        hydrated["transcript"] = stored_transcript
+    if stored_summary:
+        current_summary = _normalize_text(hydrated.get("voice_summary", ""))
+        if not current_summary or current_summary == "Structured job intake captured. Proceeding with recruiter calibration.":
+            hydrated["voice_summary"] = stored_summary
+    if not _normalize_text(hydrated.get("voice_summary", "")):
+        hydrated["voice_summary"] = _normalize_text(hydrated.get("transcript", ""))
+    return hydrated
+
+
 def _persist_job_intelligence_snapshot(*, db: Session, job_id: str, state: dict[str, Any]) -> None:
     job_repo = JobRepository(db)
     job = job_repo.get(job_id)
@@ -86,6 +115,7 @@ def start_recruiter_interview_session(
 
     recruiter_id = _normalize_text(recruiter_id)
     transcript = _normalize_text(transcript)
+    job_intelligence = _load_job_recruiter_intelligence(db=db, job_id=job_id)
     existing = _load_state(recruiter_id=recruiter_id, job_id=job_id)
     if existing and transcript and not existing.get("transcript"):
         existing["transcript"] = transcript
@@ -94,6 +124,11 @@ def start_recruiter_interview_session(
         _persist_job_intelligence_snapshot(db=db, job_id=job_id, state=final_existing)
         return final_existing
     if existing:
+        hydrated_existing = _hydrate_voice_fields(state=existing, job_intelligence=job_intelligence)
+        if hydrated_existing != existing:
+            final_existing = _save_state(recruiter_id=recruiter_id, job_id=job_id, state=hydrated_existing)
+            _persist_job_intelligence_snapshot(db=db, job_id=job_id, state=final_existing)
+            return final_existing
         return existing
 
     gap_analysis = analyze_job_gap(job=job, voice_summary=transcript, entities=entities or {})
@@ -103,7 +138,7 @@ def start_recruiter_interview_session(
         voice_summary=transcript,
         max_questions=7,
     )
-    voice_summary = transcript or "Structured job intake captured. Proceeding with recruiter calibration."
+    voice_summary = transcript or _normalize_text(job_intelligence.get("voiceSummary", "")) or _normalize_text(job_intelligence.get("transcript", "")) or "Structured job intake captured. Proceeding with recruiter calibration."
     intent_profile = build_recruiter_intent_profile(
         db=db,
         recruiter_id=recruiter_id,
@@ -239,6 +274,11 @@ def advance_recruiter_interview_stage(
 
 def build_recruiter_interview_response(*, state: dict[str, Any] | None) -> dict[str, Any]:
     payload = build_state_response(state)
+    if isinstance(payload, dict):
+        summary = _normalize_text(payload.get("voice_summary", ""))
+        transcript = _normalize_text(payload.get("transcript", ""))
+        if not summary or summary == "Structured job intake captured. Proceeding with recruiter calibration.":
+            payload["voice_summary"] = summary or transcript
     payload["stage_summary"] = {
         "initial_job_understanding": "Understand the structured job request and context.",
         "gap_analysis": "Identify missing, ambiguous, and low-confidence inputs.",

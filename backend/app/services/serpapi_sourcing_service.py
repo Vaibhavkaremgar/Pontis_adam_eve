@@ -2246,6 +2246,7 @@ def _select_primary_query_layers(layers: list[XRayQueryLayer], *, max_layers: in
     preferred_order = (
         "precision_query",
         "expansion_query",
+        "location_query",
         "signal_query",
         # Legacy names kept so any cached/partial layer objects still work
         "role_query_1",
@@ -2571,11 +2572,12 @@ def _build_role_aware_xray_queries(
     )
 
     # Q3 — Skills-first: no title, skills + signals + location
-    signal_skills = _dedupe_preserve_order(caller_skills[:2] + taxonomy_skills[:2])[:3]
+    # Keep Query 3 anchored on the target geography instead of broad signal terms.
+    location_skills = _dedupe_preserve_order(caller_skills[:2] + taxonomy_skills[:2])[:3]
     q3 = _build_google_xray_query(
-        title_terms=[],
-        skill_terms=signal_skills,
-        signal_terms=taxonomy_signals[:3],
+        title_terms=primary_titles[:1],
+        skill_terms=location_skills,
+        signal_terms=[],
         location=location,
     )
 
@@ -2851,13 +2853,14 @@ def build_linkedin_xray_query_layers(
             },
         ),
         XRayQueryLayer(
-            layer_type="signal_query",
+            layer_type="location_query",
             query=q3,
             signals={
-                "family": "signal",
-                "family_purpose": "skills + work signals, no title constraint (Query 3)",
+                "family": "location",
+                "family_purpose": "location-specific title + skills (Query 3)",
+                "title_terms": title_variants[:1],
                 "skill_terms": skill_list[:3],
-                "signal_terms": _role_xray_spec(family)["signals"][:3],
+                "signal_terms": [],
                 "location": location,
                 "location_term": location_term,
                 "is_fallback": False,

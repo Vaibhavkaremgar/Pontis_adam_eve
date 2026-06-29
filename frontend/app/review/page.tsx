@@ -1380,6 +1380,7 @@ export default function ReviewPage() {
   const [sourcingState, setSourcingState] = useState("");
   const [calibrationSelectionId, setCalibrationSelectionId] = useState("");
   const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [isVoiceSummaryOpen, setIsVoiceSummaryOpen] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [activeCandidate, setActiveCandidate] = useState<Candidate | null>(null);
   const [activeInterviewInsights, setActiveInterviewInsights] = useState<any>(null);
@@ -1549,11 +1550,9 @@ export default function ReviewPage() {
         });
       }
       const likelyReason = typeof debugPayload?.likelyReason === "string" ? debugPayload.likelyReason : "";
-      setFeedbackMessage(
-        rankedCandidates.length > 0
-          ? `Scanning loaded ${rankedCandidates.length} ranked candidate${rankedCandidates.length === 1 ? "" : "s"} for recruiter review.`
-          : `Scanning completed, but no candidates were returned${likelyReason ? ` (${likelyReason.replace(/_/g, " ")})` : ""}.`
-      );
+      if (rankedCandidates.length === 0) {
+        setFeedbackMessage(`Scanning completed, but no candidates were returned${likelyReason ? ` (${likelyReason.replace(/_/g, " ")})` : ""}.`);
+      }
     } finally {
       setReviewLoading(false);
       sourcingInFlightRef.current = false;
@@ -1689,9 +1688,12 @@ export default function ReviewPage() {
           intelligence?.interview?.voice_summary ||
           "",
         1200
-      ),
+    ),
     [intelligence]
   );
+  useEffect(() => {
+    setIsVoiceSummaryOpen(false);
+  }, [jobId, voiceIntakeSummary]);
   const calibrationComplete = calibration?.stage === "real_sourcing_ready";
   const interviewProgression = activeInterviewInsights?.progression || [];
   const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
@@ -1998,12 +2000,6 @@ export default function ReviewPage() {
             </div>
           </div>
 
-          {isRefined && (
-            <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Voice intake completed. Candidate scanning is now ready.
-            </div>
-          )}
-
           {(feedbackMessage || calibrationError || sourcingError || error) && (
             <div className="space-y-3">
               {feedbackMessage && <p className="rounded-xl border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">{feedbackMessage}</p>}
@@ -2167,7 +2163,27 @@ export default function ReviewPage() {
           {!isLoading && calibrationComplete && swipeCandidates.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
               {voiceIntakeSummary && (
-                <div className="rounded-[24px] border border-[#DDF5E6] bg-[#F4FBF7] p-5 shadow-[0_4px_16px_rgba(15,107,58,0.06)]">
+                <div className="flex justify-start">
+                  <button
+                    type="button"
+                    onClick={() => setIsVoiceSummaryOpen((open) => !open)}
+                    className={`rounded-full border px-4 py-2 text-left text-sm font-semibold transition-all duration-200 ${
+                      isVoiceSummaryOpen
+                        ? "border-[#DDF5E6] bg-[#F4FBF7] text-[#0F6B3A] shadow-[0_4px_16px_rgba(15,107,58,0.06)]"
+                        : "border-[#E7E0D4] bg-white text-[#111827] hover:bg-[#FAFAF8]"
+                    }`}
+                    aria-expanded={isVoiceSummaryOpen}
+                    aria-controls="voice-intake-summary"
+                  >
+                    Voice intake summary
+                  </button>
+                </div>
+              )}
+              {voiceIntakeSummary && isVoiceSummaryOpen && (
+                <div
+                  id="voice-intake-summary"
+                  className="rounded-[24px] border border-[#DDF5E6] bg-[#F4FBF7] p-5 shadow-[0_4px_16px_rgba(15,107,58,0.06)]"
+                >
                   <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">Voice intake summary</p>
                   <p className="mt-3 max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[#374151]">{voiceIntakeSummary}</p>
                 </div>
@@ -2177,9 +2193,9 @@ export default function ReviewPage() {
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
                     Candidate review
                   </p>
-                  <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
+                  {/* <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
                     Review the externally sourced candidates. Each card is ranked from scanning signals and reranked with recruiter memory.
-                  </p>
+                  </p> */}
                 </div>
               </div>
 
