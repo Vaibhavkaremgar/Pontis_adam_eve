@@ -279,6 +279,8 @@ def build_recruiter_interview_response(*, state: dict[str, Any] | None) -> dict[
         transcript = _normalize_text(payload.get("transcript", ""))
         if not summary or summary == "Structured job intake captured. Proceeding with recruiter calibration.":
             payload["voice_summary"] = summary or transcript
+        payload["persisted_voice_summary"] = payload.get("voice_summary", "")
+        payload["persisted_transcript"] = payload.get("transcript", "")
     payload["stage_summary"] = {
         "initial_job_understanding": "Understand the structured job request and context.",
         "gap_analysis": "Identify missing, ambiguous, and low-confidence inputs.",
