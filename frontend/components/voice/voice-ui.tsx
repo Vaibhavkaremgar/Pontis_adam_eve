@@ -17,7 +17,7 @@ import Image from "next/image";
 import { Mic, MicOff } from "lucide-react";
 
 import { useAppContext } from "@/context/AppContext";
-import { getRecruiterIntelligence, updateRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
+import { getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { refineWithVoice } from "@/lib/api/voice";
 import type { RecruiterIntelligenceSession } from "@/lib/api/recruiter-intelligence";
 import { completeOrchestrationVoice } from "@/lib/api/orchestration";
@@ -762,6 +762,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
 
   // Refs — never cause re-renders, safe to read inside Vapi callbacks
   const vapiRef = useRef<Vapi | null>(null);
+  const vapiSessionIdRef = useRef<string>("");
   const turnsRef = useRef<TranscriptTurn[]>([]);  // committed + live transcript turns
   const firedRef = useRef(false);                  // guard against double pipeline trigger
   const callStartedAtRef = useRef<number | null>(null);
@@ -1037,18 +1038,6 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     // Store voiceNotes for any downstream consumers (outreach, etc.)
     setVoiceNotes([fullTranscript]);
 
-    if (user && jobId) {
-      const intelligenceResult = await updateRecruiterIntelligence(user.id, jobId, {
-        jobId,
-        transcript: fullTranscript,
-        voiceSummary: fullTranscript,
-        entities: {},
-      });
-      if (intelligenceResult.success && intelligenceResult.data) {
-        setIntelligence(intelligenceResult.data);
-      }
-    }
-
     setPipelineStatus("refining");
     const refineResult = await refineWithVoice({
       jobId,
@@ -1240,6 +1229,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     }
     setPipelineStatus("idle");
     setPipelineError("");
+    vapiSessionIdRef.current = crypto.randomUUID();
 
     const jobTitle = job.title || "this role";
     const companyName = company.name || "your company";
@@ -1290,6 +1280,11 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
         jobId,
       });
       await vapi.start(assistantId, {
+        metadata: {
+          jobId,
+          recruiterId: user?.id || "",
+          sessionId: vapiSessionIdRef.current,
+        },
         variableValues: {
           jobTitle,
           companyName,

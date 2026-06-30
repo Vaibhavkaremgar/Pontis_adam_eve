@@ -325,6 +325,11 @@ export function SlackVoiceUi({ token }: { token: string }) {
 
         setStatus("connecting");
         await vapi.start(assistantId, {
+          metadata: {
+            jobId: orchestrationSession?.jobId || "",
+            recruiterId: "",
+            sessionId: orchestrationSession?.sessionToken || token,
+          },
           firstMessage: session.firstMessage || question,
           variableValues: {
             ...(session.variableValues || {}),
