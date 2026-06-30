@@ -88,6 +88,45 @@ function hasReachableEmail(candidate: Candidate): boolean {
   return true;
 }
 
+function buildCandidateSummary(candidate: Candidate): string {
+  const name = (candidate.name || "").trim();
+  const role = (candidate.role || candidate.headline || "").trim();
+  const company = (candidate.company || candidate.currentCompany || "").trim();
+  const location = (candidate.location || "").trim();
+  const yearsExperience = typeof candidate.yearsExperience === "number" && Number.isFinite(candidate.yearsExperience)
+    ? candidate.yearsExperience
+    : null;
+  const skills = (candidate.skills || []).map((skill) => skill.trim()).filter(Boolean).slice(0, 3);
+  const summary = (candidate.recruiterSummary || candidate.summary || "").trim();
+  const details: string[] = [];
+
+  if (role) {
+    details.push(role);
+  }
+  if (company && (!role || !company.toLowerCase().includes(role.toLowerCase()))) {
+    details.push(`at ${company}`);
+  }
+  if (yearsExperience !== null) {
+    details.push(`${yearsExperience}${yearsExperience === 1 ? " year" : " years"} of experience`);
+  }
+  if (location) {
+    details.push(`based in ${location}`);
+  }
+  if (skills.length > 0) {
+    details.push(`with strengths in ${skills.join(", ")}`);
+  }
+
+  if (summary) {
+    return summary;
+  }
+
+  if (details.length === 0) {
+    return name ? `${name} is a candidate we are currently reviewing.` : "Candidate profile summary coming soon.";
+  }
+
+  return `${name ? `${name} is ` : "This candidate is "}${details.join(", ")}.`;
+}
+
 export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
   const { candidates, isRefined, jobId, setCandidates } = useAppContext();
   const [pipelineTab, setPipelineTab] = useState<PipelineTab>("all");
@@ -346,10 +385,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h4 className="text-sm font-semibold text-gray-900">{candidate.name || candidate.id.slice(0, 8)}</h4>
-          <p className="text-xs text-gray-600">
-            {candidate.role}
-            {candidate.company ? ` @ ${candidate.company}` : ""}
-          </p>
+          <p className="text-xs text-gray-600">Candidate summary</p>
         </div>
         <Badge
           variant={
@@ -375,7 +411,22 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
               : candidate.enrichmentStatus || "Pending"}
         </span>
       </div>
-      {renderSummary(candidate)}
+      <p className="text-sm leading-relaxed text-gray-700">
+        {buildCandidateSummary(candidate)}
+      </p>
+      {candidate.linkedinUrl && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+          <span>LinkedIn</span>
+          <Link
+            href={candidate.linkedinUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-blue-700 underline decoration-blue-200 underline-offset-2 hover:text-blue-800"
+          >
+            View profile
+          </Link>
+        </div>
+      )}
       {renderExplanation(candidate)}
       <div className="flex flex-wrap gap-2 text-xs text-gray-500">
         <span>Status: {statusLabel(candidate.status)}</span>
@@ -461,16 +512,28 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
                           <h4 className="text-sm font-semibold text-gray-900">
                             {currentReviewCandidate.name || currentReviewCandidate.id.slice(0, 8)}
                           </h4>
-                          <p className="text-xs text-gray-600">
-                            {currentReviewCandidate.role}
-                            {currentReviewCandidate.company ? ` @ ${currentReviewCandidate.company}` : ""}
-                          </p>
+                          <p className="text-xs text-gray-600">Candidate summary</p>
                         </div>
                         <Badge variant={currentReviewCandidate.strategy === "HIGH" ? "high" : currentReviewCandidate.strategy === "MEDIUM" ? "medium" : "low"}>
                           ⭐ {currentReviewCandidate.fitScore}
                         </Badge>
                       </div>
-                      {renderSummary(currentReviewCandidate)}
+                      <p className="text-sm leading-relaxed text-gray-700">
+                        {buildCandidateSummary(currentReviewCandidate)}
+                      </p>
+                      {currentReviewCandidate.linkedinUrl && (
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                          <span>LinkedIn</span>
+                          <Link
+                            href={currentReviewCandidate.linkedinUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-medium text-blue-700 underline decoration-blue-200 underline-offset-2 hover:text-blue-800"
+                          >
+                            View profile
+                          </Link>
+                        </div>
+                      )}
                       {renderExplanation(currentReviewCandidate)}
                       <Separator />
                       <div className="grid grid-cols-2 gap-2">
