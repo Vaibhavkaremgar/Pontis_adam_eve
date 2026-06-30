@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +20,27 @@ _STATE_TTL_SECONDS = 24 * 60 * 60
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _build_voice_summary(*, transcript: str, fallback: str = "") -> str:
+    cleaned = _normalize_text(transcript)
+    if not cleaned:
+        return _normalize_text(fallback)
+
+    # Split on sentence boundaries while keeping the most useful first two lines.
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if len(sentences) >= 2:
+        return " ".join(sentences[:2])
+    if len(sentences) == 1:
+        sentence = sentences[0]
+        return sentence if len(sentence) <= 260 else f"{sentence[:257].rstrip()}..."
+
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if lines:
+        combined = " ".join(lines[:2])
+        return combined if len(combined) <= 260 else f"{combined[:257].rstrip()}..."
+
+    return cleaned if len(cleaned) <= 260 else f"{cleaned[:257].rstrip()}..."
 
 
 def _state_key(*, recruiter_id: str, job_id: str) -> str:
@@ -76,7 +98,10 @@ def _hydrate_voice_fields(*, state: dict[str, Any], job_intelligence: dict[str, 
         if not current_summary or current_summary == "Structured job intake captured. Proceeding with recruiter calibration.":
             hydrated["voice_summary"] = stored_summary
     if not _normalize_text(hydrated.get("voice_summary", "")):
-        hydrated["voice_summary"] = _normalize_text(hydrated.get("transcript", ""))
+        hydrated["voice_summary"] = _build_voice_summary(
+            transcript=_normalize_text(hydrated.get("transcript", "")),
+            fallback="Structured job intake captured. Proceeding with recruiter calibration.",
+        )
     return hydrated
 
 
@@ -138,7 +163,10 @@ def start_recruiter_interview_session(
         voice_summary=transcript,
         max_questions=7,
     )
-    voice_summary = transcript or _normalize_text(job_intelligence.get("voiceSummary", "")) or _normalize_text(job_intelligence.get("transcript", "")) or "Structured job intake captured. Proceeding with recruiter calibration."
+    voice_summary = _build_voice_summary(
+        transcript=transcript or _normalize_text(job_intelligence.get("voiceSummary", "")) or _normalize_text(job_intelligence.get("transcript", "")),
+        fallback="Structured job intake captured. Proceeding with recruiter calibration.",
+    )
     intent_profile = build_recruiter_intent_profile(
         db=db,
         recruiter_id=recruiter_id,
@@ -213,7 +241,10 @@ def update_recruiter_interview_session(
             "gap_analysis": gap_analysis,
             "recommended_questions": questions,
             "transcript": transcript,
-            "voice_summary": transcript or state.get("voice_summary", ""),
+            "voice_summary": _build_voice_summary(
+                transcript=transcript or state.get("voice_summary", ""),
+                fallback=state.get("voice_summary", ""),
+            ),
             "intent_profile": summarize_intent_profile(intent_profile),
             "current_question_index": min(int(state.get("current_question_index") or 0), max(0, len(questions) - 1)),
             "current_question": questions[min(int(state.get("current_question_index") or 0), max(0, len(questions) - 1))] if questions else "",

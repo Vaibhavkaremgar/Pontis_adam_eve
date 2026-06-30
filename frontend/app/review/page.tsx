@@ -234,29 +234,46 @@ function getReasoningSummary(candidate: Candidate): string {
   return "Low-information profile kept in the queue so recruiters do not lose potentially relevant candidates.";
 }
 
+function normalizeSummaryText(value: string): string {
+  return String(value || "")
+    .replace(/\bI['’]m\b/gi, "is")
+    .replace(/\bI am\b/gi, "is")
+    .replace(/\bI'm\b/gi, "is")
+    .replace(/\bmy\b/gi, "their")
+    .replace(/\bme\b/gi, "them")
+    .replace(/\bmine\b/gi, "theirs")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function getCandidateCardSummary(candidate: Candidate): string {
-  const recruiterSummary = String(candidate.recruiterSummary || "").trim();
+  const recruiterSummary = normalizeSummaryText(String(candidate.recruiterSummary || "").trim());
   if (recruiterSummary) return recruiterSummary;
 
-  const summary = String(candidate.summary || "").trim();
+  const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   if (summary) return summary;
 
   const role = getCandidateCurrentRole(candidate) || String(candidate.role || "").trim();
   const company = String(candidate.currentCompany || candidate.company || "").trim();
   const location = getCandidateLocation(candidate);
   const skills = getCandidateSkills(candidate).slice(0, 3);
-  const parts: string[] = [];
+  const summaryFragments: string[] = [];
 
-  if (role) parts.push(role);
-  if (company) parts.push(`at ${company}`);
-  if (location) parts.push(`based in ${location}`);
-  if (skills.length > 0) parts.push(`with strengths in ${skills.join(", ")}`);
+  if (role) {
+    summaryFragments.push(role);
+  } else {
+    summaryFragments.push("a candidate");
+  }
+  if (company) summaryFragments.push(`at ${company}`);
+  if (location) summaryFragments.push(`based in ${location}`);
+  if (skills.length > 0) summaryFragments.push(`with strengths in ${skills.join(", ")}`);
 
-  if (parts.length === 0) {
+  if (summaryFragments.length === 0) {
     return "Candidate profile summary coming soon.";
   }
 
-  return parts.join(" ").replace(/\s+/g, " ").trim().replace(/^[a-z]/, (match) => match.toUpperCase()) + ".";
+  const sentence = summaryFragments.join(" ").replace(/\s+/g, " ").trim();
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
 }
 
 function renderSignals(candidate: Candidate) {
