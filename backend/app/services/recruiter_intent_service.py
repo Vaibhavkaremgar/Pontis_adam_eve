@@ -268,6 +268,7 @@ def build_recruiter_intent_profile(
         "recruiter_preference_embedding": vector,
         "preference_text": intent_text,
         "voice_summary": _normalize_text(voice_summary or transcript),
+        "voice_transcript": _normalize_text(transcript),
         "selection_round_count": len(selection_rounds),
         "history_signal_strength": float(recruiter_history.get("signal_strength") or 0.0),
         "updated_at": datetime.now(timezone.utc).isoformat(),

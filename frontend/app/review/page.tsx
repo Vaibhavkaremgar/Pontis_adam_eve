@@ -246,6 +246,10 @@ function normalizeSummaryText(value: string): string {
     .trim();
 }
 
+function joinSentenceParts(parts: string[]): string {
+  return parts.map((part) => part.trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+
 function getCandidateCardSummary(candidate: Candidate): string {
   const recruiterSummary = normalizeSummaryText(String(candidate.recruiterSummary || "").trim());
   if (recruiterSummary) return recruiterSummary;
@@ -253,27 +257,47 @@ function getCandidateCardSummary(candidate: Candidate): string {
   const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   if (summary) return summary;
 
-  const role = getCandidateCurrentRole(candidate) || String(candidate.role || "").trim();
-  const company = String(candidate.currentCompany || candidate.company || "").trim();
+  const role = normalizeSummaryText(getCandidateCurrentRole(candidate) || String(candidate.role || "").trim());
+  const company = normalizeSummaryText(String(candidate.currentCompany || candidate.company || "").trim());
   const location = getCandidateLocation(candidate);
-  const skills = getCandidateSkills(candidate).slice(0, 3);
-  const summaryFragments: string[] = [];
+  const skills = getCandidateSkills(candidate).slice(0, 4);
+  const roleLabel = role || "candidate";
+  const prefix = `${candidate.name || "This candidate"} is a ${roleLabel}`;
+  const contextParts: string[] = [];
+  const skillsLabel = skills.length > 0 ? skills.join(", ") : "";
 
-  if (role) {
-    summaryFragments.push(role);
+  if (company) {
+    contextParts.push(`currently with ${company}`);
   } else {
-    summaryFragments.push("a candidate");
+    contextParts.push("currently reviewing opportunities");
   }
-  if (company) summaryFragments.push(`at ${company}`);
-  if (location) summaryFragments.push(`based in ${location}`);
-  if (skills.length > 0) summaryFragments.push(`with strengths in ${skills.join(", ")}`);
+  if (location) {
+    contextParts.push(`based in ${location}`);
+  }
+  if (skillsLabel) {
+    contextParts.push(`bringing strengths in ${skillsLabel}`);
+  }
 
-  if (summaryFragments.length === 0) {
+  const experienceHint = candidate.yearsExperience && candidate.yearsExperience > 0
+    ? `${candidate.yearsExperience}+ years of experience`
+    : "";
+
+  const opening = [
+    prefix,
+    experienceHint ? `with ${experienceHint}` : "",
+  ].filter(Boolean).join(" ");
+
+  const contextSentence = joinSentenceParts(contextParts);
+  const summarySentence = joinSentenceParts([
+    opening.endsWith(".") ? opening : `${opening}.`,
+    contextSentence ? `${contextSentence.charAt(0).toLowerCase()}${contextSentence.slice(1)}.` : "",
+  ]);
+
+  if (!summarySentence) {
     return "Candidate profile summary coming soon.";
   }
 
-  const sentence = summaryFragments.join(" ").replace(/\s+/g, " ").trim();
-  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
+  return `${summarySentence.charAt(0).toUpperCase()}${summarySentence.slice(1)}`;
 }
 
 function renderSignals(candidate: Candidate) {
