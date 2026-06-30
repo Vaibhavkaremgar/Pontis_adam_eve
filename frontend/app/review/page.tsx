@@ -234,6 +234,31 @@ function getReasoningSummary(candidate: Candidate): string {
   return "Low-information profile kept in the queue so recruiters do not lose potentially relevant candidates.";
 }
 
+function getCandidateCardSummary(candidate: Candidate): string {
+  const recruiterSummary = String(candidate.recruiterSummary || "").trim();
+  if (recruiterSummary) return recruiterSummary;
+
+  const summary = String(candidate.summary || "").trim();
+  if (summary) return summary;
+
+  const role = getCandidateCurrentRole(candidate) || String(candidate.role || "").trim();
+  const company = String(candidate.currentCompany || candidate.company || "").trim();
+  const location = getCandidateLocation(candidate);
+  const skills = getCandidateSkills(candidate).slice(0, 3);
+  const parts: string[] = [];
+
+  if (role) parts.push(role);
+  if (company) parts.push(`at ${company}`);
+  if (location) parts.push(`based in ${location}`);
+  if (skills.length > 0) parts.push(`with strengths in ${skills.join(", ")}`);
+
+  if (parts.length === 0) {
+    return "Candidate profile summary coming soon.";
+  }
+
+  return parts.join(" ").replace(/\s+/g, " ").trim().replace(/^[a-z]/, (match) => match.toUpperCase()) + ".";
+}
+
 function renderSignals(candidate: Candidate) {
   const explanation = candidate.explanation;
   const penalties = explanation?.penalties ?? {};
@@ -1261,20 +1286,8 @@ function RecruiterSwipeDeck({
                 </div>
               )}
 
-              <div className="grid gap-2 rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm text-[#4B5563]">
-                <p>
-                  <span className="font-semibold text-[#111827]">Current role:</span>{" "}
-                  {getCandidateCurrentRole(current) || current.role || "Not Available"}
-                </p>
-                <p>
-                  <span className="font-semibold text-[#111827]">Current company:</span> {current.currentCompany || current.company || "Not Available"}
-                </p>
-                <p>
-                  <span className="font-semibold text-[#111827]">Location:</span> {getCandidateLocation(current) || "Not Available"}
-                </p>
-                <p>
-                  <span className="font-semibold text-[#111827]">Skills:</span> {getCandidateSkills(current).slice(0, 4).join(", ") || "Not Available"}
-                </p>
+              <div className="rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm leading-7 text-[#4B5563]">
+                <p>{getCandidateCardSummary(current)}</p>
               </div>
 
               {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
