@@ -73,6 +73,55 @@ def _resolve_float(source: Any, *keys: str) -> float | None:
     return None
 
 
+def _education_text(value: Any) -> str:
+    if isinstance(value, str):
+        return _t(value)
+    if not isinstance(value, dict):
+        return ""
+
+    school = _t(value.get("school") or value.get("institution") or value.get("university") or value.get("name"))
+    degree = _t(value.get("degree") or value.get("qualification") or value.get("fieldOfStudy") or value.get("field"))
+    summary = _t(value.get("summary") or value.get("description"))
+
+    parts: list[str] = []
+    if degree and school:
+        parts.append(f"{degree} at {school}")
+    elif degree:
+        parts.append(degree)
+    elif school:
+        parts.append(school)
+    if summary and summary.lower() not in " ".join(parts).lower():
+        parts.append(summary)
+    return ", ".join(parts).strip(" ,")
+
+
+def _education_summary(candidate: Any) -> str:
+    raw_education = None
+    if isinstance(candidate, dict):
+        raw_education = candidate.get("education") or candidate.get("educations")
+    else:
+        raw_education = getattr(candidate, "education", None) or getattr(candidate, "educations", None)
+
+    entries: list[str] = []
+    if isinstance(raw_education, list):
+        for item in raw_education:
+            cleaned = _education_text(item)
+            if cleaned and cleaned.lower() not in {entry.lower() for entry in entries}:
+                entries.append(cleaned)
+            if len(entries) >= 2:
+                break
+    else:
+        cleaned = _education_text(raw_education)
+        if cleaned:
+            entries.append(cleaned)
+
+    if not entries:
+        return ""
+    if len(entries) == 1:
+        return f"Education highlights include {entries[0]}."
+    return f"Education highlights include {entries[0]} and {entries[1]}."
+
+
 def _split_headline_dump(text: str) -> list[str]:
     clean = _t(text)
     if not clean:
@@ -166,6 +215,7 @@ def build_recruiter_summary(
     job_location: str = "",
     job_experience: str = "",
     raw_snippet: str = "",
+    education_summary: str = "",
 ) -> list[str]:
     """
     Build a human-sounding recruiter summary as 2–3 natural sentences.
@@ -241,13 +291,16 @@ def build_recruiter_summary(
         if truncated:
             sentences.append(truncated + ".")
 
+    if education_summary:
+        sentences.append(education_summary)
+
     # Fallback if we couldn’t build anything meaningful
     if not sentences:
         if first_name:
             return [f"{first_name} was sourced via LinkedIn and looks worth a closer look."]
         return ["This candidate was sourced via LinkedIn and looks worth a closer look."]
 
-    return sentences[:3]
+    return sentences[:5]
 
 
 # ── shared view-model builder ─────────────────────────────────────────────────
@@ -273,6 +326,7 @@ def build_candidate_view_model(
     years_experience = _resolve_float(candidate, "yearsExperience", "years_experience")
     summary = _resolve(candidate, "summary") or ""
     linkedin_url = _linkedin_url(candidate)
+    education_summary = _education_summary(candidate)
 
     # Skills
     raw_skills: list[str] = []
@@ -341,6 +395,7 @@ def build_candidate_view_model(
         job_location=job_location,
         job_experience=job_exp,
         raw_snippet=summary,
+        education_summary=education_summary,
     )
 
     # Source metadata
