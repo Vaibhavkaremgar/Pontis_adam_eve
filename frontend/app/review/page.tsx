@@ -250,7 +250,7 @@ function joinSentenceParts(parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
-function getCandidateCardSummary(candidate: Candidate): string {
+function buildHumanCardSentence(candidate: Candidate): string {
   const recruiterSummary = normalizeSummaryText(String(candidate.recruiterSummary || "").trim());
   const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   const skills = getCandidateSkills(candidate).slice(0, 5);
@@ -258,64 +258,57 @@ function getCandidateCardSummary(candidate: Candidate): string {
   const company = normalizeSummaryText(String(candidate.currentCompany || candidate.company || "").trim());
   const location = getCandidateLocation(candidate);
   const yearsExperience = typeof candidate.yearsExperience === "number" && candidate.yearsExperience > 0 ? candidate.yearsExperience : null;
+  const name = candidate.name || "This candidate";
 
-  const skillSentence = skills.length
-    ? `Their strongest signals are ${skills.join(", ")}${skills.length >= 3 ? ", and related hands-on experience across those areas." : "."}`
-    : "Their profile suggests enough technical context to review further.";
+  const parts: string[] = [];
 
-  if (recruiterSummary) {
-    return joinSentenceParts([
-      recruiterSummary,
-      summary ? `Profile notes: ${summary}` : "",
-      skillSentence,
-    ]);
+  if (yearsExperience) {
+    parts.push(`${name} brings ${yearsExperience} years of experience`);
+  } else {
+    parts.push(`${name} appears to be an experienced candidate`);
   }
 
-  const roleLabel = role || "candidate";
-  const prefix = `${candidate.name || "This candidate"} is a ${roleLabel}`;
-  const contextParts: string[] = [];
-  const skillsLabel = skills.length > 0 ? skills.join(", ") : "";
-
+  if (role) {
+    parts.push(`working as a ${role}`);
+  }
   if (company) {
-    contextParts.push(`currently with ${company}`);
-  } else {
-    contextParts.push("currently reviewing opportunities");
+    parts.push(`at ${company}`);
   }
   if (location) {
-    contextParts.push(`based in ${location}`);
+    parts.push(`based in ${location}`);
   }
-  if (skillsLabel) {
-    contextParts.push(`bringing strengths in ${skillsLabel}`);
+  if (skills.length > 0) {
+    parts.push(`with strength in ${skills.slice(0, 3).join(", ")}`);
+  }
+  if (recruiterSummary) {
+    parts.push(recruiterSummary.replace(/^additional profile notes:\s*/i, ""));
+  } else if (summary) {
+    const cleanSummary = summary
+      .replace(/^profile notes:\s*/i, "")
+      .replace(/^source snippet:.*$/i, "")
+      .replace(/\s*their strongest signals are.*$/i, "")
+      .trim();
+    if (cleanSummary) {
+      parts.push(cleanSummary);
+    }
   }
 
-  const experienceHint = yearsExperience ? `${yearsExperience}+ years of experience` : "";
+  return joinSentenceParts(parts).replace(/\s+/g, " ").replace(/\.\.+/g, ".").trim();
+}
 
-  const opening = [
-    prefix,
-    experienceHint ? `with ${experienceHint}` : "",
-  ].filter(Boolean).join(" ");
+function getCandidateCardSummary(candidate: Candidate): string {
+  const humanSentence = buildHumanCardSentence(candidate);
+  if (humanSentence) return humanSentence;
 
-  const contextSentence = joinSentenceParts(contextParts);
-  const summarySentence = joinSentenceParts([
-    opening.endsWith(".") ? opening : `${opening}.`,
-    contextSentence ? `${contextSentence.charAt(0).toLowerCase()}${contextSentence.slice(1)}.` : "",
-  ]);
-
-  if (!summarySentence) {
-    const skillFallback = skills.length
-      ? `This candidate shows strength in ${skills.join(", ")}.`
-      : "This candidate has limited profile data available right now.";
-    return joinSentenceParts([
-      "Candidate profile summary coming soon.",
-      skillFallback,
-      "Please review the full profile for more context.",
-    ]);
-  }
+  const skills = getCandidateSkills(candidate).slice(0, 5);
+  const skillFallback = skills.length
+    ? `This candidate shows strength in ${skills.join(", ")}.`
+    : "This candidate has limited profile data available right now.";
 
   return joinSentenceParts([
-    `${summarySentence.charAt(0).toUpperCase()}${summarySentence.slice(1)}`,
-    summary ? `Additional profile notes: ${summary}` : "",
-    skillSentence,
+    "Candidate profile summary coming soon.",
+    skillFallback,
+    "Please review the full profile for more context.",
   ]);
 }
 
@@ -466,6 +459,23 @@ function trimText(value?: string, maxLength = 1200): string {
   const normalized = value.replace(/\r\n/g, "\n").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, maxLength).trim()}...`;
+}
+
+function summarizeVoiceIntakeText(value?: string): string {
+  const text = trimText(value, 1200);
+  if (!text) return "";
+
+  const filtered = text
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => !/^structured job intake captured\./i.test(part));
+
+  if (filtered.length > 0) {
+    return trimText(filtered.slice(0, 2).join(" "), 360);
+  }
+
+  return trimText(text, 360);
 }
 
 function clampLines(lines = 2) {
@@ -1755,19 +1765,18 @@ export default function ReviewPage() {
   const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const voiceIntakeSummary = useMemo(
     () =>
-      trimText(
-        intelligence?.calibration?.transcript ||
+      summarizeVoiceIntakeText(
+        intelligence?.calibration?.voice_summary ||
+          intelligence?.selection?.voice_summary ||
+          intelligence?.interview?.voice_summary ||
+          intelligence?.calibration?.transcript ||
           intelligence?.calibration?.voice_transcript ||
           intelligence?.selection?.transcript ||
           intelligence?.selection?.voice_transcript ||
           intelligence?.interview?.transcript ||
           intelligence?.interview?.voice_transcript ||
-          intelligence?.calibration?.voice_summary ||
-          intelligence?.selection?.voice_summary ||
-          intelligence?.interview?.voice_summary ||
-          "",
-        1200
-    ),
+          ""
+      ),
     [intelligence]
   );
   useEffect(() => {
