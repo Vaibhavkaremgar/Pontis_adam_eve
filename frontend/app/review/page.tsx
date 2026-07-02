@@ -250,8 +250,39 @@ function joinSentenceParts(parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
+function getSkillExpansion(skill: string): string {
+  const normalized = String(skill || "").trim().toLowerCase();
+  if (!normalized) return "";
+
+  if (normalized.includes("python")) {
+    return "They likely work on Python-heavy projects and are comfortable with FastAPI, backend APIs, and core server-side concepts.";
+  }
+  if (normalized.includes("javascript") || normalized.includes("typescript")) {
+    return "They likely work on product features, frontend integration, and building reliable client-side experiences.";
+  }
+  if (normalized.includes("react")) {
+    return "They likely build interactive interfaces, reusable UI components, and smooth frontend flows.";
+  }
+  if (normalized.includes("node")) {
+    return "They likely work on backend services, APIs, and application logic in JavaScript-based stacks.";
+  }
+  if (normalized.includes("java")) {
+    return "They likely work on backend systems, service development, and scalable application logic.";
+  }
+  if (normalized.includes("aws") || normalized.includes("cloud")) {
+    return "They likely handle deployment, cloud infrastructure, and production-ready system setup.";
+  }
+  if (normalized.includes("sql") || normalized.includes("database")) {
+    return "They likely work with data models, querying, and backend data flow across projects.";
+  }
+  if (normalized.includes("fastapi")) {
+    return "They likely build APIs, backend services, and clean application layers around FastAPI.";
+  }
+
+  return "They likely apply this skill across practical projects and real-world delivery work.";
+}
+
 function buildHumanCardSentence(candidate: Candidate): string {
-  const recruiterSummary = normalizeSummaryText(String(candidate.recruiterSummary || "").trim());
   const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   const skills = getCandidateSkills(candidate).slice(0, 5);
   const role = normalizeSummaryText(getCandidateCurrentRole(candidate) || String(candidate.role || "").trim());
@@ -277,23 +308,25 @@ function buildHumanCardSentence(candidate: Candidate): string {
   if (location) {
     parts.push(`based in ${location}`);
   }
-  if (skills.length > 0) {
+  const primarySkill = skills[0] || "";
+  if (primarySkill) {
     parts.push(`with strength in ${skills.slice(0, 3).join(", ")}`);
-  }
-  if (recruiterSummary) {
-    parts.push(recruiterSummary.replace(/^additional profile notes:\s*/i, ""));
+    const expansion = getSkillExpansion(primarySkill);
+    if (expansion) parts.push(expansion);
   } else if (summary) {
     const cleanSummary = summary
       .replace(/^profile notes:\s*/i, "")
       .replace(/^source snippet:.*$/i, "")
       .replace(/\s*their strongest signals are.*$/i, "")
       .trim();
-    if (cleanSummary) {
-      parts.push(cleanSummary);
-    }
+    if (cleanSummary) parts.push(cleanSummary);
   }
 
-  return joinSentenceParts(parts).replace(/\s+/g, " ").replace(/\.\.+/g, ".").trim();
+  return joinSentenceParts(parts)
+    .replace(/\s+/g, " ")
+    .replace(/\.\.+/g, ".")
+    .replace(/\s+\./g, ".")
+    .trim();
 }
 
 function getCandidateCardSummary(candidate: Candidate): string {
