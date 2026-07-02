@@ -264,71 +264,85 @@ function pickVariant(seed: string, variants: string[]): string {
   return variants[hashString(seed) % variants.length];
 }
 
-function getSkillExpansion(skill: string, seed = ""): string {
+function getSentenceCompletedText(value: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const normalized = text.charAt(0).toUpperCase() + text.slice(1);
+  return normalized.endsWith(".") ? normalized : `${normalized}.`;
+}
+
+function getPronounBundle(seed: string): { subject: "He" | "She"; verbHave: "has" } {
+  return hashString(seed) % 2 === 0
+    ? { subject: "He", verbHave: "has" }
+    : { subject: "She", verbHave: "has" };
+}
+
+function getSkillExpansion(skill: string, seed = "", pronoun = "He"): string {
   const normalized = String(skill || "").trim().toLowerCase();
   if (!normalized) return "";
+  const base = `${pronoun} likely`;
 
   if (normalized.includes("python")) {
     return pickVariant(seed, [
-      "He or she has likely worked on Python-heavy projects and knows how to use FastAPI, backend APIs, and core server-side concepts in real work.",
-      "He or she has probably used Python to build backend services, ship APIs, and solve practical product problems.",
-      "He or she seems to have applied Python in real projects and picked up a solid understanding of backend design and service development.",
+      `${base} worked on Python-heavy projects and knows how to use FastAPI, backend APIs, and core server-side concepts in real work.`,
+      `${base} used Python to build backend services, ship APIs, and solve practical product problems.`,
+      `${base} applied Python in real projects and picked up a solid understanding of backend design and service development.`,
     ]);
   }
   if (normalized.includes("javascript") || normalized.includes("typescript")) {
     return pickVariant(seed, [
-      "He or she has likely worked on product features, frontend integration, and building reliable client-side experiences.",
-      "He or she probably contributes to interactive web apps, UI flows, and smooth handoffs between frontend and backend.",
-      "He or she seems comfortable building responsive product experiences and connecting the UI cleanly to application logic.",
+      `${base} worked on product features, frontend integration, and building reliable client-side experiences.`,
+      `${base} contributed to interactive web apps, UI flows, and smooth handoffs between frontend and backend.`,
+      `${base} seems comfortable building responsive product experiences and connecting the UI cleanly to application logic.`,
     ]);
   }
   if (normalized.includes("react")) {
     return pickVariant(seed, [
-      "He or she likely builds interactive interfaces, reusable UI components, and smooth frontend flows.",
-      "He or she probably shapes component-driven UIs and keeps user interactions polished and maintainable.",
-      "He or she seems to handle dynamic screens, reusable patterns, and product-facing interface work.",
+      `${base} builds interactive interfaces, reusable UI components, and smooth frontend flows.`,
+      `${base} shapes component-driven UIs and keeps user interactions polished and maintainable.`,
+      `${base} handles dynamic screens, reusable patterns, and product-facing interface work.`,
     ]);
   }
   if (normalized.includes("node")) {
     return pickVariant(seed, [
-      "He or she likely works on backend services, APIs, and application logic in JavaScript-based stacks.",
-      "He or she probably contributes to service layers, integration logic, and API-driven backend work.",
-      "He or she seems to build server-side features and support product delivery through API development.",
+      `${base} works on backend services, APIs, and application logic in JavaScript-based stacks.`,
+      `${base} contributes to service layers, integration logic, and API-driven backend work.`,
+      `${base} builds server-side features and supports product delivery through API development.`,
     ]);
   }
   if (normalized.includes("java")) {
     return pickVariant(seed, [
-      "He or she likely works on backend systems, service development, and scalable application logic.",
-      "He or she probably contributes to enterprise services, reliable backend modules, and structured application design.",
-      "He or she seems to build stable backend components and support production-grade software delivery.",
+      `${base} works on backend systems, service development, and scalable application logic.`,
+      `${base} contributes to enterprise services, reliable backend modules, and structured application design.`,
+      `${base} builds stable backend components and supports production-grade software delivery.`,
     ]);
   }
   if (normalized.includes("aws") || normalized.includes("cloud")) {
     return pickVariant(seed, [
-      "He or she likely handles deployment, cloud infrastructure, and production-ready system setup.",
-      "He or she probably works with environments, scaling, and production operations on the cloud.",
-      "He or she seems to support infrastructure, deployment flow, and reliability for live systems.",
+      `${base} handles deployment, cloud infrastructure, and production-ready system setup.`,
+      `${base} works with environments, scaling, and production operations on the cloud.`,
+      `${base} supports infrastructure, deployment flow, and reliability for live systems.`,
     ]);
   }
   if (normalized.includes("sql") || normalized.includes("database")) {
     return pickVariant(seed, [
-      "He or she likely works with data models, querying, and backend data flow across projects.",
-      "He or she probably handles database logic, reporting queries, and application data movement.",
-      "He or she seems to shape how data is stored, fetched, and used across the product stack.",
+      `${base} works with data models, querying, and backend data flow across projects.`,
+      `${base} handles database logic, reporting queries, and application data movement.`,
+      `${base} shapes how data is stored, fetched, and used across the product stack.`,
     ]);
   }
   if (normalized.includes("fastapi")) {
     return pickVariant(seed, [
-      "He or she likely builds APIs, backend services, and clean application layers around FastAPI.",
-      "He or she probably uses FastAPI to ship service endpoints, validation, and backend workflows.",
-      "He or she seems to work on modern Python API development and service-oriented backend design.",
+      `${base} builds APIs, backend services, and clean application layers around FastAPI.`,
+      `${base} uses FastAPI to ship service endpoints, validation, and backend workflows.`,
+      `${base} works on modern Python API development and service-oriented backend design.`,
     ]);
   }
 
   return pickVariant(seed, [
-    "He or she likely applies this skill across practical projects and real-world delivery work.",
-    "He or she probably uses this skill in hands-on product work and day-to-day implementation.",
-    "He or she seems to bring this skill into active project delivery and problem solving.",
+    `${base} applies this skill across practical projects and real-world delivery work.`,
+    `${base} uses this skill in hands-on product work and day-to-day implementation.`,
+    `${base} brings this skill into active project delivery and problem solving.`,
   ]);
 }
 
@@ -350,53 +364,56 @@ function buildHumanCardSentence(candidate: Candidate): string {
     skills.join("|"),
     String(profileData.summary || profileData.overview || rawDiscovery.summary || rawDiscovery.overview || ""),
   ].join("::");
+  const pronouns = getPronounBundle(seed);
 
   const parts: string[] = [];
 
+  const subject = pronouns.subject;
+  const verbHave = pronouns.verbHave;
   const openers = yearsExperience
     ? [
-        `${name} brings ${yearsExperience} years of experience`,
-        `${name} has ${yearsExperience} years in the field`,
-        `${name} comes with ${yearsExperience} years of hands-on experience`,
+        `${subject} ${verbHave} ${yearsExperience} years of experience`,
+        `${subject} ${verbHave} ${yearsExperience} years in the field`,
+        `${subject} ${verbHave} ${yearsExperience} years of hands-on experience`,
       ]
     : [
-        `${name} appears to be an experienced candidate`,
-        `${name} shows a solid professional background`,
-        `${name} looks like a candidate with meaningful real-world experience`,
+        `${subject} appears to have a solid professional background`,
+        `${subject} shows meaningful real-world experience`,
+        `${subject} looks like a candidate with practical delivery experience`,
       ];
-  parts.push(pickVariant(seed, openers));
+  parts.push(getSentenceCompletedText(pickVariant(seed, openers)));
 
   if (role) {
-    parts.push(pickVariant(seed + "role", [
-      `working as a ${role}`,
-      `currently in the ${role} role`,
-      `with a background as a ${role}`,
-    ]));
+    parts.push(getSentenceCompletedText(pickVariant(seed + "role", [
+      `${subject} is working as a ${role}`,
+      `${subject} is currently in the ${role} role`,
+      `${subject} has a background as a ${role}`,
+    ])));
   }
   if (company) {
-    parts.push(pickVariant(seed + "company", [
-      `at ${company}`,
-      `with experience at ${company}`,
-      `from ${company}`,
-    ]));
+    parts.push(getSentenceCompletedText(pickVariant(seed + "company", [
+      `${subject} works at ${company}`,
+      `${subject} has experience at ${company}`,
+      `${subject} comes from ${company}`,
+    ])));
   }
   if (location) {
-    parts.push(pickVariant(seed + "location", [
-      `based in ${location}`,
-      `working out of ${location}`,
-      `from ${location}`,
-    ]));
+    parts.push(getSentenceCompletedText(pickVariant(seed + "location", [
+      `${subject} is based in ${location}`,
+      `${subject} works out of ${location}`,
+      `${subject} is from ${location}`,
+    ])));
   }
   const primarySkill = skills[0] || "";
   if (primarySkill) {
     const skillList = skills.slice(0, 3).join(", ");
-    parts.push(pickVariant(seed + "skill", [
-      `with strength in ${skillList}`,
-      `with a core focus on ${skillList}`,
-      `and a practical grip on ${skillList}`,
-    ]));
-    const expansion = getSkillExpansion(primarySkill, seed + "expansion");
-    if (expansion) parts.push(expansion);
+    parts.push(getSentenceCompletedText(pickVariant(seed + "skill", [
+      `${subject} has strength in ${skillList}`,
+      `${subject} has a core focus on ${skillList}`,
+      `${subject} has a practical grip on ${skillList}`,
+    ])));
+    const expansion = getSkillExpansion(primarySkill, seed + "expansion", subject);
+    if (expansion) parts.push(getSentenceCompletedText(expansion));
   } else if (summary) {
     const cleanSummary = summary
       .replace(/^profile notes:\s*/i, "")
@@ -404,19 +421,15 @@ function buildHumanCardSentence(candidate: Candidate): string {
       .replace(/\s*their strongest signals are.*$/i, "")
       .trim();
     if (cleanSummary) {
-      parts.push(pickVariant(seed + "summary", [
+      parts.push(getSentenceCompletedText(pickVariant(seed + "summary", [
         cleanSummary,
-        `The profile suggests ${cleanSummary.charAt(0).toLowerCase()}${cleanSummary.slice(1)}`,
         `Overall, ${cleanSummary.charAt(0).toLowerCase()}${cleanSummary.slice(1)}`,
-      ]));
+        `The profile suggests ${cleanSummary.charAt(0).toLowerCase()}${cleanSummary.slice(1)}`,
+      ])));
     }
   }
 
-  return joinSentenceParts(parts)
-    .replace(/\s+/g, " ")
-    .replace(/\.\.+/g, ".")
-    .replace(/\s+\./g, ".")
-    .trim();
+  return parts.filter(Boolean).map(getSentenceCompletedText).join(" ");
 }
 
 function getCandidateCardSummary(candidate: Candidate): string {
