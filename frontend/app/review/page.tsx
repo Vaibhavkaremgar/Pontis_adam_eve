@@ -270,65 +270,65 @@ function getSkillExpansion(skill: string, seed = ""): string {
 
   if (normalized.includes("python")) {
     return pickVariant(seed, [
-      "They likely work on Python-heavy projects and are comfortable with FastAPI, backend APIs, and core server-side concepts.",
-      "They likely use Python to build backend services, ship APIs, and solve practical product problems.",
-      "They likely apply Python across real projects, with a good grasp of backend design and service development.",
+      "He or she has likely worked on Python-heavy projects and knows how to use FastAPI, backend APIs, and core server-side concepts in real work.",
+      "He or she has probably used Python to build backend services, ship APIs, and solve practical product problems.",
+      "He or she seems to have applied Python in real projects and picked up a solid understanding of backend design and service development.",
     ]);
   }
   if (normalized.includes("javascript") || normalized.includes("typescript")) {
     return pickVariant(seed, [
-      "They likely work on product features, frontend integration, and building reliable client-side experiences.",
-      "They likely contribute to interactive web apps, UI flows, and smooth handoffs between frontend and backend.",
-      "They likely build responsive product experiences and connect the UI cleanly to application logic.",
+      "He or she has likely worked on product features, frontend integration, and building reliable client-side experiences.",
+      "He or she probably contributes to interactive web apps, UI flows, and smooth handoffs between frontend and backend.",
+      "He or she seems comfortable building responsive product experiences and connecting the UI cleanly to application logic.",
     ]);
   }
   if (normalized.includes("react")) {
     return pickVariant(seed, [
-      "They likely build interactive interfaces, reusable UI components, and smooth frontend flows.",
-      "They likely shape component-driven UIs and keep user interactions polished and maintainable.",
-      "They likely handle dynamic screens, reusable patterns, and product-facing interface work.",
+      "He or she likely builds interactive interfaces, reusable UI components, and smooth frontend flows.",
+      "He or she probably shapes component-driven UIs and keeps user interactions polished and maintainable.",
+      "He or she seems to handle dynamic screens, reusable patterns, and product-facing interface work.",
     ]);
   }
   if (normalized.includes("node")) {
     return pickVariant(seed, [
-      "They likely work on backend services, APIs, and application logic in JavaScript-based stacks.",
-      "They likely contribute to service layers, integration logic, and API-driven backend work.",
-      "They likely build server-side features and support product delivery through API development.",
+      "He or she likely works on backend services, APIs, and application logic in JavaScript-based stacks.",
+      "He or she probably contributes to service layers, integration logic, and API-driven backend work.",
+      "He or she seems to build server-side features and support product delivery through API development.",
     ]);
   }
   if (normalized.includes("java")) {
     return pickVariant(seed, [
-      "They likely work on backend systems, service development, and scalable application logic.",
-      "They likely contribute to enterprise services, reliable backend modules, and structured application design.",
-      "They likely build stable backend components and support production-grade software delivery.",
+      "He or she likely works on backend systems, service development, and scalable application logic.",
+      "He or she probably contributes to enterprise services, reliable backend modules, and structured application design.",
+      "He or she seems to build stable backend components and support production-grade software delivery.",
     ]);
   }
   if (normalized.includes("aws") || normalized.includes("cloud")) {
     return pickVariant(seed, [
-      "They likely handle deployment, cloud infrastructure, and production-ready system setup.",
-      "They likely work with environments, scaling, and production operations on the cloud.",
-      "They likely support infrastructure, deployment flow, and reliability for live systems.",
+      "He or she likely handles deployment, cloud infrastructure, and production-ready system setup.",
+      "He or she probably works with environments, scaling, and production operations on the cloud.",
+      "He or she seems to support infrastructure, deployment flow, and reliability for live systems.",
     ]);
   }
   if (normalized.includes("sql") || normalized.includes("database")) {
     return pickVariant(seed, [
-      "They likely work with data models, querying, and backend data flow across projects.",
-      "They likely handle database logic, reporting queries, and application data movement.",
-      "They likely shape how data is stored, fetched, and used across the product stack.",
+      "He or she likely works with data models, querying, and backend data flow across projects.",
+      "He or she probably handles database logic, reporting queries, and application data movement.",
+      "He or she seems to shape how data is stored, fetched, and used across the product stack.",
     ]);
   }
   if (normalized.includes("fastapi")) {
     return pickVariant(seed, [
-      "They likely build APIs, backend services, and clean application layers around FastAPI.",
-      "They likely use FastAPI to ship service endpoints, validation, and backend workflows.",
-      "They likely work on modern Python API development and service-oriented backend design.",
+      "He or she likely builds APIs, backend services, and clean application layers around FastAPI.",
+      "He or she probably uses FastAPI to ship service endpoints, validation, and backend workflows.",
+      "He or she seems to work on modern Python API development and service-oriented backend design.",
     ]);
   }
 
   return pickVariant(seed, [
-    "They likely apply this skill across practical projects and real-world delivery work.",
-    "They likely use this skill in hands-on product work and day-to-day implementation.",
-    "They likely bring this skill into active project delivery and problem solving.",
+    "He or she likely applies this skill across practical projects and real-world delivery work.",
+    "He or she probably uses this skill in hands-on product work and day-to-day implementation.",
+    "He or she seems to bring this skill into active project delivery and problem solving.",
   ]);
 }
 
@@ -393,7 +393,7 @@ function buildHumanCardSentence(candidate: Candidate): string {
     parts.push(pickVariant(seed + "skill", [
       `with strength in ${skillList}`,
       `with a core focus on ${skillList}`,
-      `bringing useful depth in ${skillList}`,
+      `and a practical grip on ${skillList}`,
     ]));
     const expansion = getSkillExpansion(primarySkill, seed + "expansion");
     if (expansion) parts.push(expansion);
