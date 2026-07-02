@@ -271,28 +271,27 @@ function getSentenceCompletedText(value: string): string {
   return normalized.endsWith(".") ? normalized : `${normalized}.`;
 }
 
-function getPronounBundle(seed: string): { subject: "He" | "She"; verbHave: "has" } {
-  return hashString(seed) % 2 === 0
-    ? { subject: "He", verbHave: "has" }
-    : { subject: "She", verbHave: "has" };
+function getCandidatePerspective(seed: string): { subject: "The candidate"; verbHave: "has" } {
+  void seed;
+  return { subject: "The candidate", verbHave: "has" };
 }
 
-function getSkillExpansion(skill: string, seed = "", pronoun = "He"): string {
+function getSkillExpansion(skill: string, seed = "", subject = "The candidate"): string {
   const normalized = String(skill || "").trim().toLowerCase();
   if (!normalized) return "";
-  const base = `${pronoun} likely`;
+  const base = subject;
 
   if (normalized.includes("python")) {
     return pickVariant(seed, [
-      `${base} worked on Python-heavy projects and knows how to use FastAPI, backend APIs, and core server-side concepts in real work.`,
-      `${base} used Python to build backend services, ship APIs, and solve practical product problems.`,
-      `${base} applied Python in real projects and picked up a solid understanding of backend design and service development.`,
+      `${base} has worked on Python-heavy projects and knows how to use FastAPI, backend APIs, and core server-side concepts in real work.`,
+      `${base} has used Python to build backend services, ship APIs, and solve practical product problems.`,
+      `${base} has applied Python in real projects and picked up a solid understanding of backend design and service development.`,
     ]);
   }
   if (normalized.includes("javascript") || normalized.includes("typescript")) {
     return pickVariant(seed, [
-      `${base} worked on product features, frontend integration, and building reliable client-side experiences.`,
-      `${base} contributed to interactive web apps, UI flows, and smooth handoffs between frontend and backend.`,
+      `${base} has worked on product features, frontend integration, and building reliable client-side experiences.`,
+      `${base} has contributed to interactive web apps, UI flows, and smooth handoffs between frontend and backend.`,
       `${base} seems comfortable building responsive product experiences and connecting the UI cleanly to application logic.`,
     ]);
   }
@@ -305,8 +304,8 @@ function getSkillExpansion(skill: string, seed = "", pronoun = "He"): string {
   }
   if (normalized.includes("node")) {
     return pickVariant(seed, [
-      `${base} works on backend services, APIs, and application logic in JavaScript-based stacks.`,
-      `${base} contributes to service layers, integration logic, and API-driven backend work.`,
+      `${base} has worked on backend services, APIs, and application logic in JavaScript-based stacks.`,
+      `${base} has contributed to service layers, integration logic, and API-driven backend work.`,
       `${base} builds server-side features and supports product delivery through API development.`,
     ]);
   }
@@ -364,12 +363,12 @@ function buildHumanCardSentence(candidate: Candidate): string {
     skills.join("|"),
     String(profileData.summary || profileData.overview || rawDiscovery.summary || rawDiscovery.overview || ""),
   ].join("::");
-  const pronouns = getPronounBundle(seed);
+  const perspective = getCandidatePerspective(seed);
 
   const parts: string[] = [];
 
-  const subject = pronouns.subject;
-  const verbHave = pronouns.verbHave;
+  const subject = perspective.subject;
+  const verbHave = perspective.verbHave;
   const openers = yearsExperience
     ? [
         `${subject} ${verbHave} ${yearsExperience} years of experience`,
