@@ -252,15 +252,25 @@ function joinSentenceParts(parts: string[]): string {
 
 function getCandidateCardSummary(candidate: Candidate): string {
   const recruiterSummary = normalizeSummaryText(String(candidate.recruiterSummary || "").trim());
-  if (recruiterSummary) return recruiterSummary;
-
   const summary = normalizeSummaryText(String(candidate.summary || "").trim());
-  if (summary) return summary;
-
+  const skills = getCandidateSkills(candidate).slice(0, 5);
   const role = normalizeSummaryText(getCandidateCurrentRole(candidate) || String(candidate.role || "").trim());
   const company = normalizeSummaryText(String(candidate.currentCompany || candidate.company || "").trim());
   const location = getCandidateLocation(candidate);
-  const skills = getCandidateSkills(candidate).slice(0, 4);
+  const yearsExperience = typeof candidate.yearsExperience === "number" && candidate.yearsExperience > 0 ? candidate.yearsExperience : null;
+
+  const skillSentence = skills.length
+    ? `Their strongest signals are ${skills.join(", ")}${skills.length >= 3 ? ", and related hands-on experience across those areas." : "."}`
+    : "Their profile suggests enough technical context to review further.";
+
+  if (recruiterSummary) {
+    return joinSentenceParts([
+      recruiterSummary,
+      summary ? `Profile notes: ${summary}` : "",
+      skillSentence,
+    ]);
+  }
+
   const roleLabel = role || "candidate";
   const prefix = `${candidate.name || "This candidate"} is a ${roleLabel}`;
   const contextParts: string[] = [];
@@ -278,9 +288,7 @@ function getCandidateCardSummary(candidate: Candidate): string {
     contextParts.push(`bringing strengths in ${skillsLabel}`);
   }
 
-  const experienceHint = candidate.yearsExperience && candidate.yearsExperience > 0
-    ? `${candidate.yearsExperience}+ years of experience`
-    : "";
+  const experienceHint = yearsExperience ? `${yearsExperience}+ years of experience` : "";
 
   const opening = [
     prefix,
@@ -294,10 +302,21 @@ function getCandidateCardSummary(candidate: Candidate): string {
   ]);
 
   if (!summarySentence) {
-    return "Candidate profile summary coming soon.";
+    const skillFallback = skills.length
+      ? `This candidate shows strength in ${skills.join(", ")}.`
+      : "This candidate has limited profile data available right now.";
+    return joinSentenceParts([
+      "Candidate profile summary coming soon.",
+      skillFallback,
+      "Please review the full profile for more context.",
+    ]);
   }
 
-  return `${summarySentence.charAt(0).toUpperCase()}${summarySentence.slice(1)}`;
+  return joinSentenceParts([
+    `${summarySentence.charAt(0).toUpperCase()}${summarySentence.slice(1)}`,
+    summary ? `Additional profile notes: ${summary}` : "",
+    skillSentence,
+  ]);
 }
 
 function renderSignals(candidate: Candidate) {
@@ -749,8 +768,8 @@ function CandidateListRow({
             <span className="text-[#A18E7C] transition-opacity group-hover:text-[#7D6A57]">â†—</span>
           </div>
           <p className="font-body text-[14px] text-[#8A6F55]">{candidateSubtitle(candidate)}</p>
-          <p style={clampLines(3)} className="max-w-4xl overflow-hidden font-body text-[15px] leading-6 text-[#5F564D]">
-            {trimText(candidate.summary || "No summary provided", 260)}
+          <p style={clampLines(5)} className="max-w-4xl overflow-hidden font-body text-[15px] leading-6 text-[#5F564D]">
+            {trimText(getCandidateCardSummary(candidate), 650)}
           </p>
           <p className="mt-2 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 220)}</p>
         </div>
@@ -1737,7 +1756,13 @@ export default function ReviewPage() {
   const voiceIntakeSummary = useMemo(
     () =>
       trimText(
-        intelligence?.calibration?.voice_summary ||
+        intelligence?.calibration?.transcript ||
+          intelligence?.calibration?.voice_transcript ||
+          intelligence?.selection?.transcript ||
+          intelligence?.selection?.voice_transcript ||
+          intelligence?.interview?.transcript ||
+          intelligence?.interview?.voice_transcript ||
+          intelligence?.calibration?.voice_summary ||
           intelligence?.selection?.voice_summary ||
           intelligence?.interview?.voice_summary ||
           "",
@@ -2247,9 +2272,9 @@ export default function ReviewPage() {
                   <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
                     Candidate review
                   </p>
-                  {/* <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Review the externally sourced candidates. Each card is ranked from scanning signals and reranked with recruiter memory.
-                  </p> */}
+                  <p className="max-w-4xl font-body text-sm leading-6 text-[#6B7280]">
+                    For a better understanding of each candidate and their work, please open the LinkedIn profile from the LinkedIn button on the card before making your choice.
+                  </p>
                 </div>
               </div>
 

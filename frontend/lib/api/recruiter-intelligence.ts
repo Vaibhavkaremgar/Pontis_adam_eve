@@ -28,6 +28,8 @@ export type RecruiterIntelligenceSession = {
     };
     recommended_questions?: string[];
     voice_summary?: string;
+    transcript?: string;
+    voice_transcript?: string;
     intent_profile?: Record<string, unknown>;
     telemetry?: Record<string, number>;
     current_question?: string;
@@ -52,6 +54,8 @@ export type RecruiterIntelligenceSession = {
     recommended_questions?: string[];
     telemetry?: Record<string, number>;
     voice_summary?: string;
+    transcript?: string;
+    voice_transcript?: string;
   };
   calibration?: {
     status?: string;
@@ -75,6 +79,8 @@ export type RecruiterIntelligenceSession = {
     recommended_questions?: string[];
     telemetry?: Record<string, number>;
     voice_summary?: string;
+    transcript?: string;
+    voice_transcript?: string;
     archetype_sets?: Array<Record<string, unknown>>;
     profile_sets?: Array<Record<string, unknown>>;
     candidate_profile_sets?: Array<Record<string, unknown>>;
