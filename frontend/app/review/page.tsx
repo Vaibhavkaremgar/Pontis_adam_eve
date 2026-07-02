@@ -250,68 +250,152 @@ function joinSentenceParts(parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
-function getSkillExpansion(skill: string): string {
+function hashString(value: string): number {
+  let hash = 0;
+  const input = String(value || "");
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function pickVariant(seed: string, variants: string[]): string {
+  if (variants.length === 0) return "";
+  return variants[hashString(seed) % variants.length];
+}
+
+function getSkillExpansion(skill: string, seed = ""): string {
   const normalized = String(skill || "").trim().toLowerCase();
   if (!normalized) return "";
 
   if (normalized.includes("python")) {
-    return "They likely work on Python-heavy projects and are comfortable with FastAPI, backend APIs, and core server-side concepts.";
+    return pickVariant(seed, [
+      "They likely work on Python-heavy projects and are comfortable with FastAPI, backend APIs, and core server-side concepts.",
+      "They likely use Python to build backend services, ship APIs, and solve practical product problems.",
+      "They likely apply Python across real projects, with a good grasp of backend design and service development.",
+    ]);
   }
   if (normalized.includes("javascript") || normalized.includes("typescript")) {
-    return "They likely work on product features, frontend integration, and building reliable client-side experiences.";
+    return pickVariant(seed, [
+      "They likely work on product features, frontend integration, and building reliable client-side experiences.",
+      "They likely contribute to interactive web apps, UI flows, and smooth handoffs between frontend and backend.",
+      "They likely build responsive product experiences and connect the UI cleanly to application logic.",
+    ]);
   }
   if (normalized.includes("react")) {
-    return "They likely build interactive interfaces, reusable UI components, and smooth frontend flows.";
+    return pickVariant(seed, [
+      "They likely build interactive interfaces, reusable UI components, and smooth frontend flows.",
+      "They likely shape component-driven UIs and keep user interactions polished and maintainable.",
+      "They likely handle dynamic screens, reusable patterns, and product-facing interface work.",
+    ]);
   }
   if (normalized.includes("node")) {
-    return "They likely work on backend services, APIs, and application logic in JavaScript-based stacks.";
+    return pickVariant(seed, [
+      "They likely work on backend services, APIs, and application logic in JavaScript-based stacks.",
+      "They likely contribute to service layers, integration logic, and API-driven backend work.",
+      "They likely build server-side features and support product delivery through API development.",
+    ]);
   }
   if (normalized.includes("java")) {
-    return "They likely work on backend systems, service development, and scalable application logic.";
+    return pickVariant(seed, [
+      "They likely work on backend systems, service development, and scalable application logic.",
+      "They likely contribute to enterprise services, reliable backend modules, and structured application design.",
+      "They likely build stable backend components and support production-grade software delivery.",
+    ]);
   }
   if (normalized.includes("aws") || normalized.includes("cloud")) {
-    return "They likely handle deployment, cloud infrastructure, and production-ready system setup.";
+    return pickVariant(seed, [
+      "They likely handle deployment, cloud infrastructure, and production-ready system setup.",
+      "They likely work with environments, scaling, and production operations on the cloud.",
+      "They likely support infrastructure, deployment flow, and reliability for live systems.",
+    ]);
   }
   if (normalized.includes("sql") || normalized.includes("database")) {
-    return "They likely work with data models, querying, and backend data flow across projects.";
+    return pickVariant(seed, [
+      "They likely work with data models, querying, and backend data flow across projects.",
+      "They likely handle database logic, reporting queries, and application data movement.",
+      "They likely shape how data is stored, fetched, and used across the product stack.",
+    ]);
   }
   if (normalized.includes("fastapi")) {
-    return "They likely build APIs, backend services, and clean application layers around FastAPI.";
+    return pickVariant(seed, [
+      "They likely build APIs, backend services, and clean application layers around FastAPI.",
+      "They likely use FastAPI to ship service endpoints, validation, and backend workflows.",
+      "They likely work on modern Python API development and service-oriented backend design.",
+    ]);
   }
 
-  return "They likely apply this skill across practical projects and real-world delivery work.";
+  return pickVariant(seed, [
+    "They likely apply this skill across practical projects and real-world delivery work.",
+    "They likely use this skill in hands-on product work and day-to-day implementation.",
+    "They likely bring this skill into active project delivery and problem solving.",
+  ]);
 }
 
 function buildHumanCardSentence(candidate: Candidate): string {
-  const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   const skills = getCandidateSkills(candidate).slice(0, 5);
   const role = normalizeSummaryText(getCandidateCurrentRole(candidate) || String(candidate.role || "").trim());
   const company = normalizeSummaryText(String(candidate.currentCompany || candidate.company || "").trim());
   const location = getCandidateLocation(candidate);
   const yearsExperience = typeof candidate.yearsExperience === "number" && candidate.yearsExperience > 0 ? candidate.yearsExperience : null;
+  const profileData = getCandidateProfileData(candidate);
+  const rawDiscovery = getCandidateRawDiscovery(candidate);
+  const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   const name = candidate.name || "This candidate";
+  const seed = [
+    name,
+    role,
+    company,
+    location,
+    skills.join("|"),
+    String(profileData.summary || profileData.overview || rawDiscovery.summary || rawDiscovery.overview || ""),
+  ].join("::");
 
   const parts: string[] = [];
 
-  if (yearsExperience) {
-    parts.push(`${name} brings ${yearsExperience} years of experience`);
-  } else {
-    parts.push(`${name} appears to be an experienced candidate`);
-  }
+  const openers = yearsExperience
+    ? [
+        `${name} brings ${yearsExperience} years of experience`,
+        `${name} has ${yearsExperience} years in the field`,
+        `${name} comes with ${yearsExperience} years of hands-on experience`,
+      ]
+    : [
+        `${name} appears to be an experienced candidate`,
+        `${name} shows a solid professional background`,
+        `${name} looks like a candidate with meaningful real-world experience`,
+      ];
+  parts.push(pickVariant(seed, openers));
 
   if (role) {
-    parts.push(`working as a ${role}`);
+    parts.push(pickVariant(seed + "role", [
+      `working as a ${role}`,
+      `currently in the ${role} role`,
+      `with a background as a ${role}`,
+    ]));
   }
   if (company) {
-    parts.push(`at ${company}`);
+    parts.push(pickVariant(seed + "company", [
+      `at ${company}`,
+      `with experience at ${company}`,
+      `from ${company}`,
+    ]));
   }
   if (location) {
-    parts.push(`based in ${location}`);
+    parts.push(pickVariant(seed + "location", [
+      `based in ${location}`,
+      `working out of ${location}`,
+      `from ${location}`,
+    ]));
   }
   const primarySkill = skills[0] || "";
   if (primarySkill) {
-    parts.push(`with strength in ${skills.slice(0, 3).join(", ")}`);
-    const expansion = getSkillExpansion(primarySkill);
+    const skillList = skills.slice(0, 3).join(", ");
+    parts.push(pickVariant(seed + "skill", [
+      `with strength in ${skillList}`,
+      `with a core focus on ${skillList}`,
+      `bringing useful depth in ${skillList}`,
+    ]));
+    const expansion = getSkillExpansion(primarySkill, seed + "expansion");
     if (expansion) parts.push(expansion);
   } else if (summary) {
     const cleanSummary = summary
@@ -319,7 +403,13 @@ function buildHumanCardSentence(candidate: Candidate): string {
       .replace(/^source snippet:.*$/i, "")
       .replace(/\s*their strongest signals are.*$/i, "")
       .trim();
-    if (cleanSummary) parts.push(cleanSummary);
+    if (cleanSummary) {
+      parts.push(pickVariant(seed + "summary", [
+        cleanSummary,
+        `The profile suggests ${cleanSummary.charAt(0).toLowerCase()}${cleanSummary.slice(1)}`,
+        `Overall, ${cleanSummary.charAt(0).toLowerCase()}${cleanSummary.slice(1)}`,
+      ]));
+    }
   }
 
   return joinSentenceParts(parts)
