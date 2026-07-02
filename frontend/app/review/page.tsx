@@ -271,15 +271,17 @@ function getSentenceCompletedText(value: string): string {
   return normalized.endsWith(".") ? normalized : `${normalized}.`;
 }
 
-function getCandidatePerspective(seed: string): { subject: "The candidate"; verbHave: "has" } {
-  void seed;
-  return { subject: "The candidate", verbHave: "has" };
+function getCandidateFirstName(candidate: Candidate): string {
+  const name = String(candidate.name || "").trim();
+  if (!name) return "";
+  const first = name.split(/\s+/)[0].trim();
+  return first || "";
 }
 
-function getSkillExpansion(skill: string, seed = "", subject = "The candidate"): string {
+function getSkillExpansion(skill: string, seed = "", name = "The candidate"): string {
   const normalized = String(skill || "").trim().toLowerCase();
   if (!normalized) return "";
-  const base = subject;
+  const base = name;
 
   if (normalized.includes("python")) {
     return pickVariant(seed, [
@@ -354,64 +356,61 @@ function buildHumanCardSentence(candidate: Candidate): string {
   const profileData = getCandidateProfileData(candidate);
   const rawDiscovery = getCandidateRawDiscovery(candidate);
   const summary = normalizeSummaryText(String(candidate.summary || "").trim());
-  const name = candidate.name || "This candidate";
+  const displayName = getCandidateFirstName(candidate) || "The candidate";
   const seed = [
-    name,
+    displayName,
     role,
     company,
     location,
     skills.join("|"),
     String(profileData.summary || profileData.overview || rawDiscovery.summary || rawDiscovery.overview || ""),
   ].join("::");
-  const perspective = getCandidatePerspective(seed);
 
   const parts: string[] = [];
 
-  const subject = perspective.subject;
-  const verbHave = perspective.verbHave;
-  const openers = yearsExperience
+  const intro = yearsExperience
     ? [
-        `${subject} ${verbHave} ${yearsExperience} years of experience`,
-        `${subject} ${verbHave} ${yearsExperience} years in the field`,
-        `${subject} ${verbHave} ${yearsExperience} years of hands-on experience`,
+        `${displayName} brings ${yearsExperience} years of experience in the field`,
+        `${displayName} has ${yearsExperience} years of hands-on experience`,
+        `${displayName} offers ${yearsExperience} years of practical industry experience`,
       ]
     : [
-        `${subject} appears to have a solid professional background`,
-        `${subject} shows meaningful real-world experience`,
-        `${subject} looks like a candidate with practical delivery experience`,
+        `${displayName} brings a solid professional background`,
+        `${displayName} shows meaningful real-world experience`,
+        `${displayName} presents as a practical, delivery-focused candidate`,
       ];
-  parts.push(getSentenceCompletedText(pickVariant(seed, openers)));
+  parts.push(getSentenceCompletedText(pickVariant(seed, intro)));
 
   if (role) {
     parts.push(getSentenceCompletedText(pickVariant(seed + "role", [
-      `${subject} is working as a ${role}`,
-      `${subject} is currently in the ${role} role`,
-      `${subject} has a background as a ${role}`,
+      `${displayName} is currently working as a ${role}`,
+      `${displayName} has been serving in a ${role} role`,
+      `${displayName} comes with a background as a ${role}`,
     ])));
   }
   if (company) {
     parts.push(getSentenceCompletedText(pickVariant(seed + "company", [
-      `${subject} works at ${company}`,
-      `${subject} has experience at ${company}`,
-      `${subject} comes from ${company}`,
+      `Recent experience includes ${company}`,
+      `${displayName} has experience at ${company}`,
+      `${displayName} has spent time with ${company}`,
     ])));
   }
   if (location) {
     parts.push(getSentenceCompletedText(pickVariant(seed + "location", [
-      `${subject} is based in ${location}`,
-      `${subject} works out of ${location}`,
-      `${subject} is from ${location}`,
+      `${displayName} is based in ${location}`,
+      `${displayName} works out of ${location}`,
+      `${displayName} is from ${location}`,
     ])));
   }
   const primarySkill = skills[0] || "";
   if (primarySkill) {
     const skillList = skills.slice(0, 3).join(", ");
     parts.push(getSentenceCompletedText(pickVariant(seed + "skill", [
-      `${subject} has strength in ${skillList}`,
-      `${subject} has a core focus on ${skillList}`,
-      `${subject} has a practical grip on ${skillList}`,
+      `${displayName} has strength in ${skillList}`,
+      `${displayName} shows a strong focus on ${skillList}`,
+      `${displayName} brings practical depth in ${skillList}`,
     ])));
-    const expansion = getSkillExpansion(primarySkill, seed + "expansion", subject);
+    const expansion = getSkillExpansion(primarySkill, seed + "expansion", displayName);
     if (expansion) parts.push(getSentenceCompletedText(expansion));
   } else if (summary) {
     const cleanSummary = summary
@@ -428,7 +427,11 @@ function buildHumanCardSentence(candidate: Candidate): string {
     }
   }
 
-  return parts.filter(Boolean).map(getSentenceCompletedText).join(" ");
+  return parts
+    .filter(Boolean)
+    .slice(0, 5)
+    .map(getSentenceCompletedText)
+    .join(" ");
 }
 
 function getCandidateCardSummary(candidate: Candidate): string {
