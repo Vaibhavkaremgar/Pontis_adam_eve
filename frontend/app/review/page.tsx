@@ -278,10 +278,10 @@ function getCandidateFirstName(candidate: Candidate): string {
   return first || "";
 }
 
-function getSkillExpansion(skill: string, seed = "", name = "The candidate"): string {
+function getSkillExpansion(skill: string, seed = "", subject = "They"): string {
   const normalized = String(skill || "").trim().toLowerCase();
   if (!normalized) return "";
-  const base = name;
+  const base = subject;
 
   if (normalized.includes("python")) {
     return pickVariant(seed, [
@@ -357,6 +357,9 @@ function buildHumanCardSentence(candidate: Candidate): string {
   const rawDiscovery = getCandidateRawDiscovery(candidate);
   const summary = normalizeSummaryText(String(candidate.summary || "").trim());
   const displayName = getCandidateFirstName(candidate) || "The candidate";
+  const subject = displayName;
+  const followUp = "The candidate";
+  const laterSubject = "They";
   const seed = [
     displayName,
     role,
@@ -370,47 +373,47 @@ function buildHumanCardSentence(candidate: Candidate): string {
 
   const intro = yearsExperience
     ? [
-        `${displayName} brings ${yearsExperience} years of experience in the field`,
-        `${displayName} has ${yearsExperience} years of hands-on experience`,
-        `${displayName} offers ${yearsExperience} years of practical industry experience`,
+        `${subject} brings ${yearsExperience} years of experience in the field`,
+        `${subject} has ${yearsExperience} years of hands-on experience`,
+        `${subject} offers ${yearsExperience} years of practical industry experience`,
       ]
     : [
-        `${displayName} brings a solid professional background`,
-        `${displayName} shows meaningful real-world experience`,
-        `${displayName} presents as a practical, delivery-focused candidate`,
+        `${subject} brings a solid professional background`,
+        `${subject} shows meaningful real-world experience`,
+        `${subject} presents as a practical, delivery-focused candidate`,
       ];
   parts.push(getSentenceCompletedText(pickVariant(seed, intro)));
 
   if (role) {
     parts.push(getSentenceCompletedText(pickVariant(seed + "role", [
-      `${displayName} is currently working as a ${role}`,
-      `${displayName} has been serving in a ${role} role`,
-      `${displayName} comes with a background as a ${role}`,
+      `${followUp} is currently working as a ${role}`,
+      `${followUp} has been serving in a ${role} role`,
+      `${followUp} comes with a background as a ${role}`,
     ])));
   }
   if (company) {
     parts.push(getSentenceCompletedText(pickVariant(seed + "company", [
       `Recent experience includes ${company}`,
-      `${displayName} has experience at ${company}`,
-      `${displayName} has spent time with ${company}`,
+      `${followUp} has experience at ${company}`,
+      `${followUp} has spent time with ${company}`,
     ])));
   }
   if (location) {
     parts.push(getSentenceCompletedText(pickVariant(seed + "location", [
-      `${displayName} is based in ${location}`,
-      `${displayName} works out of ${location}`,
-      `${displayName} is from ${location}`,
+      `${followUp} is based in ${location}`,
+      `${followUp} works out of ${location}`,
+      `${followUp} is from ${location}`,
     ])));
   }
   const primarySkill = skills[0] || "";
   if (primarySkill) {
     const skillList = skills.slice(0, 3).join(", ");
     parts.push(getSentenceCompletedText(pickVariant(seed + "skill", [
-      `${displayName} has strength in ${skillList}`,
-      `${displayName} shows a strong focus on ${skillList}`,
-      `${displayName} brings practical depth in ${skillList}`,
+      `${laterSubject} have strength in ${skillList}`,
+      `${laterSubject} show a strong focus on ${skillList}`,
+      `${laterSubject} bring practical depth in ${skillList}`,
     ])));
-    const expansion = getSkillExpansion(primarySkill, seed + "expansion", displayName);
+    const expansion = getSkillExpansion(primarySkill, seed + "expansion", laterSubject);
     if (expansion) parts.push(getSentenceCompletedText(expansion));
   } else if (summary) {
     const cleanSummary = summary
