@@ -88,43 +88,90 @@ function hasReachableEmail(candidate: Candidate): boolean {
   return true;
 }
 
-function buildCandidateSummary(candidate: Candidate): string {
-  const name = (candidate.name || "").trim();
+function getCandidateFirstName(candidate: Candidate): string {
+  const name = String(candidate.name || "").trim();
+  if (!name) return "";
+  return name.split(/\s+/)[0].trim();
+}
+
+function completeSentence(value: string): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const normalized = text.charAt(0).toUpperCase() + text.slice(1);
+  return normalized.endsWith(".") ? normalized : `${normalized}.`;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  const input = String(value || "");
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
+function summarizeCandidateModalText(candidate: Candidate): string {
+  const name = getCandidateFirstName(candidate);
+  const subject = name || "The candidate";
   const role = (candidate.role || candidate.headline || "").trim();
   const company = (candidate.company || candidate.currentCompany || "").trim();
   const location = (candidate.location || "").trim();
   const yearsExperience = typeof candidate.yearsExperience === "number" && Number.isFinite(candidate.yearsExperience)
     ? candidate.yearsExperience
     : null;
-  const skills = (candidate.skills || []).map((skill) => skill.trim()).filter(Boolean).slice(0, 3);
-  const summary = (candidate.recruiterSummary || candidate.summary || "").trim();
-  const details: string[] = [];
+  const skills = (candidate.skills || []).map((skill) => skill.trim()).filter(Boolean).slice(0, 4);
+  const sourceSummary = (candidate.recruiterSummary || candidate.summary || "").trim();
+  const profileData = candidate.profileData && typeof candidate.profileData === "object" ? candidate.profileData : {};
+  const rawDiscovery = profileData.raw_discovery && typeof profileData.raw_discovery === "object" ? profileData.raw_discovery as Record<string, unknown> : {};
+  const seed = [subject, role, company, location, skills.join("|"), String(profileData.summary || rawDiscovery.summary || "")].join("::");
+
+  const variants = [
+    `${subject} brings ${yearsExperience ? `${yearsExperience} years of experience` : "solid professional experience"}`,
+    `${subject} has a background in ${role || "the relevant role"} with practical, hands-on delivery`,
+    `${subject} appears to have strong, real-world experience`,
+  ];
+
+  const fallback = sourceSummary
+    ? sourceSummary
+        .replace(/^profile notes:\s*/i, "")
+        .replace(/^source snippet:.*$/i, "")
+        .replace(/\s*their strongest signals are.*$/i, "")
+        .trim()
+    : "";
+
+  const sentences: string[] = [];
+    sentences.push(completeSentence(variants[hashString(seed) % variants.length]));
 
   if (role) {
-    details.push(role);
+    sentences.push(completeSentence(`${subject} is currently working as a ${role}${company ? ` at ${company}` : ""}`));
+  } else if (company) {
+    sentences.push(completeSentence(`Recent experience includes ${company}`));
   }
-  if (company && (!role || !company.toLowerCase().includes(role.toLowerCase()))) {
-    details.push(`at ${company}`);
-  }
-  if (yearsExperience !== null) {
-    details.push(`${yearsExperience}${yearsExperience === 1 ? " year" : " years"} of experience`);
-  }
+
   if (location) {
-    details.push(`based in ${location}`);
+    sentences.push(completeSentence(`${subject} is based in ${location}`));
   }
+
   if (skills.length > 0) {
-    details.push(`with strengths in ${skills.join(", ")}`);
+    const skillSentence = skills.length === 1
+      ? `${subject} has strong experience with ${skills[0]}`
+      : `${subject} has practical depth across ${skills.slice(0, 3).join(", ")}`;
+    sentences.push(completeSentence(skillSentence));
   }
 
-  if (summary) {
-    return summary;
+  if (fallback) {
+    sentences.push(completeSentence(fallback));
   }
 
-  if (details.length === 0) {
-    return name ? `${name} is a candidate we are currently reviewing.` : "Candidate profile summary coming soon.";
+  if (sentences.length < 3) {
+    sentences.push(completeSentence(`${subject} remains a relevant profile for this role`));
   }
 
-  return `${name ? `${name} is ` : "This candidate is "}${details.join(", ")}.`;
+  return sentences.filter(Boolean).slice(0, 5).join(" ");
+}
+
+function buildCandidateSummary(candidate: Candidate): string {
+  return summarizeCandidateModalText(candidate);
 }
 
 export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
@@ -332,6 +379,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
       return null;
     }
     const signals = getSignals(candidate);
+    const reasonSummary = buildCandidateSummary(candidate);
     return (
       <div className="space-y-2">
         <div className="space-y-1">
@@ -348,13 +396,14 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
           <p className="text-sm font-medium text-gray-800">Why selected</p>
           {getWhySelected(candidate).map((reason) => (
             <p key={`${candidate.id}-${reason}`} className="text-xs text-green-700">
-              ✔ {reason}
+              ✔ {completeSentence(reason)}
             </p>
           ))}
         </div>
         {signals.experienceMatch && (
           <p className="text-xs text-gray-600">Experience: {signals.experienceMatch}</p>
         )}
+        <p className="text-sm leading-relaxed text-gray-700">{reasonSummary}</p>
         {hasConcerns(candidate) && (
           <div className="rounded-md bg-yellow-50 px-2 py-2 text-xs text-yellow-800">
             ⚠ Potential gaps in experience or skills
