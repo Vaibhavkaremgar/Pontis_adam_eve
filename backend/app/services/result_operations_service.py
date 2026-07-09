@@ -130,6 +130,7 @@ def record_result_decision(
     db: Session,
     workflow_token: str,
     recruiter_id: str,
+    company_id: str,
     decision: str,
 ) -> dict[str, Any]:
     from app.services.results_service import resolve_result_context
@@ -145,6 +146,8 @@ def record_result_decision(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not job or not profile:
         raise APIError("Result not found", status_code=404)
+    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+        raise APIError("Forbidden", status_code=403)
 
     current_status = str(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", "") or "results_ready").strip().lower()
     now = datetime.now(timezone.utc)
@@ -234,6 +237,7 @@ def advance_result_candidate(
     db: Session,
     workflow_token: str,
     recruiter_id: str,
+    company_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     from app.services.results_service import resolve_result_context
@@ -245,6 +249,8 @@ def advance_result_candidate(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not job or not profile:
         raise APIError("Result not found", status_code=404)
+    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+        raise APIError("Forbidden", status_code=403)
     ats_metadata = getattr(profile, "ats_metadata", {}) if isinstance(getattr(profile, "ats_metadata", {}), dict) else {}
     current_status = _normalize_text(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", "")).lower()
     if current_status in {"second_round_requested", "second_round_scheduled"} and _normalize_text(ats_metadata.get("providerMessageId")):

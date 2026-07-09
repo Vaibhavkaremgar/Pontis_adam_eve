@@ -251,6 +251,7 @@ class CandidateProfileEntity(Base):
     github_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     parsed_resume_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     parsed_resume_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    workflow_token: Mapped[str] = mapped_column(String(255), nullable=False, default="", index=True)
     fit_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     decision: Mapped[str] = mapped_column(String(64), nullable=False, default="weak")
     strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="LOW")

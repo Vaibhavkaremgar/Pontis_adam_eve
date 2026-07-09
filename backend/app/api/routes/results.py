@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
-from app.services.ownership import assert_job_ownership
+from app.services.ownership import assert_job_company_ownership, resolve_company_id_for_user
 from app.services.results_service import get_result_by_workflow_token, list_results, resolve_result_context, stream_result_video
 from app.services.result_operations_service import advance_result_candidate, record_result_decision
 from app.utils.responses import success_response
@@ -45,8 +45,9 @@ def results_list(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_job_ownership(db=db, job_id=jobId, user_id=request.state.user["id"])
-    return success_response(list_results(db=db, job_id=jobId, recruiter_id=request.state.user["id"]))
+    assert_job_company_ownership(db=db, job_id=jobId, user_id=request.state.user["id"])
+    company_id = resolve_company_id_for_user(db=db, user_id=request.state.user["id"])
+    return success_response(list_results(db=db, job_id=jobId, recruiter_id=request.state.user["id"], company_id=company_id))
 
 
 @router.get("/results/{workflowToken}")
@@ -57,11 +58,12 @@ def results_detail(
     db: Session = Depends(get_db),
 ):
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
     payload = get_result_by_workflow_token(
         db=db,
         workflow_token=workflowToken,
         recruiter_id=request.state.user["id"],
+        company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
     )
     return success_response(payload)
 
@@ -74,11 +76,12 @@ def results_video(
     db: Session = Depends(get_db),
 ):
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
     return stream_result_video(
         db=db,
         workflow_token=workflowToken,
         recruiter_id=request.state.user["id"],
+        company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
         range_header=request.headers.get("range", ""),
     )
 
@@ -92,12 +95,13 @@ def results_decision(
     db: Session = Depends(get_db),
 ):
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
     return success_response(
         record_result_decision(
             db=db,
             workflow_token=workflowToken,
             recruiter_id=request.state.user["id"],
+            company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
             decision=payload.decision,
         )
     )
@@ -112,12 +116,13 @@ def results_advance(
     db: Session = Depends(get_db),
 ):
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
     return success_response(
         advance_result_candidate(
             db=db,
             workflow_token=workflowToken,
             recruiter_id=request.state.user["id"],
+            company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
             payload=payload.model_dump(),
         )
     )

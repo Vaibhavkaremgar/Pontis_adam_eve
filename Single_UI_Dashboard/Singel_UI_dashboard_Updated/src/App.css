@@ -1,0 +1,65 @@
+@media (max-width: 900px) {
+  main {
+    margin-left: 0 !important;
+    padding: 20px 16px !important;
+  }
+
+  aside {
+    width: 100% !important;
+    min-height: unset !important;
+    position: relative !important;
+    flex-direction: row !important;
+    align-items: center !important;
+    padding: 0 12px !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border) !important;
+  }
+
+  div[style*="display: flex"][style*="min-height: 100vh"] {
+    flex-direction: column !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .interview-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 1200px) {
+  .interview-executive-report {
+    padding-left: 20px !important;
+    padding-right: 20px !important;
+  }
+
+  .interview-executive-report .report-header-grid,
+  .interview-executive-report .report-candidate-card,
+  .interview-executive-report .report-bottom-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .interview-executive-report .report-right-column {
+    gap: 16px !important;
+  }
+}
+
+@media (max-width: 768px) {
+  .interview-executive-report {
+    padding: 18px 16px 28px !important;
+  }
+
+  .interview-executive-report .report-candidate-card {
+    gap: 18px !important;
+  }
+
+  .interview-executive-report .report-right-column {
+    gap: 14px !important;
+  }
+
+  .interview-executive-report .report-header-grid {
+    gap: 18px !important;
+  }
+}
+
+a:hover > span { color: var(--primary); }
+button:hover { opacity: 0.95; }

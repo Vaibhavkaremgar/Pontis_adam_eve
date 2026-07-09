@@ -19,7 +19,7 @@ from app.services.interview_service import list_interviews
 from app.services.interview_evaluation_service import list_interview_evaluations, record_interview_evaluation
 from app.services.interview_session_service import book_interview_session, create_interview_session, get_interview_session, mark_interview_no_show, reschedule_interview_session
 from app.utils.exceptions import APIError
-from app.services.ownership import assert_job_ownership
+from app.services.ownership import assert_job_company_ownership, resolve_company_id_for_user
 from app.utils.responses import success_response
 
 router = APIRouter(tags=["interviews"])
@@ -41,8 +41,10 @@ class InterviewResultsCallbackRequest(BaseModel):
 
 @router.get("/interviews")
 def get_interviews(jobId: str = Query(...), _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
-    rows = list_interviews(db=db, job_id=jobId)
+    user_id = _.get("id", "")
+    company_id = resolve_company_id_for_user(db=db, user_id=user_id)
+    assert_job_company_ownership(db=db, job_id=jobId, user_id=user_id)
+    rows = list_interviews(db=db, job_id=jobId, company_id=company_id)
     return success_response([row.model_dump() for row in rows])
 
 
@@ -85,7 +87,9 @@ def interview_results_callback(payload: InterviewResultsCallbackRequest, request
 
 @router.post("/interview/session")
 def create_session(payload: InterviewSessionRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
+    user_id = request.state.user["id"]
+    company_id = resolve_company_id_for_user(db=db, user_id=user_id)
+    assert_job_company_ownership(db=db, job_id=payload.jobId, user_id=user_id)
     data = create_interview_session(
         db=db,
         job_id=payload.jobId,
@@ -99,7 +103,7 @@ def create_session(payload: InterviewSessionRequest, request: Request, _: dict =
         action="interview_session_created",
         entity_type="job",
         entity_id=payload.jobId,
-        metadata={"candidate_id": payload.candidateId},
+        metadata={"candidate_id": payload.candidateId, "company_id": company_id},
         request_id=str(getattr(request.state, "request_id", "") or ""),
     )
     db.commit()
@@ -135,14 +139,18 @@ def interview_no_show(payload: dict, db: Session = Depends(get_db)):
 
 @router.get("/interview/insights")
 def interview_insights(jobId: str = Query(...), candidateId: str = Query(...), _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
+    user_id = _.get("id", "")
+    resolve_company_id_for_user(db=db, user_id=user_id)
+    assert_job_company_ownership(db=db, job_id=jobId, user_id=user_id)
     data = get_interview_insights(db=db, job_id=jobId, candidate_id=candidateId)
     return success_response(InterviewInsightsData(**data).model_dump())
 
 
 @router.post("/interview/decision")
 def interview_decision(payload: InterviewDecisionRequest, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    assert_job_ownership(db=db, job_id=payload.jobId, user_id=request.state.user["id"])
+    user_id = request.state.user["id"]
+    resolve_company_id_for_user(db=db, user_id=user_id)
+    assert_job_company_ownership(db=db, job_id=payload.jobId, user_id=user_id)
     job = JobRepository(db).get(payload.jobId)
     result = advance_interview_stage(
         db=db,
@@ -174,7 +182,9 @@ def interview_decision(payload: InterviewDecisionRequest, request: Request, _: d
 
 @router.get("/interview/evaluations")
 def get_evaluations(jobId: str = Query(...), candidateId: str = Query(...), _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
-    assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
+    user_id = _.get("id", "")
+    resolve_company_id_for_user(db=db, user_id=user_id)
+    assert_job_company_ownership(db=db, job_id=jobId, user_id=user_id)
     return success_response(list_interview_evaluations(db=db, job_id=jobId, candidate_id=candidateId))
 
 
@@ -182,7 +192,9 @@ def get_evaluations(jobId: str = Query(...), candidateId: str = Query(...), _: d
 def create_evaluation(payload: dict, request: Request, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     job_id = str(payload.get("jobId") or "").strip()
     candidate_id = str(payload.get("candidateId") or "").strip()
-    assert_job_ownership(db=db, job_id=job_id, user_id=request.state.user["id"])
+    user_id = request.state.user["id"]
+    resolve_company_id_for_user(db=db, user_id=user_id)
+    assert_job_company_ownership(db=db, job_id=job_id, user_id=user_id)
     result = record_interview_evaluation(
         db=db,
         job_id=job_id,

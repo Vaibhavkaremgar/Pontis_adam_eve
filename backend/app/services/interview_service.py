@@ -27,10 +27,13 @@ def _candidate_display_name(profile) -> str:
     return candidate_id or ""
 
 
-def list_interviews(*, db: Session, job_id: str) -> list[InterviewItem]:
+def list_interviews(*, db: Session, job_id: str, company_id: str) -> list[InterviewItem]:
     jobs = JobRepository(db)
     if not jobs.get(job_id):
         raise APIError("Job not found", status_code=404)
+    job = jobs.get(job_id)
+    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+        raise APIError("Forbidden", status_code=403)
 
     interviews = InterviewRepository(db).list_for_job(job_id)
     profiles = {str(row.candidate_id): row for row in CandidateProfileRepository(db).list_for_job(job_id)}

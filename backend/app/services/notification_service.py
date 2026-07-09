@@ -283,6 +283,7 @@ def build_slot_booking_payload(
     db: Session | None = None,
     available_slots: list[str] | None = None,
     timezone_name: str = "UTC",
+    source_type: str = "ui",
 ) -> dict[str, Any]:
     source = _candidate_source(candidate)
     parsed_resume_json = _candidate_value(candidate, "parsed_resume_json", "parsedResumeJson")
@@ -384,6 +385,8 @@ def build_slot_booking_payload(
         "job_description": job_description,
         "agency_id": agency_id,
         "user_id": user_id,
+        "source_type": source_type,
+        "sourceType": source_type,
         "interview_questions": interview_questions,
         "fit_score": float(_candidate_value(candidate, "fit_score") or 0.0),
         "job_title": _string_field(job, "title", "job_title", "jobTitle"),

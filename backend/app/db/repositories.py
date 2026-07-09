@@ -1325,7 +1325,7 @@ class CandidateProfileRepository:
         normalized = (candidate_id or "").strip().lower()
         return normalized.startswith("fallback-candidate")
 
-    def ensure_candidate_profile(self, *, job_id: str, candidate_id: str) -> CandidateProfileEntity:
+    def ensure_candidate_profile(self, *, job_id: str, candidate_id: str, workflow_token: str = "") -> CandidateProfileEntity:
         normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         if not normalized_candidate_id:
             raise APIError("candidate_id is required", status_code=400)
@@ -1352,6 +1352,8 @@ class CandidateProfileRepository:
             company_id=job.company_id,
             candidate_id=normalized_candidate_id,
         )
+        if workflow_token:
+            row.workflow_token = _normalize_text(workflow_token)
         try:
             with self.db.begin_nested():
                 self.db.add(row)
@@ -1382,6 +1384,7 @@ class CandidateProfileRepository:
         fit_score: float,
         decision: str,
         strategy: str,
+        workflow_token: str = "",
     ) -> CandidateProfileEntity:
         normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         row = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
@@ -1405,6 +1408,8 @@ class CandidateProfileRepository:
                 row = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
                 if not row:
                     raise
+        if workflow_token:
+            row.workflow_token = _normalize_text(workflow_token)
 
         row.name = _clamp_text(name, max_length=255)
         row.role = _clamp_text(role, max_length=255)

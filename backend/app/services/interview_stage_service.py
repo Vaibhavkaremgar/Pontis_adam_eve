@@ -140,7 +140,12 @@ async def _post_not_moving_forward_slack_message(*, db: Session, job_id: str, ca
 
 
 def get_interview_insights(*, db: Session, job_id: str, candidate_id: str) -> dict[str, Any]:
+    job = JobRepository(db).get(job_id)
+    if not job:
+        raise APIError("Job not found", status_code=404)
     session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+    if str(getattr(job, "company_id", "") or "").strip() != str(getattr(session, "company_id", "") or getattr(job, "company_id", "") or "").strip():
+        raise APIError("Forbidden", status_code=403)
     current_stage = _session_stage_name(session) if session else "recruiter_screen"
     progression = get_interview_stage_progression(db=db, job_id=job_id, candidate_id=candidate_id)
     intelligence = get_interview_intelligence(db=db, job_id=job_id, candidate_id=candidate_id)
@@ -189,6 +194,8 @@ def advance_interview_stage(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not profile:
         raise APIError("Candidate not found", status_code=404)
+    if str(getattr(job, "company_id", "") or "").strip() != str(getattr(profile, "company_id", "") or "").strip():
+        raise APIError("Forbidden", status_code=403)
 
     session_repo = InterviewSessionRepository(db)
     current_session = session_repo.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)

@@ -303,7 +303,7 @@ def resolve_result_context(*, db: Session, workflow_token: str) -> dict[str, str
         "jobId": job_id,
         "candidateId": candidate_id,
         "workflowToken": resolved_workflow_token,
-        "sourceApp": str((payload or {}).get("sourceApp") or getattr(token_row, "source_app", "") or "ui"),
+        "sourceApp": str((payload or {}).get("sourceApp") or (payload or {}).get("source_type") or (payload or {}).get("sourceType") or "ui"),
     }
 
 
@@ -438,12 +438,13 @@ def _build_candidate_snapshot(
     return response
 
 
-def _candidate_result_rows(db: Session, job_id: str) -> list[dict[str, Any]]:
+def _candidate_result_rows(db: Session, job_id: str, *, company_id: str) -> list[dict[str, Any]]:
     try:
         results = db.execute(
             text("""
                 SELECT
                     i.candidate_id,
+                    i.company_id,
                     i.status,
                     i.interview_score,
                     i.transcript,
@@ -463,9 +464,10 @@ def _candidate_result_rows(db: Session, job_id: str) -> list[dict[str, Any]]:
                    AND nt.candidate_id = i.candidate_id
                    AND nt.is_active = 1
                 WHERE i.job_id = :job_id
+                  AND i.company_id = :company_id
                 ORDER BY COALESCE(i.interview_score, 0) DESC, COALESCE(cp.fit_score, 0) DESC, cp.name ASC
             """),
-            {"job_id": job_id},
+            {"job_id": job_id, "company_id": company_id},
         ).mappings().all()
     except Exception as exc:
         logger.warning("results_list_fetch_failed job_id=%s error=%s", job_id, str(exc))
@@ -491,15 +493,18 @@ def _candidate_result_rows(db: Session, job_id: str) -> list[dict[str, Any]]:
     return rows
 
 
-def list_results(*, db: Session, job_id: str, recruiter_id: str) -> dict[str, Any]:
+def list_results(*, db: Session, job_id: str, recruiter_id: str, company_id: str) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
+    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+        raise APIError("Forbidden", status_code=403)
 
     emit_trace(logger, "results_fetch", workflow_token="", candidate_id="", recruiter_id=recruiter_id, job_id=job_id)
-    candidates = _candidate_result_rows(db, job_id)
+    candidates = _candidate_result_rows(db, job_id, company_id=company_id)
     return {
         "jobId": job_id,
+        "companyId": company_id,
         "recruiterId": recruiter_id,
         "candidates": candidates,
         "counts": {
@@ -509,7 +514,7 @@ def list_results(*, db: Session, job_id: str, recruiter_id: str) -> dict[str, An
     }
 
 
-def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_id: str) -> dict[str, Any]:
+def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_id: str, company_id: str) -> dict[str, Any]:
     payload, job_id, candidate_id, resolved_workflow_token = _workflow_token_payload(db, workflow_token)
     if not job_id or not candidate_id:
         raise APIError("Result not found", status_code=404)
@@ -517,6 +522,8 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
+    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+        raise APIError("Forbidden", status_code=403)
 
     emit_trace(
         logger,
@@ -550,7 +557,7 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
     return result
 
 
-def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, range_header: str = ""):
+def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, company_id: str, range_header: str = ""):
     payload, job_id, candidate_id, resolved_workflow_token = _workflow_token_payload(db, workflow_token)
     if not job_id or not candidate_id:
         raise APIError("Result not found", status_code=404)
@@ -558,6 +565,8 @@ def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, 
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
+    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+        raise APIError("Forbidden", status_code=403)
 
     interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)
     recording_path = _normalize_text(interview_row.get("video_url") or "")

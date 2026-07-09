@@ -4838,6 +4838,7 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             job={"title": job.title, "company_name": company.name if company else ""},
             recruiter_id=recruiter_id,
             db=db,
+            source_type="adam",
         )
         slot_payload.update(
             {
@@ -4885,12 +4886,22 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
 
     results: list[CandidateResult] = []
     for row in shortlisted_rows:
+        workflow_token = generate_workflow_token()
+        row["slot_payload"].update(
+            {
+                "workflowToken": workflow_token,
+                "workflow_token": workflow_token,
+                "currentInterviewToken": workflow_token,
+                "sessionToken": workflow_token,
+                "token": workflow_token,
+            }
+        )
         upsert_notification_workflow_token(
             db=db,
             job_id=job_id,
             candidate_id=row["candidate_id"],
             workflow_name="slot_booking",
-            token=generate_workflow_token(),
+            token=workflow_token,
             payload=row["slot_payload"],
             expires_at=datetime.now(timezone.utc) + timedelta(days=7),
             token_type="slot_booking",
@@ -4898,6 +4909,8 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             source_app=getattr(job, "source_app", "ui"),
             force_token=False,
         )
+        if profile:
+            profile.workflow_token = workflow_token
         updated_workflow_tokens = True
         final_score = max(0.0, min(1.0, float(row["fit_score"]) / 5.0))
         results.append(

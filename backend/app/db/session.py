@@ -276,6 +276,8 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_json JSON NOT NULL DEFAULT '{}'"))
             if "parsed_resume_text" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_text TEXT NOT NULL DEFAULT ''"))
+            if "workflow_token" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN workflow_token VARCHAR(255) NOT NULL DEFAULT ''"))
             if "ats_status" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status VARCHAR(64) NOT NULL DEFAULT 'reviewed'"))
             if "ats_status_source" not in candidate_columns:

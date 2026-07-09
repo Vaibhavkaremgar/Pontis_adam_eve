@@ -1,0 +1,187 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --primary: #5b3df5;
+  --primary-hover: #4c32e0;
+  --primary-secondary: #7c63ff;
+  --primary-bg: #f2efff;
+  --success: #16a34a;
+  --success-bg: #dcfce7;
+  --warning: #f59e0b;
+  --warning-bg: #fef3c7;
+  --danger: #dc2626;
+  --danger-bg: #fee2e2;
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --border: #e5e7eb;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --text-body: #4b5563;
+  --text-light: #9ca3af;
+  --sidebar-w: 260px;
+  --radius: 20px;
+  --radius-sm: 12px;
+  --shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+  --shadow-hover: 0 8px 30px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 12px 30px rgba(15, 23, 42, 0.08);
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+body.interview-report-body-lock {
+  overflow: hidden;
+  height: 100vh;
+}
+
+a { text-decoration: none; color: inherit; }
+button { cursor: pointer; border: none; background: none; font: inherit; }
+input, textarea, select { font: inherit; }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+
+@keyframes shimmer {
+  0% { background-position: -600px 0; }
+  100% { background-position: 600px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+  background-size: 600px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: 8px;
+  display: block;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.fade-in { animation: fadeIn .3s ease both; }
+
+.dashboard-shell {
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+.dashboard-page {
+  padding: 32px;
+}
+
+.interview-report-body,
+.interview-report-columns,
+.interview-report-analysis-panel,
+.interview-report-scoring-panel {
+  min-height: 0;
+}
+
+.interview-report-page {
+  overflow: visible;
+}
+
+.interview-report-candidate-card {
+  min-width: 0;
+}
+
+.interview-report-bottom-grid {
+  min-width: 0;
+}
+
+.interview-report-scoring-panel > * {
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  div[style*="gridTemplateColumns: 1fr 380px"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (min-width: 1025px) {
+  .interview-report-page {
+    height: 100vh !important;
+    overflow: hidden !important;
+  }
+
+  .interview-report-bottom-grid {
+    overflow: hidden !important;
+  }
+
+  .interview-report-scoring-panel {
+    overflow: auto !important;
+  }
+}
+
+@media (max-width: 1024px) {
+  .interview-report-page {
+    min-height: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .interview-report-body {
+    overflow: visible !important;
+  }
+
+  .interview-report-columns {
+    grid-template-columns: 1fr !important;
+  }
+
+  .interview-report-video-slot {
+    height: auto !important;
+  }
+
+  .interview-report-candidate-card {
+    grid-template-columns: 1fr !important;
+    justify-items: start !important;
+  }
+
+  .interview-report-bottom-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .candidate-details-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 700px) {
+  aside {
+    width: 100% !important;
+    min-height: unset !important;
+    position: relative !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border) !important;
+    padding: 10px 14px !important;
+  }
+
+  main {
+    margin-left: 0 !important;
+    padding: 16px !important;
+  }
+
+  div[style*="gridTemplateColumns: 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  .interview-report-page {
+    padding: 18px 14px !important;
+  }
+
+  .interview-report-candidate-card {
+    padding: 16px !important;
+  }
+}
