@@ -24,6 +24,8 @@ export type ResultListItem = {
   recommendation: string;
   completionState: string;
   videoAvailable: boolean;
+  createdAt?: string | null;
+  expiresAt?: string | null;
 };
 
 export type ResultListResponse = {
@@ -78,6 +80,8 @@ export type ResultWorkspaceResponse = {
     [key: string]: unknown;
   };
   metadata: Record<string, unknown>;
+  createdAt?: string | null;
+  expiresAt?: string | null;
   operations?: {
     decisionState?: string;
     availableActions?: string[];

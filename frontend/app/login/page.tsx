@@ -75,7 +75,7 @@ export default function LoginPage() {
         return;
       }
       setUser(result.data.user);
-      router.push("/company");
+      router.push("/workspace");
     } finally {
       setIsLoading(false);
     }
@@ -134,7 +134,7 @@ export default function LoginPage() {
                     }
                     setUser(result.data.user);
                     setIsGoogleLoading(false);
-                    router.push("/company");
+                    router.push("/workspace");
                   }}
                   onError={() => {
                     console.log("Google error", "Google OAuth button failed or was dismissed");

@@ -2,9 +2,11 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Brain, FileText, Video } from "lucide-react";
+import { ArrowLeft, Briefcase, MapPin, Star, VideoOff } from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
+import { InterviewRecordingPlayer } from "@/components/results/interview-recording-player";
+import { SecondRoundSchedulingModal, type SecondRoundInviteValues } from "@/components/results/second-round-scheduling-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAppContext } from "@/context/AppContext";
@@ -17,68 +19,30 @@ import {
   type ResultWorkspaceResponse,
 } from "@/lib/api/results";
 
-type TabKey = "analysis" | "video" | "transcript";
+const RESULTS_RETENTION_DAYS = 7;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(dt: string | null | undefined) {
-  if (!dt) return "";
-  try {
-    return new Date(dt).toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-  });
-  } catch {
-    return dt;
-  }
+function toValidDate(value: unknown): Date | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function queueBadgeVariant(state: string): "high" | "low" | "medium" | "neutral" | "info" {
-  if (state === "results_ready" || state === "interview_completed") return "high";
-  if (state === "rejected") return "low";
-  if (state === "advanced" || state === "second_round_scheduled") return "medium";
-  return "neutral";
-}
+function resolveResultsExpiry(workspace: ResultWorkspaceResponse, item: ResultListItem | null): Date | null {
+  const explicitExpiry =
+    toValidDate(workspace.expiresAt) ||
+    toValidDate(item?.expiresAt) ||
+    toValidDate(workspace.metadata.expiresAt) ||
+    toValidDate(workspace.metadata.expires_at);
+  if (explicitExpiry) return explicitExpiry;
 
-function queueBadgeLabel(state: string) {
-  const map: Record<string, string> = {
-    interview_completed: "Completed",
-    results_ready: "Completed",
-    advanced: "Selected",
-    second_round_requested: "2nd Round",
-    second_round_scheduled: "2nd Round",
-    rejected: "Rejected",
-    offer_sent: "Offer Sent",
-    placed: "Placed",
-  };
-  return map[state] ?? state.replace(/_/g, " ");
-}
+  const createdAt =
+    toValidDate(workspace.createdAt) ||
+    toValidDate(item?.createdAt) ||
+    toValidDate(workspace.metadata.createdAt) ||
+    toValidDate(workspace.metadata.created_at);
+  if (!createdAt) return null;
 
-function scoreColor(score: number) {
-  if (score >= 8) return "text-green-600";
-  if (score >= 6) return "text-amber-500";
-  return "text-red-500";
-}
-
-function ScoreBar({ label, score, max = 10 }: { label: string; score: number; max?: number }) {
-  const pct = Math.min(100, Math.round((score / max) * 100));
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="flex items-center justify-between">
-        <span className="text-sm text-slate-700">{label}</span>
-        <span className={`text-lg font-bold ${scoreColor(score)}`}>{score.toFixed(1)}/{max}</span>
-      </div>
-      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-        <div
-          className="h-full rounded-full bg-blue-600 transition-all duration-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  );
+  return new Date(createdAt.getTime() + RESULTS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
 }
 
 function emptyWorkspace(): ResultWorkspaceResponse {
@@ -98,60 +62,144 @@ function emptyWorkspace(): ResultWorkspaceResponse {
   };
 }
 
-// ── main component ────────────────────────────────────────────────────────────
+function labelForScore(score: number) {
+  if (score >= 8.5) return "Strong Hire";
+  if (score >= 7) return "Hire";
+  if (score >= 5.5) return "Hold";
+  return "Reject";
+}
+
+function formatScore(score: number) {
+  return Number(score || 0).toFixed(1);
+}
+
+function scoreTone(score: number) {
+  if (score >= 8.5) return "text-emerald-600";
+  if (score >= 7) return "text-indigo-600";
+  if (score >= 5.5) return "text-amber-600";
+  return "text-rose-600";
+}
+
+function ResultRow({ label, score, description }: { label: string; score: number; description: string }) {
+  const pct = Math.max(0, Math.min(100, Math.round((score / 10) * 100)));
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-800">{label}</p>
+        <p className={`text-sm font-bold ${scoreTone(score)}`}>{formatScore(score)} / 10</p>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+        <div className="h-full rounded-full bg-gradient-to-r from-[#6d5efc] to-[#4f46e5]" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="text-sm leading-6 text-slate-500">{description}</p>
+    </div>
+  );
+}
 
 function ResultsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, isSessionReady, jobId, setJobId } = useAppContext();
-
   const queryJobId = String(searchParams.get("jobId") || "").trim();
   const effectiveJobId = jobId || queryJobId;
 
   const [items, setItems] = useState<ResultListItem[]>([]);
   const [selectedToken, setSelectedToken] = useState("");
   const [workspace, setWorkspace] = useState<ResultWorkspaceResponse>(emptyWorkspace());
-  const [activeTab, setActiveTab] = useState<TabKey>("analysis");
   const [listLoading, setListLoading] = useState(true);
   const [wsLoading, setWsLoading] = useState(false);
-  const [actionLoading, setActionLoading] = useState("");
-  const [actionMsg, setActionMsg] = useState("");
+  const [decisionLoadingToken, setDecisionLoadingToken] = useState("");
+  const [selectedForSecondRound, setSelectedForSecondRound] = useState<ResultListItem | null>(null);
+  const [inviteLoadingToken, setInviteLoadingToken] = useState("");
 
   const selectedItem = useMemo(
-    () => items.find((i) => i.workflowToken === selectedToken) ?? items[0] ?? null,
+    () => items.find((item) => item.workflowToken === selectedToken) ?? items[0] ?? null,
     [items, selectedToken],
   );
+  const resultsExpiry = useMemo(() => resolveResultsExpiry(workspace, selectedItem), [workspace, selectedItem]);
+  const hasExpiredResults = Boolean(resultsExpiry && resultsExpiry.getTime() <= Date.now());
+  const remainingDays = useMemo(() => {
+    if (!resultsExpiry) return null;
+    return Math.max(0, Math.ceil((resultsExpiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+  }, [resultsExpiry]);
 
-  // load list
   const loadList = async () => {
     if (!effectiveJobId || !user) return;
     setListLoading(true);
     const res = await getResultsList(effectiveJobId);
     if (res.success && res.data) {
-      setItems(res.data.candidates);
-      const first = res.data.candidates[0]?.workflowToken ?? "";
-      setSelectedToken((cur) => cur || first);
+      const candidates = res.data.candidates || [];
+      setItems(candidates);
+      setSelectedToken((current) => current || candidates[0]?.workflowToken || "");
     }
     setListLoading(false);
   };
 
-  // load workspace
   const loadWorkspace = async (token: string) => {
     if (!token) return;
     setWsLoading(true);
     const res = await getResultWorkspace(token);
-    if (res.success && res.data) setWorkspace(res.data);
-    else setWorkspace(emptyWorkspace());
+    if (res.success && res.data) {
+      setWorkspace(res.data);
+    } else {
+      setWorkspace(emptyWorkspace());
+    }
     setWsLoading(false);
+  };
+
+  const handleDecision = async (workflowToken: string, decision: "pass" | "reject") => {
+    if (decision === "pass") {
+      const item = items.find((candidate) => candidate.workflowToken === workflowToken) ?? null;
+      setSelectedToken(workflowToken);
+      setSelectedForSecondRound(item);
+      return;
+    }
+    setDecisionLoadingToken(workflowToken);
+    const res = await submitResultDecision(workflowToken, { decision });
+    if (res.success && res.data && workflowToken === selectedToken) {
+      void loadWorkspace(workflowToken);
+    }
+    setDecisionLoadingToken("");
+  };
+
+  const handleSecondRoundSubmit = async (values: SecondRoundInviteValues) => {
+    if (!selectedForSecondRound || inviteLoadingToken) return;
+    setInviteLoadingToken(selectedForSecondRound.workflowToken);
+    const payload = {
+      roundType: values.roundType,
+      mode: values.mode,
+      meetUrl: values.meetUrl,
+      officeAddress: values.officeAddress,
+      interviewer: {
+        name: values.interviewerName,
+        email: values.interviewerEmail,
+      },
+      recruiterEmail: values.recruiterEmail,
+      slots: [values.interviewDate, values.interviewTime].filter(Boolean),
+      notes: values.additionalNotes,
+      timezone: values.timezone,
+      duration: "",
+      panelInterviewers: [],
+    };
+    const res = await advanceResultWorkflow(selectedForSecondRound.workflowToken, payload);
+    if (res.success) {
+      setSelectedForSecondRound(null);
+    }
+    setInviteLoadingToken("");
   };
 
   useEffect(() => {
     if (!isSessionReady) return;
-    if (!user) { router.replace("/login"); return; }
-    if (!effectiveJobId) { router.replace("/job"); return; }
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+    if (!effectiveJobId) {
+      router.replace("/job");
+      return;
+    }
     void loadList();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveJobId, isSessionReady]);
+  }, [effectiveJobId, isSessionReady, router, user]);
 
   useEffect(() => {
     if (jobId || !queryJobId) return;
@@ -160,300 +208,256 @@ function ResultsPageContent() {
 
   useEffect(() => {
     if (!selectedToken) return;
-    setActionMsg("");
     void loadWorkspace(selectedToken);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedToken]);
 
-  const handleDecision = async (decision: "pass" | "hold" | "reject") => {
-    if (!selectedToken) return;
-    setActionLoading(decision);
-    setActionMsg("");
-    const res = await submitResultDecision(selectedToken, { decision });
-    setActionMsg(res.success ? `Decision recorded: ${decision}` : res.error ?? "Failed");
-    if (res.success) { await loadList(); await loadWorkspace(selectedToken); }
-    setActionLoading("");
-  };
-
-  const handleApprove = async () => {
-    if (!selectedToken) return;
-    setActionLoading("advance");
-    setActionMsg("");
-    const res = await advanceResultWorkflow(selectedToken, {
-      roundType: "second_round",
-      mode: "video",
-      meetUrl: "",
-      officeAddress: "",
-      interviewer: { name: "", email: "" },
-      recruiterEmail: user?.email ?? "",
-      slots: [],
-      notes: "",
-    });
-    setActionMsg(res.success ? "Candidate approved and advanced." : res.error ?? "Failed");
-    if (res.success) { await loadList(); await loadWorkspace(selectedToken); }
-    setActionLoading("");
-  };
-
-  // video src — proxied through Adam backend using workflow token
-  const videoSrc = workspace.recording.videoAvailable && selectedToken
-    ? `/api/backend/results/video/${encodeURIComponent(selectedToken)}`
-    : null;
-
-  const scores = workspace.scores;
+  const scoreLabel = labelForScore(workspace.scores.overall);
   const scoreRows = [
-    { label: "Overall", value: scores.overall },
-    { label: "Technical", value: scores.technical },
-    { label: "Communication", value: scores.communication },
-    { label: "Culture Fit", value: scores.cultureFit },
+    { label: "Communication", score: workspace.scores.communication, description: workspace.analysis.communication || "Clear, structured, and confident responses." },
+    { label: "Technical Skills", score: workspace.scores.technical, description: workspace.analysis.technicalDepth || "Shows practical problem-solving depth." },
+    { label: "Culture Fit", score: workspace.scores.cultureFit, description: workspace.analysis.riskAreas?.length ? workspace.analysis.riskAreas.join(" ") : "Aligned with team expectations and collaboration." },
+    { label: "Overall", score: workspace.scores.overall, description: workspace.summary || "A well-rounded interview summary appears here." },
   ];
 
   return (
     <AppShell activeStep={5}>
-      <div className="flex h-[calc(100vh-120px)] gap-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="mx-auto w-full max-w-[1600px] px-4 py-6">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <Button variant="outline" className="rounded-full" onClick={() => router.push("/workspace")}>
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            Back to workspace
+          </Button>
+          <p className="text-sm font-bold uppercase tracking-[0.18em] text-indigo-600">Interview Analysis</p>
+        </div>
 
-        {/* ── LEFT: Interview Queue ─────────────────────────────────────── */}
-        <aside className="flex w-[300px] shrink-0 flex-col border-r border-slate-200 bg-white">
-          <div className="border-b border-slate-200 px-5 py-4">
-            <p className="text-base font-bold text-slate-900">Interview Queue</p>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 space-y-2">
-            {listLoading ? (
-              Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="h-24 animate-pulse rounded-xl bg-slate-100" />
-              ))
-            ) : items.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">No completed interviews yet.</p>
-            ) : (
-              items.map((item) => {
-                const active = item.workflowToken === selectedToken;
-                return (
-                  <button
-                    key={item.workflowToken}
-                    type="button"
-                    onClick={() => { setWorkspace(emptyWorkspace()); setSelectedToken(item.workflowToken); setActiveTab("analysis"); }}
-                    className={[
-                      "w-full rounded-xl border p-4 text-left transition-all",
-                      active ? "border-blue-400 bg-blue-50 shadow-sm" : "border-slate-200 bg-white hover:bg-slate-50",
-                    ].join(" ")}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="font-semibold text-slate-900 leading-tight">{item.name}</p>
-                      <Badge variant={queueBadgeVariant(item.completionState || item.status)}>
-                        {queueBadgeLabel(item.completionState || item.status)}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-xs text-slate-500 truncate">{item.recommendation ? item.recommendation.slice(0, 40) : ""}</p>
-                    <div className="mt-2 flex items-center justify-between text-xs text-slate-500">
-                      <span>Status</span>
-                      <span className="font-medium text-slate-700">{queueBadgeLabel(item.completionState || item.status)}</span>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </aside>
-
-        {/* ── RIGHT: Workspace ─────────────────────────────────────────── */}
-        <main className="flex flex-1 flex-col overflow-hidden">
-
-          {/* header */}
-          <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900">
-                {selectedItem?.name || workspace.candidate.name || "Select a candidate"}
-              </h2>
-              <p className="mt-0.5 text-sm text-slate-500">
-                {workspace.candidate.role || "General Interview"}
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <Button
-                className="h-10 rounded-full bg-green-600 px-5 text-sm font-semibold text-white hover:bg-green-700"
-                disabled={Boolean(actionLoading)}
-                onClick={() => void handleApprove()}
-              >
-                {actionLoading === "advance" ? "Saving..." : "Approve"}
-              </Button>
-              <Button
-                className="h-10 rounded-full bg-red-600 px-5 text-sm font-semibold text-white hover:bg-red-700"
-                disabled={Boolean(actionLoading)}
-                onClick={() => void handleDecision("reject")}
-              >
-                {actionLoading === "reject" ? "Saving..." : "Reject"}
-              </Button>
-            </div>
-          </div>
-
-          {actionMsg && (
-            <div className="mx-6 mt-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-800">
-              {actionMsg}
-            </div>
-          )}
-
-          {/* tabs */}
-          <div className="flex gap-1 border-b border-slate-200 px-6 pt-3">
-            {([ 
-              { key: "analysis" as TabKey, label: "AI Analysis", icon: Brain },
-              { key: "video" as TabKey, label: "Video", icon: Video },
-              { key: "transcript" as TabKey, label: "Transcript", icon: FileText },
-            ] as const).map(({ key, label, icon: Icon }) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setActiveTab(key)}
-                className={[
-                  "inline-flex items-center gap-2 rounded-t-lg border-b-2 px-5 py-2.5 text-sm font-medium transition-colors",
-                  activeTab === key
-                    ? "border-slate-900 bg-white text-slate-900"
-                    : "border-transparent text-slate-500 hover:text-slate-700",
-                ].join(" ")}
-              >
-                <Icon className="h-4 w-4" />
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {/* tab content */}
-          <div className="flex-1 overflow-y-auto p-6">
-            {wsLoading && (
-              <div className="space-y-4">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="h-20 animate-pulse rounded-xl bg-slate-100" />
-                ))}
-              </div>
-            )}
-
-            {!wsLoading && activeTab === "analysis" && (
-              <div className="space-y-5">
-                {/* AI Summary */}
-                <div className="rounded-xl border border-slate-200 bg-white p-5">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Brain className="h-5 w-5 text-slate-700" />
-                    <h3 className="font-semibold text-slate-900">AI Summary</h3>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.75fr)_minmax(320px,1fr)]">
+          <div className="space-y-4">
+            <section className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-white p-5 shadow-[0_16px_40px_rgba(0,0,0,0.04)]">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-3">
+                  <h1 className="text-3xl font-semibold tracking-tight text-slate-900">
+                    {selectedItem?.name || workspace.candidate.name || "Candidate"}
+                  </h1>
+                  <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
+                    <span className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 font-medium text-indigo-700">
+                      <Briefcase className="h-4 w-4" />
+                      {workspace.candidate.role || selectedItem?.recommendation || "Interview result"}
+                    </span>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
+                      <MapPin className="h-4 w-4" />
+                      {workspace.candidate.location || "Location not set"}
+                    </span>
                   </div>
-                  <p className="text-sm leading-7 text-slate-700">
-                    {workspace.summary || "AI summary will appear here once the interview evaluation is complete."}
+                  <div className="flex flex-wrap gap-5 text-sm font-medium text-slate-600">
+                    <span>Interview ID: {selectedItem?.workflowToken || workspace.recording.sessionToken || "—"}</span>
+                    <span>Duration: {String((workspace.metadata as Record<string, unknown>).duration || "48 min")}</span>
+                  </div>
+                </div>
+
+                <div className="min-w-[240px] rounded-2xl border border-emerald-100 bg-emerald-50 px-5 py-4">
+                  <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.12em] text-slate-500">
+                    <Star className="h-4 w-4 text-indigo-600" />
+                    Overall score
+                  </div>
+                  <div className="mt-2 flex items-end justify-between gap-4">
+                    <div className={`text-5xl font-semibold tracking-tight ${scoreTone(workspace.scores.overall)}`}>
+                      {formatScore(workspace.scores.overall)}
+                      <span className="text-xl text-slate-500">/10</span>
+                    </div>
+                    <Badge variant="high">{scoreLabel}</Badge>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-600">
+                    Final recommendation and score remain visible beside the candidate summary.
                   </p>
                 </div>
-
-                {/* Score grid */}
-                <div className="grid grid-cols-2 gap-4">
-                  {scoreRows.map((row) => (
-                    <ScoreBar key={row.label} label={row.label} score={row.value} />
-                  ))}
-                </div>
-
-                {/* Strengths / Weaknesses */}
-                {((workspace.analysis.strengths ?? []).length > 0 || (workspace.analysis.weaknesses ?? []).length > 0) && (
-                  <div className="grid grid-cols-2 gap-4">
-                    {(workspace.analysis.strengths ?? []).length > 0 && (
-                      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-700">Strengths</p>
-                        <ul className="space-y-1">
-                          {(workspace.analysis.strengths ?? []).map((s) => (
-                            <li key={s} className="text-sm text-slate-800">• {s}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {(workspace.analysis.weaknesses ?? []).length > 0 && (
-                      <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-rose-700">Weaknesses</p>
-                        <ul className="space-y-1">
-                          {(workspace.analysis.weaknesses ?? []).map((w) => (
-                            <li key={w} className="text-sm text-slate-800">• {w}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Recommendation */}
-                {workspace.recommendation && (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 mb-1">Recommendation</p>
-                    <p className="text-sm text-slate-800">{workspace.recommendation}</p>
-                  </div>
-                )}
               </div>
-            )}
+            </section>
 
-            {!wsLoading && activeTab === "video" && (
-              <div className="space-y-4">
-                {videoSrc ? (
-                  <div className="overflow-hidden rounded-xl border border-slate-200 bg-black">
-                    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                    <video
-                      key={videoSrc}
-                      controls
-                      className="w-full max-h-[520px]"
-                      src={videoSrc}
-                    />
+            {hasExpiredResults ? (
+              <section className="rounded-[28px] border border-amber-100 bg-amber-50 p-5 shadow-[0_16px_40px_rgba(0,0,0,0.04)]">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-full bg-amber-100 p-2 text-amber-700">
+                    <VideoOff className="h-5 w-5" />
                   </div>
-                ) : (
-                  <div className="flex h-64 items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50">
-                    <div className="text-center">
-                      <Video className="mx-auto h-10 w-10 text-slate-300" />
-                      <p className="mt-3 text-sm text-slate-500">
-                        {workspace.recording.recordingPath
-                          ? "Video is processing — check back shortly."
-                          : "No video recording available for this interview."}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Session token</p>
-                    <p className="font-medium text-slate-900 break-all">{workspace.recording.sessionToken || "—"}</p>
-                  </div>
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <p className="text-xs uppercase tracking-widest text-slate-500 mb-1">Recording status</p>
-                    <p className="font-medium text-slate-900">
-                      {workspace.recording.videoAvailable ? "Available" : "Pending"}
+                  <div>
+                    <h2 className="text-2xl font-semibold text-amber-950">Results expired from the UI</h2>
+                    <p className="mt-1 text-sm text-amber-800">
+                      Video playback and AI analysis are hidden after 7 days, but the underlying records remain stored in the database.
                     </p>
                   </div>
                 </div>
-              </div>
-            )}
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-white/70 p-4 text-sm text-amber-900">
+                  <p className="font-medium">Retention status</p>
+                  <p className="mt-1">
+                    {resultsExpiry
+                      ? `This result expired on ${resultsExpiry.toLocaleDateString()}.`
+                      : "No expiry timestamp was found, so the UI is treating this result as expired."}
+                  </p>
+                </div>
+              </section>
+            ) : (
+              <>
+                <InterviewRecordingPlayer
+                  workflowToken={selectedToken}
+                  available={Boolean(workspace.recording.videoAvailable || workspace.recording.recordingPath)}
+                  title="Interview recording"
+                  className="rounded-[28px]"
+                />
 
-            {!wsLoading && activeTab === "transcript" && (
-              <div className="space-y-3">
-                {workspace.transcript ? (
-                  workspace.transcript.split("\n").filter(Boolean).map((line, i) => {
-                    const isCandidate = /^(candidate|interviewee):/i.test(line);
-                    const isInterviewer = /^(interviewer|adam|recruiter):/i.test(line);
-                    return (
-                      <div
-                        key={i}
-                        className={[
-                          "rounded-xl border p-4 text-sm leading-6",
-                          isCandidate ? "border-sky-200 bg-sky-50 text-slate-900" :
-                          isInterviewer ? "border-emerald-200 bg-emerald-50 text-slate-900" :
-                          "border-slate-200 bg-slate-50 text-slate-700",
-                        ].join(" ")}
-                      >
-                        {line}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="flex h-48 items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50">
-                    <div className="text-center">
-                      <FileText className="mx-auto h-10 w-10 text-slate-300" />
-                      <p className="mt-3 text-sm text-slate-500">Transcript not available yet.</p>
+                <section className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-white p-5 shadow-[0_16px_40px_rgba(0,0,0,0.04)]">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-slate-900">AI Interview Analysis</h2>
+                      <p className="mt-1 text-sm text-slate-500">A concise summary of communication, technical depth, and overall interview takeaways.</p>
                     </div>
+                    <Button variant="outline" className="rounded-full">Read more</Button>
+                  </div>
+                  <div className="space-y-4">
+                    <p className="text-[15px] leading-7 text-slate-700">
+                      {workspace.summary || "AI summary will appear here once the interview evaluation is complete."}
+                    </p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="rounded-2xl bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Score justification</p>
+                        <p className="mt-2 text-sm leading-6 text-slate-700">
+                          {workspace.decision || "Score justification will appear here from the interview analysis data."}
+                        </p>
+                      </div>
+                      <div className="rounded-2xl bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Transcript preview</p>
+                        <p className="mt-2 text-sm leading-6 text-slate-700">
+                          {workspace.transcript ? workspace.transcript.slice(0, 320) : "Transcript not available yet."}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </>
+            )}
+          </div>
+
+          <div className="space-y-4">
+            <section className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-white p-5 shadow-[0_16px_40px_rgba(0,0,0,0.04)]">
+              <h2 className="text-2xl font-semibold text-slate-900">Scoring Parameters</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                High-level scoring summary using the existing backend values.
+                {hasExpiredResults ? " Hidden from the main UI after the 7-day retention window." : ""}
+              </p>
+              <div className="mt-5 space-y-5">
+                {scoreRows.map((row) => <ResultRow key={row.label} {...row} />)}
+              </div>
+            </section>
+
+            <section className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-white p-5 shadow-[0_16px_40px_rgba(0,0,0,0.04)]">
+              <h2 className="text-2xl font-semibold text-slate-900">Transcript</h2>
+              <div className="mt-4 max-h-[420px] space-y-3 overflow-auto pr-1">
+                {hasExpiredResults ? (
+                  <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-amber-200 bg-amber-50 text-sm text-amber-800">
+                    Transcript hidden after the 7-day UI retention window.
+                  </div>
+                ) : workspace.transcript ? (
+                  workspace.transcript.split("\n").filter(Boolean).map((line, index) => (
+                    <div key={index} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm leading-6 text-slate-700">
+                      {line}
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500">
+                    Transcript not available yet.
                   </div>
                 )}
               </div>
+            </section>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-white p-4 shadow-[0_16px_40px_rgba(0,0,0,0.04)]">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.12em] text-indigo-600">Interview queue</p>
+              <p className="text-sm text-slate-500">Select another completed interview to review its recording and scores.</p>
+              <p className="text-xs text-slate-500">
+                {remainingDays !== null && !hasExpiredResults
+                  ? `This result stays visible for about ${remainingDays} more day${remainingDays === 1 ? "" : "s"}.`
+                  : "Expired results are hidden from the UI but remain stored in the database."}
+              </p>
+            </div>
+            <Badge variant="neutral">{items.length} candidates</Badge>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {listLoading ? (
+              Array.from({ length: 3 }).map((_, index) => (
+                <div key={index} className="h-24 animate-pulse rounded-2xl bg-slate-100" />
+              ))
+            ) : (
+              items.map((item) => (
+                <div
+                  key={item.workflowToken}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedToken(item.workflowToken)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setSelectedToken(item.workflowToken);
+                    }
+                  }}
+                  className={[
+                    "rounded-2xl border p-4 text-left transition",
+                    item.workflowToken === selectedToken ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-white hover:bg-slate-50",
+                  ].join(" ")}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-slate-900">{item.name}</p>
+                      <p className="mt-1 text-xs text-slate-500">{item.recommendation || "Interview completed"}</p>
+                    </div>
+                    <Badge variant={item.completionState === "results_ready" ? "high" : "neutral"}>{item.completionState || item.status}</Badge>
+                  </div>
+                  <div className="mt-4 flex gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1 rounded-full border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDecision(item.workflowToken, "pass");
+                      }}
+                      disabled={Boolean(decisionLoadingToken) || Boolean(inviteLoadingToken)}
+                    >
+                      {selectedForSecondRound?.workflowToken === item.workflowToken && inviteLoadingToken === item.workflowToken ? "Opening..." : "Select"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1 rounded-full border-rose-200 text-rose-700 hover:bg-rose-50"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleDecision(item.workflowToken, "reject");
+                      }}
+                      disabled={Boolean(decisionLoadingToken) || Boolean(inviteLoadingToken)}
+                    >
+                      {decisionLoadingToken === item.workflowToken ? "Saving..." : "Reject"}
+                    </Button>
+                  </div>
+                </div>
+              ))
             )}
           </div>
-        </main>
+        </div>
+
+        <SecondRoundSchedulingModal
+          open={Boolean(selectedForSecondRound)}
+          onOpenChange={(open) => {
+            if (!open) setSelectedForSecondRound(null);
+          }}
+          candidateName={selectedForSecondRound?.name || ""}
+          role={workspace.candidate.role || selectedForSecondRound?.recommendation || ""}
+          company={workspace.candidate.company || ""}
+          defaultRecruiterEmail={user?.email || ""}
+          submitting={Boolean(inviteLoadingToken)}
+          onSubmit={(values) => void handleSecondRoundSubmit(values)}
+        />
       </div>
     </AppShell>
   );

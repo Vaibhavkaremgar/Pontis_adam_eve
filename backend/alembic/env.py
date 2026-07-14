@@ -22,6 +22,7 @@ if config.config_file_name is not None:
 # target_metadata = mymodel.Base.metadata
 # target_metadata = None
 from app.models.entities import Base
+import app.linkedin.models  # noqa: F401 - register LinkedIn tables with Base.metadata
 target_metadata = Base.metadata
 
 database_url = normalize_database_url(os.getenv("DATABASE_URL", ""))

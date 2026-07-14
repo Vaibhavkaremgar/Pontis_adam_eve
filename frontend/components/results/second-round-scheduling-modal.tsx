@@ -7,19 +7,18 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 
-export type SecondRoundSchedulingValues = {
+export type SecondRoundInviteValues = {
   roundType: "Second Round" | "Final Round";
-  mode: "Online" | "In-Person";
+  mode: "virtual" | "in_person";
+  interviewDate: string;
+  interviewTime: string;
+  timezone: string;
   meetUrl: string;
   officeAddress: string;
+  recruiterEmail: string;
   interviewerName: string;
   interviewerEmail: string;
-  recruiterEmail: string;
-  slots: string[];
-  notes: string;
-  timezone: string;
-  duration: string;
-  panelInterviewers: string[];
+  additionalNotes: string;
 };
 
 type Props = {
@@ -30,30 +29,22 @@ type Props = {
   company: string;
   defaultRecruiterEmail: string;
   submitting?: boolean;
-  onSubmit: (values: SecondRoundSchedulingValues) => void;
+  onSubmit: (values: SecondRoundInviteValues) => void;
 };
 
-const DEFAULT_VALUES: SecondRoundSchedulingValues = {
+const DEFAULT_VALUES: SecondRoundInviteValues = {
   roundType: "Second Round",
-  mode: "Online",
+  mode: "virtual",
+  interviewDate: "",
+  interviewTime: "",
+  timezone: "",
   meetUrl: "",
   officeAddress: "",
+  recruiterEmail: "",
   interviewerName: "",
   interviewerEmail: "",
-  recruiterEmail: "",
-  slots: [],
-  notes: "",
-  timezone: "",
-  duration: "",
-  panelInterviewers: [],
+  additionalNotes: "",
 };
-
-function splitList(value: string): string[] {
-  return value
-    .split(/[,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
 
 export function SecondRoundSchedulingModal({
   open,
@@ -65,51 +56,40 @@ export function SecondRoundSchedulingModal({
   submitting,
   onSubmit,
 }: Props) {
-  const [values, setValues] = useState<SecondRoundSchedulingValues>(DEFAULT_VALUES);
-  const [slotsText, setSlotsText] = useState("");
-  const [panelText, setPanelText] = useState("");
+  const [values, setValues] = useState<SecondRoundInviteValues>(DEFAULT_VALUES);
 
   useEffect(() => {
     if (!open) return;
     setValues((current) => ({
       ...DEFAULT_VALUES,
       recruiterEmail: current.recruiterEmail || defaultRecruiterEmail || "",
-      interviewerName: current.interviewerName,
-      interviewerEmail: current.interviewerEmail,
     }));
-    setSlotsText("");
-    setPanelText("");
   }, [defaultRecruiterEmail, open]);
 
-  const isOnline = values.mode === "Online";
   const canSubmit = useMemo(() => {
-    const recruiterEmail = values.recruiterEmail.trim();
-    const interviewerName = values.interviewerName.trim();
-    const interviewerEmail = values.interviewerEmail.trim();
-    const slots = splitList(slotsText);
-    const meetUrl = values.meetUrl.trim();
-    const officeAddress = values.officeAddress.trim();
-    if (!recruiterEmail || !interviewerName || !interviewerEmail || slots.length === 0) return false;
-    if (isOnline) return Boolean(meetUrl);
-    return Boolean(officeAddress);
-  }, [isOnline, slotsText, values.interviewerEmail, values.interviewerName, values.meetUrl, values.officeAddress, values.recruiterEmail]);
+    const required = [values.recruiterEmail, values.interviewDate, values.interviewTime, values.timezone, values.interviewerName, values.interviewerEmail]
+      .map((item) => item.trim())
+      .every(Boolean);
+    if (!required) return false;
+    return values.mode === "virtual" ? Boolean(values.meetUrl.trim()) : Boolean(values.officeAddress.trim());
+  }, [values]);
 
   return (
     <Modal
       open={open}
       onOpenChange={onOpenChange}
-      title="Schedule the next round"
-      description={`Configure the recruiter handoff for ${candidateName || "this candidate"} at ${company || "the company"}.`}
+      title="Schedule second round"
+      description={`Send the next-round invite for ${candidateName || "this candidate"} without leaving the results page.`}
       className="max-w-3xl bg-white"
     >
       <div className="space-y-5">
         <div className="grid gap-4 md:grid-cols-2">
           <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Interview Round</span>
+            <span className="font-medium text-slate-700">Round Type</span>
             <select
               className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-sky-500/20"
               value={values.roundType}
-              onChange={(event) => setValues((current) => ({ ...current, roundType: event.target.value as SecondRoundSchedulingValues["roundType"] }))}
+              onChange={(event) => setValues((current) => ({ ...current, roundType: event.target.value as SecondRoundInviteValues["roundType"] }))}
             >
               <option value="Second Round">Second Round</option>
               <option value="Final Round">Final Round</option>
@@ -120,13 +100,53 @@ export function SecondRoundSchedulingModal({
             <select
               className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-sky-500/20"
               value={values.mode}
-              onChange={(event) => setValues((current) => ({ ...current, mode: event.target.value as SecondRoundSchedulingValues["mode"] }))}
+              onChange={(event) => setValues((current) => ({ ...current, mode: event.target.value as SecondRoundInviteValues["mode"] }))}
             >
-              <option value="Online">Online</option>
-              <option value="In-Person">In-Person</option>
+              <option value="virtual">Virtual</option>
+              <option value="in_person">In person</option>
             </select>
           </label>
         </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-2 text-sm">
+            <span className="font-medium text-slate-700">Interview Date</span>
+            <Input value={values.interviewDate} onChange={(event) => setValues((current) => ({ ...current, interviewDate: event.target.value }))} placeholder="2026-07-18" />
+          </label>
+          <label className="space-y-2 text-sm">
+            <span className="font-medium text-slate-700">Interview Time</span>
+            <Input value={values.interviewTime} onChange={(event) => setValues((current) => ({ ...current, interviewTime: event.target.value }))} placeholder="2:30 PM" />
+          </label>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="space-y-2 text-sm">
+            <span className="font-medium text-slate-700">Timezone</span>
+            <Input value={values.timezone} onChange={(event) => setValues((current) => ({ ...current, timezone: event.target.value }))} placeholder="Asia/Calcutta" />
+          </label>
+          <label className="space-y-2 text-sm">
+            <span className="font-medium text-slate-700">{values.mode === "virtual" ? "Google Meet URL" : "Location"}</span>
+            {values.mode === "virtual" ? (
+              <Input value={values.meetUrl} onChange={(event) => setValues((current) => ({ ...current, meetUrl: event.target.value }))} placeholder="https://meet.google.com/..." />
+            ) : (
+              <Textarea
+                value={values.officeAddress}
+                onChange={(event) => setValues((current) => ({ ...current, officeAddress: event.target.value }))}
+                placeholder="123 Market Street, San Francisco, CA"
+                className="min-h-[96px]"
+              />
+            )}
+          </label>
+        </div>
+
+        <label className="space-y-2 text-sm">
+          <span className="font-medium text-slate-700">Recruiter Email</span>
+          <Input
+            value={values.recruiterEmail}
+            onChange={(event) => setValues((current) => ({ ...current, recruiterEmail: event.target.value }))}
+            placeholder="recruiter@company.com"
+          />
+        </label>
 
         <div className="grid gap-4 md:grid-cols-2">
           <label className="space-y-2 text-sm">
@@ -148,92 +168,22 @@ export function SecondRoundSchedulingModal({
         </div>
 
         <label className="space-y-2 text-sm">
-          <span className="font-medium text-slate-700">Recruiter Email</span>
-          <Input
-            value={values.recruiterEmail}
-            onChange={(event) => setValues((current) => ({ ...current, recruiterEmail: event.target.value }))}
-            placeholder="recruiter@company.com"
-          />
-        </label>
-
-        {isOnline ? (
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Meet URL</span>
-            <Input
-              value={values.meetUrl}
-              onChange={(event) => setValues((current) => ({ ...current, meetUrl: event.target.value }))}
-              placeholder="https://meet.google.com/..."
-            />
-          </label>
-        ) : (
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Office Address</span>
-            <Textarea
-              value={values.officeAddress}
-              onChange={(event) => setValues((current) => ({ ...current, officeAddress: event.target.value }))}
-              placeholder="123 Market Street, San Francisco, CA"
-              className="min-h-[96px]"
-            />
-          </label>
-        )}
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Available Slots</span>
-            <Textarea
-              value={slotsText}
-              onChange={(event) => setSlotsText(event.target.value)}
-              placeholder="Tue 10:00 AM PT, Tue 2:00 PM PT, Wed 11:30 AM PT"
-              className="min-h-[96px]"
-            />
-          </label>
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Panel Interviewers</span>
-            <Textarea
-              value={panelText}
-              onChange={(event) => setPanelText(event.target.value)}
-              placeholder="Priya Nair <priya@company.com>, Sam Lee <sam@company.com>"
-              className="min-h-[96px]"
-            />
-          </label>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Timezone</span>
-            <Input
-              value={values.timezone}
-              onChange={(event) => setValues((current) => ({ ...current, timezone: event.target.value }))}
-              placeholder="America/Los_Angeles"
-            />
-          </label>
-          <label className="space-y-2 text-sm">
-            <span className="font-medium text-slate-700">Duration</span>
-            <Input
-              value={values.duration}
-              onChange={(event) => setValues((current) => ({ ...current, duration: event.target.value }))}
-              placeholder="45 minutes"
-            />
-          </label>
-        </div>
-
-        <label className="space-y-2 text-sm">
-          <span className="font-medium text-slate-700">Notes / Instructions</span>
+          <span className="font-medium text-slate-700">Additional Notes</span>
           <Textarea
-            value={values.notes}
-            onChange={(event) => setValues((current) => ({ ...current, notes: event.target.value }))}
-            placeholder="Share interview focus areas, prep expectations, and any handoff notes."
+            value={values.additionalNotes}
+            onChange={(event) => setValues((current) => ({ ...current, additionalNotes: event.target.value }))}
+            placeholder="Add prep notes or any interviewer instructions."
             className="min-h-[120px]"
           />
         </label>
 
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-          <p className="font-medium text-slate-900">Operational summary</p>
+          <p className="font-medium text-slate-900">Summary</p>
           <div className="mt-2 grid gap-2 md:grid-cols-2">
             <p>Candidate: {candidateName || "Unknown"}</p>
             <p>Role: {role || "Unknown"}</p>
             <p>Company: {company || "Unknown"}</p>
-            <p>Mode: {values.mode}</p>
+            <p>Mode: {values.mode === "virtual" ? "Virtual" : "In person"}</p>
           </div>
         </div>
 
@@ -247,16 +197,15 @@ export function SecondRoundSchedulingModal({
             onClick={() =>
               onSubmit({
                 ...values,
-                slots: splitList(slotsText),
-                panelInterviewers: splitList(panelText),
                 recruiterEmail: values.recruiterEmail.trim(),
-                interviewerEmail: values.interviewerEmail.trim(),
-                interviewerName: values.interviewerName.trim(),
+                interviewDate: values.interviewDate.trim(),
+                interviewTime: values.interviewTime.trim(),
+                timezone: values.timezone.trim(),
                 meetUrl: values.meetUrl.trim(),
                 officeAddress: values.officeAddress.trim(),
-                notes: values.notes.trim(),
-                timezone: values.timezone.trim(),
-                duration: values.duration.trim(),
+                interviewerName: values.interviewerName.trim(),
+                interviewerEmail: values.interviewerEmail.trim(),
+                additionalNotes: values.additionalNotes.trim(),
               })
             }
           >
@@ -267,4 +216,3 @@ export function SecondRoundSchedulingModal({
     </Modal>
   );
 }
-

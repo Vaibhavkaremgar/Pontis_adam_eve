@@ -259,6 +259,53 @@ def _extract_json_object(raw: str) -> dict[str, Any] | None:
         return None
 
 
+def _extract_questions(payload: Any) -> list[str]:
+    if isinstance(payload, dict):
+        items = None
+        for key in ("questions", "async_questions", "asyncQuestions", "recommended_questions", "recommendedQuestions"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+        if items is None:
+            return []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        return []
+
+    questions: list[str] = []
+    for item in items:
+        if isinstance(item, str):
+            text = _normalize_text(item)
+        elif isinstance(item, dict):
+            text = _normalize_text(item.get("question") or item.get("text") or item.get("content"))
+        else:
+            text = ""
+        if text:
+            questions.append(text)
+    return _normalize_list(questions, max_items=10)
+
+
+def _normalize_list(values: Any, *, max_items: int = 10) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _normalize_text(value)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
 def extract_structured_data_fallback(transcript: str) -> dict[str, Any]:
     text = _normalize_text(transcript)
     lowered = text.lower()
@@ -337,6 +384,38 @@ def _extract_structured_hiring_data(*, transcript: str) -> dict[str, Any] | None
         log_metric("error", source="voice_structured_extraction", kind="request_failed")
         logger.warning("voice_extraction_failed reason=request_failed error=%s", str(exc))
         return None
+
+
+def _extract_async_questions(*, transcript: str, job_title: str = "", company_name: str = "") -> list[str]:
+    transcript_text = _normalize_text(transcript)
+    if not transcript_text:
+        return []
+    if not (GROQ_API_KEY or OPEN_ROUTER_API):
+        return []
+
+    prompt = (
+        "You are generating asynchronous screening questions from a recruiter voice intake transcript.\n"
+        "Return ONLY valid JSON.\n"
+        "Use this schema: {\"questions\": [\"question 1\", \"question 2\"]}\n"
+        "Rules:\n"
+        "- Return 3 to 7 concise questions\n"
+        "- Focus on must-haves, dealbreakers, experience requirements, and role clarity\n"
+        "- Make questions natural and suitable for async candidate screening\n"
+        "- Do not add numbering, bullets, markdown, or extra text\n\n"
+        f"{sanitize_prompt_block('Job title', job_title, max_length=160)}\n"
+        f"{sanitize_prompt_block('Company name', company_name, max_length=160)}\n"
+        f"{sanitize_prompt_block('Transcript', transcript_text, max_length=12000)}\n"
+    )
+
+    try:
+        payload = generate(prompt, expect_json=True)
+        questions = _extract_questions(payload)
+        if questions:
+            logger.info("voice_async_questions_generated source=groq count=%s", len(questions))
+            return questions
+    except Exception as exc:
+        logger.warning("voice_async_questions_failed error=%s", str(exc))
+    return []
 
 
 def _merge_unique(existing: list[str], incoming: list[str], *, limit: int = 30) -> list[str]:
@@ -671,6 +750,11 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
     merged_company_name = existing_company_name or extracted_company["name"]
     merged_company_industry = existing_company_industry or extracted_company["industry"]
     merged_company_description = existing_company_description or extracted_company["description"]
+    async_questions = _extract_async_questions(
+        transcript=cleaned_text,
+        job_title=merged_title,
+        company_name=merged_company_name,
+    )
 
     # Use the full transcript (both sides) for richer description refinement.
     notes_for_refinement = [cleaned_text] if cleaned_text else voice_notes
@@ -776,6 +860,9 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
             "voiceTranscript": cleaned_text,
             "voiceTranscriptClean": cleaned_text,
             "voiceTranscriptRaw": raw_text,
+            "voiceSummary": cleaned_text,
+            "async_questions": async_questions,
+            "asyncQuestions": async_questions,
         },
     )
     if not updated:
@@ -819,6 +906,9 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
             "voiceTranscript": cleaned_text,
             "voiceTranscriptClean": cleaned_text,
             "voiceTranscriptRaw": raw_text,
+            "voiceSummary": cleaned_text,
+            "async_questions": async_questions,
+            "asyncQuestions": async_questions,
         },
         intake_status="completed",
         completed_at=datetime.now(timezone.utc),

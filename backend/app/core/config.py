@@ -272,6 +272,19 @@ FEEDBACK_WEIGHTS = {
     "accept": float(os.getenv("FEEDBACK_WEIGHT_ACCEPT", "0.15")),
     "reject": float(os.getenv("FEEDBACK_WEIGHT_REJECT", "-0.25")),
 }
+LINKEDIN_ENABLED = os.getenv("LINKEDIN_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+LINKEDIN_BROWSER_PROFILE_ROOT = os.getenv("LINKEDIN_BROWSER_PROFILE_ROOT", "").strip()
+LINKEDIN_PROFILE_ROOT = os.getenv("LINKEDIN_PROFILE_ROOT", LINKEDIN_BROWSER_PROFILE_ROOT).strip()
+LINKEDIN_HEADLESS = os.getenv("LINKEDIN_HEADLESS", "false").strip().lower() in {"1", "true", "yes", "on"}
+LINKEDIN_DEFAULT_TIMEOUT = int(os.getenv("LINKEDIN_DEFAULT_TIMEOUT", "30000"))
+LINKEDIN_DOWNLOAD_PATH = os.getenv("LINKEDIN_DOWNLOAD_PATH", "backend/storage/linkedin_downloads").strip()
+LINKEDIN_VIEWPORT_WIDTH = int(os.getenv("LINKEDIN_VIEWPORT_WIDTH", "1440"))
+LINKEDIN_VIEWPORT_HEIGHT = int(os.getenv("LINKEDIN_VIEWPORT_HEIGHT", "900"))
+LINKEDIN_USER_AGENT = os.getenv("LINKEDIN_USER_AGENT", "").strip()
+LINKEDIN_PROXY_SERVER = os.getenv("LINKEDIN_PROXY_SERVER", "").strip()
+LINKEDIN_STEALTH_ENABLED = os.getenv("LINKEDIN_STEALTH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+LINKEDIN_DEFAULT_CONNECTION_LIMIT = int(os.getenv("LINKEDIN_DEFAULT_CONNECTION_LIMIT", "0"))
+LINKEDIN_DEFAULT_MESSAGE_LIMIT = int(os.getenv("LINKEDIN_DEFAULT_MESSAGE_LIMIT", "0"))
 
 
 def missing_secret_warnings() -> list[str]:

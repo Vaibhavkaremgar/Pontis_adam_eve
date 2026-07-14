@@ -183,6 +183,17 @@ def _job_interview_questions(job: Any) -> list[Any]:
     return []
 
 
+def _job_async_questions(job: Any) -> list[Any]:
+    structured_data = getattr(job, "structured_data", None)
+    if isinstance(structured_data, dict):
+        async_questions = structured_data.get("async_questions") or structured_data.get("asyncQuestions")
+        if isinstance(async_questions, list):
+            return list(async_questions)
+        if isinstance(async_questions, tuple):
+            return list(async_questions)
+    return _job_interview_questions(job)
+
+
 def _build_booking_link(token: str, *, source_type: str = "ui") -> str:
     params = {"token": token} if token else {}
     query = urlencode(params) if params else ""
@@ -338,6 +349,7 @@ def build_slot_booking_payload(
     agency_id = _string_field(job, "company_id")
     user_id = _normalize_text(recruiter_id or _string_field(job, "recruiter_id", "created_by"))
     interview_questions = _job_interview_questions(job)
+    async_questions = _job_async_questions(job)
     resume_metadata = {
         "full_name": _normalize_text(name),
         "headline": _normalize_text(headline),
@@ -388,6 +400,8 @@ def build_slot_booking_payload(
         "source_type": source_type,
         "sourceType": source_type,
         "interview_questions": interview_questions,
+        "async_questions": async_questions,
+        "asyncQuestions": async_questions,
         "fit_score": float(_candidate_value(candidate, "fit_score") or 0.0),
         "job_title": _string_field(job, "title", "job_title", "jobTitle"),
         "company_name": _string_field(job, "company_name", "company", "companyName"),
