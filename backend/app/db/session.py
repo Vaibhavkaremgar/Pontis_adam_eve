@@ -286,8 +286,17 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_reason TEXT NOT NULL DEFAULT ''"))
             if "ats_status_updated_at" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+            if "talent_pool_ready_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN talent_pool_ready_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "ats_metadata" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_metadata JSON NOT NULL DEFAULT '{}'"))
+
+        if "candidate_applications" in table_names:
+            application_columns = {column["name"] for column in inspector.get_columns("candidate_applications")}
+            if "shortlist_email_sent_at" not in application_columns:
+                conn.execute(text("ALTER TABLE candidate_applications ADD COLUMN shortlist_email_sent_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "shortlist_email_status" not in application_columns:
+                conn.execute(text("ALTER TABLE candidate_applications ADD COLUMN shortlist_email_status VARCHAR(32) NOT NULL DEFAULT ''"))
 
         if "ranking_explanations" in table_names:
             ranking_columns = {column["name"] for column in inspector.get_columns("ranking_explanations")}

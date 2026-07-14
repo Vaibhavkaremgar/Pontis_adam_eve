@@ -11,6 +11,7 @@ from app.db.repositories import (
     JobRepository,
     RecruiterNoteRepository,
 )
+from app.services.candidate_application_service import mark_candidate_talent_pool_ready
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.notification_intelligence_service import route_recruiter_notification
 
@@ -74,6 +75,10 @@ def record_interview_evaluation(
             reason="interview_advanced",
             metadata={"evaluationId": row.id, "stageName": stage_name},
         )
+        try:
+            mark_candidate_talent_pool_ready(db=db, job_id=job_id, candidate_id=candidate_id)
+        except Exception:
+            pass
     elif normalized_recommendation in {"reject", "no"}:
         transition_candidate_ats_state(
             db=db,

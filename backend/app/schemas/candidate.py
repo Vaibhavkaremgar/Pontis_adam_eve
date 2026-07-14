@@ -127,6 +127,16 @@ class SwipeFeedbackRequest(BaseModel):
     reactivateAt: str = ""
 
 
+class CandidateApplicationRequest(BaseModel):
+    jobId: str
+    name: str
+    email: str
+    phone: str = ""
+    resumeText: str = ""
+    resumeFileName: str = ""
+    resumeFilePath: str = ""
+
+
 class SwipeFeedbackData(BaseModel):
     jobId: str
     candidateId: str

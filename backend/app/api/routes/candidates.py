@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
-from app.schemas.candidate import CandidateExportRequest, CandidateSelectionRequest, SwipeFeedbackRequest
+from app.schemas.candidate import CandidateApplicationRequest, CandidateExportRequest, CandidateSelectionRequest, SwipeFeedbackRequest
 from app.services.ats_service import export_to_ats
+from app.services.candidate_application_service import submit_candidate_application
 from app.services.candidate_service import apply_feedback, build_candidate_fetch_debug, fetch_ranked_candidates
 from app.services.candidate_selection_service import (
     get_final_selection_results,
@@ -123,6 +124,25 @@ def export_candidates(payload: CandidateExportRequest, request: Request, _: dict
         job_id=payload.jobId,
         candidate_ids=payload.candidateIds,
         provider=payload.provider,
+    )
+    return success_response(result)
+
+
+@router.post("/candidates/applications")
+def submit_application(
+    payload: CandidateApplicationRequest,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    result = submit_candidate_application(
+        db=db,
+        job_id=payload.jobId,
+        name=payload.name,
+        email=payload.email,
+        phone=payload.phone,
+        resume_text=payload.resumeText,
+        resume_file_name=payload.resumeFileName,
+        resume_file_path=payload.resumeFilePath,
     )
     return success_response(result)
 

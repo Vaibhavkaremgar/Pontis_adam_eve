@@ -261,11 +261,46 @@ class CandidateProfileEntity(Base):
     ats_status_source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
     ats_status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     ats_status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    talent_pool_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     ats_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     job: Mapped["JobEntity"] = relationship(back_populates="candidate_profiles")
     company_record: Mapped["CompanyEntity"] = relationship(back_populates="candidate_profiles")
     company_record: Mapped["CompanyEntity"] = relationship(back_populates="candidate_profiles")
+
+
+class CandidateApplicationEntity(Base):
+    __tablename__ = "candidate_applications"
+    __table_args__ = (
+        UniqueConstraint("application_fingerprint", name="uq_candidate_applications_fingerprint"),
+        Index("ix_candidate_applications_job_status", "job_id", "application_status"),
+        Index("ix_candidate_applications_job_email", "job_id", "email"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="", index=True)
+    phone: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    resume_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    resume_file_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    resume_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    resume_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    application_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    application_status: Mapped[str] = mapped_column(String(64), nullable=False, default="application_received")
+    resume_processing_status: Mapped[str] = mapped_column(String(64), nullable=False, default="pending")
+    resume_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    evaluation_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    evaluation_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    shortlist_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    shortlist_email_status: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    shortlisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class CandidateLifecycleEventEntity(Base):

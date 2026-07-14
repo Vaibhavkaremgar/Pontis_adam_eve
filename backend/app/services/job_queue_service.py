@@ -28,6 +28,7 @@ QUEUE_TYPES = (
     "outreach_send_after_enrichment",
     "outreach_followup",
     "candidate_enrichment",
+    "candidate_application_processing",
     "embedding_generation",
     "candidate_refresh",
     "reply_processing",
@@ -339,6 +340,21 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
                     "job_id": job_id,
                     "candidate_id": candidate_id,
                 }
+
+        return _handler
+
+    if queue_type == "candidate_application_processing":
+        from app.db.session import SessionLocal
+        from app.services.candidate_application_service import process_candidate_application
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            application_id = str(payload.get("application_id") or payload.get("job_id") or "").strip()
+            if not application_id:
+                return {"status": "skipped", "reason": "missing_application_id"}
+            with SessionLocal() as db:
+                result = process_candidate_application(db=db, application_id=application_id)
+                db.commit()
+                return result
 
         return _handler
 

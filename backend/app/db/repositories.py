@@ -17,6 +17,7 @@ from app.utils.exceptions import APIError
 from app.models.entities import (
     ATSExportEntity,
     ATSExportRetryEntity,
+    CandidateApplicationEntity,
     CandidateFeedbackEntity,
     AutomationJobEntity,
     CandidateLifecycleEventEntity,
@@ -1694,6 +1695,151 @@ class InternalCandidateResumeRepository:
     def count(self) -> int:
         count = self.db.scalar(select(func.count()).select_from(InternalCandidateResumeEntity))
         return int(count or 0)
+
+
+class CandidateApplicationRepository:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+
+    def get(self, application_id: str) -> CandidateApplicationEntity | None:
+        normalized = _normalize_text(application_id)
+        if not normalized:
+            return None
+        return self.db.scalar(select(CandidateApplicationEntity).where(CandidateApplicationEntity.id == normalized))
+
+    def get_by_fingerprint(self, fingerprint: str) -> CandidateApplicationEntity | None:
+        normalized = _normalize_text(fingerprint)
+        if not normalized:
+            return None
+        return self.db.scalar(select(CandidateApplicationEntity).where(CandidateApplicationEntity.application_fingerprint == normalized))
+
+    def get_latest_for_job_and_email(self, *, job_id: str, email: str) -> CandidateApplicationEntity | None:
+        normalized_job_id = _normalize_text(job_id)
+        normalized_email = _normalize_text(email).lower()
+        if not normalized_job_id or not normalized_email:
+            return None
+        return self.db.scalar(
+            select(CandidateApplicationEntity)
+            .where(
+                _string_id_match(CandidateApplicationEntity.job_id, normalized_job_id),
+                CandidateApplicationEntity.email == normalized_email,
+            )
+            .order_by(CandidateApplicationEntity.created_at.desc())
+        )
+
+    def upsert(
+        self,
+        *,
+        job_id: str,
+        company_id: str,
+        candidate_id: str,
+        name: str,
+        email: str,
+        phone: str,
+        resume_file_name: str,
+        resume_file_path: str,
+        resume_text: str,
+        resume_fingerprint: str,
+        application_fingerprint: str,
+        application_status: str = "application_received",
+        resume_processing_status: str = "pending",
+    ) -> CandidateApplicationEntity:
+        now = datetime.now(timezone.utc)
+        row = self.get_by_fingerprint(application_fingerprint) or self.get_latest_for_job_and_email(job_id=job_id, email=email)
+        if not row:
+            row = CandidateApplicationEntity(
+                id=str(uuid4()),
+                job_id=job_id,
+                company_id=company_id,
+                candidate_id=candidate_id,
+                name=name,
+                email=email,
+                phone=phone,
+                resume_file_name=resume_file_name,
+                resume_file_path=resume_file_path,
+                resume_text=resume_text,
+                resume_fingerprint=resume_fingerprint,
+                application_fingerprint=application_fingerprint,
+                application_status=application_status,
+                resume_processing_status=resume_processing_status,
+                created_at=now,
+                updated_at=now,
+            )
+            try:
+                with self.db.begin_nested():
+                    self.db.add(row)
+                    self.db.flush()
+            except IntegrityError:
+                row = self.get_by_fingerprint(application_fingerprint) or self.get_latest_for_job_and_email(job_id=job_id, email=email)
+                if not row:
+                    raise
+        row.job_id = job_id
+        row.company_id = company_id
+        row.candidate_id = candidate_id
+        row.name = name
+        row.email = email
+        row.phone = phone
+        row.resume_file_name = resume_file_name
+        row.resume_file_path = resume_file_path
+        row.resume_text = resume_text
+        row.resume_fingerprint = resume_fingerprint
+        row.application_fingerprint = application_fingerprint
+        row.application_status = application_status
+        row.resume_processing_status = resume_processing_status
+        row.updated_at = now
+        self.db.flush()
+        return row
+
+    def update_status(
+        self,
+        *,
+        application_id: str,
+        application_status: str | None = None,
+        resume_processing_status: str | None = None,
+        resume_score: float | None = None,
+        evaluation_json: dict | None = None,
+        evaluation_timestamp: datetime | None = None,
+        shortlist_email_sent_at: datetime | None = None,
+        shortlist_email_status: str | None = None,
+        shortlisted_at: datetime | None = None,
+        rejected_at: datetime | None = None,
+        last_error: str | None = None,
+    ) -> CandidateApplicationEntity | None:
+        row = self.get(application_id)
+        if not row:
+            return None
+        if application_status is not None:
+            row.application_status = application_status
+        if resume_processing_status is not None:
+            row.resume_processing_status = resume_processing_status
+        if resume_score is not None:
+            row.resume_score = float(resume_score)
+        if evaluation_json is not None:
+            row.evaluation_json = dict(evaluation_json or {})
+        if evaluation_timestamp is not None:
+            row.evaluation_timestamp = evaluation_timestamp
+        if shortlist_email_sent_at is not None:
+            row.shortlist_email_sent_at = shortlist_email_sent_at
+        if shortlist_email_status is not None:
+            row.shortlist_email_status = shortlist_email_status
+        if shortlisted_at is not None:
+            row.shortlisted_at = shortlisted_at
+        if rejected_at is not None:
+            row.rejected_at = rejected_at
+        if last_error is not None:
+            row.last_error = last_error
+        row.updated_at = datetime.now(timezone.utc)
+        self.db.flush()
+        return row
+
+    def list_for_job(self, job_id: str, *, limit: int = 100) -> list[CandidateApplicationEntity]:
+        rows = self.db.scalars(
+            select(CandidateApplicationEntity)
+            .where(_string_id_match(CandidateApplicationEntity.job_id, job_id))
+            .order_by(CandidateApplicationEntity.created_at.desc())
+            .limit(max(1, limit))
+        ).all()
+        return list(rows)
 
 
 class CandidateFeedbackRepository:
