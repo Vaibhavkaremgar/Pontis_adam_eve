@@ -21,7 +21,7 @@ class LinkedInAccountEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     linkedin_email: Mapped[str] = mapped_column(String(320), nullable=False, default="", index=True)
     browser_profile_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")

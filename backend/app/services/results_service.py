@@ -263,7 +263,7 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                     cp.raw_data                AS candidate_raw_data,
                     nt.token                   AS workflow_token
                 FROM interviews i
-                LEFT JOIN candidate_profiles cp
+                LEFT JOIN candidates cp
                     ON cp.job_id = i.job_id
                    AND cp.candidate_id = i.candidate_id
                 LEFT JOIN notification_workflow_tokens nt
@@ -456,7 +456,7 @@ def _candidate_result_rows(db: Session, job_id: str, *, company_id: str) -> list
                     cp.decision,
                     nt.token AS workflow_token
                 FROM interviews i
-                LEFT JOIN candidate_profiles cp
+                LEFT JOIN candidates cp
                     ON cp.job_id = i.job_id
                    AND cp.candidate_id = i.candidate_id
                 LEFT JOIN notification_workflow_tokens nt

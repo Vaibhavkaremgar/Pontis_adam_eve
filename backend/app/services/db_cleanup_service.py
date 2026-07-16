@@ -56,23 +56,6 @@ def run_db_cleanup(db: Session) -> dict[str, int]:
         logger.warning("db_cleanup_ranking_runs_failed error=%s", str(exc))
         results["ranking_runs_deleted"] = 0
 
-    # Clean up expired interview sessions older than 7 days
-    try:
-        cutoff_sessions = now - timedelta(days=7)
-        result = db.execute(
-            text(
-                "DELETE FROM interview_sessions WHERE expires_at < :cutoff AND status != 'interview_scheduled'"
-            ),
-            {"cutoff": cutoff_sessions},
-        )
-        deleted_sessions = result.rowcount or 0
-        results["interview_sessions_deleted"] = deleted_sessions
-        if deleted_sessions:
-            logger.info("db_cleanup_interview_sessions deleted=%s", deleted_sessions)
-    except Exception as exc:
-        logger.warning("db_cleanup_interview_sessions_failed error=%s", str(exc))
-        results["interview_sessions_deleted"] = 0
-
     try:
         db.commit()
     except Exception as exc:

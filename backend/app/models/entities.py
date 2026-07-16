@@ -72,7 +72,7 @@ class AllowedUserEntity(Base):
 
 
 class CompanyEntity(Base):
-    __tablename__ = "companies"
+    __tablename__ = "agencies"
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_companies_user_name"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
@@ -105,7 +105,7 @@ class SlackInstallationEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     team_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     team_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     enterprise_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -132,7 +132,7 @@ class SlackUserEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     slack_installation_id: Mapped[str] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=False, index=True)
     slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
@@ -150,7 +150,7 @@ class SlackUserEntity(Base):
 
 
 class JobEntity(Base):
-    __tablename__ = "jobs"
+    __tablename__ = "job_descriptions"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
@@ -162,16 +162,11 @@ class JobEntity(Base):
     skills_required: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     experience_level: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    compensation: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    compensation: Mapped[str] = mapped_column("salary_range", String(255), nullable=False, default="")
     structured_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    work_authorization: Mapped[str] = mapped_column(String(64), nullable=False, default="required")
     ats_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
-    auto_export_to_ats: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     created_by: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
-    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
-    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     remote_policy: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     experience_required: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     last_candidate_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
@@ -187,7 +182,6 @@ class JobEntity(Base):
     ats_exports: Mapped[list["ATSExportEntity"]] = relationship(back_populates="job")
     outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="job")
     orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="job_record")
-    slack_installation: Mapped["SlackInstallationEntity | None"] = relationship()
 
 
 class JobIntakeEntity(Base):
@@ -195,8 +189,8 @@ class JobIntakeEntity(Base):
     __table_args__ = (UniqueConstraint("job_id", name="uq_job_intakes_job"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     transcript: Mapped[str] = mapped_column(Text, nullable=False, default="")
     structured_data_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     intake_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
@@ -212,13 +206,13 @@ class InterviewEntity(Base):
     __tablename__ = "interviews"
     __table_args__ = (
         UniqueConstraint("job_id", "candidate_id", name="uq_interviews_job_candidate"),
-        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
+        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidates.job_id", "candidates.candidate_id"]),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="selected")
     async_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, default=None)
@@ -228,24 +222,20 @@ class InterviewEntity(Base):
 
 
 class CandidateProfileEntity(Base):
-    __tablename__ = "candidate_profiles"
+    __tablename__ = "candidates"
     __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_candidate_profiles_job_candidate"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    role: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    company: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
     skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     raw_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     candidate_status: Mapped[str] = mapped_column(String(64), nullable=False, default="new")
     resume_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     total_experience_years: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    current_title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    current_company: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     phone: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     linkedin_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     github_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
@@ -261,7 +251,6 @@ class CandidateProfileEntity(Base):
     ats_status_source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
     ats_status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
     ats_status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    talent_pool_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     ats_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
     job: Mapped["JobEntity"] = relationship(back_populates="candidate_profiles")
@@ -278,8 +267,8 @@ class CandidateApplicationEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     email: Mapped[str] = mapped_column(String(320), nullable=False, default="", index=True)
@@ -310,8 +299,8 @@ class CandidateLifecycleEventEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     from_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     to_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -332,8 +321,8 @@ class NotificationEventEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     recipient_type: Mapped[str] = mapped_column(String(32), nullable=False, default="recruiter")
@@ -361,7 +350,7 @@ class AutomationJobEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     automation_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     automation_key: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -381,7 +370,7 @@ class RecruiterNoteEntity(Base):
     __tablename__ = "recruiter_notes"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     note_type: Mapped[str] = mapped_column(String(32), nullable=False, default="note")
@@ -396,7 +385,7 @@ class RecruiterTaskEntity(Base):
     __tablename__ = "recruiter_tasks"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -417,7 +406,7 @@ class InterviewEvaluationEntity(Base):
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     interviewer_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     stage_name: Mapped[str] = mapped_column(String(64), nullable=False, default="screen")
@@ -470,7 +459,7 @@ class ScoringProfileEntity(Base):
     __table_args__ = (UniqueConstraint("job_id", name="uq_scoring_profiles_job"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     weight_pdl: Mapped[float] = mapped_column(Float, nullable=False, default=0.35)
     weight_semantic: Mapped[float] = mapped_column(Float, nullable=False, default=0.45)
     weight_skill: Mapped[float] = mapped_column(Float, nullable=False, default=0.15)
@@ -487,12 +476,12 @@ class CandidateFeedbackEntity(Base):
     __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_candidate_feedback_job_candidate"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     feedback: Mapped[str] = mapped_column(String(16), nullable=False)  # accept | reject
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
     recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
     slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -509,8 +498,8 @@ class RankingExplanationEntity(Base):
     __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_ranking_explanations_job_candidate"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     existing_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     recruiter_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -525,7 +514,7 @@ class RankingRunEntity(Base):
     __tablename__ = "ranking_runs"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     run_type: Mapped[str] = mapped_column(String(32), nullable=False, default="initial")
     avg_existing_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -581,7 +570,7 @@ class CandidateSelectionSessionEntity(Base):
     __table_args__ = ()
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     current_batch_index: Mapped[int] = mapped_column(nullable=False, default=0)
     batch_size: Mapped[int] = mapped_column(nullable=False, default=2)
@@ -632,8 +621,8 @@ class OrchestrationSessionEntity(Base):
     last_processed_action_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     last_processed_transcript_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     intake_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
-    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
@@ -659,11 +648,11 @@ class ATSExportEntity(Base):
     __tablename__ = "ats_exports"
     __table_args__ = (
         UniqueConstraint("job_id", "candidate_id", "provider", name="uq_ats_exports_job_candidate_provider"),
-        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
+        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidates.job_id", "candidates.candidate_id"]),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None, index=True)
     candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="mock")
@@ -679,17 +668,14 @@ class ATSExportEntity(Base):
 class OutreachEventEntity(Base):
     __tablename__ = "outreach_events"
     __table_args__ = (
-        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidate_profiles.job_id", "candidate_profiles.candidate_id"]),
+        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidates.job_id", "candidates.candidate_id"]),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
-    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="sendgrid")
     to_email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     subject: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -738,8 +724,8 @@ class InboundEmailReplyEntity(Base):
     email_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     provider_message_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
-    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=True, index=True, default=None)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
     outreach_event_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
     sender_email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     sender_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -789,8 +775,8 @@ class InterviewSessionEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     outreach_event_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
     slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
     slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -824,7 +810,7 @@ class NotificationWorkflowTokenEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     workflow_name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -855,7 +841,7 @@ class ATSExportRetryEntity(Base):
     __tablename__ = "ats_export_retries"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("jobs.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="mock")
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
@@ -886,7 +872,7 @@ class AuditEventEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("companies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
     user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False, default="user")
@@ -900,3 +886,4 @@ class AuditEventEntity(Base):
     user_agent: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     request_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+

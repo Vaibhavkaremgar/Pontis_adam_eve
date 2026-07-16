@@ -27,9 +27,11 @@ from app.services.platform_ops_service import (
     replay_dead_letter,
     list_recent_platform_events,
 )
+from app.services.internal_candidate_matcher_service import InternalCandidateMatcher
 from app.services.operational_intelligence_service import get_operational_intelligence_snapshot
 from app.services.automation_service import list_automation_jobs
 from app.db.repositories import NotificationEventRepository, RecruiterNoteRepository, RecruiterTaskRepository
+from app.schemas.candidate import InternalCandidateMatchRequest
 from app.utils.responses import success_response
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -464,4 +466,19 @@ def migrate_embedding(
         metadata={"vectorSize": vectorSize, **result},
     )
     db.commit()
+    return success_response(result)
+
+
+@router.post("/internal-candidates/match")
+def match_internal_candidates(
+    payload: InternalCandidateMatchRequest,
+    user: dict = ops_access,
+    db: Session = Depends(get_db),
+):
+    _ = user
+    matcher = InternalCandidateMatcher(db)
+    try:
+        result = matcher.match(job_id=payload.jobId, filters=payload.filters, limit=payload.limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     return success_response(result)

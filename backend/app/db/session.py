@@ -86,12 +86,12 @@ def _verify_migrated_schema() -> None:
         table_names = set(inspector.get_table_names())
         required_tables = {
             "users",
-            "companies",
-            "jobs",
+            "agencies",
+            "job_descriptions",
             "job_intakes",
             "orchestration_sessions",
             "orchestration_events",
-            "candidate_profiles",
+            "candidates",
             "interviews",
             "outreach_events",
             "notification_workflow_tokens",
@@ -118,7 +118,7 @@ def _reconcile_legacy_schema_if_needed() -> None:
     with engine.begin() as conn:
         inspector = inspect(conn)
         table_names = set(inspector.get_table_names())
-        if not {"users", "companies", "jobs", "interviews"}.intersection(table_names):
+        if not {"users", "agencies", "job_descriptions", "interviews"}.intersection(table_names):
             return
 
         schema_incompatible, reason = _has_schema_incompatibility(inspector, table_names)
@@ -142,8 +142,8 @@ def _reconcile_legacy_schema_if_needed() -> None:
 def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool, str]:
     expected_columns = {
         "users": ["id", "email", "created_at"],
-        "companies": ["id", "name", "website", "description", "user_id", "created_at"],
-        "jobs": [
+        "agencies": ["id", "name", "website", "description", "user_id", "created_at"],
+        "job_descriptions": [
             "id",
             "source_app",
             "job_status",
@@ -196,49 +196,49 @@ def _ensure_optional_schema_columns() -> None:
 
         inspector = inspect(conn)
         table_names = set(inspector.get_table_names())
-        if "jobs" not in table_names and "companies" not in table_names:
+        if "job_descriptions" not in table_names and "agencies" not in table_names:
             return
 
-        if "jobs" in table_names:
-            job_columns = {column["name"] for column in inspector.get_columns("jobs")}
+        if "job_descriptions" in table_names:
+            job_columns = {column["name"] for column in inspector.get_columns("job_descriptions")}
             if "source_app" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'ui'"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'ui'"))
             if "job_status" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN job_status VARCHAR(32) NOT NULL DEFAULT 'active'"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN job_status VARCHAR(32) NOT NULL DEFAULT 'active'"))
             if "vetting_mode" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN vetting_mode VARCHAR(16) NOT NULL DEFAULT 'volume'"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN vetting_mode VARCHAR(16) NOT NULL DEFAULT 'volume'"))
             if "last_candidate_attempt_at" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN last_candidate_attempt_at TIMESTAMPTZ NULL DEFAULT NULL"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN last_candidate_attempt_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "responsibilities" not in job_columns:
                 conn.execute(
                     text(
-                        f"ALTER TABLE jobs ADD COLUMN responsibilities JSON NOT NULL DEFAULT {json_empty_list_default}"
+                        f"ALTER TABLE job_descriptions ADD COLUMN responsibilities JSON NOT NULL DEFAULT {json_empty_list_default}"
                     )
                 )
             if "skills_required" not in job_columns:
                 conn.execute(
                     text(
-                        f"ALTER TABLE jobs ADD COLUMN skills_required JSON NOT NULL DEFAULT {json_empty_list_default}"
+                        f"ALTER TABLE job_descriptions ADD COLUMN skills_required JSON NOT NULL DEFAULT {json_empty_list_default}"
                     )
                 )
             if "experience_level" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN experience_level VARCHAR(255) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN experience_level VARCHAR(255) NOT NULL DEFAULT ''"))
             if "structured_data" not in job_columns:
                 conn.execute(
                     text(
-                        f"ALTER TABLE jobs ADD COLUMN structured_data JSON NOT NULL DEFAULT {json_empty_object_default}"
+                        f"ALTER TABLE job_descriptions ADD COLUMN structured_data JSON NOT NULL DEFAULT {json_empty_object_default}"
                     )
                 )
             if "ats_job_id" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN ats_job_id VARCHAR(128) NULL DEFAULT NULL"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN ats_job_id VARCHAR(128) NULL DEFAULT NULL"))
             if "created_by" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN created_by VARCHAR(36) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN created_by VARCHAR(36) NOT NULL DEFAULT ''"))
             if "remote_policy" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN remote_policy VARCHAR(64) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN remote_policy VARCHAR(64) NOT NULL DEFAULT ''"))
             if "experience_required" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN experience_required VARCHAR(255) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN experience_required VARCHAR(255) NOT NULL DEFAULT ''"))
             if "updated_at" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+                conn.execute(text("ALTER TABLE job_descriptions ADD COLUMN updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
 
         if "users" in table_names:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -252,44 +252,44 @@ def _ensure_optional_schema_columns() -> None:
             if "session_id" not in feedback_columns:
                 conn.execute(text("ALTER TABLE candidate_feedback ADD COLUMN session_id VARCHAR(36) NULL DEFAULT NULL"))
 
-        if "candidate_profiles" in table_names:
-            candidate_columns = {column["name"] for column in inspector.get_columns("candidate_profiles")}
+        if "candidates" in table_names:
+            candidate_columns = {column["name"] for column in inspector.get_columns("candidates")}
             if "company_id" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "candidate_status" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN candidate_status VARCHAR(64) NOT NULL DEFAULT 'new'"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN candidate_status VARCHAR(64) NOT NULL DEFAULT 'new'"))
             if "resume_received_at" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN resume_received_at TIMESTAMPTZ NULL DEFAULT NULL"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN resume_received_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "total_experience_years" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN total_experience_years DOUBLE PRECISION NOT NULL DEFAULT 0"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN total_experience_years DOUBLE PRECISION NOT NULL DEFAULT 0"))
             if "current_title" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN current_title VARCHAR(255) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN current_title VARCHAR(255) NOT NULL DEFAULT ''"))
             if "current_company" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN current_company VARCHAR(255) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN current_company VARCHAR(255) NOT NULL DEFAULT ''"))
             if "phone" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN phone VARCHAR(64) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN phone VARCHAR(64) NOT NULL DEFAULT ''"))
             if "linkedin_url" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN linkedin_url VARCHAR(500) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN linkedin_url VARCHAR(500) NOT NULL DEFAULT ''"))
             if "github_url" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN github_url VARCHAR(500) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN github_url VARCHAR(500) NOT NULL DEFAULT ''"))
             if "parsed_resume_json" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_json JSON NOT NULL DEFAULT '{}'"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN parsed_resume_json JSON NOT NULL DEFAULT '{}'"))
             if "parsed_resume_text" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN parsed_resume_text TEXT NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN parsed_resume_text TEXT NOT NULL DEFAULT ''"))
             if "workflow_token" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN workflow_token VARCHAR(255) NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN workflow_token VARCHAR(255) NOT NULL DEFAULT ''"))
             if "ats_status" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status VARCHAR(64) NOT NULL DEFAULT 'reviewed'"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status VARCHAR(64) NOT NULL DEFAULT 'reviewed'"))
             if "ats_status_source" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_source VARCHAR(32) NOT NULL DEFAULT 'system'"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status_source VARCHAR(32) NOT NULL DEFAULT 'system'"))
             if "ats_status_reason" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_reason TEXT NOT NULL DEFAULT ''"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status_reason TEXT NOT NULL DEFAULT ''"))
             if "ats_status_updated_at" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
             if "talent_pool_ready_at" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN talent_pool_ready_at TIMESTAMPTZ NULL DEFAULT NULL"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN talent_pool_ready_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "ats_metadata" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidate_profiles ADD COLUMN ats_metadata JSON NOT NULL DEFAULT '{}'"))
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_metadata JSON NOT NULL DEFAULT '{}'"))
 
         if "candidate_applications" in table_names:
             application_columns = {column["name"] for column in inspector.get_columns("candidate_applications")}
@@ -898,11 +898,11 @@ def _ensure_optional_schema_columns() -> None:
         if dialect == "postgresql":
             timestamptz_columns: dict[str, tuple[str, ...]] = {
                 "users": ("created_at",),
-                "companies": ("created_at",),
-                "jobs": ("created_at", "last_candidate_attempt_at"),
+                "agencies": ("created_at",),
+                "job_descriptions": ("created_at", "last_candidate_attempt_at"),
                 "job_intakes": ("created_at", "completed_at", "updated_at"),
                 "interviews": ("created_at",),
-                "candidate_profiles": ("last_scored_at", "last_refreshed_at", "ats_status_updated_at"),
+                "candidates": ("last_scored_at", "last_refreshed_at", "ats_status_updated_at"),
                 "scoring_profiles": ("updated_at",),
                 "candidate_feedback": ("updated_at", "created_at"),
                 "ats_exports": ("exported_at",),
@@ -947,12 +947,12 @@ def _ensure_optional_schema_columns() -> None:
 def _cleanup_invalid_candidate_references() -> None:
     """
     One-time defensive cleanup:
-    remove orphan references that violate (job_id, candidate_id) -> candidate_profiles.
+    remove orphan references that violate (job_id, candidate_id) -> candidates.
     """
     with engine.begin() as conn:
         inspector = inspect(conn)
         table_names = set(inspector.get_table_names())
-        if "candidate_profiles" not in table_names:
+        if "candidates" not in table_names:
             return
 
         if "interviews" in table_names:
@@ -961,7 +961,7 @@ def _cleanup_invalid_candidate_references() -> None:
                     """
                     SELECT i.id, i.job_id, i.candidate_id
                     FROM interviews i
-                    LEFT JOIN candidate_profiles cp
+                    LEFT JOIN candidates cp
                       ON i.job_id = cp.job_id
                      AND i.candidate_id = cp.candidate_id
                     WHERE cp.id IS NULL
@@ -979,7 +979,7 @@ def _cleanup_invalid_candidate_references() -> None:
                         DELETE FROM interviews
                         WHERE NOT EXISTS (
                             SELECT 1
-                            FROM candidate_profiles cp
+                            FROM candidates cp
                             WHERE cp.job_id = interviews.job_id
                               AND cp.candidate_id = interviews.candidate_id
                         )
@@ -993,7 +993,7 @@ def _cleanup_invalid_candidate_references() -> None:
                     """
                     SELECT o.id, o.job_id, o.candidate_id
                     FROM outreach_events o
-                    LEFT JOIN candidate_profiles cp
+                    LEFT JOIN candidates cp
                       ON o.job_id = cp.job_id
                      AND o.candidate_id = cp.candidate_id
                     WHERE cp.id IS NULL
@@ -1011,7 +1011,7 @@ def _cleanup_invalid_candidate_references() -> None:
                         DELETE FROM outreach_events
                         WHERE NOT EXISTS (
                             SELECT 1
-                            FROM candidate_profiles cp
+                            FROM candidates cp
                             WHERE cp.job_id = outreach_events.job_id
                               AND cp.candidate_id = outreach_events.candidate_id
                         )

@@ -269,6 +269,17 @@ RANKING_WEIGHTS = {
     "skill_overlap": float(os.getenv("RANKING_WEIGHT_SKILL_OVERLAP", "0.2")),
     "experience": float(os.getenv("RANKING_WEIGHT_EXPERIENCE", "0.1")),
 }
+INTERNAL_MATCH_WEIGHTS = {
+    "resume_score": float(os.getenv("INTERNAL_MATCH_WEIGHT_RESUME_SCORE", "0.34")),
+    "interview_score": float(os.getenv("INTERNAL_MATCH_WEIGHT_INTERVIEW_SCORE", "0.28")),
+    "skill_coverage": float(os.getenv("INTERNAL_MATCH_WEIGHT_SKILL_COVERAGE", "0.18")),
+    "experience_match": float(os.getenv("INTERNAL_MATCH_WEIGHT_EXPERIENCE_MATCH", "0.12")),
+    "freshness": float(os.getenv("INTERNAL_MATCH_WEIGHT_FRESHNESS", "0.08")),
+}
+INTERNAL_MATCH_DEFAULT_LIMIT = int(os.getenv("INTERNAL_MATCH_DEFAULT_LIMIT", "25"))
+INTERNAL_MATCH_MAX_LIMIT = int(os.getenv("INTERNAL_MATCH_MAX_LIMIT", "100"))
+INTERNAL_MATCH_MIN_RESUME_SCORE = float(os.getenv("INTERNAL_MATCH_MIN_RESUME_SCORE", "0"))
+INTERNAL_MATCH_MIN_INTERVIEW_SCORE = float(os.getenv("INTERNAL_MATCH_MIN_INTERVIEW_SCORE", "0"))
 FEEDBACK_WEIGHTS = {
     "accept": float(os.getenv("FEEDBACK_WEIGHT_ACCEPT", "0.15")),
     "reject": float(os.getenv("FEEDBACK_WEIGHT_REJECT", "-0.25")),

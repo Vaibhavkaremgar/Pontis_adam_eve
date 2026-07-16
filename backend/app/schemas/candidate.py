@@ -137,6 +137,48 @@ class CandidateApplicationRequest(BaseModel):
     resumeFilePath: str = ""
 
 
+class InternalCandidateMatchFilters(BaseModel):
+    skills: list[str] = Field(default_factory=list)
+    experience: str = ""
+    currentRole: str = ""
+    currentCompany: str = ""
+    location: str = ""
+    minResumeScore: float | None = None
+    minInterviewScore: float | None = None
+    recommendation: str = ""
+    interviewDateFrom: str = ""
+    interviewDateTo: str = ""
+    talentPoolReadyOnly: bool = True
+
+
+class InternalCandidateMatchRequest(BaseModel):
+    jobId: str
+    limit: int = 25
+    filters: InternalCandidateMatchFilters = Field(default_factory=InternalCandidateMatchFilters)
+
+
+class InternalCandidateMatchItem(BaseModel):
+    candidateId: str
+    name: str
+    currentRole: str = ""
+    currentCompany: str = ""
+    experience: float = 0.0
+    resumeMatch: float = 0.0
+    interviewScore: float = 0.0
+    overallMatch: float = 0.0
+    recommendation: str = ""
+    interviewDate: str | None = None
+    freshness: float = 0.0
+    matchingExplanation: str = ""
+    skills: list[str] = Field(default_factory=list)
+
+
+class InternalCandidateMatchResponse(BaseModel):
+    jobId: str
+    total: int
+    items: list[InternalCandidateMatchItem] = Field(default_factory=list)
+
+
 class SwipeFeedbackData(BaseModel):
     jobId: str
     candidateId: str
