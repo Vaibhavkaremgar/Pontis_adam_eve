@@ -9,4 +9,3 @@ out/
 coverage/
 *.log
 *.tsbuildinfo
-backend/linkedin_profiles/
