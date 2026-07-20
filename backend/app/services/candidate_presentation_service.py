@@ -162,6 +162,9 @@ def _humanize_snippet(snippet: str, *, name: str = "", role: str = "", company: 
     normalized = clean[:-1] if clean.endswith(".") else clean
     normalized = re.sub(r"\s*\|\s*", ", ", normalized)
 
+    if any(marker in lower for marker in ("view ", "linkedin", "professional community", "source snippet", "experience:", "location:")):
+        return ""
+
     if role and role.lower() not in lower:
         intro_name = name.split()[0] if name and name != "Unknown Candidate" else "This candidate"
         if company and company.lower() not in lower:
@@ -291,7 +294,7 @@ def build_recruiter_summary(
         if truncated:
             sentences.append(truncated + ".")
 
-    if education_summary:
+    if education_summary and len(sentences) < 4:
         sentences.append(education_summary)
 
     # Fallback if we couldn’t build anything meaningful
@@ -300,7 +303,7 @@ def build_recruiter_summary(
             return [f"{first_name} was sourced via LinkedIn and looks worth a closer look."]
         return ["This candidate was sourced via LinkedIn and looks worth a closer look."]
 
-    return sentences[:5]
+    return sentences[:4]
 
 
 # ── shared view-model builder ─────────────────────────────────────────────────

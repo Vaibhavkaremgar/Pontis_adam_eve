@@ -101,6 +101,18 @@ function completeSentence(value: string): string {
   return normalized.endsWith(".") ? normalized : `${normalized}.`;
 }
 
+function shortenSummaryText(value: string, maxSentences = 4, maxLength = 320): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .slice(0, maxSentences);
+  const merged = (sentences.length > 0 ? sentences.join(" ") : text).trim();
+  return merged.length > maxLength ? `${merged.slice(0, maxLength).trim()}...` : merged;
+}
+
 function hashString(value: string): number {
   let hash = 0;
   const input = String(value || "");
@@ -171,7 +183,7 @@ function summarizeCandidateModalText(candidate: Candidate): string {
 }
 
 function buildCandidateSummary(candidate: Candidate): string {
-  return summarizeCandidateModalText(candidate);
+  return shortenSummaryText(summarizeCandidateModalText(candidate));
 }
 
 export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
@@ -460,7 +472,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
               : candidate.enrichmentStatus || "Pending"}
         </span>
       </div>
-      <p className="text-sm leading-relaxed text-gray-700">
+      <p className="text-sm leading-relaxed text-gray-700" style={{ display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
         {buildCandidateSummary(candidate)}
       </p>
       {candidate.linkedinUrl && (
@@ -567,7 +579,7 @@ export function CandidateModal({ open, onOpenChange }: CandidateModalProps) {
                           ⭐ {currentReviewCandidate.fitScore}
                         </Badge>
                       </div>
-                      <p className="text-sm leading-relaxed text-gray-700">
+                      <p className="text-sm leading-relaxed text-gray-700" style={{ display: "-webkit-box", WebkitLineClamp: 4, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
                         {buildCandidateSummary(currentReviewCandidate)}
                       </p>
                       {currentReviewCandidate.linkedinUrl && (
