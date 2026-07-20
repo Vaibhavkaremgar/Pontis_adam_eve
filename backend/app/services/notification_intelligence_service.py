@@ -20,12 +20,6 @@ def resolve_recruiter_slack_user_id(*, db: Session, job_id: str) -> str:
     session = OrchestrationSessionRepository(db).get_by_job(job_id)
     if session and _normalize(session.slack_user_id):
         return _normalize(session.slack_user_id)
-    job = JobRepository(db).get(job_id)
-    if not job:
-        return ""
-    company = job.company
-    if company and _normalize(getattr(company, "user_id", "")):
-        return _normalize(str(company.user_id))
     return ""
 
 

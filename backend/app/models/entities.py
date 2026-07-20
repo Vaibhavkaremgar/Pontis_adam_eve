@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 from uuid import UUID
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, BigInteger
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy import func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, synonym
 from sqlalchemy.types import CHAR, TypeDecorator
 
 
@@ -51,11 +51,22 @@ class UserEntity(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
-    role: Mapped[str] = mapped_column(String(32), nullable=False, default="recruiter")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hashed_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    full_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    is_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
+    phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    department: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    wallet_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True)
 
-    companies: Mapped[list["CompanyEntity"]] = relationship(back_populates="user")
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="users")
     slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="internal_user")
     slack_installations: Mapped[list["SlackInstallationEntity"]] = relationship(back_populates="installed_by_user")
 
@@ -73,39 +84,41 @@ class AllowedUserEntity(Base):
 
 class CompanyEntity(Base):
     __tablename__ = "agencies"
-    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_companies_user_name"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    website: Mapped[str] = mapped_column(String(500), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    industry: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    ats_provider: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    ats_connected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    user_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
+    new_id: Mapped[str | None] = mapped_column(GUID(), nullable=True, default=None)
 
-    user: Mapped["UserEntity"] = relationship(back_populates="companies")
-    jobs: Mapped[list["JobEntity"]] = relationship(back_populates="company")
-    job_intakes: Mapped[list["JobIntakeEntity"]] = relationship(back_populates="company_record")
-    candidate_profiles: Mapped[list["CandidateProfileEntity"]] = relationship(back_populates="company_record")
-    outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="company_record")
-    inbound_email_replies: Mapped[list["InboundEmailReplyEntity"]] = relationship(back_populates="company_record")
-    interview_sessions: Mapped[list["InterviewSessionEntity"]] = relationship(back_populates="company_record")
-    orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="company_record")
-    slack_installations: Mapped[list["SlackInstallationEntity"]] = relationship(back_populates="company")
-    slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="company")
+    users: Mapped[list["UserEntity"]] = relationship(back_populates="agency")
+    jobs: Mapped[list["JobEntity"]] = relationship(back_populates="agency")
+    candidates: Mapped[list["CandidateProfileEntity"]] = relationship(back_populates="agency")
+    job_intakes: Mapped[list["JobIntakeEntity"]] = relationship(back_populates="agency")
+    outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="agency")
+    inbound_email_replies: Mapped[list["InboundEmailReplyEntity"]] = relationship(back_populates="agency")
+    interview_sessions: Mapped[list["InterviewSessionEntity"]] = relationship(back_populates="agency")
+    orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="agency")
+    slack_installations: Mapped[list["SlackInstallationEntity"]] = relationship(back_populates="agency")
+    slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="agency")
+    candidate_lifecycle_events: Mapped[list["CandidateLifecycleEventEntity"]] = relationship(back_populates="agency")
+    notification_events: Mapped[list["NotificationEventEntity"]] = relationship(back_populates="agency")
+    candidate_feedback: Mapped[list["CandidateFeedbackEntity"]] = relationship(back_populates="agency")
+    ranking_explanations: Mapped[list["RankingExplanationEntity"]] = relationship(back_populates="agency")
 
 
 class SlackInstallationEntity(Base):
     __tablename__ = "slack_installations"
     __table_args__ = (
         UniqueConstraint("team_id", name="uq_slack_installations_team_id"),
-        Index("ix_slack_installations_company_active", "company_id", "is_active"),
+        Index("ix_slack_installations_agency_active", "agency_id", "is_active"),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = synonym("agency_id")
     team_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     team_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     enterprise_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -119,7 +132,7 @@ class SlackInstallationEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
-    company: Mapped["CompanyEntity"] = relationship(back_populates="slack_installations")
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="slack_installations")
     installed_by_user: Mapped["UserEntity | None"] = relationship(back_populates="slack_installations")
     slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="installation")
 
@@ -128,11 +141,12 @@ class SlackUserEntity(Base):
     __tablename__ = "slack_users"
     __table_args__ = (
         UniqueConstraint("slack_installation_id", "slack_user_id", name="uq_slack_users_installation_user"),
-        Index("ix_slack_users_company_slack_user", "company_id", "slack_user_id"),
+        Index("ix_slack_users_agency_slack_user", "agency_id", "slack_user_id"),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = synonym("agency_id")
     slack_installation_id: Mapped[str] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=False, index=True)
     slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
@@ -144,7 +158,7 @@ class SlackUserEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
-    company: Mapped["CompanyEntity"] = relationship(back_populates="slack_users")
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="slack_users")
     installation: Mapped["SlackInstallationEntity"] = relationship(back_populates="slack_users")
     internal_user: Mapped["UserEntity | None"] = relationship(back_populates="slack_users")
 
@@ -153,28 +167,54 @@ class JobEntity(Base):
     __tablename__ = "job_descriptions"
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    job_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    company_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    department: Mapped[str | None] = mapped_column(Text, nullable=True)
+    location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    employment_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    experience_required: Mapped[str | None] = mapped_column(Text, nullable=True)
+    salary_range: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vacancies: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requirements: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responsibilities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skills: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    is_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interview_questions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    min_passing_score: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True)
+    company_id: Mapped[str | None] = synonym("agency_id")
+    city: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    state: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    remote: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    company_website_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    company_logo_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    valid_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    shortlist_email_template_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    shortlist_email_template_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email_template_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
+    created_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
+    updated_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     vetting_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="volume")
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    responsibilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    last_candidate_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     skills_required: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     experience_level: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    location: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    compensation: Mapped[str] = mapped_column("salary_range", String(255), nullable=False, default="")
     structured_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     ats_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
-    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
-    created_by: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
     remote_policy: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    experience_required: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    last_candidate_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
 
-    company: Mapped["CompanyEntity"] = relationship(back_populates="jobs")
-    interviews: Mapped[list["InterviewEntity"]] = relationship(back_populates="job")
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="jobs")
+    created_by_user: Mapped["UserEntity | None"] = relationship()
     candidate_profiles: Mapped[list["CandidateProfileEntity"]] = relationship(back_populates="job")
     job_intakes: Mapped[list["JobIntakeEntity"]] = relationship(back_populates="job")
     scoring_profile: Mapped["ScoringProfileEntity | None"] = relationship(back_populates="job", uselist=False)
@@ -183,6 +223,38 @@ class JobEntity(Base):
     outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="job")
     orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="job_record")
 
+    @property
+    def compensation(self) -> str:
+        return str(self.salary_range or "")
+
+    @compensation.setter
+    def compensation(self, value: str) -> None:
+        self.salary_range = (value or "").strip()
+
+    @property
+    def work_authorization(self) -> str:
+        structured = self.structured_data if isinstance(self.structured_data, dict) else {}
+        return str(structured.get("work_authorization") or structured.get("workAuthorization") or "")
+
+    @work_authorization.setter
+    def work_authorization(self, value: str) -> None:
+        structured = dict(self.structured_data or {})
+        structured["work_authorization"] = (value or "").strip()
+        structured["workAuthorization"] = (value or "").strip()
+        self.structured_data = structured
+
+    @property
+    def auto_export_to_ats(self) -> bool:
+        structured = self.structured_data if isinstance(self.structured_data, dict) else {}
+        return bool(structured.get("auto_export_to_ats") or structured.get("autoExportToAts") or False)
+
+    @auto_export_to_ats.setter
+    def auto_export_to_ats(self, value: bool) -> None:
+        structured = dict(self.structured_data or {})
+        structured["auto_export_to_ats"] = bool(value)
+        structured["autoExportToAts"] = bool(value)
+        self.structured_data = structured
+
 
 class JobIntakeEntity(Base):
     __tablename__ = "job_intakes"
@@ -190,35 +262,59 @@ class JobIntakeEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
     transcript: Mapped[str] = mapped_column(Text, nullable=False, default="")
     structured_data_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     intake_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    company_id: Mapped[str] = synonym("agency_id")
 
     job: Mapped["JobEntity"] = relationship(back_populates="job_intakes")
-    company_record: Mapped["CompanyEntity"] = relationship(back_populates="job_intakes")
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="job_intakes")
 
 
 class InterviewEntity(Base):
     __tablename__ = "interviews"
-    __table_args__ = (
-        UniqueConstraint("job_id", "candidate_id", name="uq_interviews_job_candidate"),
-        ForeignKeyConstraint(["job_id", "candidate_id"], ["candidates.job_id", "candidates.candidate_id"]),
-    )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    interview_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_minutes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    meeting_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interview_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technical_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    communication_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    culture_fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_async: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    async_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    async_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    async_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    async_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    async_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    async_answers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    candidate_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("candidates.id"), nullable=True, index=True)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True)
+    agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True)
+    interview_score_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technical_score_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    communication_score_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    culture_fit_score_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
+    updated_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
-    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(64), nullable=False, default="selected")
-    async_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, default=None)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
-    job: Mapped["JobEntity"] = relationship(back_populates="interviews")
+    candidate: Mapped["CandidateProfileEntity | None"] = relationship()
+    agency: Mapped["CompanyEntity | None"] = relationship()
 
 
 class CandidateProfileEntity(Base):
@@ -226,36 +322,90 @@ class CandidateProfileEntity(Base):
     __table_args__ = (UniqueConstraint("job_id", "candidate_id", name="uq_candidate_profiles_job_candidate"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
-    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    skills: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    raw_data: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    candidate_status: Mapped[str] = mapped_column(String(64), nullable=False, default="new")
-    resume_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    phone: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_company: Mapped[str | None] = mapped_column(Text, nullable=True)
+    current_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    experience_years: Mapped[float | None] = mapped_column(Float, nullable=True)
+    location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resume_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resume_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parsing_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resume_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    skills: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    education: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    work_experience: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decline_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    offer_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synced_to_sheets: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    display_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    predefined_questions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interview_transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interview_ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interview_technical_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    interview_communication_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    interview_culture_fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    interview_video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage_entered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
+    assigned_to_user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True)
+    created_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
+    updated_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
+    raw_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    candidate_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resume_received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    github_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    parsed_resume_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    parsed_resume_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ats_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ats_status_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ats_status_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ats_status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ats_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    workflow_token: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = synonym("agency_id")
     total_experience_years: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    phone: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    linkedin_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
-    github_url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
-    parsed_resume_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    parsed_resume_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    workflow_token: Mapped[str] = mapped_column(String(255), nullable=False, default="", index=True)
-    fit_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    decision: Mapped[str] = mapped_column(String(64), nullable=False, default="weak")
-    strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="LOW")
-    last_scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    ats_status: Mapped[str] = mapped_column(String(64), nullable=False, default="reviewed")
-    ats_status_source: Mapped[str] = mapped_column(String(32), nullable=False, default="system")
-    ats_status_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    ats_status_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    ats_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 
-    job: Mapped["JobEntity"] = relationship(back_populates="candidate_profiles")
-    company_record: Mapped["CompanyEntity"] = relationship(back_populates="candidate_profiles")
-    company_record: Mapped["CompanyEntity"] = relationship(back_populates="candidate_profiles")
+    job: Mapped["JobEntity | None"] = relationship(back_populates="candidate_profiles")
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="candidates")
+
+    @property
+    def current_title(self) -> str:
+        return str(self.current_role or "")
+
+    @current_title.setter
+    def current_title(self, value: str) -> None:
+        self.current_role = (value or "").strip()
+
+    @property
+    def talent_pool_ready_at(self) -> datetime | None:
+        return self.last_refreshed_at
+
+    @talent_pool_ready_at.setter
+    def talent_pool_ready_at(self, value: datetime | None) -> None:
+        self.last_refreshed_at = value
 
 
 class CandidateApplicationEntity(Base):
@@ -268,7 +418,8 @@ class CandidateApplicationEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = synonym("company_id")
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     email: Mapped[str] = mapped_column(String(320), nullable=False, default="", index=True)
@@ -300,7 +451,8 @@ class CandidateLifecycleEventEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = synonym("company_id")
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     from_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     to_status: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -313,6 +465,8 @@ class CandidateLifecycleEventEntity(Base):
     event_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="candidate_lifecycle_events")
+
 
 class NotificationEventEntity(Base):
     __tablename__ = "notification_events"
@@ -322,7 +476,8 @@ class NotificationEventEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    agency_id: Mapped[str | None] = synonym("company_id")
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     actor_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     recipient_type: Mapped[str] = mapped_column(String(32), nullable=False, default="recruiter")
@@ -341,6 +496,8 @@ class NotificationEventEntity(Base):
     is_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="notification_events")
 
 
 class AutomationJobEntity(Base):
@@ -481,7 +638,8 @@ class CandidateFeedbackEntity(Base):
     feedback: Mapped[str] = mapped_column(String(16), nullable=False)  # accept | reject
     accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     rejected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    agency_id: Mapped[str | None] = synonym("company_id")
     recruiter_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
     slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
@@ -491,6 +649,7 @@ class CandidateFeedbackEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="feedback_items")
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="candidate_feedback")
 
 
 class RankingExplanationEntity(Base):
@@ -499,7 +658,8 @@ class RankingExplanationEntity(Base):
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = synonym("company_id")
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     existing_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     recruiter_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -508,6 +668,7 @@ class RankingExplanationEntity(Base):
     recruiter_capped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="ranking_explanations")
 
 
 class RankingRunEntity(Base):
@@ -548,7 +709,6 @@ class RecruiterSkillPreferenceEntity(Base):
     positive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     negative_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class RecruiterRolePreferenceEntity(Base):
@@ -562,7 +722,6 @@ class RecruiterRolePreferenceEntity(Base):
     positive_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     negative_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
 
 class CandidateSelectionSessionEntity(Base):
@@ -621,12 +780,13 @@ class OrchestrationSessionEntity(Base):
     last_processed_action_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     last_processed_transcript_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     intake_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    agency_id: Mapped[str | None] = synonym("company_id")
     job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
-    company_record: Mapped["CompanyEntity | None"] = relationship(back_populates="orchestration_sessions")
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="orchestration_sessions")
     job_record: Mapped["JobEntity | None"] = relationship(back_populates="orchestration_sessions")
     events: Mapped[list["OrchestrationEventEntity"]] = relationship(back_populates="session_record")
 
@@ -674,7 +834,8 @@ class OutreachEventEntity(Base):
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = synonym("company_id")
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="sendgrid")
     to_email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
@@ -707,7 +868,7 @@ class OutreachEventEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="outreach_events")
-    company_record: Mapped["CompanyEntity"] = relationship(back_populates="outreach_events")
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="outreach_events")
 
 
 class InboundEmailReplyEntity(Base):
@@ -725,7 +886,8 @@ class InboundEmailReplyEntity(Base):
     provider_message_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
-    company_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    agency_id: Mapped[str | None] = synonym("company_id")
     outreach_event_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
     sender_email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     sender_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -746,7 +908,7 @@ class InboundEmailReplyEntity(Base):
 
     attachments: Mapped[list["InboundEmailAttachmentEntity"]] = relationship(back_populates="reply")
     outreach_event: Mapped["OutreachEventEntity | None"] = relationship()
-    company_record: Mapped["CompanyEntity | None"] = relationship(back_populates="inbound_email_replies")
+    agency: Mapped["CompanyEntity | None"] = relationship(back_populates="inbound_email_replies")
 
 
 class InboundEmailAttachmentEntity(Base):
@@ -771,35 +933,42 @@ class InboundEmailAttachmentEntity(Base):
 
 class InterviewSessionEntity(Base):
     __tablename__ = "interview_sessions"
-    __table_args__ = (UniqueConstraint("token", name="uq_interview_sessions_token"),)
+    __table_args__ = (UniqueConstraint("session_token", name="uq_interview_sessions_token"),)
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
-    outreach_event_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
-    slack_installation_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("slack_installations.id"), nullable=True, index=True, default=None)
-    slack_team_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    slack_user_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
-    token: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    booking_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    stage: Mapped[str] = mapped_column(String(64), nullable=False, default="requested")
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
+    candidate_id: Mapped[str | None] = mapped_column(GUID(), nullable=True, index=True, default=None)
+    company_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    outreach_event_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    session_token: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    status: Mapped[str | None] = mapped_column(Text, nullable=True, default="scheduled")
+    booking_status: Mapped[str | None] = mapped_column(String(255), nullable=True, default="pending")
+    stage: Mapped[str | None] = mapped_column(String(255), nullable=True, default="requested")
     booked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     available_slots: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    timezone: Mapped[str | None] = mapped_column(String(255), nullable=True, default="UTC")
     interviewer_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     scheduling_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-    evaluation_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    evaluation_status: Mapped[str | None] = mapped_column(String(255), nullable=True, default="pending")
     evaluation_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
-    booking_url: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    booking_url: Mapped[str | None] = mapped_column(String(1024), nullable=True, default=None)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=True)
+    created_by_source: Mapped[str] = mapped_column(String(255), nullable=False, default="PONTIS")
+    updated_by_source: Mapped[str] = mapped_column(String(255), nullable=False, default="PONTIS")
 
-    company_record: Mapped["CompanyEntity"] = relationship(back_populates="interview_sessions")
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="interview_sessions")
     outreach_event: Mapped["OutreachEventEntity | None"] = relationship()
+
+    @property
+    def token(self) -> str:
+        return self.session_token or ""
+
+    @token.setter
+    def token(self, value: str) -> None:
+        self.session_token = value
 
 
 class NotificationWorkflowTokenEntity(Base):

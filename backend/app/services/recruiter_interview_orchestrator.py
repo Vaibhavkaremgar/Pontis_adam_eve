@@ -27,7 +27,6 @@ def _build_voice_summary(*, transcript: str, fallback: str = "") -> str:
     if not cleaned:
         return _normalize_text(fallback)
 
-    # Split on sentence boundaries while keeping the most useful first two lines.
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
     if len(sentences) >= 2:
         return " ".join(sentences[:2])
@@ -209,53 +208,65 @@ def update_recruiter_interview_session(
     transcript: str,
     parsed_entities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    state = start_recruiter_interview_session(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-        transcript=transcript,
-        entities=parsed_entities or {},
-    )
+    # Load job once — reused for gap_analysis, questions, and intent_profile.
+    # Previously this called start_recruiter_interview_session (which loaded the job
+    # and ran gap_analysis + intent_profile) then immediately re-ran all three again,
+    # causing 2× DB queries and 2× AI calls per POST /intelligence/jobs/{id}.
     job = JobRepository(db).get(job_id)
     if not job:
         raise ValueError("Job not found")
 
-    gap_analysis = analyze_job_gap(job=job, voice_summary=transcript, entities=parsed_entities or state.get("entities") or {})
+    recruiter_id_norm = _normalize_text(recruiter_id)
+    transcript_norm = _normalize_text(transcript)
+    entities = parsed_entities or {}
+
+    gap_analysis = analyze_job_gap(job=job, voice_summary=transcript_norm, entities=entities)
     questions = generate_recruiter_questions(
         gap_analysis=gap_analysis,
         job=job,
-        voice_summary=transcript,
+        voice_summary=transcript_norm,
         max_questions=7,
     )
     intent_profile = build_recruiter_intent_profile(
         db=db,
-        recruiter_id=recruiter_id,
+        recruiter_id=recruiter_id_norm,
         job=job,
-        voice_summary=transcript,
+        voice_summary=transcript_norm,
         gap_analysis=gap_analysis,
         selection_rounds=[],
-        transcript=transcript,
+        transcript=transcript_norm,
     )
-    persist_recruiter_intent_profile(db=db, recruiter_id=recruiter_id, profile=intent_profile)
+    persist_recruiter_intent_profile(db=db, recruiter_id=recruiter_id_norm, profile=intent_profile)
 
+    # Merge into existing cached state; avoid re-running start_recruiter_interview_session.
+    state = _load_state(recruiter_id=recruiter_id_norm, job_id=job_id) or {
+        "job_id": job_id,
+        "recruiter_id": recruiter_id_norm,
+        "stage": "initial_job_understanding",
+        "status": "active",
+        "current_question_index": 0,
+        "entities": entities,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    q_index = min(int(state.get("current_question_index") or 0), max(0, len(questions) - 1))
     state.update(
         {
             "stage": "dynamic_questioning" if questions else "intent_refinement",
             "gap_analysis": gap_analysis,
             "recommended_questions": questions,
-            "transcript": transcript,
-            "voice_transcript": transcript,
+            "transcript": transcript_norm,
+            "voice_transcript": transcript_norm,
             "voice_summary": _build_voice_summary(
-                transcript=transcript or state.get("voice_summary", ""),
+                transcript=transcript_norm or state.get("voice_summary", ""),
                 fallback=state.get("voice_summary", ""),
             ),
             "intent_profile": summarize_intent_profile(intent_profile),
-            "current_question_index": min(int(state.get("current_question_index") or 0), max(0, len(questions) - 1)),
-            "current_question": questions[min(int(state.get("current_question_index") or 0), max(0, len(questions) - 1))] if questions else "",
+            "current_question_index": q_index,
+            "current_question": questions[q_index] if questions else "",
             "status": "active",
         }
     )
-    final_state = _save_state(recruiter_id=recruiter_id, job_id=job_id, state=state)
+    final_state = _save_state(recruiter_id=recruiter_id_norm, job_id=job_id, state=state)
     _persist_job_intelligence_snapshot(db=db, job_id=job_id, state=final_state)
     return final_state
 

@@ -185,11 +185,25 @@ def on_startup() -> None:
         embedding_health_snapshot().get("model") or "",
     )
 
-    try:
-        init_db()
-    except Exception as exc:
-        logger.exception("database_initialization_failed error=%s", str(exc))
-        raise
+    db_ready = False
+    _db_attempts = 3
+    for _db_attempt in range(1, _db_attempts + 1):
+        try:
+            init_db()
+            db_ready = True
+            break
+        except Exception as exc:
+            if _db_attempt < _db_attempts:
+                import time as _time
+                logger.warning(
+                    "database_initialization_retry attempt=%s/%s error=%s",
+                    _db_attempt, _db_attempts, str(exc),
+                )
+                _time.sleep(2)
+            else:
+                logger.exception(
+                    "database_initialization_failed continuing_without_db error=%s", str(exc)
+                )
 
     try:
         try:
@@ -243,9 +257,12 @@ def on_startup() -> None:
                 qdrant_status.get("status", ""),
             )
     finally:
-        start_job_queue_workers()
-        start_scheduler()
-        logger.info("startup_scheduler_started")
+        if db_ready:
+            start_job_queue_workers()
+            start_scheduler()
+            logger.info("startup_scheduler_started")
+    if not db_ready:
+        logger.warning("startup_completed_without_database")
 
 
 @app.on_event("shutdown")

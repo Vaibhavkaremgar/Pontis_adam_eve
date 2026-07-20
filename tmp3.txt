@@ -1,0 +1,50 @@
+de=404)
+        existing_session = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+        normalized_stage_name = (stage_name or "").strip().lower().replace("-", "_").replace(" ", "_")
+        existing_stage_name = str((dict(getattr(existing_session, "scheduling_metadata", {}) or {}).get("stageName") or "").strip().lower().replace("-", "_").replace(" ", "_")) if existing_session else ""
+        if existing_session:
+            if normalized_stage_name and existing_stage_name != normalized_stage_name:
+                existing_session = None
+            else:
+                existing_session.email = email
+                existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
+                existing_session.booking_status = booking_status if (existing_session.booking_status or "").strip().lower() != "confirmed" else existing_session.booking_status
+                existing_session.token = existing_session.token or token
+                existing_session.company_id = job.company_id
+                if outreach_event_id is not None:
+                    existing_session.outreach_event_id = outreach_event_id
+                if booking_url:
+                    existing_session.booking_url = booking_url
+                if available_slots is not None:
+                    existing_session.available_slots = list(available_slots or [])
+                existing_session.timezone = (timezone_name or existing_session.timezone or "UTC").strip() or "UTC"
+                self.db.flush()
+                return existing_session
+
+        existing = self.get_by_token(token)
+        if existing:
+            existing.job_id = job_id
+            existing.candidate_id = candidate_id
+            existing.email = email
+            existing.status = status
+            existing.booking_status = booking_status
+            existing.booked_at = None
+            existing.company_id = job.company_id
+            existing.outreach_event_id = outreach_event_id
+            existing.booking_url = booking_url or existing.booking_url
+            if available_slots is not None:
+                existing.available_slots = list(available_slots or [])
+            existing.timezone = (timezone_name or existing.timezone or "UTC").strip() or "UTC"
+            self.db.flush()
+            return existing
+
+        row = InterviewSessionEntity(
+            id=str(uuid4()),
+            job_id=job_id,
+            candidate_id=candidate_id,
+            company_id=job.company_id,
+            outreach_event_id=outreach_event_id,
+            email=email,
+            token=token,
+            status=status,
+      

@@ -399,8 +399,8 @@ def record_successful_candidate_memory(*, db: Session, job_id: str, candidate_id
     text = build_candidate_text(
         {
             "name": profile.name,
-            "role": profile.role,
-            "company": profile.company,
+            "role": profile.current_role,
+            "company": profile.current_company,
             "summary": profile.summary,
             "skills": list(profile.skills or []),
             "experience": getattr(profile, "total_experience_years", 0.0),
@@ -416,7 +416,7 @@ def record_successful_candidate_memory(*, db: Session, job_id: str, candidate_id
             "memoryType": memory_type,
             "embeddingVersion": getattr(profile, "raw_data", {}).get("embedding_version") if isinstance(getattr(profile, "raw_data", {}), dict) else "",
             "candidateName": profile.name,
-            "candidateRole": profile.role,
-            "candidateCompany": profile.company,
+            "candidateRole": profile.current_role,
+            "candidateCompany": profile.current_company,
         },
     )

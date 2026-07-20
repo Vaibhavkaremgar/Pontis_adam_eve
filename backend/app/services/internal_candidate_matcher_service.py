@@ -136,13 +136,13 @@ class InternalCandidateMatcher:
                 SELECT
                     cp.candidate_id,
                     cp.name,
-                    cp.current_title,
+                    cp.current_role AS current_title,
                     cp.current_company,
                     cp.total_experience_years,
                     cp.skills,
                     cp.raw_data,
                     cp.parsed_resume_json,
-                    cp.talent_pool_ready_at,
+                    cp.last_refreshed_at AS talent_pool_ready_at,
                     la.resume_score,
                     la.evaluation_json,
                     la.evaluation_timestamp,
@@ -159,9 +159,9 @@ class InternalCandidateMatcher:
                 LEFT JOIN latest_interview_eval lie
                     ON lie.job_id = cp.job_id AND lie.candidate_id = cp.candidate_id
                 WHERE cp.job_id = :job_id
-                  AND cp.company_id = :company_id
-                  AND cp.talent_pool_ready_at IS NOT NULL
-                ORDER BY cp.talent_pool_ready_at DESC, cp.total_experience_years DESC, cp.name ASC
+                  AND cp.agency_id = :company_id
+                  AND cp.last_refreshed_at IS NOT NULL
+                ORDER BY cp.last_refreshed_at DESC, cp.total_experience_years DESC, cp.name ASC
                 """
             ),
             {"job_id": job_id, "company_id": job.company_id},

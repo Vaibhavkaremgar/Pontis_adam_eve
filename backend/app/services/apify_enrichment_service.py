@@ -140,9 +140,9 @@ def _extract_candidate_identity(profile: Any) -> dict[str, str]:
     raw_data = dict(getattr(profile, "raw_data", {}) or {})
     return {
         "full_name": _first_non_empty(getattr(profile, "name", ""), raw_data.get("full_name"), raw_data.get("name")),
-        "headline": _first_non_empty(getattr(profile, "role", ""), raw_data.get("headline"), raw_data.get("title")),
+        "headline": _first_non_empty(getattr(profile, "current_role", ""), raw_data.get("headline"), raw_data.get("title")),
         "linkedin_url": _extract_profile_url(profile),
-        "current_company": _first_non_empty(getattr(profile, "current_company", ""), getattr(profile, "company", ""), raw_data.get("current_company"), raw_data.get("company")),
+        "current_company": _first_non_empty(getattr(profile, "current_company", ""), raw_data.get("current_company"), raw_data.get("company")),
     }
 
 
@@ -430,8 +430,8 @@ def enrich_candidate_with_apify(
         )
 
     profile.name = profile_payload["full_name"] or profile.name
-    profile.role = profile_payload["headline"] or profile.role
-    profile.company = profile_payload["current_company"] or profile.company
+    profile.current_role = profile_payload["headline"] or profile.current_role
+    profile.current_company = profile_payload["current_company"] or profile.current_company
     profile.summary = profile_payload["about"] or profile.summary
     profile.skills = profile_payload["skills"] or profile.skills
     profile.linkedin_url = profile_payload["linkedin_url"] or profile.linkedin_url

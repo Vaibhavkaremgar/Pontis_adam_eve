@@ -17,13 +17,9 @@ def _company_status_payload(company):
     return {
         "id": getattr(company, "id", ""),
         "name": getattr(company, "name", "") or "",
-        "website": getattr(company, "website", "") or "",
-        "description": getattr(company, "description", "") or "",
-        "industry": getattr(company, "industry", "") or "",
-        "ats_connected": bool(getattr(company, "ats_connected", False)),
-        "ats_provider": getattr(company, "ats_provider", "") or "",
-        "atsConnected": bool(getattr(company, "ats_connected", False)),
-        "atsProvider": getattr(company, "ats_provider", "") or "",
+        "slug": getattr(company, "slug", "") or "",
+        "is_active": bool(getattr(company, "is_active", True)),
+        "isActive": bool(getattr(company, "is_active", True)),
     }
 
 
@@ -52,18 +48,15 @@ def save_company(
     company = CompanyRepository(db).upsert_for_user(
         user_id=user_id,
         name=payload.name,
-        website=payload.website,
-        description=payload.description,
-        industry=payload.industry,
+        website=getattr(payload, "website", ""),
+        description=getattr(payload, "description", ""),
+        industry=getattr(payload, "industry", ""),
     )
     db.commit()
     return success_response(
         {
             "id": company.id,
             "name": company.name,
-            "website": company.website,
-            "description": company.description,
-            "industry": company.industry,
             **_company_status_payload(company),
         }
     )

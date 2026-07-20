@@ -415,22 +415,13 @@ class CompanyRepository:
         normalized_name = self._normalize_name(name)
         if not normalized_name:
             return None
-        return self.db.scalar(
-            select(CompanyEntity).where(
-                CompanyEntity.user_id == user_id,
-                CompanyEntity.name == normalized_name,
-            )
-        )
+        return self.db.scalar(select(CompanyEntity).where(CompanyEntity.slug == normalized_name))
 
     def get_by_id(self, company_id: str) -> CompanyEntity | None:
         return self.db.scalar(select(CompanyEntity).where(CompanyEntity.id == company_id))
 
     def get_latest_for_user(self, *, user_id: str) -> CompanyEntity | None:
-        return self.db.scalar(
-            select(CompanyEntity)
-            .where(CompanyEntity.user_id == user_id)
-            .order_by(CompanyEntity.created_at.desc())
-        )
+        return self.db.scalar(select(CompanyEntity).order_by(CompanyEntity.created_at.desc()))
 
     def create(
         self,
@@ -443,13 +434,8 @@ class CompanyRepository:
     ) -> CompanyEntity:
         entity = CompanyEntity(
             id=str(uuid4()),
-            user_id=user_id,
             name=self._normalize_name(name),
-            website=website.strip(),
-            description=description.strip(),
-            industry=industry.strip(),
-            ats_provider="",
-            ats_connected=False,
+            slug=self._normalize_name(name) or str(uuid4()),
         )
         self.db.add(entity)
         self.db.flush()
@@ -472,13 +458,8 @@ class CompanyRepository:
 
         row = CompanyEntity(
             id=str(uuid4()),
-            user_id=user_id,
             name=normalized_name,
-            website=website.strip(),
-            description=description.strip(),
-            industry=industry.strip(),
-            ats_provider="",
-            ats_connected=False,
+            slug=normalized_name or str(uuid4()),
         )
         try:
             with self.db.begin_nested():
@@ -514,14 +495,9 @@ class CompanyRepository:
 
         if name is not None:
             company.name = self._normalize_name(name)
-        if description is not None:
-            company.description = description.strip()
-        if industry is not None:
-            company.industry = industry.strip()
-        if ats_provider is not None:
-            company.ats_provider = ats_provider.strip().lower()
-        if ats_connected is not None:
-            company.ats_connected = bool(ats_connected)
+        if name is not None:
+            company.slug = self._normalize_name(name) or company.slug
+        # agencies no longer stores enrichment fields directly
 
         self.db.flush()
         return company
@@ -538,9 +514,6 @@ class CompanyRepository:
         normalized_name = self._normalize_name(name)
         existing = self.get_by_user_and_name(user_id=user_id, name=normalized_name)
         if existing:
-            existing.website = website.strip()
-            existing.description = description.strip()
-            existing.industry = industry.strip()
             self.db.flush()
             return existing
         return self.create(
@@ -588,7 +561,7 @@ class JobRepository:
             skills_required=list(skills_required or []),
             experience_level=experience_level.strip(),
             location=location.strip(),
-            compensation=compensation.strip(),
+            salary_range=compensation.strip(),
             structured_data=dict(structured_data or {}),
             work_authorization=work_authorization.strip(),
             ats_job_id=(ats_job_id or "").strip() or None,
@@ -609,13 +582,7 @@ class JobRepository:
         job = self.get(job_id)
         if not job:
             return None
-        recruiter_id = str(getattr(job, "created_by", "") or "").strip()
-        if recruiter_id:
-            return recruiter_id
-        company = CompanyRepository(self.db).get_by_id(job.company_id)
-        if not company:
-            return None
-        return str(company.user_id or "").strip() or None
+        return str(getattr(job, "created_by", "") or "").strip() or None
 
     def update_candidate_sourcing_state(
         self,
@@ -643,6 +610,15 @@ class JobRepository:
     def list_recent(self, limit: int = 50) -> list[JobEntity]:
         rows = self.db.scalars(
             select(JobEntity)
+            .order_by(JobEntity.created_at.desc())
+            .limit(limit)
+        ).all()
+        return list(rows)
+
+    def list_by_company(self, company_id: str, limit: int = 100) -> list[JobEntity]:
+        rows = self.db.scalars(
+            select(JobEntity)
+            .where(JobEntity.company_id == company_id.strip())
             .order_by(JobEntity.created_at.desc())
             .limit(limit)
         ).all()
@@ -692,7 +668,7 @@ class JobRepository:
         if location is not None:
             job.location = location.strip()
         if compensation is not None:
-            job.compensation = compensation.strip()
+            job.salary_range = compensation.strip()
         if vetting_mode is not None:
             normalized = (vetting_mode or "volume").strip().lower()
             job.vetting_mode = normalized if normalized in {"volume", "elite"} else "volume"
@@ -1065,7 +1041,7 @@ class InterviewRepository:
                 id=str(uuid4()),
                 source_app=job.source_app,
                 job_id=job_id,
-                company_id=job.company_id,
+                agency_id=job.company_id,
                 candidate_id=candidate_id,
                 status=create_default,
                 async_token=normalized_async_token,
@@ -1091,14 +1067,14 @@ class InterviewRepository:
         if not row:
             raise APIError("Interview not found", status_code=404)
 
-        completed_at = result_data.get("completed_at")
-        if isinstance(completed_at, str):
+        async_completed_at = result_data.get("completed_at") or result_data.get("async_completed_at")
+        if isinstance(async_completed_at, str):
             try:
-                completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+                async_completed_at = datetime.fromisoformat(async_completed_at.replace("Z", "+00:00"))
             except ValueError:
-                completed_at = None
-        if isinstance(completed_at, datetime) and completed_at.tzinfo is None:
-            completed_at = completed_at.replace(tzinfo=timezone.utc)
+                async_completed_at = None
+        if isinstance(async_completed_at, datetime) and async_completed_at.tzinfo is None:
+            async_completed_at = async_completed_at.replace(tzinfo=timezone.utc)
 
         self.db.execute(
             text(
@@ -1114,7 +1090,7 @@ class InterviewRepository:
                     feedback = :feedback,
                     interviewer_notes = :interviewer_notes,
                     video_url = :video_url,
-                    completed_at = :completed_at,
+                    async_completed_at = :async_completed_at,
                     status = 'completed'
                 WHERE job_id = :job_id
                   AND candidate_id = :candidate_id
@@ -1132,7 +1108,7 @@ class InterviewRepository:
                 "feedback": result_data.get("feedback") or "",
                 "interviewer_notes": result_data.get("interviewer_notes") or "",
                 "video_url": result_data.get("video_url") or None,
-                "completed_at": completed_at,
+                "async_completed_at": async_completed_at,
             },
         )
         self.db.flush()
@@ -1160,7 +1136,7 @@ class InterviewSessionRepository:
             select(InterviewSessionEntity).where(
                 _string_id_match(InterviewSessionEntity.job_id, normalized_job_id),
                 InterviewSessionEntity.candidate_id == normalized_candidate_id,
-            ).order_by(InterviewSessionEntity.expires_at.desc())
+            ).order_by(InterviewSessionEntity.created_at.desc())
         )
 
     def create(
@@ -1170,7 +1146,6 @@ class InterviewSessionRepository:
         candidate_id: str,
         email: str,
         token: str,
-        expires_at: datetime,
         booking_url: str = "",
         outreach_event_id: str | None = None,
         status: str = "pending",
@@ -1185,7 +1160,7 @@ class InterviewSessionRepository:
         existing_session = self.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
         normalized_stage_name = (stage_name or "").strip().lower().replace("-", "_").replace(" ", "_")
         existing_stage_name = str((dict(getattr(existing_session, "scheduling_metadata", {}) or {}).get("stageName") or "").strip().lower().replace("-", "_").replace(" ", "_")) if existing_session else ""
-        if existing_session and (existing_session.expires_at is None or existing_session.expires_at > datetime.now(timezone.utc)):
+        if existing_session:
             if normalized_stage_name and existing_stage_name != normalized_stage_name:
                 existing_session = None
             else:
@@ -1193,8 +1168,7 @@ class InterviewSessionRepository:
                 existing_session.status = status if (existing_session.status or "").strip().lower() != "booked" else existing_session.status
                 existing_session.booking_status = booking_status if (existing_session.booking_status or "").strip().lower() != "confirmed" else existing_session.booking_status
                 existing_session.token = existing_session.token or token
-                existing_session.expires_at = expires_at if not existing_session.expires_at or existing_session.expires_at < expires_at else existing_session.expires_at
-                existing_session.company_id = job.company_id
+                existing_session.agency_id = job.company_id
                 if outreach_event_id is not None:
                     existing_session.outreach_event_id = outreach_event_id
                 if booking_url:
@@ -1210,11 +1184,10 @@ class InterviewSessionRepository:
             existing.job_id = job_id
             existing.candidate_id = candidate_id
             existing.email = email
-            existing.expires_at = expires_at
             existing.status = status
             existing.booking_status = booking_status
             existing.booked_at = None
-            existing.company_id = job.company_id
+            existing.agency_id = job.company_id
             existing.outreach_event_id = outreach_event_id
             existing.booking_url = booking_url or existing.booking_url
             if available_slots is not None:
@@ -1227,13 +1200,12 @@ class InterviewSessionRepository:
             id=str(uuid4()),
             job_id=job_id,
             candidate_id=candidate_id,
-            company_id=job.company_id,
+            agency_id=job.company_id,
             outreach_event_id=outreach_event_id,
             email=email,
             token=token,
             status=status,
             booking_status=booking_status,
-            expires_at=expires_at,
             booking_url=booking_url,
             available_slots=list(available_slots or []),
             timezone=(timezone_name or "UTC").strip() or "UTC",
@@ -1256,7 +1228,7 @@ class InterviewSessionRepository:
         normalized = (token or "").strip()
         if not normalized:
             return None
-        return self.db.scalar(select(InterviewSessionEntity).where(InterviewSessionEntity.token == normalized))
+        return self.db.scalar(select(InterviewSessionEntity).where(InterviewSessionEntity.session_token == normalized))
 
     def mark_booked(self, token: str) -> InterviewSessionEntity | None:
         row = self.get_by_token(token)
@@ -1273,6 +1245,17 @@ class CandidateProfileRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def _get_by_candidate_id(self, candidate_id: str) -> CandidateProfileEntity | None:
+        normalized_candidate_id = _sanitize_candidate_id(candidate_id)
+        if not normalized_candidate_id:
+            return None
+        row = self.db.scalar(
+            select(CandidateProfileEntity).where(CandidateProfileEntity.candidate_id == normalized_candidate_id)
+        )
+        if not row and normalized_candidate_id != candidate_id:
+            row = self.db.scalar(select(CandidateProfileEntity).where(CandidateProfileEntity.candidate_id == candidate_id))
+        return row
+
     def get(self, *, job_id: str, candidate_id: str) -> CandidateProfileEntity | None:
         normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         row = self.db.scalar(
@@ -1288,6 +1271,8 @@ class CandidateProfileRepository:
                     CandidateProfileEntity.candidate_id == candidate_id,
                 )
             )
+        if not row:
+            row = self._get_by_candidate_id(normalized_candidate_id)
         if row and not getattr(row, "company_id", "").strip():
             job = JobRepository(self.db).get(job_id)
             if job:
@@ -1339,13 +1324,20 @@ class CandidateProfileRepository:
             )
             raise APIError("fallback candidate ids are not allowed", status_code=400)
 
-        existing = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
-        if existing:
-            return existing
-
         job = JobRepository(self.db).get(job_id)
         if not job:
             raise APIError("Job not found", status_code=404)
+
+        existing = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
+        if existing:
+            return existing
+        existing = self._get_by_candidate_id(normalized_candidate_id)
+        if existing:
+            if not getattr(existing, "company_id", "").strip():
+                existing.company_id = job.company_id
+            if workflow_token:
+                existing.workflow_token = _normalize_text(workflow_token)
+            return existing
 
         row = CandidateProfileEntity(
             id=str(uuid4()),
@@ -1394,6 +1386,20 @@ class CandidateProfileRepository:
         if not job:
             raise APIError("Job not found", status_code=404)
         if not row:
+            # Secondary lookup by identity_fingerprint stored in raw_data to catch
+            # candidates whose candidate_id differs across pipeline runs (e.g. when
+            # source_query changes) but whose underlying identity is the same person.
+            identity_fingerprint = str((raw_data or {}).get("identity", {}).get("identity_fingerprint") or "").strip() if isinstance((raw_data or {}).get("identity"), dict) else ""
+            if identity_fingerprint:
+                row = self.db.scalar(
+                    select(CandidateProfileEntity).where(
+                        _string_id_match(CandidateProfileEntity.job_id, job_id),
+                        CandidateProfileEntity.raw_data["identity"]["identity_fingerprint"].as_string() == identity_fingerprint,
+                    )
+                )
+        if not row:
+            row = self._get_by_candidate_id(normalized_candidate_id)
+        if not row:
             row = CandidateProfileEntity(
                 id=str(uuid4()),
                 job_id=job_id,
@@ -1406,15 +1412,15 @@ class CandidateProfileRepository:
                     self.db.flush()
             except IntegrityError:
                 logger.info("candidate_profile_duplicate_skipped job_id=%s candidate_id=%s", job_id, normalized_candidate_id)
-                row = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
+                row = self.get(job_id=job_id, candidate_id=normalized_candidate_id) or self._get_by_candidate_id(normalized_candidate_id)
                 if not row:
                     raise
         if workflow_token:
             row.workflow_token = _normalize_text(workflow_token)
 
         row.name = _clamp_text(name, max_length=255)
-        row.role = _clamp_text(role, max_length=255)
-        row.company = _clamp_text(company, max_length=255)
+        row.current_role = _clamp_text(role, max_length=255)
+        row.current_company = _clamp_text(company, max_length=255)
         row.summary = _clamp_text(summary, max_length=5000)
         row.skills = skills
         row.raw_data = raw_data
@@ -2134,11 +2140,16 @@ class RecruiterPreferenceRepository:
 
         dialect_name = self._dialect_name()
         if dialect_name == "postgresql":
+            constraint_name = next(
+                (c.name for c in table.constraints if hasattr(c, "columns") and {col.name for col in c.columns} == {"recruiter_id", value_field}),
+                None,
+            )
             stmt = pg_insert(table).values(**insert_values)
             excluded = stmt.excluded
+            conflict_kwargs = {"index_elements": ["recruiter_id", value_field]}
             if track_counts:
                 stmt = stmt.on_conflict_do_update(
-                    index_elements=["recruiter_id", value_field],
+                    **conflict_kwargs,
                     set_={
                         "weight": excluded.weight,
                         "positive_count": excluded.positive_count,
@@ -2148,7 +2159,7 @@ class RecruiterPreferenceRepository:
                 )
             else:
                 stmt = stmt.on_conflict_do_update(
-                    index_elements=["recruiter_id", value_field],
+                    **conflict_kwargs,
                     set_={
                         "weight": excluded.weight,
                         "updated_at": now,
@@ -2279,12 +2290,11 @@ class RecruiterPreferenceRepository:
             select(func.count())
             .select_from(OutreachEventEntity)
             .join(JobEntity, JobEntity.id == OutreachEventEntity.job_id)
-            .join(CompanyEntity, CompanyEntity.id == JobEntity.company_id)
             .where(
                 OutreachEventEntity.learning_applied.is_(True),
                 OutreachEventEntity.responded_at.is_(None),
                 OutreachEventEntity.status.in_(("sent", "delivered")),
-                CompanyEntity.user_id == recruiter_id,
+                JobEntity.created_by == recruiter_id,
             )
         )
         return int(count or 0)

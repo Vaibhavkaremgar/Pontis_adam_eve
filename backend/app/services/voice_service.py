@@ -207,23 +207,6 @@ def _comparison_token(token: str) -> str:
     return re.sub(r"^[^\w]+|[^\w]+$", "", token).lower()
 
 
-def _normalize_list(values: Any, *, max_items: int = 20) -> list[str]:
-    if not isinstance(values, list):
-        return []
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for item in values:
-        text = _normalize_text(item)
-        if not text:
-            continue
-        key = text.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        normalized.append(text)
-        if len(normalized) >= max_items:
-            break
-    return normalized
 
 
 def _contains_keyword(text: str, keyword: str) -> bool:
@@ -874,11 +857,13 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         industry=merged_company_industry if not existing_company_industry else None,
         description=merged_company_description if not existing_company_description else None,
     )
+    # Use merged_title (the updated value) rather than the stale job.structured_data
+    # snapshot that existed before jobs.update_structured_fields was called.
     JobIntakeRepository(db).upsert_completed_intake(
         job_id=job_id,
         transcript=cleaned_text,
         structured_data_json={
-            "title": job.title or structured_data.get("title") or structured_data.get("job_title") or "",
+            "title": merged_title,
             "location": job.location or structured_data.get("location") or "",
             "skills": merged_skills,
             "nice_to_have_skills": nice_to_have_skills,

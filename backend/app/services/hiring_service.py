@@ -126,12 +126,8 @@ def create_hiring_job(
         structured_data={
             "remotePolicy": remote_policy,
             "experienceRequired": experience_required,
-            "autoExportToAts": auto_export_to_ats,
         },
     )
-    job_row.slack_installation_id = (slack_installation_id or "").strip() or None
-    job_row.slack_team_id = (slack_team_id or "").strip()
-    job_row.slack_user_id = (slack_user_id or "").strip()
     try:
         vector_source = build_job_text(job_row)
         chunks = chunk_text(vector_source)

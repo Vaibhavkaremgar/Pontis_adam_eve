@@ -468,6 +468,8 @@ def ingest_resume_file(db: Session, pdf_path: Path) -> dict[str, Any]:
     if existing:
         log_metric("duplicate_candidates_detected", file_name=pdf_path.name, candidate_id=candidate_id)
 
+    # _extract_emails_from_text was already called inside build_internal_candidate_payload;
+    # reuse the result stored in payload to avoid a second regex scan.
     embedding_text = _build_embedding_text(parsed_profile, resume_text)
     vector = embed(embedding_text)
     ensure_collection_indexes(INTERNAL_CANDIDATE_COLLECTION_NAME)

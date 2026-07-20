@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from app.models.entities import Base, GUID
 
@@ -15,13 +15,14 @@ def _utc_now() -> datetime:
 class LinkedInAccountEntity(Base):
     __tablename__ = "linkedin_accounts"
     __table_args__ = (
-        Index("ix_linkedin_accounts_company_id", "company_id"),
+        Index("ix_linkedin_accounts_agency_id", "agency_id"),
         Index("ix_linkedin_accounts_status", "status"),
         Index("ix_linkedin_accounts_health", "health"),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    company_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    company_id: Mapped[str] = synonym("agency_id")
     display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     linkedin_email: Mapped[str] = mapped_column(String(320), nullable=False, default="", index=True)
     browser_profile_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -36,7 +37,7 @@ class LinkedInAccountEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
-    company = relationship("CompanyEntity")
+    agency = relationship("CompanyEntity")
     jobs = relationship("LinkedInJobEntity", back_populates="account")
     connections = relationship("LinkedInConnectionEntity", back_populates="account")
     conversations = relationship("LinkedInConversationEntity", back_populates="account")

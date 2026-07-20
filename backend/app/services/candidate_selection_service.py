@@ -666,10 +666,10 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 selected_profile_data["full_name"] = selected_name
                 selected_profile_data["name"] = selected_name
             if selected_role:
-                profile.role = selected_role
+                profile.current_role = selected_role
                 selected_profile_data["role"] = selected_role
             if selected_company:
-                profile.company = selected_company
+                profile.current_company = selected_company
                 selected_profile_data["company"] = selected_company
                 selected_profile_data["current_company"] = selected_company
             if selected_summary and not _normalize_text(getattr(profile, "summary", "") or ""):

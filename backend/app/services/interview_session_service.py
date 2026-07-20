@@ -196,7 +196,7 @@ def _session_payload(*, row, booking_link: str, token_payload: dict[str, Any] | 
         "email": row.email,
         "token": row.token,
         "status": row.status,
-        "expiresAt": _utc_isoformat(row.expires_at) or row.expires_at.isoformat(),
+        "expiresAt": None,
         "bookedAt": _utc_isoformat(booked_at),
         "scheduledAt": _utc_isoformat(getattr(row, "scheduled_at", None)),
         "timezone": timezone_name,
@@ -261,13 +261,6 @@ def _resolve_booking_context(*, db: Session, token: str) -> tuple[Any, str, Any,
             )
 
     if session_row:
-        if _ensure_utc_datetime(session_row.expires_at) and _ensure_utc_datetime(session_row.expires_at) <= now:
-            _booking_resolution_failed(
-                token=normalized_token,
-                reason="expired",
-                status_code=410,
-                message="This booking link has expired",
-            )
         if (str(getattr(session_row, "booking_status", "") or "").strip().lower() == "confirmed") or getattr(session_row, "booked_at", None) or str(getattr(session_row, "status", "") or "").strip().lower() in {"booked", "interview_scheduled"}:
             _booking_resolution_failed(
                 token=normalized_token,
@@ -311,13 +304,6 @@ def _resolve_booking_context(*, db: Session, token: str) -> tuple[Any, str, Any,
             status_code=404,
             message="Booking link is invalid or has expired",
         )
-    if _ensure_utc_datetime(session_row.expires_at) and _ensure_utc_datetime(session_row.expires_at) <= now:
-        _booking_resolution_failed(
-            token=normalized_token,
-            reason="expired",
-            status_code=410,
-            message="This booking link has expired",
-        )
     if (str(getattr(session_row, "booking_status", "") or "").strip().lower() == "confirmed") or getattr(session_row, "booked_at", None) or str(getattr(session_row, "status", "") or "").strip().lower() in {"booked", "interview_scheduled"}:
         _booking_resolution_failed(
             token=normalized_token,
@@ -355,13 +341,12 @@ def create_interview_session(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     recruiter_id = JobRepository(db).get_recruiter_id(job.id)
     existing_session = session_repo.get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
-    existing_expires_at = _ensure_utc_datetime(getattr(existing_session, "expires_at", None))
     normalized_stage_name = _normalize_stage_name(stage_name) or "recruiter_screen"
     normalized_timezone = _normalize_timezone_name(timezone_name or getattr(existing_session, "timezone", None) or "UTC")
     normalized_slots = _normalize_available_slots(available_slots or [], timezone_name=normalized_timezone)
     existing_slots = _normalize_available_slots(list(getattr(existing_session, "available_slots", None) or []), timezone_name=normalized_timezone) if existing_session else []
     existing_stage_name = _session_stage_name(existing_session) if existing_session else ""
-    if existing_session and existing_stage_name == normalized_stage_name and (existing_expires_at is None or existing_expires_at > datetime.now(timezone.utc)):
+    if existing_session and existing_stage_name == normalized_stage_name:
         company = CompanyRepository(db).get_by_id(job.company_id)
         source_type = str((_metadata_map(getattr(existing_session, "scheduling_metadata", {})).get("sourceType") or normalized_source_app or getattr(job, "source_app", "ui") or "ui"))
         workflow_token_value = _workflow_token(existing_session) or existing_session.token
@@ -398,7 +383,7 @@ def create_interview_session(
                     workflow_name="slot_booking",
                     token=workflow_token_value,
                     payload=token_payload,
-                    expires_at=existing_session.expires_at,
+                    expires_at=None,
                     token_type="slot_booking",
                     is_active=True,
                     source_app=normalized_source_app,
@@ -500,7 +485,6 @@ def create_interview_session(
         candidate_id=candidate_id,
         email=email,
         token=session_token,
-        expires_at=expires_at,
         booking_url=booking_link,
         outreach_event_id=outreach_event_id,
         stage_name=normalized_stage_name,
@@ -583,10 +567,6 @@ def create_interview_session(
 
 def get_interview_session(*, db: Session, token: str) -> dict[str, str | None]:
     row, workflow_token_value, token_row, token_payload = _resolve_booking_context(db=db, token=token)
-    row_expires_at = _ensure_utc_datetime(row.expires_at)
-    if row_expires_at and row_expires_at <= datetime.now(timezone.utc):
-        raise APIError("Interview session expired", status_code=410)
-
     booking_link = row.booking_url or _slot_booking_url(workflow_token_value or _workflow_token(row) or row.token)
     return _session_payload(row=row, booking_link=booking_link, token_payload=token_payload)
 
@@ -650,7 +630,7 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         workflow_name="slot_booking",
         token=workflow_token_value,
         payload=workflow_payload,
-        expires_at=row.expires_at,
+        expires_at=None,
         token_type="slot_booking",
         is_active=True,
         source_app=source_type,
@@ -775,7 +755,7 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
             "jobId": row.job_id,
             "candidateId": row.candidate_id,
             "scheduledAt": existing_scheduled_at,
-            "meetingLink": _interview_url(workflow_token_value or _workflow_token(row) or row.token, source_type=source_type),
+            "meetingLink": _interview_url(workflow_token_value or _workflow_token(row) or row.token),
             "sourceType": source_type,
             "bookingStatus": row.booking_status,
             "timezone": str(getattr(row, "timezone", "") or token_payload.get("timezone") or "UTC"),
@@ -817,14 +797,14 @@ def reschedule_interview_session(*, db: Session, token: str, scheduled_at: str, 
         workflow_name="slot_booking",
         token=workflow_token_value,
         payload=workflow_payload,
-        expires_at=row.expires_at,
+        expires_at=None,
         token_type="slot_booking",
         is_active=True,
         source_app=source_type,
         force_token=True,
     )
 
-    meeting_link = _interview_url(workflow_token_value or _workflow_token(row) or row.token, source_type=source_type)
+    meeting_link = _interview_url(workflow_token_value or _workflow_token(row) or row.token)
     InterviewRepository(db).upsert_status(
         job_id=row.job_id,
         candidate_id=row.candidate_id,
@@ -952,7 +932,7 @@ def mark_interview_no_show(*, db: Session, token: str, reason: str = "no_show_de
         workflow_name="slot_booking",
         token=workflow_token_value,
         payload=workflow_payload,
-        expires_at=row.expires_at,
+        expires_at=None,
         token_type="slot_booking",
         is_active=True,
         source_app=source_type,

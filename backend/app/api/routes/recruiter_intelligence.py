@@ -66,11 +66,12 @@ def get_recruiter_intelligence_job(
         gap_analysis=interview_state.get("gap_analysis") or {},
     )
     db.commit()
+    _cal_resp = build_calibration_state_response(calibration_state)
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_calibration_state_response(calibration_state),
-            "calibration": build_calibration_state_response(calibration_state),
+            "selection": _cal_resp,
+            "calibration": _cal_resp,
         }
     )
 
@@ -103,11 +104,12 @@ def update_recruiter_intelligence_job(
         gap_analysis=interview_state.get("gap_analysis") or {},
     )
     db.commit()
+    _cal_resp = build_calibration_state_response(calibration_state)
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_calibration_state_response(calibration_state),
-            "calibration": build_calibration_state_response(calibration_state),
+            "selection": _cal_resp,
+            "calibration": _cal_resp,
         }
     )
 
@@ -161,11 +163,12 @@ def advance_recruiter_intelligence_job(
         gap_analysis=interview_state.get("gap_analysis") or {},
     )
     db.commit()
+    _cal_resp = build_calibration_state_response(calibration_state)
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_calibration_state_response(calibration_state),
-            "calibration": build_calibration_state_response(calibration_state),
+            "selection": _cal_resp,
+            "calibration": _cal_resp,
         }
     )
 
@@ -184,10 +187,11 @@ def finalize_recruiter_intelligence_job(
     interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)
     calibration_state = finalize_preference_calibration_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
     db.commit()
+    _cal_resp = build_calibration_state_response(calibration_state)
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": build_calibration_state_response(calibration_state),
-            "calibration": build_calibration_state_response(calibration_state),
+            "selection": _cal_resp,
+            "calibration": _cal_resp,
         }
     )

@@ -384,14 +384,14 @@ def _update_candidate_from_resume(
         current_company = str(companies[0] or "").strip()
 
     candidate_profile.name = str(profile.get("full_name") or candidate_profile.name or "").strip()
-    candidate_profile.role = str(profile.get("headline") or candidate_profile.role or "").strip()
-    candidate_profile.company = current_company or candidate_profile.company or ""
+    candidate_profile.current_role = str(profile.get("headline") or candidate_profile.current_role or "").strip()
+    candidate_profile.current_company = current_company or candidate_profile.current_company or ""
     candidate_profile.summary = str(profile.get("summary") or candidate_profile.summary or "").strip()
     candidate_profile.skills = list(profile.get("skills") or candidate_profile.skills or [])
     candidate_profile.candidate_status = "qualified"
     candidate_profile.resume_received_at = datetime.now(timezone.utc)
     candidate_profile.total_experience_years = float(profile.get("years_experience") or 0.0)
-    candidate_profile.current_title = candidate_profile.role
+    candidate_profile.current_title = candidate_profile.current_role
     candidate_profile.current_company = current_company
     candidate_profile.phone = parsed_resume.phone
     candidate_profile.linkedin_url = parsed_resume.linkedin_url

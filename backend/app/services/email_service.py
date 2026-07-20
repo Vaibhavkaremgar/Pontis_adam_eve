@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from app.core.config import FROM_EMAIL, RESEND_API_KEY
+from app.core.config import APP_ENV, FROM_EMAIL, RESEND_API_KEY
 from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
@@ -45,9 +45,12 @@ def send_email(
     logger.info("email_send_called to=%s", to_email)
 
     if not RESEND_API_KEY:
-        raise APIError("RESEND_API_KEY is missing", status_code=500)
+        if APP_ENV in {"development", "dev", "local", "test"}:
+            logger.warning("email_send_fallback_enabled to=%s reason=missing_resend_api_key", to_email)
+            return {"id": "local-email-fallback", "to": [to_email], "from": sender}
+        raise APIError("RESEND_API_KEY is missing", status_code=503)
     if not sender:
-        raise APIError("FROM_EMAIL is missing", status_code=500)
+        raise APIError("FROM_EMAIL is missing", status_code=503)
 
     try:
         payload = {

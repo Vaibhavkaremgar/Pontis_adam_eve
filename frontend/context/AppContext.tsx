@@ -147,7 +147,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
       if (pipeline.jobId) setJobIdState(pipeline.jobId);
       if (pipeline.job) setJobState(pipeline.job);
-      if (pipeline.company) setCompanyState(pipeline.company);
+      if (pipeline.company) setCompanyState({ ...initialCompany, ...pipeline.company });
       if (pipeline.isRefined) setIsRefinedState(pipeline.isRefined);
       setIsSessionReady(true);
       setIsBootstrapped(true);

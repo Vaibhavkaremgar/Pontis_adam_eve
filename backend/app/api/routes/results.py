@@ -10,6 +10,7 @@ from app.db.session import get_db
 from app.services.ownership import assert_job_company_ownership, resolve_company_id_for_user
 from app.services.results_service import get_result_by_workflow_token, list_results, resolve_result_context, stream_result_video
 from app.services.result_operations_service import advance_result_candidate, record_result_decision
+from app.db.repositories import JobRepository
 from app.utils.responses import success_response
 
 router = APIRouter(tags=["results"])
@@ -36,6 +37,22 @@ class AdvanceResultPayload(BaseModel):
 
 class DecisionPayload(BaseModel):
     decision: str
+
+
+@router.get("/results/jobs")
+def results_jobs_list(
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    company_id = resolve_company_id_for_user(db=db, user_id=request.state.user["id"])
+    jobs = JobRepository(db).list_by_company(company_id) if company_id else []
+    return success_response({
+        "jobs": [
+            {"jobId": job.id, "title": job.title or "Untitled", "location": job.location or "", "createdAt": job.created_at.isoformat() if job.created_at else None}
+            for job in jobs
+        ]
+    })
 
 
 @router.get("/results")

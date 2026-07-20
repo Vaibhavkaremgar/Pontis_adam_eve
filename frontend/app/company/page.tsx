@@ -23,10 +23,21 @@ import { useAppContext } from "@/context/AppContext";
 import { connectAts, disconnectAts } from "@/lib/api/ats";
 import { getCompany, saveCompany } from "@/lib/api/company";
 
+function normalizeForm(c: { name?: string; website?: string; description?: string; industry?: string; atsProvider?: string; atsConnected?: boolean }) {
+  return {
+    name: c.name ?? "",
+    website: c.website ?? "",
+    description: c.description ?? "",
+    industry: c.industry ?? "",
+    atsProvider: c.atsProvider ?? "",
+    atsConnected: c.atsConnected ?? false
+  };
+}
+
 export default function CompanyPage() {
   const router = useRouter();
   const { user, isSessionReady, company, setCompany } = useAppContext();
-  const [form, setForm] = useState(company);
+  const [form, setForm] = useState(() => normalizeForm(company));
   const [error, setError] = useState("");
   const [connectError, setConnectError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -56,14 +67,14 @@ export default function CompanyPage() {
       if (result.success && result.data) {
         const nextProvider = result.data.atsProvider || result.data.ats_provider || "mock";
         const nextConnected = Boolean(result.data.atsConnected ?? result.data.ats_connected);
-        const nextForm = {
-          name: result.data.name || "",
-          website: result.data.website || "",
-          description: result.data.description || "",
-          industry: result.data.industry || "",
+        const nextForm = normalizeForm({
+          name: result.data.name,
+          website: result.data.website,
+          description: result.data.description,
+          industry: result.data.industry,
           atsProvider: nextProvider,
           atsConnected: nextConnected
-        };
+        });
         setCompany(nextForm);
         setForm(nextForm);
         setSelectedProvider(nextProvider || "mock");
@@ -82,9 +93,8 @@ export default function CompanyPage() {
   }, [isSessionReady, setCompany, user]);
 
   const handleSubmit = async () => {
-    // This handles real-world API delays and failures.
-    if (!form.name.trim() || !form.website.trim()) {
-      setError("Company name and website are required.");
+    if (!form.name.trim()) {
+      setError("Company name is required.");
       return;
     }
 
@@ -95,17 +105,17 @@ export default function CompanyPage() {
       name: form.name.trim(),
       website: form.website.trim(),
       description: form.description.trim(),
-      industry: (form.industry || "").trim()
+      industry: form.industry.trim()
     });
     if (result.success && result.data) {
-      setCompany({
+      setCompany(normalizeForm({
         name: result.data.name,
         website: result.data.website,
         description: result.data.description,
-        industry: result.data.industry || "",
-        atsProvider: result.data.atsProvider || result.data.ats_provider || "",
+        industry: result.data.industry,
+        atsProvider: result.data.atsProvider || result.data.ats_provider,
         atsConnected: Boolean(result.data.atsConnected ?? result.data.ats_connected)
-      });
+      }));
       router.push("/job");
       return;
     }
@@ -115,7 +125,7 @@ export default function CompanyPage() {
   };
 
   const handleConnectAts = async () => {
-    if (!form.name.trim() || !form.website.trim()) {
+    if (!form.name.trim()) {
       setError("Save company details first.");
       return;
     }
@@ -128,7 +138,7 @@ export default function CompanyPage() {
       name: form.name.trim(),
       website: form.website.trim(),
       description: form.description.trim(),
-      industry: (form.industry || "").trim()
+      industry: form.industry.trim()
     });
     if (!saved.success || !saved.data) {
       setConnectError(saved.error || "Failed to save company before connecting ATS.");
@@ -143,14 +153,14 @@ export default function CompanyPage() {
       return;
     }
 
-    const nextCompany = {
+    const nextCompany = normalizeForm({
       name: saved.data.name,
       website: saved.data.website,
       description: saved.data.description,
-      industry: saved.data.industry || "",
+      industry: saved.data.industry,
       atsProvider: connected.data.provider || selectedProvider,
       atsConnected: Boolean(connected.data.connected)
-    };
+    });
     setCompany(nextCompany);
     setForm(nextCompany);
     setConnectMessage(`Connected to: ${connected.data.provider === "mock" ? "Mock ATS" : connected.data.provider}`);
@@ -168,16 +178,8 @@ export default function CompanyPage() {
       return;
     }
 
-    setCompany({
-      ...company,
-      atsProvider: "",
-      atsConnected: false
-    });
-    setForm((prev) => ({
-      ...prev,
-      atsProvider: "",
-      atsConnected: false
-    }));
+    setCompany({ ...company, atsProvider: "", atsConnected: false });
+    setForm((prev) => ({ ...prev, atsProvider: "", atsConnected: false }));
     setSelectedProvider("mock");
     setConnectMessage("ATS disconnected.");
     setIsConnecting(false);
@@ -208,7 +210,7 @@ export default function CompanyPage() {
 
           <div className="space-y-2">
             <Label htmlFor="company-website">
-              Website <span className="text-red-500">*</span>
+              Website <span className="text-gray-500">(optional)</span>
             </Label>
             <Input
               id="company-website"
@@ -292,7 +294,7 @@ export default function CompanyPage() {
           </div>
           {error && <p className="text-sm text-red-600">{error}</p>}
 
-          <Button className="w-full justify-center" onClick={handleSubmit} disabled={isSubmitting}>
+          <Button className="w-full justify-center" onClick={handleSubmit} disabled={isSubmitting || !form.name.trim()}>
             {isSubmitting ? "Loading..." : "Continue"}
           </Button>
         </CardContent>

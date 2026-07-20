@@ -113,6 +113,24 @@ export type ResultDecisionPayload = {
   decision: "pass" | "hold" | "reject";
 };
 
+export type JobSummary = {
+  jobId: string;
+  title: string;
+  location: string;
+  createdAt: string | null;
+};
+
+export type JobsListResponse = {
+  jobs: JobSummary[];
+};
+
+export async function getJobsForResults(): Promise<ApiResponse<JobsListResponse>> {
+  return requestApi<JobsListResponse>({
+    url: `${API_BASE_URL}/results/jobs`,
+    method: "GET",
+  });
+}
+
 export async function getResultsList(jobId: string): Promise<ApiResponse<ResultListResponse>> {
   return requestApi<ResultListResponse>({
     url: `${API_BASE_URL}/results?jobId=${encodeURIComponent(jobId)}`,

@@ -469,8 +469,8 @@ def _extract_email_display(raw: dict[str, Any]) -> str:
 def _build_heuristic_email(*, candidate_profile, job) -> tuple[str, str]:
     """Deterministic template-based email — used when LLM is unavailable."""
     first_name = (candidate_profile.name or "").split()[0] if candidate_profile.name else "there"
-    their_role = candidate_profile.role or "your background"
-    their_company = candidate_profile.company
+    their_role = candidate_profile.current_role or "your background"
+    their_company = candidate_profile.current_company
     skills = (candidate_profile.skills or [])[:3]
     hook = skills[0] if skills else their_role
 
@@ -549,8 +549,8 @@ def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
             "- Ask the candidate to share an updated resume\n"
             f"- End with a {'discreet next-step offer' if elite else 'soft call-to-action for a 15-minute chat'}\n\n"
             f"{sanitize_prompt_block('Candidate name', candidate_profile.name or 'there', max_length=120)}\n"
-            f"{sanitize_prompt_block('Candidate current role', candidate_profile.role or 'unknown', max_length=120)}\n"
-            f"{sanitize_prompt_block('Candidate current company', candidate_profile.company or 'unknown', max_length=120)}\n"
+            f"{sanitize_prompt_block('Candidate current role', candidate_profile.current_role or 'unknown', max_length=120)}\n"
+            f"{sanitize_prompt_block('Candidate current company', candidate_profile.current_company or 'unknown', max_length=120)}\n"
             f"{sanitize_prompt_block('Candidate skills', skills_text, max_length=1000)}\n"
             f"{sanitize_prompt_block('Candidate summary', candidate_profile.summary or 'not listed', max_length=2000)}\n"
             f"{sanitize_prompt_block('Job title', job.title, max_length=120)}\n"

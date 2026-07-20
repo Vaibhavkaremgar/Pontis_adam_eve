@@ -205,9 +205,6 @@ function VoicePageContent() {
           <div className="w-full rounded-3xl border border-[rgba(120,100,80,0.08)] bg-[#F3EDE3] p-6 text-center shadow-[0_4px_12px_rgba(0,0,0,0.02)]">
             <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#166534]">Preparing intake</p>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight text-gray-900">Your voice intake is loading</h1>
-            <p className="mt-3 text-sm text-gray-600">
-              We moved you forward right away. The job record is still syncing in the background.
-            </p>
             <div className="mt-5 flex justify-center">
               <Button variant="outline" onClick={() => router.push("/job")}>
                 Back to Job Details

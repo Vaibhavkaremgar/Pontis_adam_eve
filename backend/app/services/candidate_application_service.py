@@ -387,7 +387,7 @@ def mark_candidate_talent_pool_ready(*, db: Session, job_id: str, candidate_id: 
     profile.ats_status_source = "interview_completion"
     profile.ats_status_reason = "resume_evaluated_and_interview_completed"
     profile.ats_status_updated_at = datetime.now(timezone.utc)
-    profile.talent_pool_ready_at = profile.talent_pool_ready_at or datetime.now(timezone.utc)
+    profile.last_refreshed_at = profile.last_refreshed_at or datetime.now(timezone.utc)
     profile.ats_metadata = evaluation_json
     db.flush()
     transition_candidate_ats_state(

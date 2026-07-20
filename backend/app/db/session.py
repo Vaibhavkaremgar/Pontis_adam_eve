@@ -35,6 +35,14 @@ if database_url.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
 elif _is_railway_environment():
     engine_kwargs["pool_recycle"] = 300
+    engine_kwargs["pool_size"] = 10
+    engine_kwargs["max_overflow"] = 20
+else:
+    # Non-Railway PostgreSQL: still set sensible pool limits
+    if not database_url.startswith("sqlite"):
+        engine_kwargs["pool_size"] = 10
+        engine_kwargs["max_overflow"] = 20
+        engine_kwargs["pool_recycle"] = 300
 
 engine = create_engine(database_url, **engine_kwargs)
 
@@ -142,7 +150,7 @@ def _reconcile_legacy_schema_if_needed() -> None:
 def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool, str]:
     expected_columns = {
         "users": ["id", "email", "created_at"],
-        "agencies": ["id", "name", "website", "description", "user_id", "created_at"],
+        "agencies": ["id", "name", "slug", "is_active", "created_at", "updated_at"],
         "job_descriptions": [
             "id",
             "source_app",
@@ -151,10 +159,9 @@ def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool,
             "title",
             "description",
             "location",
-            "compensation",
-            "work_authorization",
-            "ats_job_id",
-            "company_id",
+            "salary_range",
+            "company_name",
+            "agency_id",
             "created_by",
             "remote_policy",
             "experience_required",
@@ -162,7 +169,7 @@ def _has_schema_incompatibility(inspector, table_names: set[str]) -> tuple[bool,
             "updated_at",
             "created_at",
         ],
-        "interviews": ["id", "source_app", "job_id", "company_id", "candidate_id", "status", "created_at"],
+        "interviews": ["id", "source_app", "job_id", "agency_id", "candidate_id", "status", "created_at"],
     }
 
     for table_name, columns in expected_columns.items():
@@ -254,16 +261,14 @@ def _ensure_optional_schema_columns() -> None:
 
         if "candidates" in table_names:
             candidate_columns = {column["name"] for column in inspector.get_columns("candidates")}
-            if "company_id" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidates ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
+            if "agency_id" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN agency_id UUID NULL DEFAULT NULL"))
             if "candidate_status" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN candidate_status VARCHAR(64) NOT NULL DEFAULT 'new'"))
             if "resume_received_at" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN resume_received_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "total_experience_years" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN total_experience_years DOUBLE PRECISION NOT NULL DEFAULT 0"))
-            if "current_title" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidates ADD COLUMN current_title VARCHAR(255) NOT NULL DEFAULT ''"))
             if "current_company" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN current_company VARCHAR(255) NOT NULL DEFAULT ''"))
             if "phone" not in candidate_columns:
@@ -286,8 +291,6 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status_reason TEXT NOT NULL DEFAULT ''"))
             if "ats_status_updated_at" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
-            if "talent_pool_ready_at" not in candidate_columns:
-                conn.execute(text("ALTER TABLE candidates ADD COLUMN talent_pool_ready_at TIMESTAMPTZ NULL DEFAULT NULL"))
             if "ats_metadata" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_metadata JSON NOT NULL DEFAULT '{}'"))
 
@@ -324,8 +327,8 @@ def _ensure_optional_schema_columns() -> None:
             outreach_columns = {column["name"] for column in inspector.get_columns("outreach_events")}
             if "source_app" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN source_app VARCHAR(32) NOT NULL DEFAULT 'ui'"))
-            if "company_id" not in outreach_columns:
-                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
+            if "agency_id" not in outreach_columns:
+                conn.execute(text("ALTER TABLE outreach_events ADD COLUMN agency_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "reply_intent" not in outreach_columns:
                 conn.execute(text("ALTER TABLE outreach_events ADD COLUMN reply_intent VARCHAR(64) NOT NULL DEFAULT ''"))
             if "reply_state" not in outreach_columns:
@@ -377,10 +380,13 @@ def _ensure_optional_schema_columns() -> None:
 
         if "inbound_email_replies" in table_names:
             inbound_columns = {column["name"] for column in inspector.get_columns("inbound_email_replies")}
-            if "company_id" not in inbound_columns:
-                conn.execute(text("ALTER TABLE inbound_email_replies ADD COLUMN company_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "agency_id" not in inbound_columns:
+                conn.execute(text("ALTER TABLE inbound_email_replies ADD COLUMN agency_id VARCHAR(36) NULL DEFAULT NULL"))
             if "intent" not in inbound_columns:
                 conn.execute(text("ALTER TABLE inbound_email_replies ADD COLUMN intent VARCHAR(64) NOT NULL DEFAULT ''"))
+
+        if "ranking_runs" in table_names:
+            run_columns = {column["name"] for column in inspector.get_columns("ranking_runs")}
             if "avg_final_score" not in run_columns:
                 conn.execute(text("ALTER TABLE ranking_runs ADD COLUMN avg_final_score DOUBLE PRECISION NOT NULL DEFAULT 0"))
             if "avg_recruiter_score" not in run_columns:
@@ -411,11 +417,6 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE companies ADD COLUMN ats_connected BOOLEAN NOT NULL DEFAULT FALSE"))
             if dialect == "postgresql":
                 conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_companies_user_name ON companies (user_id, name)"))
-
-        if "jobs" in table_names:
-            job_columns = {column["name"] for column in inspector.get_columns("jobs")}
-            if "auto_export_to_ats" not in job_columns:
-                conn.execute(text("ALTER TABLE jobs ADD COLUMN auto_export_to_ats BOOLEAN NOT NULL DEFAULT FALSE"))
 
         if "outreach_events" in table_names:
             oe_columns = {column["name"] for column in inspector.get_columns("outreach_events")}
@@ -464,8 +465,8 @@ def _ensure_optional_schema_columns() -> None:
 
         if "interview_sessions" in table_names:
             interview_session_columns = {column["name"] for column in inspector.get_columns("interview_sessions")}
-            if "company_id" not in interview_session_columns:
-                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
+            if "agency_id" not in interview_session_columns:
+                conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN agency_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "outreach_event_id" not in interview_session_columns:
                 conn.execute(text("ALTER TABLE interview_sessions ADD COLUMN outreach_event_id VARCHAR(36) NULL DEFAULT NULL"))
             if "booked_at" not in interview_session_columns:
@@ -545,8 +546,8 @@ def _ensure_optional_schema_columns() -> None:
 
         if "job_intakes" in table_names:
             job_intake_columns = {column["name"] for column in inspector.get_columns("job_intakes")}
-            if "company_id" not in job_intake_columns:
-                conn.execute(text("ALTER TABLE job_intakes ADD COLUMN company_id VARCHAR(36) NOT NULL DEFAULT ''"))
+            if "agency_id" not in job_intake_columns:
+                conn.execute(text("ALTER TABLE job_intakes ADD COLUMN agency_id VARCHAR(36) NOT NULL DEFAULT ''"))
             if "transcript" not in job_intake_columns:
                 conn.execute(text("ALTER TABLE job_intakes ADD COLUMN transcript TEXT NOT NULL DEFAULT ''"))
             if "structured_data_json" not in job_intake_columns:
@@ -586,7 +587,7 @@ def _ensure_optional_schema_columns() -> None:
                         voice_token_used BOOLEAN NOT NULL DEFAULT FALSE,
                         expires_at TIMESTAMPTZ NULL DEFAULT NULL,
                         completed_at TIMESTAMPTZ NULL DEFAULT NULL,
-                        company_id VARCHAR(36) NULL DEFAULT NULL,
+                        agency_id VARCHAR(36) NULL DEFAULT NULL,
                         job_id VARCHAR(36) NULL DEFAULT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -654,8 +655,8 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN last_processed_transcript_hash VARCHAR(64) NOT NULL DEFAULT ''"))
             if "intake_version" not in orchestration_columns:
                 conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN intake_version VARCHAR(32) NOT NULL DEFAULT 'v1'"))
-            if "company_id" not in orchestration_columns:
-                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN company_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "agency_id" not in orchestration_columns:
+                conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN agency_id VARCHAR(36) NULL DEFAULT NULL"))
             if "job_id" not in orchestration_columns:
                 conn.execute(text("ALTER TABLE orchestration_sessions ADD COLUMN job_id VARCHAR(36) NULL DEFAULT NULL"))
             if dialect == "postgresql":

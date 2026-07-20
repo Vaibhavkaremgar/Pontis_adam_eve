@@ -1844,7 +1844,7 @@ def _build_feedback_learning_context(db: Session, *, job_id: str) -> FeedbackLea
 
             profile = profiles.get(row.candidate_id)
             skills = profile.skills if profile else []
-            role = profile.role if profile else ""
+            role = profile.current_role if profile else ""
             for token in _normalized_skill_tokens(skills):
                 global_skill_accum[token] += signal
                 global_skill_counts[token] += 1
@@ -2126,8 +2126,8 @@ def _build_local_candidates(
             bias=weights.feedback_bias,
         )
 
-        company = (profile.company if profile else str(payload.get("company") or "")).strip()
-        role = (profile.role if profile else str(payload.get("role") or "")).strip() or "Unknown Role"
+        company = (profile.current_company if profile else str(payload.get("company") or "")).strip()
+        role = (profile.current_role if profile else str(payload.get("role") or "")).strip() or "Unknown Role"
         skills = _candidate_skill_values(payload, fallback_profile=profile)
         candidate_source = profile.raw_data if profile and isinstance(profile.raw_data, dict) else payload
         candidate_experience = _candidate_experience_value(candidate_source)
@@ -3555,8 +3555,15 @@ def fetch_ranked_candidates(
             profile_repo = CandidateProfileRepository(db)
             refresh_queue_jobs: list[dict[str, str]] = []
             persisted_count = 0
+            _upserted_candidate_ids: set[str] = set()
             for candidate in xray_results:
                 candidate_id = str(candidate.id or "").strip()
+                if candidate_id in _upserted_candidate_ids:
+                    logger.info(
+                        'xray_dedup_skip_duplicate candidate_id="%s" reason=already_upserted_this_run',
+                        candidate_id,
+                    )
+                    continue
                 existing_profile = profile_repo.get(job_id=job.id, candidate_id=candidate.id)
                 existing_raw_data = dict(getattr(existing_profile, "raw_data", {}) or {}) if existing_profile else {}
                 new_raw_data = dict(candidate.model_dump())
@@ -3587,6 +3594,7 @@ def fetch_ranked_candidates(
                     decision=candidate.decision or "potential",
                     strategy=candidate.strategy or "MEDIUM",
                 )
+                _upserted_candidate_ids.add(candidate_id)
                 persisted_count += 1
                 logger.info(
                     'xray_upsert_result candidate_id="%s" status="%s"',
@@ -4851,8 +4859,8 @@ def list_shortlisted_candidates(*, db: Session, job_id: str) -> list[CandidateRe
             {
                 "candidate_id": candidate_id,
                 "name": _candidate_profile_display_name(profile) or (snapshot_candidate.name if snapshot_candidate else "") or candidate_id,
-                "role": (getattr(profile, "role", "") or (snapshot_candidate.role if snapshot_candidate else "") or "").strip(),
-                "company": (getattr(profile, "company", "") or (snapshot_candidate.company if snapshot_candidate else "") or "").strip(),
+                "role": (getattr(profile, "current_role", "") or (snapshot_candidate.role if snapshot_candidate else "") or "").strip(),
+                "company": (getattr(profile, "current_company", "") or (snapshot_candidate.company if snapshot_candidate else "") or "").strip(),
                 "email": email,
                 "is_mock_email": bool(profile_details["isMockEmail"]) or email.endswith("@test.local"),
                 "headline": profile_details["headline"],
@@ -5007,8 +5015,8 @@ def list_stored_candidates(*, db: Session, job_id: str) -> list[CandidateResult]
             CandidateResult(
                 id=row.candidate_id,
                 name=_candidate_profile_display_name(row),
-                role=row.role,
-                company=row.company,
+                role=row.current_role,
+                company=row.current_company,
                 email=profile_details["email"] or ensure_candidate_email(row),
                 isMockEmail=bool(profile_details["isMockEmail"]) or ensure_candidate_email(row).endswith("@test.local"),
                 headline=profile_details["headline"],

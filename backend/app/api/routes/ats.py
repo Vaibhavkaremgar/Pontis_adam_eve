@@ -47,7 +47,7 @@ def connect_ats(
         request_id=str(getattr(request.state, "request_id", "") or ""),
     )
     db.commit()
-    provider = company.ats_provider or DEFAULT_ATS_PROVIDER
+    provider = payload.provider or DEFAULT_ATS_PROVIDER
     return success_response(
         {
             "connected": True,

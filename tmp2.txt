@@ -1,0 +1,24 @@
+ation=work_authorization.strip(),
+            ats_job_id=(ats_job_id or "").strip() or None,
+            vetting_mode=((vetting_mode or "volume").strip().lower() if (vetting_mode or "").strip().lower() in {"volume", "elite"} else "volume"),
+            auto_export_to_ats=bool(auto_export_to_ats),
+            created_by=created_by,
+            remote_policy=remote_policy.strip(),
+            experience_required=experience_required.strip(),
+        )
+        self.db.add(entity)
+        self.db.flush()
+        return entity
+
+    def get(self, job_id: str) -> JobEntity | None:
+        return self.db.scalar(select(JobEntity).where(JobEntity.id == job_id))
+
+    def get_recruiter_id(self, job_id: str) -> str | None:
+        job = self.get(job_id)
+        if not job:
+            return None
+        recruiter_id = str(getattr(job, "created_by", "") or "").strip()
+        if recruiter_id:
+            return recruiter_id
+        company = CompanyRepository(self.db).get_by_id(job.company_id)
+     

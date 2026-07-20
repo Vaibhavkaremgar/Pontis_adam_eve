@@ -100,7 +100,7 @@ export default function JobPage() {
         setCompany(nextCompany);
         setSelectedATS(provider || "mock");
         setAtsConnected(connected);
-        if (!nextCompany.name.trim() || !nextCompany.website.trim()) {
+        if (!nextCompany.name.trim()) {
           router.replace("/company");
         }
       } else {

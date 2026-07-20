@@ -297,6 +297,10 @@ def tag_candidates_with_feedback_state(
             db, job_id=job_id, company_id=company_id or ""
         )
     except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         diag.feedback_lookup_skipped = True
         diag.feedback_lookup_skip_reason = f"db_error: {str(exc)[:80]}"
         diag.feedback_lookup_latency_ms = round((perf_counter() - t0) * 1000.0, 1)

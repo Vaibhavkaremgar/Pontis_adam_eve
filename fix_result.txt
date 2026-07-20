@@ -1,0 +1,1 @@
+'def get_recruiter_id(self, job_id: str) -> str | None:\n        job = self.get(job_id)\n        if not job:\n            return None\n        recruiter_id = str(getattr(job, "created_by", "") or "").strip()\n        if recruiter_id:\n            return recruiter_id\n        company = CompanyRepository(self.db).get_by_id(job.company_id)\n        if not comp'

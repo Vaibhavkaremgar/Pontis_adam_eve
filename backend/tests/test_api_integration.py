@@ -2554,6 +2554,56 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(result[candidate_a].candidate_id, candidate_a)
         self.assertEqual(result[candidate_b].candidate_id, candidate_b)
 
+    def test_candidate_profile_upsert_is_idempotent_across_jobs(self) -> None:
+        repo = CandidateProfileRepository(self.db)
+        candidate_id = "candidate-cross-job"
+        other_job = JobRepository(self.db).create(
+            company_id=self.company.id,
+            title="Backend Engineer B",
+            description="Second job for cross-job identity regression.",
+            location="Remote",
+            salary_range="120k-150k",
+            structured_data={},
+            work_authorization="Any",
+            responsibilities=["Ship backend features"],
+            skills_required=["Python"],
+            created_by=self.user.id,
+        )
+
+        first = repo.upsert(
+            job_id=self.job.id,
+            candidate_id=candidate_id,
+            name="Cross Job Candidate",
+            role="Platform Engineer",
+            company="Northstar",
+            summary="First persistence for job A.",
+            skills=["Python"],
+            raw_data={"name": "Cross Job Candidate"},
+            fit_score=4.4,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+        second = repo.upsert(
+            job_id=other_job.id,
+            candidate_id=candidate_id,
+            name="Cross Job Candidate",
+            role="Platform Engineer",
+            company="Northstar",
+            summary="Second persistence for job B.",
+            skills=["Python"],
+            raw_data={"name": "Cross Job Candidate"},
+            fit_score=4.5,
+            decision="strong_match",
+            strategy="HIGH",
+        )
+
+        self.db.commit()
+
+        self.assertEqual(first.id, second.id)
+        self.assertIsNotNone(repo.get(job_id=self.job.id, candidate_id=candidate_id))
+        self.assertIsNotNone(repo.get(job_id=other_job.id, candidate_id=candidate_id))
+        self.assertEqual(self.db.execute(text("SELECT COUNT(*) FROM candidates WHERE candidate_id = :candidate_id"), {"candidate_id": candidate_id}).scalar_one(), 1)
+
     def test_resend_inbound_not_interested_updates_declined(self) -> None:
         reply_email = {
             "object": "email",

@@ -3745,7 +3745,7 @@ def discover_linkedin_xray_candidates(
                 raw = row.raw_data if isinstance(row.raw_data, dict) else {}
                 linkedin_url = _normalize_lower(raw.get("linkedin_url") or raw.get("linkedinUrl") or row.linkedin_url)
                 candidate_id = _normalize_lower(row.candidate_id)
-                name_company = _normalize_lower(f"{row.name}|{row.current_company or row.company}")
+                name_company = _normalize_lower(f"{row.name}|{row.current_company}")
                 for key in [linkedin_url, candidate_id, name_company]:
                     if key:
                         existing_memory_keys.add(key)

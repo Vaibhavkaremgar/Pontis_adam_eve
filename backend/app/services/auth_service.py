@@ -136,7 +136,7 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
     if not raw_token:
         raise APIError("Google token is required", status_code=400)
     if not GOOGLE_OAUTH_CLIENT_ID:
-        raise APIError("Google OAuth is not configured on server", status_code=500)
+        raise APIError("Google OAuth is not configured on server", status_code=503)
     if AUTH_REQUIRE_OTP:
         logger.warning("google_login_blocked reason=otp_required")
         raise APIError("Google login disabled", status_code=403)
@@ -147,7 +147,7 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
     except ModuleNotFoundError as exc:
         raise APIError(
             "google-auth is not installed on server. Run: pip install google-auth",
-            status_code=500,
+            status_code=503,
         ) from exc
 
     try:

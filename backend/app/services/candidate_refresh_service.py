@@ -375,9 +375,9 @@ def refresh_candidate(db: Session, candidate) -> bool:
         return False
 
 
-def get_stale_candidates(*, db: Session, limit: int = REFRESH_CANDIDATE_LIMIT, stale_days: int = STALE_DAYS):
+def get_stale_candidates(*, db: Session, limit: int = REFRESH_CANDIDATE_LIMIT, stale_days: int = STALE_DAYS, _active_embedding_version: str = ""):
     stale_before = _utcnow() - timedelta(days=max(1, stale_days))
-    active_embedding_version = get_active_embedding_version(db)
+    active_embedding_version = _active_embedding_version or get_active_embedding_version(db)
     rows = CandidateProfileRepository(db).list_for_migration(limit=max(1, limit) * 5)
     filtered = []
     for row in rows:
@@ -413,16 +413,17 @@ def refresh_candidates(*, batch_size: int = 100, stale_days: int = STALE_DAYS) -
     processed = 0
     refreshed = 0
     skipped = 0
-    active_embedding_version = get_active_embedding_version()
+    active_embedding_version = ""
 
     with SessionLocal() as db:
         try:
             active_embedding_version = get_active_embedding_version(db)
-            stale_candidates = get_stale_candidates(db=db, limit=batch_size, stale_days=stale_days)
+            stale_candidates = get_stale_candidates(db=db, limit=batch_size, stale_days=stale_days, _active_embedding_version=active_embedding_version)
+            job_repo = JobRepository(db)
             for candidate in stale_candidates:
                 processed += 1
                 try:
-                    job = JobRepository(db).get(candidate.job_id)
+                    job = job_repo.get(candidate.job_id)
                     if not job:
                         skipped += 1
                         continue

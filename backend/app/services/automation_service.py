@@ -265,7 +265,7 @@ def seed_automation_jobs(*, db: Session, job_id: str | None = None, limit: int =
                     payload={
                         "reason": "no_swipe_48h",
                         "candidateName": profile.name or profile.candidate_id,
-                        "candidateRole": profile.role or "",
+                        "candidateRole": profile.current_role or "",
                     },
                 )
                 created += 1
@@ -306,7 +306,7 @@ def _handle_recruiter_reminder(db: Session, row) -> dict[str, Any]:
     title = "Recruiter reminder"
     body = "There is an active recruiter task waiting."
     if str(payload.get("reason") or "").strip() == "no_swipe_48h" and profile:
-        body = f"You haven't reviewed {profile.name or profile.candidate_id} for {profile.role or 'this role'} yet"
+        body = f"You haven't reviewed {profile.name or profile.candidate_id} for {profile.current_role or 'this role'} yet"
         title = "Candidate review reminder"
     elif profile:
         body = f"{profile.name or profile.candidate_id} is waiting for a recruiter action."
