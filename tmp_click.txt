@@ -1,0 +1,27 @@
+30:     Click flow:
+33:       3. Pre-click pause 400–900 ms → scroll → hover → hesitate → normal click.
+43:     dry_run=True logs every resolved selector + count without clicking or
+72:         count without clicking or sending — use this to verify container
+157:                 # Read href before clicking — needed for goto fallback
+179:                 # ── Phase 4: human click — pre-click delay + scroll/hover ──────
+180:                 # Randomised pre-click pause (400–900 ms) before any movement
+186:                 # Normal click — force=True intentionally absent
+188:                     await message_anchor.click(timeout=8000)
+189:                     logger.info("messaging_worker message_anchor_clicked profile_url=%s", linkedin_profile_url)
+192:                     logger.info("messaging_worker click_normal_failed reason=%r — trying js_click", str(exc))
+194:                         await message_anchor.evaluate("(el) => el.click()")
+195:                         logger.info("messaging_worker message_anchor_clicked strategy=js profile_url=%s", linkedin_profile_url)
+201:                             error_message=f"Message click failed: {exc2}",
+204:                 # ── Post-click screenshot burst (10 frames × 300 ms) ──────────
+205:                 await self._click_burst(page, linkedin_profile_url)
+214:                     "messaging_worker surface_after_click opened=%s surface=%s "
+228:                             "messaging_worker compose_not_found_after_click "
+284:                     error_message="No messaging surface found after click and goto fallback",
+310:     # ── Post-click screenshot burst ─────────────────────────────────────────
+312:     async def _click_burst(self, page: Any, profile_url: str) -> None:
+313:         """Capture 10 screenshots at 300 ms intervals right after the click."""
+330:             logger.warning("click_burst mkdir_failed: %s", exc)
+337:                 path = probe_dir / f"{slug}_{ts}_click+{n}.png"
+339:                 logger.info("click_burst_saved n=%d path=%s", n, path)
+341:                 logger.warning("click_burst screenshot_failed n=%d: %s", n, exc)
+526:                 f"Unrecognised dialog appeared after Message click "

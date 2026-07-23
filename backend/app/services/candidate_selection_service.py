@@ -19,6 +19,7 @@ from app.db.repositories import (
 from app.schemas.candidate import CandidateExplanation, CandidateResult
 from app.services.candidate_service import fetch_ranked_candidates
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
+from app.services.reuse_interview_service import check_and_reuse_interview, _REUSABLE_STATUSES
 from app.services.job_queue_service import enqueue_job
 from app.services.lifecycle_service import record_job_lifecycle_event
 from app.services.recruiter_preference_service import update_recruiter_preferences
@@ -504,7 +505,8 @@ def _store_selection_feedback(
         session_id=session_id,
     )
     scoring_repo.apply_feedback_adjustment(job_id=job_id, feedback="accept")
-    interview_repo.upsert_status(job_id=job_id, candidate_id=selected_candidate_id, status="selected", create_default="selected")
+    if selected_status not in _REUSABLE_STATUSES:
+        interview_repo.upsert_status(job_id=job_id, candidate_id=selected_candidate_id, status="selected", create_default="selected")
     transition_candidate_ats_state(
         db=db,
         job_id=job_id,
@@ -730,79 +732,85 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         outreach_error = ""
         enrichment_result: dict[str, Any] | None = None
         outreach_result: dict[str, Any] | None = None
+        reuse_result = check_and_reuse_interview(db=db, job_id=job_id, candidate_id=candidate_id)
 
-        try:
-            raw_profile_data = dict(selected_profile_data or {})
-            contact_phone = _normalize_text(
-                raw_profile_data.get("phone")
-                or raw_profile_data.get("contactPhone")
-                or raw_profile_data.get("phoneNumber")
-                or ""
-            )
+        if reuse_result.reused:
+            enrichment_status = "reused"
+            outreach_status = "skipped"
+            reply_status = "skipped"
+        else:
+            try:
+                raw_profile_data = dict(selected_profile_data or {})
+                contact_phone = _normalize_text(
+                    raw_profile_data.get("phone")
+                    or raw_profile_data.get("contactPhone")
+                    or raw_profile_data.get("phoneNumber")
+                    or ""
+                )
 
-            enrichment_result = {
-                "status": enrichment_status,
-                "enrichmentStatus": enrichment_status,
-                "shouldOutreach": False,
-                "contactEmail": "",
-                "contactPhone": contact_phone,
-            }
-            raw_profile_data["enrichment"] = {
-                **dict(raw_profile_data.get("enrichment") or {}),
-                "status": enrichment_status,
-                "enrichment_provider": "selection",
-                "sourceType": "review_selection",
-                "shouldOutreach": False,
-                "contactEmail": "",
-                "contactPhone": contact_phone,
-            }
-            profile.raw_data = raw_profile_data
-            db.flush()
+                enrichment_result = {
+                    "status": enrichment_status,
+                    "enrichmentStatus": enrichment_status,
+                    "shouldOutreach": False,
+                    "contactEmail": "",
+                    "contactPhone": contact_phone,
+                }
+                raw_profile_data["enrichment"] = {
+                    **dict(raw_profile_data.get("enrichment") or {}),
+                    "status": enrichment_status,
+                    "enrichment_provider": "selection",
+                    "sourceType": "review_selection",
+                    "shouldOutreach": False,
+                    "contactEmail": "",
+                    "contactPhone": contact_phone,
+                }
+                profile.raw_data = raw_profile_data
+                db.flush()
 
-            from app.services.enrichment_orchestration_service import request_enrichment
-            _sel_enrich = request_enrichment(
-                db=db,
-                job_id=job_id,
-                candidate_id=candidate_id,
-                action="selected",
-                source_type="review_selection",
-                selection_session_id=session.id,
-            )
-            queue_result = {
-                "job_id": _sel_enrich.queue_job_id,
-                "queue_type": "candidate_enrichment",
-                "triggered": _sel_enrich.triggered,
-                "skipped": _sel_enrich.skipped,
-                "skip_reason": _sel_enrich.skip_reason,
-            }
-            logger.info(
-                "selection_candidate_enrichment_queued job_id=%s candidate_id=%s queue_job_id=%s queue_type=%s",
-                job_id,
-                candidate_id,
-                queue_result.get("job_id") or "",
-                queue_result.get("queue_type") or "candidate_enrichment",
-            )
-            logger.info(
-                "selection_candidate_enrichment_started job_id=%s candidate_id=%s enrichment_status=%s outreach_status=%s linkedin_url=%s",
-                job_id,
-                candidate_id,
-                enrichment_status,
-                outreach_status,
-                selected_linkedin_url or "missing",
-            )
-        except Exception as exc:
-            enrichment_error = str(exc)
-            enrichment_status = "failed"
-            outreach_status = "failed"
-            reply_status = "outreach_not_sent"
-            logger.error(
-                "selection_candidate_outreach_direct_failed job_id=%s candidate_id=%s error=%s linkedin_url=%s",
-                job_id,
-                candidate_id,
-                enrichment_error,
-                selected_linkedin_url or "missing",
-                exc_info=exc,
-            )
+                from app.services.enrichment_orchestration_service import request_enrichment
+                _sel_enrich = request_enrichment(
+                    db=db,
+                    job_id=job_id,
+                    candidate_id=candidate_id,
+                    action="selected",
+                    source_type="review_selection",
+                    selection_session_id=session.id,
+                )
+                queue_result = {
+                    "job_id": _sel_enrich.queue_job_id,
+                    "queue_type": "candidate_enrichment",
+                    "triggered": _sel_enrich.triggered,
+                    "skipped": _sel_enrich.skipped,
+                    "skip_reason": _sel_enrich.skip_reason,
+                }
+                logger.info(
+                    "selection_candidate_enrichment_queued job_id=%s candidate_id=%s queue_job_id=%s queue_type=%s",
+                    job_id,
+                    candidate_id,
+                    queue_result.get("job_id") or "",
+                    queue_result.get("queue_type") or "candidate_enrichment",
+                )
+                logger.info(
+                    "selection_candidate_enrichment_started job_id=%s candidate_id=%s enrichment_status=%s outreach_status=%s linkedin_url=%s",
+                    job_id,
+                    candidate_id,
+                    enrichment_status,
+                    outreach_status,
+                    selected_linkedin_url or "missing",
+                )
+            except Exception as exc:
+                enrichment_error = str(exc)
+                enrichment_status = "failed"
+                outreach_status = "failed"
+                reply_status = "outreach_not_sent"
+                logger.error(
+                    "selection_candidate_outreach_direct_failed job_id=%s candidate_id=%s error=%s linkedin_url=%s",
+                    job_id,
+                    candidate_id,
+                    enrichment_error,
+                    selected_linkedin_url or "missing",
+                    exc_info=exc,
+                )
 
         updated_session = repository.get_by_job(job_id)
         if not updated_session:
@@ -862,6 +870,10 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
                 "candidateStatus": candidate_status,
                 "contactEmail": contact_email,
                 "contactPhone": contact_phone,
+                "interviewReuse": {
+                    "reused": reuse_result.reused,
+                    "workflowToken": reuse_result.workflow_token,
+                },
             }
 
         db.commit()
@@ -879,6 +891,10 @@ def submit_selection_choice(*, db: Session, job_id: str, candidate_id: str) -> d
         payload["candidateStatus"] = candidate_status
         payload["contactEmail"] = contact_email
         payload["contactPhone"] = contact_phone
+        payload["interviewReuse"] = {
+            "reused": reuse_result.reused,
+            "workflowToken": reuse_result.workflow_token,
+        }
         return payload
     except Exception as exc:
         logger.exception("selection_submit_unhandled job_id=%s candidate_id=%s error=%s", job_id, candidate_id, str(exc))

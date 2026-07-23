@@ -1,0 +1,655 @@
+WEBVTT
+
+00:00:01.900 --> 00:00:08.310
+Please welcome President and chief product officer G2 Patel.
+
+00:00:13.400 --> 00:00:17.260
+Good morning. How's everyone doing?
+
+00:00:17.360 --> 00:00:20.680
+I'm excited to be here today, you know, for three specific
+
+00:00:20.680 --> 00:00:24.056
+reasons. One is I think we're living in a very special time
+
+00:00:24.056 --> 00:00:27.377
+where the kinds of problems that we're going to be able to
+
+00:00:27.377 --> 00:00:30.697
+solve because of AI are going to actually surprise us in a
+
+00:00:30.697 --> 00:00:34.620
+very, very positive way over the course of the years.
+
+00:00:34.620 --> 00:00:37.929
+#2 I'm really excited because the class of innovation and
+
+00:00:37.929 --> 00:00:40.840
+the tempo with which we've with, with the team has
+
+00:00:40.840 --> 00:00:44.150
+innovated for you is, is something that I'm super excited
+
+00:00:44.150 --> 00:00:47.574
+to share with you. In fact, we have so much innovation that
+
+00:00:47.574 --> 00:00:50.998
+we have to break the session into two parts, one that we're
+
+00:00:50.998 --> 00:00:54.365
+going to do today, one that we're going to do tomorrow. So
+
+00:00:54.365 --> 00:00:58.350
+really, really excited to share that with you and #3.
+
+00:00:58.350 --> 00:01:01.901
+There's none of this really matters if it doesn't resonate
+
+00:01:01.901 --> 00:01:06.560
+for you. And what I think is gonna happen is.
+
+00:01:06.560 --> 00:01:10.045
+I'm hoping that we'll deliver some technology to you that
+
+00:01:10.045 --> 00:01:13.411
+allows you all to do the your life's best work for your
+
+00:01:13.411 --> 00:01:16.896
+customers. And so I'm really, really excited to see if we
+
+00:01:16.896 --> 00:01:20.442
+can we can bring that to you. So with that, what I thought
+
+00:01:20.442 --> 00:01:23.507
+I'd do is before we go into the details around the
+
+00:01:23.507 --> 00:01:26.933
+innovation that we've had in the payload that we have, I
+
+00:01:26.933 --> 00:01:30.238
+thought I'd just zoom out and take a step back and say
+
+00:01:30.238 --> 00:01:33.784
+what's happening in the market right now because we are in
+
+00:01:33.784 --> 00:01:37.480
+a pivotal moment in the market where we're moving from this.
+
+00:01:37.480 --> 00:01:41.028
+Era of chat bots that intelligently answered questions for
+
+00:01:41.028 --> 00:01:44.637
+us to agents that are like digital coworkers that are going
+
+00:01:44.637 --> 00:01:48.246
+to conduct tasks and jobs for us almost fully autonomously.
+
+00:01:48.246 --> 00:01:51.434
+And we are right around the corner because we're not
+
+00:01:51.434 --> 00:01:54.922
+stopping there. We're right around the corner, like Chuck
+
+00:01:54.922 --> 00:01:58.411
+mentioned, also in this era of physical AI where robotics
+
+00:01:58.411 --> 00:02:01.899
+and sensors are going to be actually sprinkled all around
+
+00:02:01.899 --> 00:02:02.800
+us.
+
+00:02:02.800 --> 00:02:04.780
+And these shifts.
+
+00:02:04.780 --> 00:02:08.570
+Are actually creating infrastructure requirements.
+
+00:02:08.570 --> 00:02:12.000
+There are changing and pretty substantial ways.
+
+00:02:12.000 --> 00:02:15.328
+And if you just take a look at the patterns of consumption
+
+00:02:15.328 --> 00:02:18.432
+of infrastructure right now, the infrastructure demand
+
+00:02:18.432 --> 00:02:21.761
+patterns of fundamentally different even from chat bots to
+
+00:02:21.761 --> 00:02:25.146
+agents. Chat bots were very spiky because they were largely
+
+00:02:25.146 --> 00:02:28.249
+human LED. A human asks a question to a child pod, the
+
+00:02:28.249 --> 00:02:31.353
+child pod responds back with an answer. And so the the
+
+00:02:31.353 --> 00:02:34.512
+patterns of infrastructure consumption were very spiky.
+
+00:02:34.512 --> 00:02:37.728
+When you go to agents, agents are working 7 by 24 and so
+
+00:02:37.728 --> 00:02:41.057
+there's a much more persistent sustained demand signal for
+
+00:02:41.057 --> 00:02:42.250
+the infrastructure.
+
+00:02:42.250 --> 00:02:45.408
+Where it's, it's, it's consuming things at a very, very
+
+00:02:45.408 --> 00:02:48.735
+kind of consistent pace. But there's more than that, these
+
+00:02:48.735 --> 00:02:50.320
+agents.
+
+00:02:50.320 --> 00:02:52.900
+Are also operating at machine speed.
+
+00:02:52.900 --> 00:02:55.694
+And So what you're starting to see is the sheer volume of
+
+00:02:55.694 --> 00:02:58.380
+infrastructure that's going to be needed.
+
+00:02:58.380 --> 00:03:02.535
+Is meaningfully higher than what we've had in the past. And
+
+00:03:02.535 --> 00:03:06.345
+the way I like to think about this is humans click but
+
+00:03:06.345 --> 00:03:10.085
+agents swarm, you know, and so this demand that we're
+
+00:03:10.085 --> 00:03:11.930
+seeing.
+
+00:03:11.930 --> 00:03:15.660
+Interestingly enough, is not just confined to data centers.
+
+00:03:15.660 --> 00:03:18.708
+It's also confined to the workplace. In fact, what you're
+
+00:03:18.708 --> 00:03:21.494
+starting to see is a pattern right now that's really
+
+00:03:21.494 --> 00:03:24.438
+interesting is you have these Mac minis and Mac studios
+
+00:03:24.438 --> 00:03:27.539
+that people will have and they'll they'll be sitting right
+
+00:03:27.539 --> 00:03:30.325
+by their desk. In fact, there's a whole new category
+
+00:03:30.325 --> 00:03:33.374
+emerging of deskside computing right where you have these
+
+00:03:33.374 --> 00:03:36.317
+Mac minis that are sitting by your desk and what you're
+
+00:03:36.317 --> 00:03:39.418
+essentially doing is having hundreds of agents that are on
+
+00:03:39.418 --> 00:03:43.580
+that Mac mini that are starting to work on your behalf.
+
+00:03:43.580 --> 00:03:48.870
+And and what you what what this allows you to do.
+
+00:03:48.870 --> 00:03:52.542
+Is solve problems with these agents who become teammates
+
+00:03:52.542 --> 00:03:56.149
+for you as digital coworkers. And it's not just one Mac
+
+00:03:56.149 --> 00:03:59.886
+mini, one death side computer. It's actually thousands of
+
+00:03:59.886 --> 00:04:03.623
+death side computers because everyone's going to have one
+
+00:04:03.623 --> 00:04:08.030
+of these by their desk at some point in time and.
+
+00:04:08.030 --> 00:04:10.908
+As you have 10s of thousands of these in your workforce,
+
+00:04:10.908 --> 00:04:12.710
+what's that gonna mean?
+
+00:04:12.710 --> 00:04:15.890
+It means that you're gonna have trillions of agents.
+
+00:04:15.890 --> 00:04:19.110
+That are gonna be proliferated everywhere that are working
+
+00:04:19.110 --> 00:04:22.057
+with each other. They're gonna be working for us, and
+
+00:04:22.057 --> 00:04:25.168
+they're gonna be making sure that they make decisions on
+
+00:04:25.168 --> 00:04:28.279
+our behalf once we start feeling comfortable that we can
+
+00:04:28.279 --> 00:04:31.020
+delegate work to them.
+
+00:04:31.020 --> 00:04:33.937
+Now, what's really interesting about these agents is not
+
+00:04:33.937 --> 00:04:36.802
+just the sheer volume of these agents. What you're also
+
+00:04:36.802 --> 00:04:40.800
+starting to see is these agents are far more consumptive.
+
+00:04:40.800 --> 00:04:44.369
+In their patterns of network bandwidth that's going to be
+
+00:04:44.369 --> 00:04:48.300
+needed. So on average, we just recently did a study.
+
+00:04:48.300 --> 00:04:53.377
+Every agent generates about 450% more traffic than a human
+
+00:04:53.377 --> 00:04:57.600
+for conducting that same task.
+
+00:04:57.600 --> 00:05:01.017
+So what you're gonna start to see is the demand signal is
+
+00:05:01.017 --> 00:05:04.257
+going to be much, much higher and infrastructure is no
+
+00:05:04.257 --> 00:05:05.600
+longer.
+
+00:05:05.600 --> 00:05:09.520
+Just something that's bound by compute and memory. It is
+
+00:05:09.520 --> 00:05:13.820
+actually very significantly network bound.
+
+00:05:13.820 --> 00:05:17.394
+And so as a result, what we're seeing right now is we are
+
+00:05:17.394 --> 00:05:21.091
+entering into a massive, what we call networking supercycle.
+
+00:05:21.091 --> 00:05:24.542
+And this networking supercycle is not just upgrades of
+
+00:05:24.542 --> 00:05:27.870
+infrastructure in your data center, which is actually
+
+00:05:27.870 --> 00:05:31.506
+happening at multi trillion dollar scale. And that's going
+
+00:05:31.506 --> 00:05:34.957
+to continue for the foreseeable future. But you're also
+
+00:05:34.957 --> 00:05:38.470
+going to start seeing those refreshers of infrastructure
+
+00:05:38.470 --> 00:05:41.859
+and reconfiguration of infrastructure happening in the
+
+00:05:41.859 --> 00:05:44.210
+workplace and happening with service.
+
+00:05:44.210 --> 00:05:46.200
+Providers.
+
+00:05:46.200 --> 00:05:47.630
+So.
+
+00:05:47.630 --> 00:05:50.734
+Well, we need to make sure that we're doing is getting our
+
+00:05:50.734 --> 00:05:53.732
+organizations effectively prepared. But as you have this
+
+00:05:53.732 --> 00:05:56.784
+massive upsurge of agents that are going to be conducting
+
+00:05:56.784 --> 00:05:59.309
+and automating workflows that we have the right
+
+00:05:59.309 --> 00:06:02.308
+infrastructure that we can provide our business users so
+
+00:06:02.308 --> 00:06:05.412
+that they don't actually get constrained by infrastructure
+
+00:06:05.412 --> 00:06:08.463
+to go out and get the full potential harness from AI that
+
+00:06:08.463 --> 00:06:09.780
+they need.
+
+00:06:09.780 --> 00:06:14.168
+Now, this super cycle that we talk about isn't just limited
+
+00:06:14.168 --> 00:06:18.483
+to networking. In fact, we need to fundamentally reimagine
+
+00:06:18.483 --> 00:06:22.100
+security as well. Now why is that?
+
+00:06:22.100 --> 00:06:25.619
+If you think about the agentic era, what happens? A user
+
+00:06:25.619 --> 00:06:28.830
+delegates a task to an agent. That agent that might
+
+00:06:28.830 --> 00:06:32.287
+actually talk to a bunch of other agents. It might be a
+
+00:06:32.287 --> 00:06:35.930
+local agent, it might be a third party agent. Those agents
+
+00:06:35.930 --> 00:06:39.573
+then will make sure that they're talking to an MCP server.
+
+00:06:39.573 --> 00:06:42.969
+They might talk to a skill, they might talk to CLI and
+
+00:06:42.969 --> 00:06:46.489
+access tools. Because one of the big differences between
+
+00:06:46.489 --> 00:06:49.947
+the child pot and an agent is agents have tools access.
+
+00:06:49.947 --> 00:06:52.250
+They use tools on our behalf to get.
+
+00:06:52.250 --> 00:06:54.040
+Jobs done.
+
+00:06:54.040 --> 00:06:57.813
+And when you start looking at this entire architecture, it
+
+00:06:57.813 --> 00:07:01.440
+creates a whole new class of attacks.
+
+00:07:01.440 --> 00:07:05.808
+Now it turns out that Cisco is at the center of addressing
+
+00:07:05.808 --> 00:07:10.250
+both of these infrastructure scaling requirements.
+
+00:07:10.250 --> 00:07:13.760
+As well as security requirements for AI.
+
+00:07:13.760 --> 00:07:17.411
+And this has put us in an incredible position to drive 3
+
+00:07:17.411 --> 00:07:20.998
+very, very specific and strategic outcomes for you that
+
+00:07:20.998 --> 00:07:24.586
+Chuck touched on briefly. So I'm just going to dig into
+
+00:07:24.586 --> 00:07:28.237
+that a little bit more, which is the first one is making
+
+00:07:28.237 --> 00:07:31.888
+sure that we can help you in building out a I ready data
+
+00:07:31.888 --> 00:07:35.668
+centers because that's where the digital workers live. And
+
+00:07:35.668 --> 00:07:39.255
+so the apparatus that you're going to need to make sure
+
+00:07:39.255 --> 00:07:42.779
+that those data centers are operating at the speed and
+
+00:07:42.779 --> 00:07:43.810
+throughput and.
+
+00:07:43.810 --> 00:07:47.314
+Reliability and security and resilience that's needed, that
+
+00:07:47.314 --> 00:07:50.610
+we make sure that we can make that real.
+
+00:07:50.610 --> 00:07:53.450
+#2 We want to make sure that we can future proof the
+
+00:07:53.450 --> 00:07:56.150
+workplaces because those workplaces.
+
+00:07:56.150 --> 00:07:59.101
+Are gonna be where the human workers are, but you're also
+
+00:07:59.101 --> 00:08:01.070
+going to have agents.
+
+00:08:01.070 --> 00:08:04.170
+Working in the workplace and that's going to require an
+
+00:08:04.170 --> 00:08:07.380
+uplift of the infrastructure in the workplace to be agent
+
+00:08:07.380 --> 00:08:10.646
+ready, to be AI ready. And by the way, these human workers
+
+00:08:10.646 --> 00:08:13.968
+need to talk to these agents within the data center. And so
+
+00:08:13.968 --> 00:08:18.170
+you're going to need that secure global connectivity fabric.
+
+00:08:18.170 --> 00:08:21.665
+And lastly, all of this is going to be extremely important
+
+00:08:21.665 --> 00:08:24.567
+that it's done in a way that's resilient from an
+
+00:08:24.567 --> 00:08:28.122
+infrastructure standpoint, where we call digital resilience,
+
+00:08:28.122 --> 00:08:31.202
+which is the ability for an organization when they
+
+00:08:31.202 --> 00:08:34.697
+experience an outage, when they experience a breach, to be
+
+00:08:34.697 --> 00:08:38.074
+able to make sure that they can stand back up right away
+
+00:08:38.074 --> 00:08:41.569
+and not spend an enormous amount of time figuring out what
+
+00:08:41.569 --> 00:08:45.005
+actually happened. But in fact, as compressed the time to
+
+00:08:45.005 --> 00:08:48.650
+investigation, respond and remediate as quickly as possible.
+
+00:08:48.650 --> 00:08:51.868
+And get to where we need to get to so that the business can
+
+00:08:51.868 --> 00:08:54.925
+be back again and operational and all of this we want to
+
+00:08:54.925 --> 00:08:58.000
+make sure that we accelerate with AI.
+
+00:08:58.000 --> 00:09:01.030
+But here's the thing.
+
+00:09:01.030 --> 00:09:04.120
+When you think about the agentic era, it comes down to this
+
+00:09:04.120 --> 00:09:06.150
+one thing, which is.
+
+00:09:06.150 --> 00:09:10.477
+Every agentic action is going to be a routing challenge,
+
+00:09:10.477 --> 00:09:14.425
+it's gonna be a trust decision, and it's gonna be a
+
+00:09:14.425 --> 00:09:17.470
+telemetry event.
+
+00:09:17.470 --> 00:09:20.488
+And this is the very reason that we're focused on actually
+
+00:09:20.488 --> 00:09:22.120
+building out this.
+
+00:09:22.120 --> 00:09:25.273
+Vertically integrated platform that actually starts with
+
+00:09:25.273 --> 00:09:28.570
+the foundation of silicon and optics.
+
+00:09:28.570 --> 00:09:32.142
+And on top of that, what we have is our systems that
+
+00:09:32.142 --> 00:09:35.918
+actually drive the networking switches, routers, access
+
+00:09:35.918 --> 00:09:37.070
+points.
+
+00:09:37.070 --> 00:09:40.395
+We have compute, we have data, we have the models, and then
+
+00:09:40.395 --> 00:09:43.500
+we have applications in agents. And it's wrapped around
+
+00:09:43.500 --> 00:09:46.493
+with security and observability so that you have full
+
+00:09:46.493 --> 00:09:49.819
+visibility in your state and you can make sure that you can
+
+00:09:49.819 --> 00:09:53.250
+enforce policy so that you can remain safe this.
+
+00:09:53.250 --> 00:09:56.556
+Co designed full stack is something that we've worked very
+
+00:09:56.556 --> 00:09:59.918
+hard to go out and build because when you start doing peace
+
+00:09:59.918 --> 00:10:03.224
+parks, it's actually pretty hard to integrate. And so when
+
+00:10:03.224 --> 00:10:06.530
+you start thinking about building a platform, we wanted to
+
+00:10:06.530 --> 00:10:09.724
+make sure that we built a platform from the physics, the
+
+00:10:09.724 --> 00:10:12.975
+silicon to the semantics, the meaning that actually is is
+
+00:10:12.975 --> 00:10:15.000
+is driven by the agents.
+
+00:10:15.000 --> 00:10:19.120
+Now as we built these platforms.
+
+00:10:19.120 --> 00:10:22.455
+One of the things that had to be kept in mind is the core
+
+00:10:22.455 --> 00:10:25.847
+characteristics we wanted to have in the platform to focus
+
+00:10:25.847 --> 00:10:27.030
+on you.
+
+00:10:27.030 --> 00:10:30.046
+And so the first one was, we can't be arrogant enough to
+
+00:10:30.046 --> 00:10:33.010
+think that the only technology that you're going to use
+
+00:10:33.010 --> 00:10:36.027
+within your organization is Cisco. In fact, you're gonna
+
+00:10:36.027 --> 00:10:39.150
+have a whole slew of other technologies and vendors within
+
+00:10:39.150 --> 00:10:42.325
+your organization. And so we need to make sure that we have
+
+00:10:42.325 --> 00:10:45.183
+an open ecosystem. We also need to make sure that the
+
+00:10:45.183 --> 00:10:48.359
+technologies that you buy from Cisco are tightly integrated,
+
+00:10:48.359 --> 00:10:51.950
+but loosely coupled. You don't have to buy everything.
+
+00:10:51.950 --> 00:10:55.231
+All at once from Cisco. But boy, when you do buy two things
+
+00:10:55.231 --> 00:10:58.570
+together, they should work like magic.
+
+00:10:58.570 --> 00:11:02.010
+And 3rd is we wanted to make sure that we could reduce your
+
+00:11:02.010 --> 00:11:05.221
+marginal cost of ingestion of new technologies that you
+
+00:11:05.221 --> 00:11:08.547
+purchased from Cisco. It should get easier and easier and
+
+00:11:08.547 --> 00:11:11.930
+easier as you buy more things from Cisco to make it easier
+
+00:11:11.930 --> 00:11:15.084
+to ingest. And it should add compounding value to you,
+
+00:11:15.084 --> 00:11:18.180
+which means it's not just adding value for what we've
+
+00:11:18.180 --> 00:11:21.563
+delivered, it also adds value for everything else that you
+
+00:11:21.563 --> 00:11:25.610
+have from Cisco that starts getting compounding value.
+
+00:11:25.610 --> 00:11:30.290
+So today what I wanted to do was I wanted to focus on three
+
+00:11:30.290 --> 00:11:32.190
+specific areas.
+
+00:11:32.190 --> 00:11:35.978
+Where we are going to be helping out all of you in bringing
+
+00:11:35.978 --> 00:11:39.641
+technology to bear. And those three areas are one, making
+
+00:11:39.641 --> 00:11:43.051
+sure that we can scale network infrastructure for the
+
+00:11:43.051 --> 00:11:46.651
+agentic era for you. That's number one. Number two is we
+
+00:11:46.651 --> 00:11:51.760
+want to make sure that we can secure your agentic workforce.
+
+00:11:51.760 --> 00:11:55.188
+And #3 is we want to make sure that we can fundamentally
+
+00:11:55.188 --> 00:11:58.376
+reimagine operations and really drive a whole lot of
+
+00:11:58.376 --> 00:12:01.580
+simplicity in there.

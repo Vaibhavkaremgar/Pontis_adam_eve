@@ -1,0 +1,7 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+  "python.analysis.extraPaths": [
+    "C:\\Users\\hp\\pontis\\backend"
+  ],
+  "python.analysis.pythonPath": "C:\\Users\\hp\\AppData\\Local\\Programs\\Python\\Python314\\python.exe"
+}

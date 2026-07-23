@@ -15,14 +15,14 @@ def _utc_now() -> datetime:
 class LinkedInAccountEntity(Base):
     __tablename__ = "linkedin_accounts"
     __table_args__ = (
-        Index("ix_linkedin_accounts_agency_id", "agency_id"),
+        Index("ix_linkedin_accounts_company_id", "agency_id"),
         Index("ix_linkedin_accounts_status", "status"),
         Index("ix_linkedin_accounts_health", "health"),
     )
 
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
-    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
-    company_id: Mapped[str] = synonym("agency_id")
+    company_id: Mapped[str] = mapped_column("agency_id", GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = synonym("company_id")
     display_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     linkedin_email: Mapped[str] = mapped_column(String(320), nullable=False, default="", index=True)
     browser_profile_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")

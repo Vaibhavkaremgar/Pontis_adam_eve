@@ -4,15 +4,48 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
+from app.linkedin.playwright.action_discovery import (
+    _INTERACTIVE_SELECTORS,
+    _PRIMARY_ACTION_SELECTORS,
+    _HEADER_SELECTORS,
+    _action_score,
+    _is_visible as _ad_is_visible,
+    _read_label as _ad_read_label,
+    _normalize as _ad_normalize,
+    build_capabilities,
+    close_messaging_overlays,
+    find_toolbar,
+    find_primary_actions,
+    find_connect_action,
+    find_message_action,
+)
 from app.linkedin.playwright.profile_types import (
     LinkedInAvailableAction,
     LinkedInProfileConnectionState,
     LinkedInProfileInspectionResult,
+    ProfileCapabilities,
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def find_connect_button_on_page(page: Any, timeout_ms: int = 30000) -> Any | None:
+    """Return the visible Connect-button Locator on *page*, or None.
+
+    Delegates to action_discovery.find_connect_action — single implementation.
+    """
+    return await find_connect_action(page)
+
+
+async def find_message_button_on_page(page: Any, timeout_ms: int = 30000) -> Any | None:
+    """Return the visible Message-button Locator on *page*, or None.
+
+    Delegates to action_discovery.find_message_action — single implementation.
+    """
+    return await find_message_action(page)
 
 
 class LinkedInProfileInspector:
@@ -32,14 +65,14 @@ class LinkedInProfileInspector:
         try:
             page = await self.browser_context.new_page()
             if hasattr(page, "set_default_timeout"):
-                page.set_default_timeout(min(self.timeout_ms, 1000))
+                page.set_default_timeout(self.timeout_ms)
             if hasattr(page, "set_default_navigation_timeout"):
                 page.set_default_navigation_timeout(self.navigation_timeout_ms)
 
             page_state = await self._timed_step("navigation", self._stage_navigation, page, profile_url=profile_url)
-            profile_state = await self._timed_step("profile extraction", self._stage_profile_extraction, page, profile_url, page_state, profile_url=profile_url)
-            toolbar_state = await self._timed_step("toolbar extraction", self._stage_toolbar_extraction, page, profile_url, profile_state, profile_url=profile_url)
-            overflow_state = await self._timed_step("overflow extraction", self._stage_overflow_extraction, page, profile_url, toolbar_state, profile_url=profile_url)
+            profile_state = await self._timed_step("profile extraction", self._stage_profile_extraction, page, profile_url, page_state)
+            toolbar_state = await self._timed_step("toolbar extraction", self._stage_toolbar_extraction, page, profile_url, profile_state)
+            overflow_state = await self._timed_step("overflow extraction", self._stage_overflow_extraction, page, profile_url, toolbar_state)
 
             raw_button_labels = list(toolbar_state["button_labels"])
             for label in overflow_state["overflow_labels"]:
@@ -66,6 +99,18 @@ class LinkedInProfileInspector:
                 button_debug=toolbar_state["button_debug"],
             )
 
+            # Build capability model alongside legacy state.
+            caps = await build_capabilities(
+                page,
+                body_text=page_state["body_text"],
+                page_url=page_state["page_url"],
+                login_required=page_state["login_required"],
+                session_expired=page_state["account_restricted"],
+                profile_not_found=page_state["profile_not_found"],
+                profile_private=page_state["profile_private"],
+            )
+            caps.log_summary(profile_url, logger)
+
             result = LinkedInProfileInspectionResult(
                 profile_url=profile_url,
                 profile_name=profile_state["profile_name"],
@@ -80,6 +125,7 @@ class LinkedInProfileInspector:
                 inspection_timestamp=started_at.isoformat(),
                 raw_button_labels=raw_button_labels,
                 page_url=page_state["page_url"],
+                capabilities=caps,
             )
             try:
                 object.__setattr__(result, "connect_location", toolbar_state["connect_location"])
@@ -98,6 +144,70 @@ class LinkedInProfileInspector:
                 inspection_timestamp=started_at.isoformat(),
                 error=str(exc),
             )
+        finally:
+            if page is not None:
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+    async def inspect_capabilities(self, profile_url: str) -> ProfileCapabilities:
+        """Lightweight inspection that returns only the capability model.
+
+        Navigates to the profile, reads the toolbar, and returns a
+        ProfileCapabilities without the full profile extraction pipeline.
+        Workers that only need capabilities should call this.
+        """
+        page = None
+        try:
+            page = await self.browser_context.new_page()
+            if hasattr(page, "set_default_timeout"):
+                page.set_default_timeout(self.timeout_ms)
+            if hasattr(page, "set_default_navigation_timeout"):
+                page.set_default_navigation_timeout(self.navigation_timeout_ms)
+
+            await page.goto(profile_url, wait_until="domcontentloaded", timeout=self.navigation_timeout_ms)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=1500)
+            except Exception:
+                pass
+            try:
+                await page.wait_for_selector("main, [role='main'], body", timeout=2000)
+            except Exception:
+                pass
+            await close_messaging_overlays(page)
+
+            page_url = str(getattr(page, "url", "") or "")
+            title = ""
+            try:
+                title = str(await page.title() or "")
+            except Exception:
+                pass
+            body_text = ""
+            try:
+                body_text = str(await page.locator("body").inner_text(timeout=1500) or "")
+            except Exception:
+                pass
+
+            login_required = self._looks_like_login_required(page_url, title, body_text)
+            session_expired = self._looks_like_restricted(page_url, title, body_text)
+            profile_not_found = self._looks_like_not_found(page_url, title, body_text)
+            profile_private = self._looks_like_private(page_url, title, body_text)
+
+            caps = await build_capabilities(
+                page,
+                body_text=body_text,
+                page_url=page_url,
+                login_required=login_required,
+                session_expired=session_expired,
+                profile_not_found=profile_not_found,
+                profile_private=profile_private,
+            )
+            caps.log_summary(profile_url, logger)
+            return caps
+        except Exception as exc:
+            logger.exception("inspect_capabilities failed profile_url=%s", profile_url)
+            return ProfileCapabilities()
         finally:
             if page is not None:
                 try:
@@ -169,8 +279,25 @@ class LinkedInProfileInspector:
 
     async def _stage_toolbar_extraction(self, page: Any, profile_url: str, profile_state: dict[str, Any]) -> dict[str, Any]:
         action_toolbar, toolbar_selector = await self._find_action_toolbar(page, profile_state["profile_header"])
+
+        # --- instrumentation: stage 1 & 2 — toolbar found? which selector? ---
+        if action_toolbar is None:
+            logger.info("toolbar_stage toolbar_found=False profile_url=%s", profile_url)
+        else:
+            logger.info("toolbar_stage toolbar_found=True selector=%r profile_url=%s", toolbar_selector, profile_url)
+
         button_labels, button_debug = await self._collect_action_labels(action_toolbar)
-        connect_location = "PRIMARY" if any("connect" in label.lower() for label in button_labels) else "NONE"
+
+        # --- instrumentation: stage 4 — enumerate every interactive element ---
+        await self._dump_profile_toolbar_debug(page, action_toolbar, toolbar_selector, profile_url)
+
+        # Use the same tightened match as _detect_connection_state: exact "connect"
+        # or "connect " prefix.  This prevents a suggestion-widget label from
+        # suppressing the overflow expansion that reveals "Remove connection".
+        connect_location = "PRIMARY" if any(
+            label.lower() == "connect" or label.lower().startswith("connect ")
+            for label in button_labels
+        ) else "NONE"
         return {
             "action_toolbar": action_toolbar,
             "toolbar_selector": toolbar_selector,
@@ -211,26 +338,43 @@ class LinkedInProfileInspector:
             return ""
 
     async def _find_profile_header(self, page: Any) -> Any | None:
-        return await self._find_first_visible_locator(page, ["[data-view-name*='profile'] header", "main header", "main section", "main"])
+        return await self._find_first_visible_locator(page, _HEADER_SELECTORS)
 
     async def _find_action_toolbar(self, page: Any, profile_header: Any | None = None) -> tuple[Any | None, str]:
-        candidates: list[tuple[str, Any]] = []
+        """Delegate to action_discovery.find_toolbar — single implementation."""
+        # Tier 1 — scoped to header
         if profile_header is not None:
-            candidates.append(("profile_header", profile_header))
-            for selector in ["[role='toolbar']", "button", "[role='button']", "a[role='button']"]:
+            for selector in _PRIMARY_ACTION_SELECTORS:
                 try:
-                    candidates.append((selector, profile_header.locator(selector).first))
+                    loc = profile_header.locator(selector).first
+                    if await self._is_visible(loc):
+                        summary = await self._summarize_action_candidate(loc)
+                        if summary["action_score"] > 0:
+                            return loc, f"header::{selector}"
                 except Exception:
                     continue
-        candidates.extend([("page_toolbar", page.locator("[role='toolbar']").first), ("page_buttons", page.locator("button, [role='button'], a[role='button']").first)])
-        for name, locator in candidates:
+
+        # Tier 2 — page-wide
+        for selector in _PRIMARY_ACTION_SELECTORS:
             try:
-                if await self._is_visible(locator):
-                    summary = await self._summarize_action_candidate(locator)
+                loc = page.locator(selector).first
+                if await self._is_visible(loc):
+                    summary = await self._summarize_action_candidate(loc)
                     if summary["action_score"] > 0:
-                        return locator, name
+                        return loc, f"page::{selector}"
             except Exception:
                 continue
+
+        # Tier 3 — header itself
+        if profile_header is not None:
+            try:
+                if await self._is_visible(profile_header):
+                    summary = await self._summarize_action_candidate(profile_header)
+                    if summary["action_score"] > 0:
+                        return profile_header, "profile_header"
+            except Exception:
+                pass
+
         return None, ""
 
     async def _collect_action_labels(self, toolbar: Any | None) -> tuple[list[str], dict[str, str]]:
@@ -583,36 +727,73 @@ class LinkedInProfileInspector:
         account_restricted: bool,
     ) -> LinkedInProfileConnectionState:
         labels = {label.lower() for label in button_labels}
+
+        # --- instrumentation: stage 5 — log normalised label set ---
+        logger.info("detect_state_labels labels=%s", labels)
+
+        # --- instrumentation: stage 6 — log which branch is taken ---
         if login_required:
+            logger.info("detect_state_branch branch=LOGIN_REQUIRED")
             self._last_connection_reason = "login-required signals detected"
             return LinkedInProfileConnectionState.LOGIN_REQUIRED
         if account_restricted:
+            logger.info("detect_state_branch branch=SESSION_EXPIRED")
             self._last_connection_reason = "checkpoint or challenge signals detected"
             return LinkedInProfileConnectionState.SESSION_EXPIRED
         if profile_not_found:
+            logger.info("detect_state_branch branch=PROFILE_NOT_FOUND")
             self._last_connection_reason = "not-found signals detected"
             return LinkedInProfileConnectionState.PROFILE_NOT_FOUND
         if profile_private:
+            logger.info("detect_state_branch branch=PRIVATE_PROFILE")
             self._last_connection_reason = "private profile signals detected"
             return LinkedInProfileConnectionState.PRIVATE_PROFILE
         if any("pending" in label or "request sent" in label or "invitation sent" in label or "withdraw invitation" in label for label in labels):
+            logger.info("detect_state_branch branch=REQUEST_PENDING")
             self._last_connection_reason = "request-pending toolbar label"
             return LinkedInProfileConnectionState.REQUEST_PENDING
-        if any("connect" in label for label in labels):
-            self._last_connection_reason = "connect toolbar label"
-            return LinkedInProfileConnectionState.CONNECT_AVAILABLE
-        if any("remove connection" in label or label == "remove" for label in labels):
-            self._last_connection_reason = "connected toolbar label"
-            return LinkedInProfileConnectionState.CONNECTED
+        # MESSAGE_AVAILABLE is checked before CONNECT_AVAILABLE.
+        # A 1st-degree connection shows a Message button; the Connect button only
+        # appears for non-connections.  Checking message first prevents a stray
+        # "connect" substring (e.g. from a suggestion widget or an aria-label like
+        # "Invite to connect") from shadowing the correct MESSAGE_AVAILABLE state.
         if any("message" == label or label.startswith("message ") or "inmail" in label for label in labels):
+            logger.info("detect_state_branch branch=MESSAGE_AVAILABLE")
             self._last_connection_reason = "message toolbar label"
             return LinkedInProfileConnectionState.MESSAGE_AVAILABLE
+        if any("remove connection" in label or label == "remove" for label in labels):
+            logger.info("detect_state_branch branch=CONNECTED via remove-connection label")
+            self._last_connection_reason = "connected toolbar label"
+            return LinkedInProfileConnectionState.CONNECTED
+        # Tightened connect match: require the label to equal "connect" exactly or
+        # start with "connect " (with a trailing space).  This excludes "reconnect"
+        # and aria-labels such as "Invite John to connect" that contain the substring
+        # but do not represent a primary Connect action button.
+        if any(label == "connect" or label.startswith("connect ") for label in labels):
+            logger.info("detect_state_branch branch=CONNECT_AVAILABLE")
+            self._last_connection_reason = "connect toolbar label"
+            return LinkedInProfileConnectionState.CONNECT_AVAILABLE
         if any("follow" in label for label in labels):
+            logger.info("detect_state_branch branch=FOLLOW_AVAILABLE")
             self._last_connection_reason = "follow toolbar label"
             return LinkedInProfileConnectionState.FOLLOW_AVAILABLE
         if "connected" in body_text.lower() or "1st degree" in body_text.lower():
+            logger.info("detect_state_branch branch=CONNECTED via body_text")
             self._last_connection_reason = "connected text without toolbar label"
             return LinkedInProfileConnectionState.CONNECTED
+
+        # --- instrumentation: stage 7 — log UNKNOWN reason ---
+        if not button_labels:
+            _unknown_reason = "no_labels"
+        elif not labels:
+            _unknown_reason = "no_toolbar"
+        else:
+            _unknown_reason = "labels_didnt_match_any_rule"
+        logger.warning(
+            "detect_state_branch branch=UNKNOWN reason=%s labels=%s",
+            _unknown_reason,
+            labels,
+        )
         self._last_connection_reason = "no confident toolbar state match"
         return LinkedInProfileConnectionState.UNKNOWN
 
@@ -649,6 +830,102 @@ class LinkedInProfileInspector:
     async def _dump_action_container_debug(self, page: Any, toolbar: Any | None, toolbar_selector: str, profile_url: str) -> None:
         return
 
+    async def _dump_profile_toolbar_debug(self, page: Any, toolbar: Any | None, toolbar_selector: str, profile_url: str) -> None:
+        """Capture and log every interactive element inside the primary action bar."""
+        debug_dir = Path(__file__).resolve().parents[4] / "debug_logs" / "profile_toolbar"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        slug = re.sub(r"[^a-zA-Z0-9_-]", "_", profile_url.rstrip("/").split("/")[-1])[:40]
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        prefix = debug_dir / f"{ts}_{slug}"
+
+        toolbar_html = ""
+        if toolbar is None:
+            logger.info("toolbar_debug toolbar_html=none selector=%r profile_url=%s", toolbar_selector, profile_url)
+        else:
+            try:
+                toolbar_html = await toolbar.evaluate("el => el.outerHTML")
+                logger.info("toolbar_debug toolbar_html_length=%d selector=%r profile_url=%s", len(toolbar_html), toolbar_selector, profile_url)
+            except Exception as exc:
+                logger.warning("toolbar_debug toolbar_html_failed: %s", exc)
+
+        html_path = str(prefix) + "_toolbar.html"
+        try:
+            Path(html_path).write_text(toolbar_html, encoding="utf-8")
+            logger.info("toolbar_debug html_saved path=%s", html_path)
+        except Exception as exc:
+            logger.warning("toolbar_debug html_write_failed: %s", exc)
+
+        container = toolbar if toolbar is not None else page.locator("body")
+        elements: list[dict] = []
+        for sel in _INTERACTIVE_SELECTORS:
+            try:
+                locs = container.locator(sel)
+                count = await locs.count()
+                for i in range(min(count, 30)):
+                    item = locs.nth(i)
+                    try:
+                        if not await item.is_visible():
+                            continue
+                        attrs = await item.evaluate(
+                            """el => ({
+                                tag: el.tagName,
+                                id: el.id || '',
+                                class: el.className || '',
+                                role: el.getAttribute('role') || '',
+                                aria_label: el.getAttribute('aria-label') || '',
+                                inner_text: (el.innerText || '').trim().slice(0, 120),
+                                text_content: (el.textContent || '').trim().slice(0, 120),
+                                disabled: el.disabled || false
+                            })"""
+                        )
+                        attrs["selector"] = sel
+                        elements.append(attrs)
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        # deduplicate by (tag, inner_text, aria_label)
+        seen: set[tuple] = set()
+        unique_elements: list[dict] = []
+        for el in elements:
+            key = (el.get("tag"), el.get("inner_text"), el.get("aria_label"))
+            if key not in seen:
+                seen.add(key)
+                unique_elements.append(el)
+
+        logger.info(
+            "toolbar_debug elements_found count=%d selector=%r profile_url=%s",
+            len(unique_elements),
+            toolbar_selector,
+            profile_url,
+        )
+        for idx, el in enumerate(unique_elements):
+            logger.info(
+                "toolbar_element[%d] tag=%s inner_text=%r text_content=%r "
+                "aria_label=%r role=%r class=%r id=%r disabled=%s",
+                idx,
+                el.get("tag"),
+                el.get("inner_text"),
+                el.get("text_content"),
+                el.get("aria_label"),
+                el.get("role"),
+                el.get("class"),
+                el.get("id"),
+                el.get("disabled"),
+            )
+
+        json_path = str(prefix) + "_elements.json"
+        try:
+            Path(json_path).write_text(
+                json.dumps(unique_elements, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            logger.info("toolbar_debug elements_json_saved path=%s", json_path)
+        except Exception as exc:
+            logger.warning("toolbar_debug elements_json_write_failed: %s", exc)
+
     async def _dump_header_and_candidate_debug(self, page: Any, profile_header: Any, candidates: list[tuple[str, Any, str]], *, profile_url: str) -> None:
         return
 
@@ -657,7 +934,7 @@ class LinkedInProfileInspector:
 
     async def _read_interactive_items(self, container: Any, *, max_items: int = 20) -> list[dict[str, str]]:
         items: list[dict[str, str]] = []
-        for selector in ["button", "[role='button']", "a[role='button']", "[aria-label]"]:
+        for selector in _INTERACTIVE_SELECTORS:
             try:
                 locator = container.locator(selector)
                 count = await locator.count()

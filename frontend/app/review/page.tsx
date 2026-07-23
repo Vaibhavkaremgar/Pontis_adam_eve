@@ -2085,6 +2085,14 @@ export default function ReviewPage() {
     }
 
     const selectionUpdate = result.data;
+    const interviewReuse = selectionUpdate.interviewReuse as { reused: boolean; workflowToken: string } | undefined;
+    if (interviewReuse?.reused && interviewReuse.workflowToken) {
+      router.push(`/results/${interviewReuse.workflowToken}`);
+      setIsAdvancing(false);
+      setSelectedCandidateId("");
+      return;
+    }
+
     const enrichmentStatus = String(selectionUpdate.enrichmentStatus || "").trim().toLowerCase();
     const outreachStatus = String(selectionUpdate.outreachStatus || "").trim().toLowerCase();
     const replyStatus = String(selectionUpdate.replyStatus || "").trim().toLowerCase();
