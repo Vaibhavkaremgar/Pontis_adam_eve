@@ -9,3 +9,12 @@ out/
 coverage/
 *.log
 *.tsbuildinfo
+# Playwright / Chromium profiles
+backend/linkedin_profiles/
+**/Cache/
+**/Code Cache/
+**/GPUCache/
+**/Crashpad/
+**/Service Worker/
+**/GrShaderCache/
+**/DawnCache/
