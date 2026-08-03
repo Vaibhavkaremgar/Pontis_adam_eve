@@ -536,6 +536,7 @@ class JobRepository:
         company_id: str,
         created_by: str,
         source_app: str,
+        job_id: str = "",
         title: str,
         description: str,
         location: str,
@@ -549,14 +550,23 @@ class JobRepository:
         responsibilities: list[str] | None = None,
         skills_required: list[str] | None = None,
         experience_level: str = "",
+        company_name: str = "",
+        company_website_url: str = "",
+        industry: str = "",
+        employment_type: str = "",
         structured_data: dict | None = None,
     ) -> JobEntity:
         normalized_source_app = _normalize_source_app(source_app)
         entity = JobEntity(
             id=str(uuid4()),
+            job_id=job_id.strip(),
             source_app=normalized_source_app,
             company_id=company_id,
             title=title.strip(),
+            company_name=company_name.strip(),
+            company_website_url=company_website_url.strip() or None,
+            industry=industry.strip() or None,
+            employment_type=employment_type.strip() or None,
             description=description.strip(),
             responsibilities=list(responsibilities or []),
             skills_required=list(skills_required or []),
@@ -650,6 +660,13 @@ class JobRepository:
         vetting_mode: str | None = None,
         auto_export_to_ats: bool | None = None,
         ats_job_id: str | None = None,
+        company_name: str | None = None,
+        company_website_url: str | None = None,
+        industry: str | None = None,
+        employment_type: str | None = None,
+        requirements: str | None = None,
+        skills: dict | list | None = None,
+        remote: bool | None = None,
         structured_data: dict | None = None,
     ) -> JobEntity | None:
         job = self.get(job_id)
@@ -677,6 +694,20 @@ class JobRepository:
             job.auto_export_to_ats = bool(auto_export_to_ats)
         if ats_job_id is not None:
             job.ats_job_id = (ats_job_id or "").strip() or None
+        if company_name is not None:
+            job.company_name = company_name.strip()
+        if company_website_url is not None:
+            job.company_website_url = company_website_url.strip() or None
+        if industry is not None:
+            job.industry = industry.strip() or None
+        if employment_type is not None:
+            job.employment_type = employment_type.strip() or None
+        if requirements is not None:
+            job.requirements = requirements.strip() or None
+        if skills is not None:
+            job.skills = skills
+        if remote is not None:
+            job.remote = remote
         if remote_policy is not None:
             job.remote_policy = remote_policy.strip()
         if experience_required is not None:

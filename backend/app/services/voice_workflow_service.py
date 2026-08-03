@@ -59,6 +59,16 @@ def build_linkedin_job_posting_spec(*, db: Session, job_id: str) -> JobPostingSp
     structured = getattr(job, "structured_data", None) if isinstance(getattr(job, "structured_data", None), dict) else {}
     application_url = _normalize_text(structured.get("linkedinPosting", {}).get("applicationUrl") if isinstance(structured.get("linkedinPosting"), dict) else "")
     application_email = _normalize_text(structured.get("linkedinPosting", {}).get("applicationEmail") if isinstance(structured.get("linkedinPosting"), dict) else "")
+    responsibilities = [
+        _normalize_text(item)
+        for item in (getattr(job, "responsibilities", None) or [])
+        if _normalize_text(item)
+    ]
+    description = _normalize_text(getattr(job, "description", ""))
+    if responsibilities:
+        description = f"{description}\n\nResponsibilities:\n" + "\n".join(f"- {item}" for item in responsibilities)
+    if _normalize_text(getattr(job, "salary_range", "")):
+        description = f"{description}\n\nCompensation: {_normalize_text(getattr(job, 'salary_range', ''))}"
 
     return JobPostingSpec(
         title=_normalize_text(getattr(job, "title", "")),
@@ -69,7 +79,7 @@ def build_linkedin_job_posting_spec(*, db: Session, job_id: str) -> JobPostingSp
         experience_level=_normalize_text(getattr(job, "experience_level", "") or getattr(job, "experience_required", "")),
         industry=company_industry,
         job_function="Engineering",
-        description=_normalize_text(getattr(job, "description", "")),
+        description=description,
         skills=[_normalize_text(skill) for skill in (getattr(job, "skills_required", None) or []) if _normalize_text(skill)],
         application_method="Through an external website" if application_url else "Through LinkedIn",
         application_email=application_email,

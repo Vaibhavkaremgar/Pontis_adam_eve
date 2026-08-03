@@ -117,7 +117,7 @@ export default function JobPage() {
     };
   }, [isSessionReady, router, setCompany, user]);
 
-  const canSubmit = Boolean(form.title.trim() && form.description.trim());
+  const canSubmit = Boolean(form.jobId.trim() && form.title.trim() && form.description.trim());
 
   const handleConnectAts = async () => {
     setAtsMessage("");
@@ -198,7 +198,7 @@ export default function JobPage() {
 
   const handleGenerateCandidates = async () => {
     if (!canSubmit) {
-      setSubmitError("Job title and job description are required.");
+      setSubmitError("Job ID, job title, and job description are required.");
       return;
     }
 
@@ -350,6 +350,19 @@ export default function JobPage() {
             <CardDescription>Fill in the structured brief recruiters need before candidate generation starts.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5 px-6 py-6">
+            <div className="space-y-2">
+              <Label htmlFor="job-id">
+                Job ID <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                id="job-id"
+                placeholder="REQ-2026-001"
+                value={form.jobId}
+                onChange={(event) => setForm((prev) => ({ ...prev, jobId: event.target.value }))}
+                disabled={false}
+              />
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="job-title">
                 Job Title <span className="text-red-500">*</span>

@@ -816,6 +816,11 @@ def refine_job_with_voice(*, db: Session, job_id: str, voice_notes: list[str], t
         compensation=merged_compensation,
         remote_policy=extracted_remote_policy or None,
         experience_required=extracted_experience_required or None,
+        company_name=merged_company_name,
+        industry=merged_company_industry,
+        requirements="\n".join(merged_responsibilities) if merged_responsibilities else None,
+        skills=merged_skills,
+        remote=(extracted_remote_policy or "").strip().lower() == "remote" if extracted_remote_policy else None,
         structured_data={
             "skills": merged_skills,
             "nice_to_have_skills": nice_to_have_skills,

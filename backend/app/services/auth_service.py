@@ -17,7 +17,7 @@ from app.core.config import GOOGLE_OAUTH_CLIENT_ID
 from app.core.config import AUTH_REQUIRE_OTP, ADMIN_EMAILS, OPS_EMAILS
 from app.core.security import AGENCY_USER_ROLE, SUPER_ADMIN_ROLE, create_access_token, normalize_app_role
 from app.db.repositories import OtpRepository, UserRepository
-from app.models.entities import AllowedUserEntity, UserEntity
+from app.models.entities import AllowedUserEntity, CompanyEntity, UserEntity
 from app.services.email_service import send_email
 from app.schemas.user import LoginData, UserProfile
 from app.utils.exceptions import APIError
@@ -144,9 +144,13 @@ def _load_portal_user(*, db: Session, email: str):
         user.role = normalize_app_role(allowed_metadata["role"])
         db.flush()
         mutated = True
+    role = normalize_app_role(getattr(user, "role", "") or AGENCY_USER_ROLE)
+    if role != SUPER_ADMIN_ROLE and agency_id:
+        agency = db.scalar(select(CompanyEntity).where(CompanyEntity.id == agency_id))
+        if not agency or not bool(getattr(agency, "is_active", False)):
+            raise APIError("Your organization has been deactivated. Please contact your administrator.", status_code=403)
     if mutated:
         db.commit()
-    role = normalize_app_role(getattr(user, "role", "") or AGENCY_USER_ROLE)
     return user, (agency_id or None), role
 
 

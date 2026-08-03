@@ -69,6 +69,7 @@ const initialCompany: Company = {
 };
 
 const initialJob: Job = {
+  jobId: "",
   title: "",
   description: "",
   location: "",

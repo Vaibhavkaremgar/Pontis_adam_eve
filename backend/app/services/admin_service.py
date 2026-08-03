@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy.orm import Session
 
@@ -9,6 +10,8 @@ from app.db.admin_repositories import AdminRepository
 from app.schemas.admin import AgencyCreateRequest, AgencyUpdateRequest, UserCreateRequest, UserUpdateRequest
 from app.services.audit_service import record_audit_event
 from app.utils.exceptions import APIError
+
+logger = logging.getLogger(__name__)
 
 
 def get_admin_dashboard(*, db: Session) -> dict[str, int]:
@@ -30,13 +33,16 @@ def create_admin_agency(*, db: Session, actor_id: str, payload: AgencyCreateRequ
         metadata={"name": row.name, "slug": row.slug},
     )
     db.commit()
+    logger.info("agency created agency_id=%s name=%s", row.id, row.name)
     # Agency creation is durable before browser startup. A browser failure
     # therefore cannot roll back the agency; onboarding marks the row failed.
     try:
         from app.linkedin.services.onboarding_service import start_linkedin_onboarding
 
+        logger.info("starting LinkedIn onboarding agency_id=%s", row.id)
         profile_path = start_linkedin_onboarding(str(row.id))
     except Exception:
+        logger.exception("LinkedIn onboarding failed to start agency_id=%s", row.id)
         profile_path = None
         row.linkedin_connected = False
         row.linkedin_connection_status = "failed"

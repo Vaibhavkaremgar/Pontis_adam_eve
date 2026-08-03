@@ -22,6 +22,7 @@ class Job(BaseModel):
 
 
 class JobInput(BaseModel):
+    jobId: str
     title: str
     description: str
     location: str

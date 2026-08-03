@@ -76,6 +76,7 @@ def create_hiring_job(
     description = (company.get("description") or "").strip()
     industry = (company.get("industry") or "").strip()
 
+    job_external_id = (job.get("jobId") or job.get("job_id") or "").strip()
     title = (job.get("title") or "").strip()
     job_description = (job.get("description") or "").strip()
     location = (job.get("location") or "").strip()
@@ -91,8 +92,8 @@ def create_hiring_job(
 
     if not company_name:
         raise APIError("company.name is required", status_code=400)
-    if not title or not job_description:
-        raise APIError("job.title and job.description are required", status_code=400)
+    if not job_external_id or not title or not job_description:
+        raise APIError("job.jobId, job.title, and job.description are required", status_code=400)
 
     job_repo = JobRepository(db)
 
@@ -113,8 +114,12 @@ def create_hiring_job(
         company_id=company_row.id,
         created_by=user_id,
         source_app=source_app,
+        job_id=job_external_id,
         title=title,
         description=job_description,
+        company_name=company_name,
+        company_website_url=website,
+        industry=industry,
         location=location,
         compensation=compensation,
         work_authorization=work_authorization,

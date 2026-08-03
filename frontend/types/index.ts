@@ -34,6 +34,7 @@ export type Company = {
 
 /** Job brief captured in step 2 and used to trigger backend embedding pipeline. */
 export type Job = {
+  jobId: string;
   title: string;
   description: string;
   location: string;
