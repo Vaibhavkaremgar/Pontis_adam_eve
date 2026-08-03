@@ -95,6 +95,10 @@ type SelectionUpdateData = {
   contactEmail?: string;
   contactPhone?: string;
   warning?: string;
+  interviewReuse?: {
+    reused: boolean;
+    workflowToken: string;
+  };
 };
 
 /** This function calls backend API and returns structured response. */
