@@ -36,6 +36,8 @@ export type Company = {
 export type Job = {
   jobId: string;
   title: string;
+  employmentType: "full-time" | "part-time" | "contract";
+  vacancies: number;
   description: string;
   location: string;
   compensation: string;

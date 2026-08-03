@@ -554,6 +554,7 @@ class JobRepository:
         company_website_url: str = "",
         industry: str = "",
         employment_type: str = "",
+        vacancies: int | None = None,
         structured_data: dict | None = None,
     ) -> JobEntity:
         normalized_source_app = _normalize_source_app(source_app)
@@ -567,6 +568,7 @@ class JobRepository:
             company_website_url=company_website_url.strip() or None,
             industry=industry.strip() or None,
             employment_type=employment_type.strip() or None,
+            vacancies=vacancies,
             description=description.strip(),
             responsibilities=list(responsibilities or []),
             skills_required=list(skills_required or []),

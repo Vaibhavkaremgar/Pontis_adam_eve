@@ -415,6 +415,42 @@ export default function JobPage() {
                 />
               </div>
             </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="employment-type">
+                  Employment Type <span className="text-red-500">*</span>
+                </Label>
+                <select
+                  id="employment-type"
+                  value={form.employmentType || "full-time"}
+                  onChange={(event) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      employmentType: event.target.value as "full-time" | "part-time" | "contract",
+                    }))
+                  }
+                  className="flex h-12 w-full rounded-xl border border-[rgba(120,100,80,0.08)] bg-[#F5EFE6] px-4 text-sm text-gray-700 outline-none transition focus:ring-2 focus:ring-green-900/15"
+                >
+                  <option value="full-time">Full-time</option>
+                  <option value="part-time">Part-time</option>
+                  <option value="contract">Contract</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="vacancies">
+                  Number of Vacancies <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="vacancies"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={form.vacancies ?? 1}
+                  onChange={(event) => setForm((prev) => ({ ...prev, vacancies: Number(event.target.value) }))}
+                />
+              </div>
+            </div>
           </CardContent>
         </Card>
 

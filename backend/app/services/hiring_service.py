@@ -78,6 +78,8 @@ def create_hiring_job(
 
     job_external_id = (job.get("jobId") or job.get("job_id") or "").strip()
     title = (job.get("title") or "").strip()
+    employment_type = (job.get("employmentType") or job.get("employment_type") or "full-time").strip().lower()
+    vacancies_raw = job.get("vacancies", 1)
     job_description = (job.get("description") or "").strip()
     location = (job.get("location") or "").strip()
     compensation = (job.get("compensation") or "").strip()
@@ -89,6 +91,14 @@ def create_hiring_job(
     auto_export_to_ats = bool(job.get("autoExportToAts") or job.get("auto_export_to_ats") or False)
     if vetting_mode not in {"volume", "elite"}:
         vetting_mode = "volume"
+    if employment_type not in {"full-time", "part-time", "contract"}:
+        raise APIError("job.employmentType must be full-time, part-time, or contract", status_code=400)
+    try:
+        vacancies = int(vacancies_raw)
+    except (TypeError, ValueError) as exc:
+        raise APIError("job.vacancies must be a positive integer", status_code=400) from exc
+    if vacancies < 1:
+        raise APIError("job.vacancies must be a positive integer", status_code=400)
 
     if not company_name:
         raise APIError("company.name is required", status_code=400)
@@ -116,6 +126,8 @@ def create_hiring_job(
         source_app=source_app,
         job_id=job_external_id,
         title=title,
+        employment_type=employment_type,
+        vacancies=vacancies,
         description=job_description,
         company_name=company_name,
         company_website_url=website,

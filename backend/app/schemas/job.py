@@ -24,6 +24,8 @@ class Job(BaseModel):
 class JobInput(BaseModel):
     jobId: str
     title: str
+    employmentType: str = "full-time"
+    vacancies: int = Field(default=1, ge=1)
     description: str
     location: str
     compensation: str
