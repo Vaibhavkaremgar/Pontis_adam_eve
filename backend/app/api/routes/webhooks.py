@@ -51,8 +51,15 @@ async def vapi_webhook(request: Request, db: Session = Depends(get_db)):
     raw_body = await request.body()
     try:
         result = process_vapi_webhook(db=db, raw_body=raw_body, headers=request.headers)
+        db.commit()
+        logger.info(
+            "vapi_webhook_db_committed job_id=%s updated=%s",
+            result.get("job_id", ""),
+            result.get("updated", False),
+        )
         return success_response(result)
     except ValueError as exc:
+        db.rollback()
         message = str(exc)
         if message.startswith("invalid_vapi_payload"):
             logger.warning("vapi_webhook_rejected reason=%s", message)
@@ -60,5 +67,6 @@ async def vapi_webhook(request: Request, db: Session = Depends(get_db)):
         logger.error("vapi_webhook_processing_failed error=%s", message, exc_info=exc)
         raise HTTPException(status_code=502, detail="Failed to process webhook") from exc
     except Exception as exc:
+        db.rollback()
         logger.error("vapi_webhook_unhandled_error error=%s", str(exc), exc_info=exc)
         raise HTTPException(status_code=502, detail="Failed to process webhook") from exc

@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.db.repositories import JobRepository
+from app.db.repositories import JobIntakeRepository
 from app.services.redis_service import get_redis
 
 logger = logging.getLogger(__name__)
@@ -163,16 +163,7 @@ def _mark_processed(*, call_id: str, webhook_id: str) -> bool:
         return False
 
 
-def _load_current_recruiter_intelligence(job_repo: JobRepository, job_id: str) -> dict[str, Any]:
-    job = job_repo.get(job_id)
-    if not job:
-        return {}
-    structured = job.structured_data if isinstance(job.structured_data, dict) else {}
-    recruiter = structured.get("recruiterIntelligence")
-    return recruiter if isinstance(recruiter, dict) else {}
-
-
-def _apply_recruiter_intelligence(
+def _apply_job_intake_transcript(
     *,
     db: Session,
     job_id: str,
@@ -185,49 +176,51 @@ def _apply_recruiter_intelligence(
     transcript_turns: list[dict[str, str]],
     ended_at: str,
     event_type: str,
+    webhook_id: str,
 ) -> dict[str, Any]:
-    job_repo = JobRepository(db)
-    job = job_repo.get(job_id)
-    if not job:
-        raise ValueError("Job not found")
-
-    existing = _load_current_recruiter_intelligence(job_repo, job_id)
-    existing_transcript = _normalize_text(existing.get("transcript", ""))
+    intake_repo = JobIntakeRepository(db)
+    existing_row = intake_repo.get_by_job(job_id)
+    existing_metadata = dict(existing_row.structured_data_json or {}) if existing_row else {}
+    existing_transcript = _normalize_text(existing_row.transcript if existing_row else "")
     incoming_transcript = _normalize_text(transcript)
+    existing_call_id = _normalize_text(existing_metadata.get("callId", ""))
 
     if existing_transcript and not incoming_transcript:
         return {"updated": False, "reason": "existing_transcript_present", "job_id": job_id, "call_id": call_id}
 
-    if existing_transcript and incoming_transcript and _normalize_text(existing.get("callId", "")) == _normalize_text(call_id):
+    if existing_transcript and incoming_transcript and existing_call_id and existing_call_id == _normalize_text(call_id):
         return {"updated": False, "reason": "duplicate_call_id", "job_id": job_id, "call_id": call_id}
 
     summary = _build_voice_summary(incoming_transcript)
     if not summary:
         summary = "Structured job intake captured. Proceeding with recruiter calibration."
 
-    structured = dict(job.structured_data or {})
-    recruiter_intelligence = dict(structured.get("recruiterIntelligence") or {})
-    recruiter_intelligence.update(
-        {
-            "transcript": incoming_transcript,
-            "voiceTranscript": incoming_transcript,
-            "voiceSummary": summary,
-            "voice_summary": summary,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-            "callId": call_id,
-            "assistantId": assistant_id,
-            "recordingUrl": recording_url,
-            "sessionId": session_id,
-            "recruiterId": recruiter_id,
-            "endedAt": ended_at,
-            "eventType": event_type,
-        }
+    metadata = {
+        "source": "vapi_webhook",
+        "callId": call_id,
+        "assistantId": assistant_id,
+        "recordingUrl": recording_url,
+        "speakerTurns": transcript_turns,
+        "eventType": event_type,
+        "endedAt": ended_at,
+        "summary": summary,
+        "sessionId": session_id,
+        "recruiterId": recruiter_id,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "rawTranscriptMetadata": {
+            "source": "vapi",
+            "webhookId": webhook_id,
+            "transcriptLength": len(incoming_transcript),
+            "transcriptPresent": bool(incoming_transcript),
+            "speakerTurnCount": len(transcript_turns),
+            "normalized": True,
+        },
+    }
+    intake_repo.upsert_transcript(
+        job_id=job_id,
+        transcript=incoming_transcript,
+        metadata=metadata,
     )
-    if transcript_turns:
-        recruiter_intelligence["speakerTurns"] = transcript_turns
-
-    structured["recruiterIntelligence"] = recruiter_intelligence
-    job_repo.update_structured_fields(job_id=job_id, structured_data=structured)
     return {"updated": True, "job_id": job_id, "call_id": call_id, "transcript_length": len(incoming_transcript)}
 
 
@@ -293,7 +286,7 @@ def process_vapi_webhook(*, db: Session, raw_body: bytes, headers: Any) -> dict[
     if deduped:
         logger.info("vapi_webhook_deduped_by_redis event_type=%s call_id=%s job_id=%s", event_type, call_id, job_id)
 
-    result = _apply_recruiter_intelligence(
+    result = _apply_job_intake_transcript(
         db=db,
         job_id=job_id,
         recruiter_id=recruiter_id,
@@ -305,6 +298,7 @@ def process_vapi_webhook(*, db: Session, raw_body: bytes, headers: Any) -> dict[
         transcript_turns=transcript_turns,
         ended_at=ended_at,
         event_type=event_type,
+        webhook_id=webhook_id,
     )
     logger.info(
         "vapi_webhook_db_update_success event_type=%s job_id=%s call_id=%s updated=%s transcript_length=%s",

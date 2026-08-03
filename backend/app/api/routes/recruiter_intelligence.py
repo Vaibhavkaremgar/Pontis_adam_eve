@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
+from app.db.repositories import JobIntakeRepository
 from app.db.session import get_db
 from app.services.ownership import assert_job_ownership
 from app.services.recruiter_interview_orchestrator import (
@@ -67,11 +68,14 @@ def get_recruiter_intelligence_job(
     )
     db.commit()
     _cal_resp = build_calibration_state_response(calibration_state)
+    intake = JobIntakeRepository(db).get_by_job(job_id)
+    intake_data = intake.structured_data_json if intake and isinstance(intake.structured_data_json, dict) else {}
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
             "selection": _cal_resp,
             "calibration": _cal_resp,
+            "voice_intake_summary": str(intake_data.get("summary") or "").strip(),
         }
     )
 

@@ -14,6 +14,7 @@ import { requestApi } from "./client";
 import type { ApiResponse } from "./types";
 
 export type RecruiterIntelligenceSession = {
+  voice_intake_summary?: string;
   interview: {
     job_id?: string;
     recruiter_id?: string;

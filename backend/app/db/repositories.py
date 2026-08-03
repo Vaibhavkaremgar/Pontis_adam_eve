@@ -778,6 +778,45 @@ class JobIntakeRepository:
         self.db.flush()
         return row
 
+    def upsert_transcript(
+        self,
+        *,
+        job_id: str,
+        transcript: str,
+        metadata: dict,
+        intake_status: str = "completed",
+        completed_at: datetime | None = None,
+    ) -> JobIntakeEntity:
+        """Persist the canonical recruiter transcript and merge source metadata."""
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
+
+        row = self.get_by_job(job_id)
+        now = datetime.now(timezone.utc)
+        if not row:
+            row = JobIntakeEntity(
+                id=str(uuid4()),
+                job_id=job.id,
+                company_id=job.company_id,
+                transcript="",
+                structured_data_json={},
+                intake_status="pending",
+            )
+            self.db.add(row)
+            self.db.flush()
+
+        structured_data = dict(row.structured_data_json or {})
+        structured_data.update(dict(metadata or {}))
+        row.company_id = job.company_id
+        row.transcript = (transcript or "").strip()
+        row.structured_data_json = structured_data
+        row.intake_status = (intake_status or "completed").strip().lower() or "completed"
+        row.completed_at = completed_at or now
+        row.updated_at = now
+        self.db.flush()
+        return row
+
 
 class OrchestrationSessionRepository:
     def __init__(self, db: Session) -> None:

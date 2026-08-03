@@ -1905,9 +1905,11 @@ export default function ReviewPage() {
   const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
   const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const voiceIntakeSummary = useMemo(
-    () =>
-      summarizeVoiceIntakeText(
-        intelligence?.calibration?.voice_summary ||
+    () => {
+      const storedSummary = intelligence?.voice_intake_summary?.trim();
+      if (storedSummary) return storedSummary;
+      return summarizeVoiceIntakeText(
+          intelligence?.calibration?.voice_summary ||
           intelligence?.selection?.voice_summary ||
           intelligence?.interview?.voice_summary ||
           intelligence?.calibration?.transcript ||
@@ -1917,7 +1919,8 @@ export default function ReviewPage() {
           intelligence?.interview?.transcript ||
           intelligence?.interview?.voice_transcript ||
           ""
-      ),
+      );
+    },
     [intelligence]
   );
   useEffect(() => {
