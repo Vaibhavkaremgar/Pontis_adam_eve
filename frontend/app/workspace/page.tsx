@@ -1,14 +1,22 @@
 "use client";
 
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { BriefcaseBusiness, ChartNoAxesCombined, ChevronRight } from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
 import { useAppContext } from "@/context/AppContext";
+import { isSuperAdminRole } from "@/lib/roles";
 
 export default function WorkspacePage() {
   const router = useRouter();
   const { user } = useAppContext();
+
+  useEffect(() => {
+    if (isSuperAdminRole(user?.role)) {
+      router.replace("/admin");
+    }
+  }, [router, user?.role]);
 
   return (
     <AppShell activeStep={1}>

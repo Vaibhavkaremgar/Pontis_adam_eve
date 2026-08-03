@@ -32,6 +32,7 @@ import {
 } from "@/lib/api/interviews";
 import { getMetrics } from "@/lib/api/metrics";
 import { getOutreachStatuses, sendOutreach, type OutreachStatusItem } from "@/lib/api/outreach";
+import { isSuperAdminRole } from "@/lib/roles";
 import type { Candidate, InterviewStatus } from "@/types";
 
 type ReadyCandidate = Candidate & {
@@ -255,7 +256,11 @@ function ReadyPageContent() {
 
   const loadReady = async () => {
     if (!effectiveJobId || !user) return;
-    const canViewOperationalMetrics = user.role === "admin" || user.role === "internal_ops";
+    if (isSuperAdminRole(user.role)) {
+      router.replace("/admin");
+      return;
+    }
+    const canViewOperationalMetrics = false;
     setIsLoading(true);
     setError("");
     const [shortlistResult, finalSelectionResult, interviewResult, outreachResult] = await Promise.all([
@@ -326,11 +331,18 @@ function ReadyPageContent() {
       router.replace("/login");
       return;
     }
+    if (isSuperAdminRole(user.role)) {
+      router.replace("/admin");
+      return;
+    }
     if (!effectiveJobId) {
       router.replace("/job");
       return;
     }
-    void loadReady();
+    const timer = window.setTimeout(() => {
+      void loadReady();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [effectiveJobId, isSessionReady, router, user]);
 
   useEffect(() => {

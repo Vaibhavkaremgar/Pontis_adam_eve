@@ -51,6 +51,7 @@ from app.models.entities import (
     UserEntity,
 )
 from app.core.config import ENABLE_FAKE_EMAILS, RLHF_BASE_FEEDBACK_BIAS, RLHF_MIN_FEEDBACK_BIAS, RLHF_SMOOTHING_ALPHA
+from app.core.security import normalize_app_role
 
 logger = logging.getLogger(__name__)
 VALID_SOURCE_APPS = {"slack", "ui"}
@@ -200,7 +201,7 @@ class UserRepository:
         return self.db.scalar(select(UserEntity).where(UserEntity.email == email))
 
     def create(self, email: str, *, role: str = "recruiter") -> UserEntity:
-        entity = UserEntity(id=str(uuid4()), email=email.lower().strip(), role=(role or "recruiter").strip().lower() or "recruiter")
+        entity = UserEntity(id=str(uuid4()), email=email.lower().strip(), role=normalize_app_role(role))
         self.db.add(entity)
         self.db.flush()
         return entity
@@ -1311,6 +1312,98 @@ class CandidateProfileRepository:
         normalized = (candidate_id or "").strip().lower()
         return normalized.startswith("fallback-candidate")
 
+    def find_by_linkedin_url(self, *, job_id: str, linkedin_url: str) -> CandidateProfileEntity | None:
+        normalized_url = _normalize_text(linkedin_url).lower()
+        if not normalized_url:
+            return None
+        row = self.db.scalar(
+            select(CandidateProfileEntity).where(
+                _string_id_match(CandidateProfileEntity.job_id, job_id),
+                func.lower(CandidateProfileEntity.linkedin_url) == normalized_url,
+            )
+        )
+        return row
+
+    def _apply_acquisition_state(
+        self,
+        row: CandidateProfileEntity,
+        *,
+        status: str,
+        reason: str = "",
+        last_error: str = "",
+        queue_job_id: str = "",
+        idempotency_key: str = "",
+        account_id: str = "",
+        retry_count: int | None = None,
+        priority: int | None = None,
+    ) -> CandidateProfileEntity:
+        now = datetime.now(timezone.utc)
+        normalized_status = (status or "").strip().upper() or "DISCOVERED"
+        row.acquisition_status = normalized_status
+        row.acquisition_status_reason = _normalize_text(reason)
+        row.acquisition_last_error = _normalize_text(last_error)
+        row.acquisition_queue_job_id = _normalize_text(queue_job_id)
+        row.acquisition_idempotency_key = _normalize_text(idempotency_key)
+        row.acquisition_updated_at = now
+        if account_id:
+            row.acquisition_account_id = _normalize_text(account_id)
+        if retry_count is not None:
+            row.acquisition_retry_count = max(0, int(retry_count))
+        if priority is not None:
+            row.acquisition_priority = int(priority)
+
+        timestamp_field = {
+            "DISCOVERED": "acquisition_discovered_at",
+            "QUEUED": "acquisition_queued_at",
+            "SENDING": "acquisition_sending_at",
+            "SENT": "acquisition_sent_at",
+            "CONNECTION_SENT": "acquisition_sent_at",
+            "PENDING_ACCEPTANCE": "acquisition_pending_acceptance_at",
+            "ACCEPTED": "acquisition_accepted_at",
+            "DECLINED": "acquisition_declined_at",
+            "FAILED": "acquisition_failed_at",
+            "BLOCKED": "acquisition_blocked_at",
+            "RETRYING": "acquisition_retrying_at",
+        }.get(normalized_status)
+        if timestamp_field and getattr(row, timestamp_field, None) is None:
+            setattr(row, timestamp_field, now)
+        elif timestamp_field and normalized_status in {"SENDING", "SENT", "PENDING_ACCEPTANCE", "ACCEPTED", "DECLINED", "FAILED", "BLOCKED", "RETRYING"}:
+            setattr(row, timestamp_field, now)
+        return row
+
+    def update_acquisition_state(
+        self,
+        *,
+        job_id: str,
+        candidate_id: str,
+        status: str,
+        reason: str = "",
+        last_error: str = "",
+        queue_job_id: str = "",
+        idempotency_key: str = "",
+        account_id: str = "",
+        retry_count: int | None = None,
+        priority: int | None = None,
+    ) -> CandidateProfileEntity | None:
+        row = self.get(job_id=job_id, candidate_id=candidate_id)
+        if not row and candidate_id:
+            row = self._get_by_candidate_id(candidate_id)
+        if not row:
+            return None
+        self._apply_acquisition_state(
+            row,
+            status=status,
+            reason=reason,
+            last_error=last_error,
+            queue_job_id=queue_job_id,
+            idempotency_key=idempotency_key,
+            account_id=account_id,
+            retry_count=retry_count,
+            priority=priority,
+        )
+        self.db.flush()
+        return row
+
     def ensure_candidate_profile(self, *, job_id: str, candidate_id: str, workflow_token: str = "") -> CandidateProfileEntity:
         normalized_candidate_id = _sanitize_candidate_id(candidate_id)
         if not normalized_candidate_id:
@@ -1413,8 +1506,8 @@ class CandidateProfileRepository:
             except IntegrityError:
                 logger.info("candidate_profile_duplicate_skipped job_id=%s candidate_id=%s", job_id, normalized_candidate_id)
                 row = self.get(job_id=job_id, candidate_id=normalized_candidate_id) or self._get_by_candidate_id(normalized_candidate_id)
-                if not row:
-                    raise
+            if not row:
+                raise
         if workflow_token:
             row.workflow_token = _normalize_text(workflow_token)
 
@@ -1437,6 +1530,86 @@ class CandidateProfileRepository:
         row.ats_status_updated_at = now
         if _ensure_candidate_profile_email(row):
             logger.info("candidate_profile_dev_email_backfilled job_id=%s candidate_id=%s", job_id, candidate_id)
+        self.db.flush()
+        return row
+
+    def upsert_acquisition_candidate(
+        self,
+        *,
+        job_id: str,
+        candidate_id: str,
+        name: str = "",
+        current_company: str = "",
+        current_role: str = "",
+        linkedin_url: str = "",
+        source: str = "",
+        source_provider: str = "",
+        source_type: str = "",
+        source_query: str = "",
+        source_timestamp: str = "",
+        discovery_timestamp: datetime | None = None,
+        raw_data: dict | None = None,
+        agency_id: str | None = None,
+        recruiter_id: str | None = None,
+        status: str = "DISCOVERED",
+        reason: str = "",
+        queue_job_id: str = "",
+        idempotency_key: str = "",
+        retry_count: int = 0,
+        priority: int = 0,
+        account_id: str = "",
+    ) -> CandidateProfileEntity:
+        normalized_candidate_id = _sanitize_candidate_id(candidate_id)
+        if not normalized_candidate_id:
+            raise APIError("candidate_id is required", status_code=400)
+        job = JobRepository(self.db).get(job_id)
+        if not job:
+            raise APIError("Job not found", status_code=404)
+
+        row = self.get(job_id=job_id, candidate_id=normalized_candidate_id)
+        normalized_linkedin_url = _normalize_text(linkedin_url)
+        if not row and normalized_linkedin_url:
+            row = self.find_by_linkedin_url(job_id=job_id, linkedin_url=normalized_linkedin_url)
+        if not row:
+            row = self.ensure_candidate_profile(job_id=job_id, candidate_id=normalized_candidate_id)
+
+        if not row.candidate_id:
+            row.candidate_id = normalized_candidate_id
+        row.name = _clamp_text(name or row.name or "", max_length=255)
+        row.current_company = _clamp_text(current_company or row.current_company or "", max_length=255)
+        row.current_role = _clamp_text(current_role or row.current_role or "", max_length=255)
+        row.linkedin_url = normalized_linkedin_url or row.linkedin_url or ""
+        row.source = _clamp_text(source or row.source or "", max_length=255)
+        row.raw_data = dict(raw_data or row.raw_data or {})
+        if discovery_timestamp is not None and row.acquisition_discovered_at is None:
+            row.acquisition_discovered_at = discovery_timestamp
+        if source_timestamp:
+            row.raw_data.setdefault("source_timestamp", source_timestamp)
+        if source_provider:
+            row.raw_data.setdefault("source_provider", source_provider)
+        if source_type:
+            row.raw_data.setdefault("source_type", source_type)
+        if source_query:
+            row.raw_data.setdefault("source_query", source_query)
+        if agency_id:
+            row.agency_id = agency_id
+        if recruiter_id:
+            row.raw_data.setdefault("recruiter_id", recruiter_id)
+        if _normalize_text(row.ats_status) == "":
+            row.ats_status = "sourced"
+        if _normalize_text(row.ats_status_source) == "":
+            row.ats_status_source = "ingestion"
+        row.ats_status_updated_at = row.ats_status_updated_at or datetime.now(timezone.utc)
+        self._apply_acquisition_state(
+            row,
+            status=status,
+            reason=reason,
+            queue_job_id=queue_job_id,
+            idempotency_key=idempotency_key,
+            account_id=account_id,
+            retry_count=retry_count,
+            priority=priority,
+        )
         self.db.flush()
         return row
 
@@ -3049,6 +3222,15 @@ class CandidateLifecycleEventRepository:
                 _string_id_match(CandidateLifecycleEventEntity.job_id, job_id),
                 CandidateLifecycleEventEntity.candidate_id == candidate_id,
             )
+            .order_by(CandidateLifecycleEventEntity.created_at.desc())
+            .limit(max(1, int(limit)))
+        ).all()
+        return list(rows)
+
+    def list_recent_for_job(self, *, job_id: str, limit: int = 100) -> list[CandidateLifecycleEventEntity]:
+        rows = self.db.scalars(
+            select(CandidateLifecycleEventEntity)
+            .where(_string_id_match(CandidateLifecycleEventEntity.job_id, job_id))
             .order_by(CandidateLifecycleEventEntity.created_at.desc())
             .limit(max(1, int(limit)))
         ).all()

@@ -120,6 +120,21 @@ _TRANSITION_ORDER: dict[str, set[str]] = {
     "archived": set(),
 }
 
+_ACQUISITION_STATES = {
+    "discovered",
+    "queued",
+    "connection_sent",
+    "pending_acceptance",
+    "accepted",
+    "message_queued",
+    "message_sent",
+    "waiting_for_eve",
+    "handoff",
+    "failed",
+    "blocked",
+    "retrying",
+}
+
 
 def normalize_ats_status(value: str | None) -> str:
     normalized = (value or "").strip().lower().replace("-", "_")
@@ -323,9 +338,14 @@ def candidate_timeline(*, db: Session, job_id: str, candidate_id: str, limit: in
 
     entries: list[dict[str, Any]] = []
     for row in CandidateLifecycleEventRepository(db).list_for_candidate(job_id=job_id, candidate_id=candidate_id, limit=limit):
+        from_status = (row.from_status or "").strip().lower()
+        to_status = (row.to_status or "").strip().lower()
+        event_type = "ats_transition"
+        if from_status in _ACQUISITION_STATES or to_status in _ACQUISITION_STATES:
+            event_type = "candidate_engagement"
         entries.append(
             {
-                "type": "ats_transition",
+                "type": event_type,
                 "jobId": row.job_id,
                 "candidateId": row.candidate_id,
                 "fromStatus": row.from_status,

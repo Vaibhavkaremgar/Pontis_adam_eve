@@ -52,6 +52,23 @@ from app.linkedin.playwright.profile_types import (
 )
 from app.linkedin.playwright.session_manager import SessionManager
 
+# ── Phase 1 infrastructure (future features only — not used by existing workers) ──
+from app.linkedin.playwright.rich_text_engine import RichTextEngine, EditorKind
+from app.linkedin.playwright.form_engine import FormEngine
+from app.linkedin.playwright.verification_helpers import (
+    verify_text,
+    verify_dropdown,
+    verify_checkbox,
+    verify_upload,
+    verify_success,
+    verify_toast,
+    verify_dialog,
+    verify_navigation,
+)
+from app.linkedin.playwright.file_upload_engine import FileUploadEngine
+from app.linkedin.playwright.dropdown_engine import DropdownEngine
+from app.linkedin.playwright.success_detector import SuccessDetector
+
 __all__ = [
     "BrowserClosedError",
     "BrowserContextConfig",
@@ -93,4 +110,19 @@ __all__ = [
     "human_scroll",
     "human_type",
     "wait_after_action",
+    # Phase 1 infrastructure
+    "RichTextEngine",
+    "EditorKind",
+    "FormEngine",
+    "verify_text",
+    "verify_dropdown",
+    "verify_checkbox",
+    "verify_upload",
+    "verify_success",
+    "verify_toast",
+    "verify_dialog",
+    "verify_navigation",
+    "FileUploadEngine",
+    "DropdownEngine",
+    "SuccessDetector",
 ]

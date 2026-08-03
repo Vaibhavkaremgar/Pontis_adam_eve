@@ -8,6 +8,7 @@ from app.core.config import (
     ATS_RETRY_INTERVAL_MINUTES,
     ENABLE_FOLLOWUPS,
     ENABLE_REPLY_POLLING,
+    LINKEDIN_ACCEPTANCE_CHECK_INTERVAL_MINUTES,
     OUTREACH_LEARNING_INTERVAL_MINUTES,
     OUTREACH_LEARNING_BATCH_LIMIT,
     NO_CANDIDATES_COOLDOWN_MINUTES,
@@ -38,6 +39,7 @@ _last_followup_cycle_at: datetime | None = None
 _last_outreach_learning_cycle_at: datetime | None = None
 _last_ats_retry_cycle_at: datetime | None = None
 _last_reply_poll_cycle_at: datetime | None = None
+_last_linkedin_acceptance_check_cycle_at: datetime | None = None
 _last_cycle_jobs_attempted = 0
 _last_cycle_jobs_refreshed = 0
 
@@ -278,6 +280,35 @@ def _run_automation_cycle() -> None:
         logger.error("automation_cycle_failed error=%s", str(exc))
 
 
+def _run_linkedin_acceptance_check_cycle() -> None:
+    """Queue LinkedIn acceptance checks for pending connection requests."""
+    global _last_linkedin_acceptance_check_cycle_at
+    with _status_lock:
+        _last_linkedin_acceptance_check_cycle_at = _utcnow()
+    try:
+        from app.db.session import SessionLocal
+        from app.linkedin.repository import LinkedInConnectionRepository
+
+        with SessionLocal() as db:
+            pending_rows = LinkedInConnectionRepository(db).list_pending()
+            if not pending_rows:
+                logger.info("linkedin_acceptance_cycle_skipped reason=no_pending_connections")
+                return
+        result = enqueue_job(
+            "linkedin_acceptance_check_queue",
+            {"requested_at": _utcnow().isoformat()},
+            idempotency_key=f"linkedin_acceptance_check:{_utcnow().strftime('%Y%m%d%H%M')}",
+            max_attempts=3,
+        )
+        logger.info(
+            "linkedin_acceptance_cycle_queued job_id=%s queue_type=%s",
+            result.get("job_id"),
+            result.get("queue_type"),
+        )
+    except Exception as exc:
+        logger.warning("linkedin_acceptance_cycle_failed error=%s", str(exc))
+
+
 def _run_loop() -> None:
     """
     Unified scheduler loop.
@@ -335,6 +366,14 @@ def _run_loop() -> None:
         except Exception as exc:
             logger.warning("automation_cycle_exception error=%s", str(exc))
 
+        try:
+            last_acceptance = _last_linkedin_acceptance_check_cycle_at
+            acceptance_interval = timedelta(minutes=max(1, LINKEDIN_ACCEPTANCE_CHECK_INTERVAL_MINUTES))
+            if not last_acceptance or (_utcnow() - last_acceptance) >= acceptance_interval:
+                _run_linkedin_acceptance_check_cycle()
+        except Exception as exc:
+            logger.warning("linkedin_acceptance_cycle_exception error=%s", str(exc))
+
         logger.info("scheduler_cycle_completed at=%s", _utcnow().isoformat())
         _scheduler_stop.wait(30)
 
@@ -376,8 +415,10 @@ def scheduler_status() -> dict:
             "last_outreach_learning_cycle_at": _last_outreach_learning_cycle_at.isoformat() if _last_outreach_learning_cycle_at else None,
             "last_ats_retry_cycle_at": _last_ats_retry_cycle_at.isoformat() if _last_ats_retry_cycle_at else None,
             "last_reply_poll_cycle_at": _last_reply_poll_cycle_at.isoformat() if _last_reply_poll_cycle_at else None,
+            "last_linkedin_acceptance_check_cycle_at": _last_linkedin_acceptance_check_cycle_at.isoformat() if _last_linkedin_acceptance_check_cycle_at else None,
             "last_cycle_jobs_attempted": _last_cycle_jobs_attempted,
             "last_cycle_jobs_refreshed": _last_cycle_jobs_refreshed,
             "reply_poll_interval_minutes": REPLY_POLL_INTERVAL_MINUTES,
+            "linkedin_acceptance_check_interval_minutes": LINKEDIN_ACCEPTANCE_CHECK_INTERVAL_MINUTES,
             "outreach_learning_interval_minutes": OUTREACH_LEARNING_INTERVAL_MINUTES,
         }

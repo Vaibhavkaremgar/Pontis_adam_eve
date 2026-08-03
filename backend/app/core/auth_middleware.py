@@ -5,8 +5,8 @@ from fastapi.responses import JSONResponse
 import secrets
 
 from app.core.config import AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, CSRF_HEADER_NAME
-from app.core.security import verify_access_token, verify_csrf_token
-from app.db.repositories import CompanyRepository
+from app.core.security import is_super_admin_role, normalize_app_role, verify_access_token, verify_csrf_token
+from app.models.entities import UserEntity
 from app.db.session import SessionLocal
 from app.utils.exceptions import APIError
 from app.utils.responses import error_response
@@ -88,11 +88,27 @@ async def auth_middleware(request: Request, call_next):
     request.state.user = {
         "id": claims["sub"],
         "email": claims.get("email"),
-        "role": claims.get("role") or "recruiter",
+        "role": normalize_app_role(claims.get("role")),
     }
     with SessionLocal() as db:
-        company = CompanyRepository(db).get_latest_for_user(user_id=claims["sub"])
-        request.state.user = _UserContext({**request.state.user, "company_id": str(getattr(company, "id", "") or "")})
+        user = db.get(UserEntity, claims["sub"])
+        if not user:
+            return JSONResponse(status_code=401, content=error_response("Unauthorized"))
+        agency_id = str(getattr(user, "agency_id", "") or "").strip()
+        role = normalize_app_role(getattr(user, "role", "") or request.state.user["role"])
+        is_super_admin = is_super_admin_role(role)
+        if not agency_id and not is_super_admin:
+            return JSONResponse(status_code=401, content=error_response("Account is not linked to an agency"))
+        request.state.agency_id = agency_id or None
+        request.state.company_id = agency_id or None
+        request.state.user = _UserContext(
+            {
+                **request.state.user,
+                "agency_id": agency_id or None,
+                "company_id": agency_id or None,
+                "role": role,
+            }
+        )
 
     if request.method not in {"GET", "HEAD"} and not _csrf_exempt(path):
         csrf_header = request.headers.get(CSRF_HEADER_NAME, "").strip()

@@ -16,6 +16,8 @@ class UserProfile(BaseModel):
     name: str = ""
     picture: str = ""
     provider: str = "email"
+    role: str = "AGENCY_USER"
+    agency_id: str | None = None
 
 
 class LoginData(BaseModel):

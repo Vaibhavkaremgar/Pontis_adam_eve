@@ -2,7 +2,7 @@
 
 /**
  * What this file does:
- * Provides global frontend orchestration state across all intake steps.
+ * Provides global frontend orchestration state across Adam pages.
  *
  * What API it connects to:
  * Stores request/response state for /auth/me, /hiring/create, /candidates,
@@ -10,7 +10,7 @@
  *
  * How it fits in the pipeline:
  * Frontend keeps only orchestration/session data (forms, ids, results),
- * restores the recruiter profile from cookies on app load, and never stores tokens in localStorage.
+ * restores the authenticated profile from cookies on app load, and never stores tokens in localStorage.
  */
 import {
   createContext,
@@ -33,6 +33,7 @@ import {
   clearPipelineState,
 } from "@/lib/session";
 import { getCurrentUser, logout as logoutApi } from "@/lib/api/auth";
+import { isSuperAdminRole } from "@/lib/roles";
 import type { Candidate, Company, Job, User } from "@/types";
 
 type CallStatus = "idle" | "connecting" | "listening" | "speaking" | "processing" | "completed" | "error";
@@ -108,7 +109,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setCallStatus = useCallback((value: CallStatus) => setCallStatusState(value), []);
 
   const logout = useCallback(() => {
-    // Fully reset session and flow state, then return recruiter to login screen.
+  // Fully reset session and flow state, then return to the login screen.
     void logoutApi().catch(() => undefined);
     clearSession();
     clearPipelineState();
@@ -126,7 +127,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [pathname, router]);
 
-  // On app load, restore recruiter profile from cookies + pipeline state from sessionStorage.
+  // On app load, restore the authenticated profile from cookies + pipeline state from sessionStorage.
   useEffect(() => {
     const storedUser = getStoredUser();
     const pipeline = getStoredPipelineState();
@@ -159,6 +160,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isSessionReady || !user) return;
+    if (pathname.startsWith("/admin") && !isSuperAdminRole(user.role)) {
+      router.replace("/workspace");
+      return;
+    }
+    if (!pathname.startsWith("/admin") && isSuperAdminRole(user.role) && pathname !== "/login") {
+      router.replace("/admin");
+    }
+  }, [isSessionReady, pathname, router, user]);
 
   // Persist or clear the cached user profile whenever auth state changes.
   useEffect(() => {

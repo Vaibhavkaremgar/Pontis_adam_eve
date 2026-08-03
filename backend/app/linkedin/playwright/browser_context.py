@@ -6,6 +6,7 @@ from pathlib import Path
 from app.linkedin.config import (
     LINKEDIN_DEFAULT_TIMEOUT,
     LINKEDIN_DOWNLOAD_PATH,
+    LINKEDIN_DEBUG,
     LINKEDIN_HEADLESS,
     LINKEDIN_PROFILE_ROOT,
     LINKEDIN_PROXY_SERVER,
@@ -18,7 +19,7 @@ from app.linkedin.config import (
 
 @dataclass(frozen=True)
 class BrowserContextConfig:
-    headless: bool = LINKEDIN_HEADLESS
+    headless: bool = LINKEDIN_HEADLESS and not LINKEDIN_DEBUG
     profile_root: str = LINKEDIN_PROFILE_ROOT
     default_timeout: int = LINKEDIN_DEFAULT_TIMEOUT
     download_path: str = LINKEDIN_DOWNLOAD_PATH
@@ -30,4 +31,3 @@ class BrowserContextConfig:
 
     def resolved_download_path(self) -> Path:
         return Path(self.download_path).expanduser().resolve()
-

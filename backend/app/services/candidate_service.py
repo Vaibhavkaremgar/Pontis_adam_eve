@@ -49,6 +49,7 @@ from app.db.repositories import (
 )
 from app.schemas.candidate import CandidateExplanation, CandidateRankingDebug, CandidateResult
 from app.services.candidate_text import build_candidate_text
+from app.services.candidate_acquisition_service import persist_discovered_linkedin_candidates
 from app.services.ats_lifecycle_service import get_candidate_ats_state, transition_candidate_ats_state
 from app.services.ats.service import export_candidate_to_ats
 from app.services.embedding_service import embed, preload_sample_candidate_embeddings
@@ -3514,6 +3515,33 @@ def fetch_ranked_candidates(
                     )
                     _qdrant_stats["qdrant_skipped"] = True
                     _qdrant_stats["qdrant_skip_reason"] = "persist_step_exception"
+            acquisition_stats: dict[str, Any] = {
+                "queued": 0,
+                "updated": 0,
+                "deduped": 0,
+                "skipped": 0,
+            }
+            if xray_results:
+                try:
+                    acquisition_stats = persist_discovered_linkedin_candidates(
+                        db,
+                        job_id=job.id,
+                        candidates=list(xray_results),
+                        recruiter_id=str(recruiter_id or ""),
+                        agency_id=str(getattr(job, "company_id", "") or getattr(job, "agency_id", "") or ""),
+                        source="serpapi",
+                        source_type="linkedin_xray",
+                        source_query=str(primary_query or ""),
+                        request_source=str(request_source or "api"),
+                        priority=0,
+                    )
+                except Exception as _acq_exc:
+                    logger.warning(
+                        "xray_linkedin_acquisition_failed job_id=%s error=%s",
+                        job.id,
+                        str(_acq_exc),
+                        exc_info=True,
+                    )
             logger.info(
                 "[xray_timing] job_id=%s recruiter_id=%s query_generation_ms=%s serpapi_latency_ms=%s dedupe_ms=%s prefilter_ms=%s rerank_ms=%s total_pipeline_ms=%s",
                 job.id,
@@ -3628,10 +3656,18 @@ def fetch_ranked_candidates(
                             exc_info=exc,
                         )
                 logger.info(
-                    "xray_candidate_refresh_queued job_id=%s count=%s",
+                "xray_candidate_refresh_queued job_id=%s count=%s",
                     job.id,
                     queued_count,
                 )
+            logger.info(
+                "xray_linkedin_acquisition_summary job_id=%s queued=%s updated=%s deduped=%s skipped=%s",
+                job.id,
+                acquisition_stats.get("queued", 0),
+                acquisition_stats.get("updated", 0),
+                acquisition_stats.get("deduped", 0),
+                acquisition_stats.get("skipped", 0),
+            )
             logger.info(
                 'xray_sourcing_complete total_found=%s total_persisted=%s total_queued=%s',
                 len(xray_results),

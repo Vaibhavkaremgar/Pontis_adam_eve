@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import hashlib
 import logging
 import random
 import re
 import string
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -13,9 +15,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import GOOGLE_OAUTH_CLIENT_ID
 from app.core.config import AUTH_REQUIRE_OTP, ADMIN_EMAILS, OPS_EMAILS
-from app.core.security import create_access_token
+from app.core.security import AGENCY_USER_ROLE, SUPER_ADMIN_ROLE, create_access_token, normalize_app_role
 from app.db.repositories import OtpRepository, UserRepository
-from app.models.entities import AllowedUserEntity
+from app.models.entities import AllowedUserEntity, UserEntity
 from app.services.email_service import send_email
 from app.schemas.user import LoginData, UserProfile
 from app.utils.exceptions import APIError
@@ -55,6 +57,26 @@ def _resolve_user_role(email: str) -> str:
     return "recruiter"
 
 
+def _allowed_user_metadata(*, db: Session, email: str) -> dict[str, str]:
+    allowed = db.scalar(select(AllowedUserEntity).where(AllowedUserEntity.email == email))
+    if not allowed:
+        return {}
+    raw_note = str(getattr(allowed, "note", "") or "").strip()
+    if not raw_note:
+        return {}
+    try:
+        parsed = json.loads(raw_note)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        "name": str(parsed.get("name") or parsed.get("fullName") or "").strip(),
+        "agency_id": str(getattr(allowed, "agency_id", "") or parsed.get("agencyId") or parsed.get("agency_id") or "").strip(),
+        "role": str(parsed.get("role") or parsed.get("userRole") or "").strip(),
+    }
+
+
 def _ensure_email_allowed(*, db: Session, email: str) -> None:
     allowed = db.scalar(
         select(AllowedUserEntity)
@@ -67,6 +89,65 @@ def _ensure_email_allowed(*, db: Session, email: str) -> None:
             status_code=403,
             detail="Access restricted. Contact your administrator to request access.",
         )
+
+
+def _load_portal_user(*, db: Session, email: str):
+    users = UserRepository(db)
+    user = users.get_by_email(email)
+    allowed_metadata = _allowed_user_metadata(db=db, email=email)
+    mutated = False
+    if not user:
+        allowed = db.scalar(
+            select(AllowedUserEntity)
+            .where(AllowedUserEntity.email == email)
+            .where(AllowedUserEntity.is_active == True)  # noqa: E712
+        )
+        if not allowed:
+            raise APIError("Access restricted. Contact your administrator to request access.", status_code=403)
+        agency_id = allowed_metadata.get("agency_id", "")
+        role = normalize_app_role(allowed_metadata.get("role") or AGENCY_USER_ROLE)
+        if role != SUPER_ADMIN_ROLE and not agency_id:
+            raise APIError("Account is not linked to an agency.", status_code=403)
+        if not agency_id:
+            agency_id = ""
+        user = UserEntity(
+            id=str(uuid4()),
+            email=email,
+            full_name=allowed_metadata.get("name") or "",
+            role=role,
+            agency_id=agency_id or None,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        mutated = True
+    agency_id = str(getattr(user, "agency_id", "") or "").strip()
+    role = normalize_app_role(getattr(user, "role", "") or allowed_metadata.get("role") or AGENCY_USER_ROLE)
+    if not agency_id:
+        agency_id = allowed_metadata.get("agency_id", "")
+        if agency_id:
+            user.agency_id = agency_id
+            db.flush()
+            mutated = True
+        elif role != SUPER_ADMIN_ROLE:
+            raise APIError("Account is not linked to an agency.", status_code=403)
+    if role == SUPER_ADMIN_ROLE and getattr(user, "agency_id", None) is not None:
+        user.agency_id = None
+        agency_id = ""
+        db.flush()
+        mutated = True
+    if allowed_metadata.get("name") and not str(getattr(user, "full_name", "") or "").strip():
+        user.full_name = allowed_metadata["name"]
+        db.flush()
+        mutated = True
+    if allowed_metadata.get("role") and normalize_app_role(user.role) != SUPER_ADMIN_ROLE:
+        user.role = normalize_app_role(allowed_metadata["role"])
+        db.flush()
+        mutated = True
+    if mutated:
+        db.commit()
+    role = normalize_app_role(getattr(user, "role", "") or AGENCY_USER_ROLE)
+    return user, (agency_id or None), role
 
 
 def request_otp(*, db: Session, email: str) -> dict:
@@ -114,18 +195,12 @@ def verify_otp(*, db: Session, email: str, otp: str) -> LoginData:
         logger.warning("otp_verification_failed email=%s reason=invalid_or_expired", normalized_email)
         raise APIError("Invalid or expired OTP", status_code=401)
 
-    users = UserRepository(db)
-    user = users.get_by_email(normalized_email)
-    if not user:
-        user = users.create(normalized_email, role=_resolve_user_role(normalized_email))
-
-    db.commit()
-
-    token = create_access_token(user_id=user.id, email=user.email, role=user.role)
+    user, agency_id, role = _load_portal_user(db=db, email=normalized_email)
+    token = create_access_token(user_id=user.id, email=user.email, role=role)
     logger.info("otp_verified_success email=%s user_id=%s", normalized_email, user.id)
 
     return LoginData(
-        user=UserProfile(id=user.id, email=user.email, provider="email"),
+        user=UserProfile(id=user.id, email=user.email, provider="email", role=role, agency_id=agency_id),
         token=token,
         access_token=token,
     )
@@ -164,15 +239,8 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
         raise APIError("Google account email is missing", status_code=401)
     _ensure_email_allowed(db=db, email=email)
 
-    users = UserRepository(db)
-    user = users.get_by_email(email)
-    if not user:
-        user = users.create(email, role=_resolve_user_role(email))
-        db.commit()
-    else:
-        db.flush()
-
-    app_token = create_access_token(user_id=user.id, email=user.email, role=user.role)
+    user, agency_id, role = _load_portal_user(db=db, email=email)
+    app_token = create_access_token(user_id=user.id, email=user.email, role=role)
     return LoginData(
         user=UserProfile(
             id=user.id,
@@ -180,6 +248,8 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
             name=str(idinfo.get("name") or ""),
             picture=str(idinfo.get("picture") or ""),
             provider="google",
+            role=role,
+            agency_id=agency_id,
         ),
         token=app_token,
         access_token=app_token,

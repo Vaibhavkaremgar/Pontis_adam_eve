@@ -53,7 +53,7 @@ async def _run(profile_url: str, *, debug: bool) -> int:
     print(f"Profile exists: {profile_dir.exists()}")
     manager = BrowserManager(account_id=account_id)
     try:
-        context = await manager.start()
+        context = await manager.get_browser()
         print(f"[{_now()}] Browser running status: {manager.is_running()}")
 
         if debug:

@@ -93,7 +93,7 @@ async def _poll_account(
 
     browser_manager = BrowserManager(account_id=account_id)
     try:
-        browser_context = await browser_manager.start()
+        browser_context = await browser_manager.get_browser()
     except Exception:
         logger.exception("acceptance_poller browser_start_failed account_id=%s", account_id)
         summary["failed"] += len(connections)

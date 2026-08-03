@@ -15,7 +15,8 @@
 export type User = {
   id: string;
   email: string;
-  role?: "recruiter" | "internal_ops" | "admin" | string;
+  role?: "SUPER_ADMIN" | "AGENCY_USER" | string;
+  agency_id?: string | null;
   provider?: "email" | "google";
   name?: string;
   picture?: string;

@@ -1,0 +1,50 @@
+Responsibilities
+
+• Design, develop, and maintain scalable backend services using Python.
+• Build REST APIs using FastAPI.
+• Develop clean, modular, and reusable code following best engineering practices.
+• Design and optimize PostgreSQL database schemas and queries.
+• Integrate third-party APIs and cloud services.
+• Build asynchronous and background processing workflows.
+• Work with Redis for caching and task queues.
+• Develop AI workflow integrations using modern LLM APIs and automation frameworks.
+• Write unit tests and participate in code reviews.
+• Troubleshoot production issues and optimize application performance.
+• Collaborate with frontend developers, AI engineers, and product teams.
+
+Required Skills
+
+• Strong Python programming skills.
+• Experience with FastAPI.
+• Experience with PostgreSQL.
+• Experience with Redis.
+• Understanding of REST API design.
+• Experience with Git and GitHub.
+• Knowledge of Docker.
+• Good understanding of asynchronous programming using asyncio.
+• Strong debugging and problem-solving skills.
+
+Preferred Skills
+
+• Experience with AI/LLM integrations.
+• Experience with LangChain or LlamaIndex.
+• Experience with vector databases such as Qdrant.
+• Experience with Playwright or browser automation.
+• Experience with AWS, Azure, or Google Cloud.
+• Familiarity with CI/CD pipelines.
+• Experience with Linux environments.
+
+Qualifications
+
+• Bachelor's degree in Computer Science or related field, or equivalent practical experience.
+• 3+ years of professional backend development experience.
+• Excellent communication and collaboration skills.
+• Ability to work independently in a remote environment.
+
+Benefits
+
+• Competitive salary.
+• Flexible remote work.
+• Opportunity to work on cutting-edge AI products.
+• Learning and career growth opportunities.
+• Collaborative engineering culture.

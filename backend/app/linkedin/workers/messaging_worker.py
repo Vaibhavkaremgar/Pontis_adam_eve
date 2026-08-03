@@ -111,7 +111,7 @@ class LinkedInMessagingWorker:
             self.account_id, linkedin_profile_url, is_dry_run,
         )
         try:
-            context = await self._browser_manager.start()
+            context = await self._browser_manager.get_browser()
             inspector = LinkedInProfileInspector(context, timeout_ms=self.timeout_ms)
 
             # ── Phase 1: capability check ─────────────────────────────────────

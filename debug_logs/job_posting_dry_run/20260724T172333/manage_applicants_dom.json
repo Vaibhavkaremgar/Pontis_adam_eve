@@ -1,0 +1,14 @@
+[
+  {
+    "index": 0,
+    "bbox": {
+      "x": 374,
+      "y": 472.8000183105469,
+      "width": 165.35003662109375,
+      "height": 24
+    },
+    "parent_html": "<div class=\"job-posting-hero-job-settings__read-only\">\n            <div class=\"job-posting-hero-job-settings__read-only-header\">\n              Manage applicants\n            </div>\n\n              <div class=\"job-posting-hero-job-settings__read-only-content\">\n                  <div class=\"text-body-small t-black pt1\">\n                    On LinkedIn\n                  </div>\n                  <div class=\"text-body-small t-black--light pt1\">\n                    I\u2019ll send email updates to vaibhavkar0009@gmail.com\n                  </div>\n              </div>\n          </div>",
+    "nearest_ancestor_html": "<div class=\"job-posting-hero-job-settings__read-only\">\n            <div class=\"job-posting-hero-job-settings__read-only-header\">\n              Manage applicants\n            </div>\n\n              <div class=\"job-posting-hero-job-settings__read-only-content\">\n                  <div class=\"text-body-small t-black pt1\">\n                    On LinkedIn\n                  </div>\n                  <div class=\"text-body-small t-black--light pt1\">\n                    I\u2019ll send email updates to vaibhavkar0009@gmail.com\n                  </div>\n              </div>\n          </div>",
+    "sibling_html": "<div class=\"job-posting-hero-job-settings__read-only-content\">\n                  <div class=\"text-body-small t-black pt1\">\n                    On LinkedIn\n                  </div>\n                  <div class=\"text-body-small t-black--light pt1\">\n                    I\u2019ll send email updates to vaibhavkar0009@gmail.com\n                  </div>\n              </div>"
+  }
+]

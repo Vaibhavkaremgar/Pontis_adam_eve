@@ -39,7 +39,7 @@ async def close_chat_overlays(account_id: str) -> None:
     """
     manager = BrowserManager(account_id=account_id)
     try:
-        context = await manager.start()
+        context = await manager.get_browser()
         page = await context.new_page()
         try:
             await page.goto(_FEED_URL, wait_until="domcontentloaded", timeout=15000)

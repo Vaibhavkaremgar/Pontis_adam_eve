@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import requests
@@ -44,6 +45,140 @@ logger = logging.getLogger(__name__)
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_lower(value: Any) -> str:
+    return _normalize_text(value).lower()
+
+
+def _metadata_map(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _current_stage_label(stage_code: str) -> str:
+    normalized = _normalize_text(stage_code).upper()
+    return {
+        "SHORTLISTED": "Shortlisted",
+        "WAITING_FOR_CANDIDATE": "Waiting for Candidate",
+        "RESUME_SUBMITTED": "Resume Submitted",
+        "RESUME_SHORTLISTED": "Resume Shortlisted",
+        "INTERVIEW_SCHEDULED": "Interview Scheduled",
+        "INTERVIEW_COMPLETED": "Interview Completed",
+        "PASSED": "Passed",
+        "REJECTED": "Rejected",
+    }.get(normalized, normalized.replace("_", " ").title() if normalized else "In progress")
+
+
+def _result_stage(profile: Any, interview_row: dict[str, Any] | None, session_row: Any) -> tuple[str, str]:
+    interview_status = _normalize_lower((interview_row or {}).get("status"))
+    transcript = _normalize_text((interview_row or {}).get("transcript"))
+    session_status = _normalize_lower(getattr(session_row, "status", ""))
+    session_booking_status = _normalize_lower(getattr(session_row, "booking_status", ""))
+    session_stage = _normalize_lower(getattr(session_row, "stage", ""))
+    acquisition_status = _normalize_lower(getattr(profile, "acquisition_status", ""))
+    ats_status = _normalize_lower(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", ""))
+    decision = _normalize_lower(getattr(profile, "decision", ""))
+    review_status = _normalize_lower(getattr(profile, "review_status", ""))
+    resume_received = bool(
+        getattr(profile, "resume_received_at", None)
+        or _normalize_text(getattr(profile, "resume_text", ""))
+        or _normalize_text(getattr(profile, "parsed_resume_text", ""))
+    )
+
+    if interview_status in {"completed", "interview_completed", "results_ready"} or transcript:
+        return "INTERVIEW_COMPLETED", "Interview Completed"
+    if (
+        interview_status in {"scheduled", "booked"}
+        or session_status in {"scheduled", "interview_scheduled"}
+        or session_booking_status in {"confirmed", "booked"}
+        or session_stage in {"interview_scheduled", "booked"}
+    ):
+        return "INTERVIEW_SCHEDULED", "Interview Scheduled"
+    if ats_status in {"advanced", "final_round", "offer_stage", "offer_sent", "hired", "placed"} or decision in {"passed", "approved", "advance"}:
+        return "PASSED", "Passed"
+    if ats_status in {"rejected", "archived", "disqualified", "closed_with_reason", "interview_no_show"} or interview_status == "rejected":
+        return "REJECTED", "Rejected"
+    if acquisition_status in {"waiting_for_eve", "handoff"} or session_status == "waiting_for_candidate":
+        return "WAITING_FOR_CANDIDATE", "Waiting for Candidate"
+    if ats_status in {"shortlisted", "selected"} or review_status in {"shortlisted", "selected"} or decision in {"selected", "shortlisted"}:
+        if resume_received:
+            return "RESUME_SHORTLISTED", "Resume Shortlisted"
+        return "SHORTLISTED", "Shortlisted"
+    if resume_received or _normalize_lower(getattr(profile, "parsing_status", "")) in {"parsed", "complete", "completed"}:
+        return "RESUME_SUBMITTED", "Resume Submitted"
+    if acquisition_status:
+        return acquisition_status.upper(), _progress_text(acquisition_status)
+    if ats_status:
+        return ats_status.upper(), _current_stage_label(ats_status)
+    return "SHORTLISTED", "Shortlisted"
+
+
+def _recording_snapshot(*, interview_row: dict[str, Any] | None, session_row: Any) -> dict[str, Any]:
+    row = interview_row or {}
+    session_metadata = _metadata_map(getattr(session_row, "scheduling_metadata", {}) if session_row else {})
+    interviewer_metadata = _metadata_map(getattr(session_row, "interviewer_metadata", {}) if session_row else {})
+    recording_path = _normalize_text(
+        row.get("video_url")
+        or session_metadata.get("recordingPath")
+        or session_metadata.get("recording_path")
+        or session_metadata.get("videoUrl")
+        or session_metadata.get("video_url")
+    )
+    recording_status = _normalize_text(
+        row.get("status")
+        or getattr(session_row, "status", "")
+        or getattr(session_row, "booking_status", "")
+        or session_metadata.get("recordingStatus")
+        or session_metadata.get("recording_status")
+        or "pending"
+    )
+    duration_value = (
+        row.get("duration_minutes")
+        or session_metadata.get("recordingDuration")
+        or session_metadata.get("recording_duration")
+        or session_metadata.get("durationMinutes")
+        or session_metadata.get("duration_minutes")
+    )
+    try:
+        recording_duration = int(duration_value) if duration_value is not None and str(duration_value).strip() != "" else None
+    except (TypeError, ValueError):
+        recording_duration = None
+    recording_metadata = {
+        "interviewId": _normalize_text(row.get("interview_id") or ""),
+        "interviewStatus": _normalize_text(row.get("status") or ""),
+        "interviewCompletedAt": row.get("completed_at").isoformat() if row.get("completed_at") else None,
+        "sessionId": _normalize_text(getattr(session_row, "id", "") or ""),
+        "sessionStatus": _normalize_text(getattr(session_row, "status", "") or ""),
+        "sessionStage": _normalize_text(getattr(session_row, "stage", "") or ""),
+        "bookingStatus": _normalize_text(getattr(session_row, "booking_status", "") or ""),
+        "bookingUrl": _normalize_text(getattr(session_row, "booking_url", "") or ""),
+        "scheduledAt": getattr(session_row, "scheduled_at", None).isoformat() if getattr(session_row, "scheduled_at", None) else None,
+        "timeZone": _normalize_text(getattr(session_row, "timezone", "") or ""),
+        "availableSlots": list(getattr(session_row, "available_slots", []) or []),
+        "interviewerMetadata": interviewer_metadata,
+        "schedulingMetadata": session_metadata,
+    }
+    return {
+        "recordingPath": recording_path,
+        "recordingStatus": recording_status,
+        "recordingDuration": recording_duration,
+        "recordingMetadata": recording_metadata,
+        "videoAvailable": bool(recording_path),
+    }
+
+
+def _result_agency_matches(*, db: Session, job_id: str, candidate_id: str, agency_id: str) -> bool:
+    normalized_agency_id = _normalize_text(agency_id)
+    if not normalized_agency_id:
+        return False
+    profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    if profile and _normalize_text(getattr(profile, "agency_id", "")) == normalized_agency_id:
+        return True
+    interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)
+    if _normalize_text(interview_row.get("agency_id") or interview_row.get("interview_agency_id") or "") == normalized_agency_id:
+        return True
+    job = JobRepository(db).get(job_id)
+    return bool(job and _normalize_text(getattr(job, "company_id", "")) == normalized_agency_id)
 
 
 def _format_score(value: Any) -> str:
@@ -101,6 +236,74 @@ def _candidate_resume_url(profile: Any) -> str:
             if value and (value.startswith("http://") or value.startswith("https://")):
                 return value
     return ""
+
+
+def _acquisition_progress(status: str) -> str:
+    normalized = _normalize_text(status).upper()
+    return {
+        "DISCOVERED": "Candidate sourced",
+        "QUEUED": "Queued for connection",
+        "CONNECTION_SENT": "Connection request sent",
+        "PENDING_ACCEPTANCE": "Waiting for acceptance",
+        "ACCEPTED": "Accepted",
+        "MESSAGE_QUEUED": "Message queued",
+        "MESSAGE_SENT": "Message sent",
+        "WAITING_FOR_EVE": "Waiting for candidate",
+        "HANDOFF": "Handed off to Eve",
+        "FAILED": "Failed",
+        "BLOCKED": "Blocked",
+        "RETRYING": "Retrying",
+    }.get(normalized, "In progress")
+
+
+def _source_category(profile: Any) -> str:
+    raw_data = getattr(profile, "raw_data", {})
+    if not isinstance(raw_data, dict):
+        raw_data = {}
+    source_type = _normalize_text(raw_data.get("source_type") or raw_data.get("sourceType"))
+    source_provider = _normalize_text(raw_data.get("source_provider") or raw_data.get("sourceProvider") or raw_data.get("source"))
+    source_hint = f"{source_type} {source_provider}".lower()
+    if any(token in source_hint for token in ("internal", "manual", "referral", "ats")):
+        return "internal"
+    return "serp"
+
+
+def _engagement_snapshot(*, profile: Any, job: Any) -> dict[str, Any]:
+    acquisition_status = _normalize_text(getattr(profile, "acquisition_status", "") or "").upper()
+    raw_data = getattr(profile, "raw_data", {})
+    if not isinstance(raw_data, dict):
+        raw_data = {}
+    engagement = dict(raw_data.get("engagement") or {})
+    return {
+        "currentStage": acquisition_status or _normalize_text(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", "")) or "DISCOVERED",
+        "connectionStatus": _normalize_text(getattr(profile, "acquisition_status", "") or "").upper() or "UNKNOWN",
+        "invitationStatus": acquisition_status if acquisition_status in {"MESSAGE_QUEUED", "MESSAGE_SENT", "WAITING_FOR_EVE", "HANDOFF"} else ("PENDING" if acquisition_status in {"PENDING_ACCEPTANCE", "QUEUED", "CONNECTION_SENT"} else "UNKNOWN"),
+        "currentProgress": _progress_text(acquisition_status),
+        "sourceCategory": _source_category(profile),
+        "reason": _normalize_text(getattr(profile, "acquisition_status_reason", "")),
+        "retryCount": int(getattr(profile, "acquisition_retry_count", 0) or 0),
+        "priority": int(getattr(profile, "acquisition_priority", 0) or 0),
+        "updatedAt": getattr(profile, "acquisition_updated_at", None).isoformat() if getattr(profile, "acquisition_updated_at", None) else None,
+        "timeline": engagement,
+    }
+
+
+def _progress_text(status: str) -> str:
+    normalized = _normalize_text(status).upper()
+    return {
+        "DISCOVERED": "Candidate sourced",
+        "QUEUED": "Queued for connection",
+        "CONNECTION_SENT": "Connection request sent",
+        "PENDING_ACCEPTANCE": "Waiting for acceptance",
+        "ACCEPTED": "Connection accepted",
+        "MESSAGE_QUEUED": "Message queued",
+        "MESSAGE_SENT": "Message sent",
+        "WAITING_FOR_EVE": "Waiting for candidate",
+        "HANDOFF": "Handed off to Eve",
+        "FAILED": "Failed",
+        "BLOCKED": "Blocked",
+        "RETRYING": "Retrying",
+    }.get(normalized, "In progress")
 
 
 async def _post_full_profile_card_to_slack(
@@ -242,12 +445,18 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                     i.id                         AS interview_id,
                     i.job_id,
                     i.company_id,
+                    i.agency_id,
                     i.candidate_id,
                     i.status,
                     i.interview_score,
+                    i.duration_minutes,
                     i.technical_score,
                     i.communication_score,
                     i.culture_fit_score,
+                    i.interview_score_reason,
+                    i.technical_score_reason,
+                    i.communication_score_reason,
+                    i.culture_fit_score_reason,
                     i.ai_summary,
                     i.transcript,
                     i.feedback,
@@ -255,17 +464,31 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                     i.video_url,
                     i.completed_at,
                     i.created_at,
+                    s.id                     AS session_id,
+                    s.status                 AS session_status,
+                    s.booking_status         AS session_booking_status,
+                    s.stage                  AS session_stage,
+                    s.booking_url            AS session_booking_url,
+                    s.scheduled_at           AS session_scheduled_at,
+                    s.timezone               AS session_timezone,
+                    s.available_slots        AS session_available_slots,
+                    s.interviewer_metadata    AS session_interviewer_metadata,
+                    s.scheduling_metadata     AS session_scheduling_metadata,
                     cp.name                    AS candidate_name,
                     cp.current_role            AS candidate_role,
                     cp.current_company         AS candidate_company,
                     cp.summary                 AS candidate_summary,
                     cp.skills                  AS candidate_skills,
                     cp.raw_data                AS candidate_raw_data,
+                    cp.agency_id               AS candidate_agency_id,
                     nt.token                   AS workflow_token
                 FROM interviews i
                 LEFT JOIN candidates cp
                     ON cp.job_id = i.job_id
                    AND cp.candidate_id = i.candidate_id
+                LEFT JOIN interview_sessions s
+                    ON s.job_id = i.job_id
+                   AND s.candidate_id = i.candidate_id
                 LEFT JOIN notification_workflow_tokens nt
                     ON nt.job_id = i.job_id
                    AND nt.candidate_id = i.candidate_id
@@ -315,17 +538,19 @@ def _build_candidate_snapshot(
     workflow_token: str,
     recruiter_id: str,
 ) -> dict[str, Any]:
+    job = JobRepository(db).get(job_id)
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
-    insights = get_interview_insights(db=db, job_id=job_id, candidate_id=candidate_id)
+    try:
+        insights = get_interview_insights(db=db, job_id=job_id, candidate_id=candidate_id)
+    except APIError:
+        insights = {}
     evaluations = InterviewEvaluationRepository(db).list_for_candidate(job_id=job_id, candidate_id=candidate_id, limit=20)
     timeline = candidate_timeline(db=db, job_id=job_id, candidate_id=candidate_id, limit=100)
 
     # ── Primary source: interviews row keyed by job_id + candidate_id ─────────
     interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)
     transcript = _normalize_text(interview_row.get("transcript") or "")
-    if not transcript:
-        return {"status": "pending"}
 
     # ── AI Summary ────────────────────────────────────────────────────────────
     summary = _normalize_text(
@@ -345,6 +570,32 @@ def _build_candidate_snapshot(
     technical_score = _f(interview_row.get("technical_score"), overall_score)
     communication_score = _f(interview_row.get("communication_score"), 0.0)
     culture_fit_score = _f(interview_row.get("culture_fit_score"), 0.0)
+    score_reasons = {
+        "overall": _normalize_text(interview_row.get("interview_score_reason") or interview_row.get("feedback") or getattr(profile, "ats_status_reason", "") or getattr(profile, "decision", "")),
+        "technical": _normalize_text(interview_row.get("technical_score_reason") or getattr(profile, "ats_status_reason", "")),
+        "communication": _normalize_text(interview_row.get("communication_score_reason") or interview_row.get("interviewer_notes") or ""),
+        "cultureFit": _normalize_text(interview_row.get("culture_fit_score_reason") or getattr(profile, "decision", "")),
+    }
+    stage_code, stage_label = _result_stage(profile, interview_row, session)
+    current_status = _normalize_text(
+        interview_row.get("status")
+        or getattr(profile, "ats_status", "")
+        or getattr(profile, "candidate_status", "")
+        or getattr(session, "status", "")
+        or stage_code.lower()
+    )
+    evaluation_ready = bool(
+        interview_row.get("interview_score")
+        or transcript
+        or (session and _normalize_lower(getattr(session, "evaluation_status", "")) == "completed")
+    )
+    recommendation = _normalize_text(
+        interview_row.get("feedback")
+        or (evaluations[0].recommendation if evaluations else "")
+        or getattr(profile, "decision", "")
+    ).lower()
+    raw_data = getattr(profile, "raw_data", {}) if isinstance(getattr(profile, "raw_data", {}), dict) else {}
+    recording = _recording_snapshot(interview_row=interview_row, session_row=session)
 
     # ── Video ─────────────────────────────────────────────────────────────────
     recording_path = _normalize_text(interview_row.get("video_url") or "")
@@ -364,22 +615,28 @@ def _build_candidate_snapshot(
     ).lower()
 
     response = {
+        "job": {
+            "id": job_id,
+            "title": _normalize_text(getattr(job, "title", "") or getattr(profile, "current_role", "") or "Untitled"),
+            "location": _normalize_text(getattr(job, "location", "") or getattr(profile, "location", "") or ""),
+            "companyName": _normalize_text(getattr(job, "company_name", "") or ""),
+            "sourceApp": _normalize_text(getattr(job, "source_app", "") or "ui"),
+        },
         "candidate": {
             "id": candidate_id,
             "name": _normalize_text(getattr(profile, "name", "") or candidate_id),
-            "role": _normalize_text(getattr(profile, "role", "")),
-            "company": _normalize_text(getattr(profile, "company", "")),
-            "headline": _normalize_text(getattr(profile, "current_title", "")),
-            "location": _normalize_text(raw_data.get("location") or ""),
-            "email": _normalize_text(raw_data.get("email") or ""),
+            "role": _normalize_text(getattr(profile, "current_role", "") or getattr(profile, "role", "")),
+            "company": _normalize_text(getattr(profile, "current_company", "") or getattr(profile, "company", "")),
+            "headline": _normalize_text(getattr(profile, "current_title", "") or getattr(profile, "current_role", "")),
+            "location": _normalize_text(getattr(profile, "location", "") or raw_data.get("location") or ""),
+            "email": _normalize_text(getattr(profile, "email", "") or raw_data.get("email") or ""),
             "summary": _normalize_text(getattr(profile, "summary", "")),
             "skills": list(getattr(profile, "skills", []) or []),
-            "source": "interviews_table",
+            "source": "shared_db",
         },
         "recording": {
             "sessionToken": _normalize_text(interview_row.get("workflow_token") or workflow_token),
-            "recordingPath": "",
-            "videoAvailable": video_available,
+            **recording,
         },
         "transcript": transcript,
         "summary": summary,
@@ -389,22 +646,41 @@ def _build_candidate_snapshot(
             "communication": communication_score,
             "cultureFit": culture_fit_score,
         },
+        "scoreReasons": score_reasons,
         "decision": recommendation,
-        "status": status,
+        "status": current_status,
+        "stage": {
+            "code": stage_code,
+            "label": stage_label,
+        },
+        "interview": {
+            "status": _normalize_text(interview_row.get("status") or getattr(session, "status", "") or stage_code.lower()),
+            "statusLabel": stage_label,
+            "completedAt": interview_row.get("completed_at").isoformat() if interview_row.get("completed_at") else None,
+            "createdAt": interview_row.get("created_at").isoformat() if interview_row.get("created_at") else None,
+            "durationMinutes": interview_row.get("duration_minutes"),
+        },
         "timeline": {"events": timeline},
         "recommendation": recommendation,
+        "engagement": {
+            **_engagement_snapshot(profile=profile, job=job),
+            "currentStage": stage_code,
+            "currentStageLabel": stage_label,
+        },
         "analysis": {
             "strengths": [],
             "weaknesses": [],
             "riskAreas": [],
-            "communication": _normalize_text(interview_row.get("interviewer_notes") or ""),
-            "technicalDepth": "",
+            "communication": score_reasons["communication"],
+            "technicalDepth": score_reasons["technical"],
+            "scoreReasons": score_reasons,
         },
         "metadata": {
             "workflowToken": workflow_token,
             "jobId": job_id,
             "candidateId": candidate_id,
             "recruiterId": recruiter_id,
+            "agencyId": _normalize_text(getattr(profile, "agency_id", "") or interview_row.get("candidate_agency_id") or getattr(job, "company_id", "") or ""),
             "evaluationReady": evaluation_ready,
             "sessionToken": _normalize_text(interview_row.get("workflow_token") or workflow_token),
             "scheduledAt": (
@@ -412,6 +688,7 @@ def _build_candidate_snapshot(
                 if interview_row.get("completed_at") else
                 (session.scheduled_at.isoformat() if session and session.scheduled_at else None)
             ),
+            "recording": recording["recordingMetadata"],
             "insights": insights,
             "evaluations": [
                 {
@@ -429,7 +706,7 @@ def _build_candidate_snapshot(
             "decisionState": _normalize_text(ats_metadata.get("recruiterDecision")).lower() or "pending",
             "availableActions": ["pass", "advance", "hold", "reject"],
             "followUpPrompt": {
-                "show": status in {"interview_completed", "results_ready"} and not _normalize_text(ats_metadata.get("recruiterDecision")),
+                "show": stage_code == "INTERVIEW_COMPLETED" and not _normalize_text(ats_metadata.get("recruiterDecision")),
                 "message": "Would you like to advance this candidate?",
             },
         },
@@ -438,36 +715,78 @@ def _build_candidate_snapshot(
     return response
 
 
-def _candidate_result_rows(db: Session, job_id: str, *, company_id: str) -> list[dict[str, Any]]:
+def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[dict[str, Any]]:
     try:
         results = db.execute(
             text("""
                 SELECT
-                    i.candidate_id,
-                    i.company_id,
+                    cp.job_id,
+                    cp.candidate_id,
+                    cp.name,
+                    cp.current_role,
+                    cp.current_company,
+                    cp.location,
+                    cp.summary,
+                    cp.skills,
+                    cp.raw_data,
+                    cp.fit_score,
+                    cp.decision,
+                    cp.ats_status,
+                    cp.candidate_status,
+                    cp.ats_status_reason,
+                    cp.review_status,
+                    cp.resume_received_at,
+                    cp.parsing_status,
+                    cp.acquisition_status,
+                    cp.acquisition_status_reason,
+                    cp.acquisition_retry_count,
+                    cp.acquisition_priority,
+                    cp.acquisition_updated_at,
+                    cp.agency_id AS candidate_agency_id,
+                    i.id AS interview_id,
+                    i.agency_id AS interview_agency_id,
                     i.status,
                     i.interview_score,
+                    i.technical_score,
+                    i.communication_score,
+                    i.culture_fit_score,
+                    i.interview_score_reason,
+                    i.technical_score_reason,
+                    i.communication_score_reason,
+                    i.culture_fit_score_reason,
                     i.transcript,
                     i.video_url,
                     i.feedback,
                     i.completed_at,
-                    cp.name,
-                    cp.fit_score,
-                    cp.decision,
+                    i.created_at AS interview_created_at,
+                    i.duration_minutes,
+                    s.id AS session_id,
+                    s.status AS session_status,
+                    s.booking_status,
+                    s.stage AS session_stage,
+                    s.booking_url,
+                    s.scheduled_at,
+                    s.timezone,
+                    s.available_slots,
+                    s.interviewer_metadata,
+                    s.scheduling_metadata,
                     nt.token AS workflow_token
-                FROM interviews i
-                LEFT JOIN candidates cp
-                    ON cp.job_id = i.job_id
-                   AND cp.candidate_id = i.candidate_id
+                FROM candidates cp
+                LEFT JOIN interviews i
+                    ON i.job_id = cp.job_id
+                   AND i.candidate_id = cp.candidate_id
+                LEFT JOIN interview_sessions s
+                    ON s.job_id = cp.job_id
+                   AND s.candidate_id = cp.candidate_id
                 LEFT JOIN notification_workflow_tokens nt
-                    ON nt.job_id = i.job_id
-                   AND nt.candidate_id = i.candidate_id
+                    ON nt.job_id = cp.job_id
+                   AND nt.candidate_id = cp.candidate_id
                    AND nt.is_active = 1
-                WHERE i.job_id = :job_id
-                  AND i.company_id = :company_id
+                WHERE cp.job_id = :job_id
+                  AND (cp.agency_id = :agency_id OR i.agency_id = :agency_id)
                 ORDER BY COALESCE(i.interview_score, 0) DESC, COALESCE(cp.fit_score, 0) DESC, cp.name ASC
             """),
-            {"job_id": job_id, "company_id": company_id},
+            {"job_id": job_id, "agency_id": agency_id},
         ).mappings().all()
     except Exception as exc:
         logger.warning("results_list_fetch_failed job_id=%s error=%s", job_id, str(exc))
@@ -475,46 +794,108 @@ def _candidate_result_rows(db: Session, job_id: str, *, company_id: str) -> list
 
     rows: list[dict[str, Any]] = []
     for row in results:
-        transcript = _normalize_text(row.get("transcript") or "")
-        status = _normalize_text(row.get("status") or "")
-        score = float(row.get("interview_score") or row.get("fit_score") or 0.0)
+        row_data = dict(row)
+        profile = SimpleNamespace(**row_data)
+        session_row = SimpleNamespace(
+            id=row_data.get("session_id"),
+            status=row_data.get("session_status"),
+            booking_status=row_data.get("booking_status"),
+            stage=row_data.get("session_stage"),
+            booking_url=row_data.get("booking_url"),
+            scheduled_at=row_data.get("scheduled_at"),
+            timezone=row_data.get("timezone"),
+            available_slots=row_data.get("available_slots") or [],
+            interviewer_metadata=row_data.get("interviewer_metadata") or {},
+            scheduling_metadata=row_data.get("scheduling_metadata") or {},
+        )
+        interview_row = {
+            "interview_id": row_data.get("interview_id"),
+            "agency_id": row_data.get("interview_agency_id"),
+            "status": row_data.get("status"),
+            "interview_score": row_data.get("interview_score"),
+            "technical_score": row_data.get("technical_score"),
+            "communication_score": row_data.get("communication_score"),
+            "culture_fit_score": row_data.get("culture_fit_score"),
+            "transcript": row_data.get("transcript"),
+            "video_url": row_data.get("video_url"),
+            "feedback": row_data.get("feedback"),
+            "completed_at": row_data.get("completed_at"),
+            "created_at": row_data.get("interview_created_at"),
+            "duration_minutes": row_data.get("duration_minutes"),
+        }
+        score = float(row_data.get("interview_score") or row_data.get("fit_score") or 0.0)
+        acquisition_status = _normalize_text(row_data.get("acquisition_status") or "").upper()
+        raw_data = row_data.get("raw_data") if isinstance(row_data.get("raw_data"), dict) else {}
+        source_category = "internal" if any(
+            token in _normalize_text((raw_data or {}).get("source_type") or (raw_data or {}).get("source_provider") or (raw_data or {}).get("source")).lower()
+            for token in ("internal", "manual", "referral", "ats")
+        ) else "serp"
+        current_progress = _progress_text(acquisition_status)
+        connection_status = acquisition_status or "UNKNOWN"
+        if acquisition_status in {"DISCOVERED", "QUEUED", "CONNECTION_SENT", "PENDING_ACCEPTANCE"}:
+            invitation_status = "PENDING"
+        elif acquisition_status in {"MESSAGE_QUEUED", "MESSAGE_SENT", "WAITING_FOR_EVE", "HANDOFF"}:
+            invitation_status = "SENT"
+        elif acquisition_status in {"ACCEPTED"}:
+            invitation_status = "ACCEPTED"
+        elif acquisition_status in {"DECLINED"}:
+            invitation_status = "DECLINED"
+        elif acquisition_status in {"BLOCKED"}:
+            invitation_status = "BLOCKED"
+        else:
+            invitation_status = "UNKNOWN"
+        stage_code, stage_label = _result_stage(profile, interview_row, session_row)
+        transcript = _normalize_text(interview_row.get("transcript") or "")
         rows.append(
             {
-                "candidateId": _normalize_text(row.get("candidate_id") or ""),
-                "name": _normalize_text(row.get("name") or row.get("candidate_id") or ""),
-                "status": "pending" if not transcript else (status or "completed"),
-                "workflowToken": _normalize_text(row.get("workflow_token") or ""),
+                "candidateId": _normalize_text(row_data.get("candidate_id") or ""),
+                "name": _normalize_text(row_data.get("name") or row_data.get("candidate_id") or ""),
+                "status": "pending" if not transcript and stage_code in {"SHORTLISTED", "WAITING_FOR_CANDIDATE", "RESUME_SUBMITTED", "RESUME_SHORTLISTED"} else (_normalize_text(interview_row.get("status") or "") or stage_label.lower()),
+                "workflowToken": _normalize_text(row_data.get("workflow_token") or ""),
                 "score": score,
-                "recommendation": _normalize_text(row.get("feedback") or row.get("decision") or "review"),
-                "completionState": "pending" if not transcript else ("results_ready" if status == "completed" else status or "results_ready"),
-                "videoAvailable": bool(transcript and _normalize_text(row.get("video_url") or "")),
+                "recommendation": _normalize_text(row_data.get("feedback") or row_data.get("decision") or "review"),
+                "completionState": "pending" if not transcript and not _normalize_text(interview_row.get("status") or "") else ("results_ready" if _normalize_text(interview_row.get("status") or "") == "completed" else _normalize_text(interview_row.get("status") or "") or "results_ready"),
+                "videoAvailable": bool(transcript and _normalize_text(interview_row.get("video_url") or "")),
+                "currentStage": stage_code,
+                "currentStageLabel": stage_label,
+                "connectionStatus": connection_status,
+                "invitationStatus": invitation_status,
+                "currentProgress": current_progress,
+                "sourceCategory": source_category,
             }
         )
     return rows
 
 
-def list_results(*, db: Session, job_id: str, recruiter_id: str, company_id: str) -> dict[str, Any]:
+def list_results(*, db: Session, job_id: str, recruiter_id: str, agency_id: str) -> dict[str, Any]:
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
-    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+    if str(getattr(job, "company_id", "") or "").strip() != str(agency_id or "").strip():
         raise APIError("Forbidden", status_code=403)
 
     emit_trace(logger, "results_fetch", workflow_token="", candidate_id="", recruiter_id=recruiter_id, job_id=job_id)
-    candidates = _candidate_result_rows(db, job_id, company_id=company_id)
+    candidates = _candidate_result_rows(db, job_id, agency_id=agency_id)
     return {
         "jobId": job_id,
-        "companyId": company_id,
+        "agencyId": agency_id,
+        "companyId": agency_id,
         "recruiterId": recruiter_id,
         "candidates": candidates,
         "counts": {
             "completed": len([item for item in candidates if item["completionState"] == "results_ready"]),
             "available": len(candidates),
+            "internalCandidates": len([item for item in candidates if item.get("sourceCategory") == "internal"]),
+            "serpCandidates": len([item for item in candidates if item.get("sourceCategory") == "serp"]),
+            "connectionsSent": len([item for item in candidates if item.get("currentStage") in {"CONNECTION_SENT", "PENDING_ACCEPTANCE", "ACCEPTED", "MESSAGE_QUEUED", "MESSAGE_SENT", "WAITING_FOR_EVE", "HANDOFF"}]),
+            "connectionsAccepted": len([item for item in candidates if item.get("currentStage") in {"ACCEPTED", "MESSAGE_QUEUED", "MESSAGE_SENT", "WAITING_FOR_EVE", "HANDOFF"}]),
+            "invitationsSent": len([item for item in candidates if item.get("invitationStatus") in {"SENT", "ACCEPTED"}]),
+            "waitingForCandidate": len([item for item in candidates if item.get("currentStage") in {"WAITING_FOR_CANDIDATE", "WAITING_FOR_EVE", "HANDOFF"}]),
         },
     }
 
 
-def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_id: str, company_id: str) -> dict[str, Any]:
+def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_id: str, agency_id: str) -> dict[str, Any]:
     payload, job_id, candidate_id, resolved_workflow_token = _workflow_token_payload(db, workflow_token)
     if not job_id or not candidate_id:
         raise APIError("Result not found", status_code=404)
@@ -522,7 +903,7 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
-    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+    if not _result_agency_matches(db=db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id):
         raise APIError("Forbidden", status_code=403)
 
     emit_trace(
@@ -557,7 +938,7 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
     return result
 
 
-def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, company_id: str, range_header: str = ""):
+def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, agency_id: str, range_header: str = ""):
     payload, job_id, candidate_id, resolved_workflow_token = _workflow_token_payload(db, workflow_token)
     if not job_id or not candidate_id:
         raise APIError("Result not found", status_code=404)
@@ -565,7 +946,7 @@ def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, 
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
-    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+    if not _result_agency_matches(db=db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id):
         raise APIError("Forbidden", status_code=403)
 
     interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)

@@ -8,6 +8,7 @@ from app.api.routes.jobs import router as jobs_router
 from app.api.routes.hiring import router as hiring_router
 from app.api.routes.interviews import router as interviews_router
 from app.api.routes.results import router as results_router
+from app.api.routes.workflow import router as workflow_router
 from app.api.routes.outreach import router as outreach_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.recruiters import router as recruiters_router
@@ -30,6 +31,7 @@ api_router.include_router(recruiters_router)
 api_router.include_router(replies_router)
 api_router.include_router(interviews_router)
 api_router.include_router(results_router)
+api_router.include_router(workflow_router)
 api_router.include_router(recruiter_intelligence_router)
 api_router.include_router(webhooks_router)
 

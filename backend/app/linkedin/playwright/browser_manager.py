@@ -11,20 +11,26 @@ from app.linkedin.playwright.playwright_factory import PlaywrightFactory
 logger = logging.getLogger(__name__)
 
 class BrowserManager:
-    def __init__(self, account_id: str, config: BrowserContextConfig | None = None) -> None:
+    def __init__(self, account_id: str, config: BrowserContextConfig | None = None, profile_path: str | None = None) -> None:
         self.account_id = account_id
+        self.profile_path = profile_path
         self.config = config or BrowserContextConfig()
         self.factory = PlaywrightFactory(self.config)
         self._playwright: Any = None
         self._browser_context: Any = None
         self._browser: Any = None
 
-    async def start(self) -> Any:
+    async def _start_browser(self) -> Any:
         if self._browser_context is not None:
             return self._browser_context
         try:
             self._playwright = await self.factory.start_playwright()
-            launch_config = self.factory.launch_config(self.account_id)
+            if self.profile_path:
+                launch_config = self.factory.launch_config_for_profile(self.profile_path)
+            else:
+                from app.linkedin.profile_resolver import resolve_agency_profile_path
+                self.profile_path = resolve_agency_profile_path(self.account_id)
+                launch_config = self.factory.launch_config_for_profile(self.profile_path)
             self._browser_context = await self._playwright.chromium.launch_persistent_context(
                 **launch_config,
                 headless=self.config.headless,
@@ -41,6 +47,12 @@ class BrowserManager:
         except Exception as exc:
             logger.exception("linkedin browser startup failure account_id=%s", self.account_id)
             raise BrowserLaunchError("Failed to start LinkedIn browser") from exc
+
+    async def get_browser(self) -> Any:
+        return await self._start_browser()
+
+    async def start(self) -> Any:
+        return await self.get_browser()
 
     async def stop(self) -> None:
         try:
@@ -60,7 +72,7 @@ class BrowserManager:
         await self.stop()
         return await self.start()
 
-    def get_browser(self) -> Any:
+    def browser_context(self) -> Any:
         if self._browser_context is None:
             raise BrowserClosedError("Browser context is not running")
         return self._browser_context

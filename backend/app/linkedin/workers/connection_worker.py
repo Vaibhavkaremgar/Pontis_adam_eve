@@ -132,10 +132,9 @@ class LinkedInConnectionWorker:
         note_sent = False
         previous_state = LinkedInProfileConnectionState.UNKNOWN
         current_state = LinkedInProfileConnectionState.UNKNOWN
-        _persist_account_id: str | None = _resolve_account_uuid(self.account_id) if candidate_id else None
         logger.info("linkedin connection worker started account_id=%s profile_url=%s", self.account_id, linkedin_profile_url)
         try:
-            self._context = await self._browser_manager.start()
+            self._context = await self._browser_manager.get_browser()
             logger.info("linkedin browser started account_id=%s", self.account_id)
             self._inspector = LinkedInProfileInspector(self._context, timeout_ms=self.timeout_ms)
             logger.info(
@@ -203,15 +202,6 @@ class LinkedInConnectionWorker:
 
             if caps.pending:
                 # Already sent a request — do not re-send.
-                if candidate_id and _persist_account_id:
-                    _persist_connection(
-                        candidate_id=candidate_id,
-                        account_id=_persist_account_id,
-                        linkedin_url=linkedin_profile_url,
-                        connection_status="requested",
-                        request_sent_at=None,
-                        profile_snapshot={"caps_pending": True, "labels": caps.raw_labels},
-                    )
                 return self._result(
                     status=LinkedInConnectionWorkerStatus.REQUEST_ALREADY_PENDING,
                     previous_state=previous_state,
@@ -223,19 +213,6 @@ class LinkedInConnectionWorker:
 
             if caps.connected:
                 # Explicitly connected — do not send another request.
-                if candidate_id and _persist_account_id:
-                    _persist_connection(
-                        candidate_id=candidate_id,
-                        account_id=_persist_account_id,
-                        linkedin_url=linkedin_profile_url,
-                        connection_status="accepted",
-                        request_sent_at=None,
-                        profile_snapshot={
-                            "caps_connected": True,
-                            "connection_verified": caps.connection_verified,
-                            "labels": caps.raw_labels,
-                        },
-                    )
                 return self._result(
                     status=LinkedInConnectionWorkerStatus.ALREADY_CONNECTED,
                     previous_state=previous_state,
@@ -333,19 +310,6 @@ class LinkedInConnectionWorker:
                 logger.info("linkedin verification caps_pending=%s profile_url=%s", after_caps.pending, linkedin_profile_url)
 
                 if after_caps.pending:
-                    if candidate_id and _persist_account_id:
-                        _persist_connection(
-                            candidate_id=candidate_id,
-                            account_id=_persist_account_id,
-                            linkedin_url=linkedin_profile_url,
-                            connection_status="requested",
-                            request_sent_at=datetime.now(timezone.utc),
-                            profile_snapshot={
-                                "caps_pending": True,
-                                "note_sent": note_sent,
-                                "labels": after_caps.raw_labels,
-                            },
-                        )
                     return self._result(
                         status=LinkedInConnectionWorkerStatus.REQUEST_SENT,
                         previous_state=previous_state,
@@ -355,15 +319,6 @@ class LinkedInConnectionWorker:
                         started_at=started_at,
                     )
 
-                if candidate_id and _persist_account_id:
-                    _persist_connection(
-                        candidate_id=candidate_id,
-                        account_id=_persist_account_id,
-                        linkedin_url=linkedin_profile_url,
-                        connection_status="unknown",
-                        request_sent_at=None,
-                        profile_snapshot={"verification_labels": after_caps.raw_labels},
-                    )
                 return self._result(
                     status=LinkedInConnectionWorkerStatus.UNKNOWN_RESULT,
                     previous_state=previous_state,

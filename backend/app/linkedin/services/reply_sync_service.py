@@ -135,7 +135,7 @@ async def sync_replies(account_id: str, *, timeout_ms: int = 30000) -> ReplySync
 
     browser = BrowserManager(account_id=account_id)
     try:
-        context = await browser.start()
+        context = await browser.get_browser()
     except Exception:
         logger.exception("reply_sync browser_start_failed account_id=%s", account_id)
         summary["failed"] = len(conversations)

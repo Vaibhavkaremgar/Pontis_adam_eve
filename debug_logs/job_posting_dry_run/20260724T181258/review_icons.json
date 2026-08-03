@@ -1,0 +1,146 @@
+[
+  {
+    "index": 18,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "none",
+    "class": "artdeco-button__icon ",
+    "outerHTML": "<svg role=\"none\" aria-hidden=\"true\" class=\"artdeco-button__icon \" xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" data-supported-dps=\"24x24\" data-test-icon=\"close-medium\">\n<!---->    \n    <use href=\"#close-medium\" width=\"24\" height=\"24\"></use>\n</svg>",
+    "bbox": {
+      "x": 1252,
+      "y": 12,
+      "width": 24,
+      "height": 24
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 19,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "none",
+    "class": "",
+    "outerHTML": "<svg role=\"none\" aria-hidden=\"true\" xmlns=\"http://www.w3.org/2000/svg\" width=\"34\" height=\"34\" viewBox=\"0 0 34 34\" data-supported-dps=\"34x34\" data-test-icon=\"linkedin-bug-medium\">\n<!---->    \n    <use href=\"#linkedin-bug-medium\" width=\"34\" height=\"34\"></use>\n</svg>",
+    "bbox": {
+      "x": 160,
+      "y": 12,
+      "width": 34,
+      "height": 34
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 20,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "none",
+    "class": "artdeco-button__icon ",
+    "outerHTML": "<svg role=\"none\" aria-hidden=\"true\" class=\"artdeco-button__icon \" xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" data-test-icon=\"edit-small\">\n<!---->    \n    <use href=\"#edit-small\" width=\"16\" height=\"16\"></use>\n</svg>",
+    "bbox": {
+      "x": 1042.7000732421875,
+      "y": 319.3000183105469,
+      "width": 16,
+      "height": 16
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 21,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "none",
+    "class": "artdeco-button__icon ",
+    "outerHTML": "<svg role=\"none\" aria-hidden=\"true\" class=\"artdeco-button__icon \" xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" data-test-icon=\"edit-small\">\n<!---->    \n    <use href=\"#edit-small\" width=\"16\" height=\"16\"></use>\n</svg>",
+    "bbox": {
+      "x": 1042.7000732421875,
+      "y": 391.3000183105469,
+      "width": 16,
+      "height": 16
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 22,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "More information about applicant collection",
+    "title": "",
+    "role": "img",
+    "class": "",
+    "outerHTML": "<svg role=\"img\" aria-hidden=\"false\" aria-label=\"More information about applicant collection\" xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" data-test-icon=\"question-small\" data-rtl=\"true\" data-rtl-ignore=\"iw\">\n<!---->    \n    <use href=\"#question-small\" width=\"16\" height=\"16\"></use>\n</svg>",
+    "bbox": {
+      "x": 578.3624877929688,
+      "y": 504.3999938964844,
+      "width": 16,
+      "height": 16.000030517578125
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 23,
+    "tag": "li-icon",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "",
+    "class": "artdeco-dropdown__trigger-icon",
+    "outerHTML": "<li-icon aria-hidden=\"true\" type=\"caret-filled-down-icon\" class=\"artdeco-dropdown__trigger-icon\" size=\"small\"><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" fill=\"currentColor\" class=\"mercado-match\" width=\"16\" height=\"16\" focusable=\"false\">\n      <path d=\"M8 11L3 6h10z\" fill-rule=\"evenodd\"></path>\n    </svg></li-icon>",
+    "bbox": {
+      "x": 633.1375122070312,
+      "y": 568.5875244140625,
+      "width": 14.86248779296875,
+      "height": 16
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 24,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "",
+    "class": "mercado-match",
+    "outerHTML": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" fill=\"currentColor\" class=\"mercado-match\" width=\"16\" height=\"16\" focusable=\"false\">\n      <path d=\"M8 11L3 6h10z\" fill-rule=\"evenodd\"></path>\n    </svg>",
+    "bbox": {
+      "x": 633.1375122070312,
+      "y": 568.5875244140625,
+      "width": 16,
+      "height": 16
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 25,
+    "tag": "svg",
+    "text": "",
+    "aria_label": "",
+    "title": "",
+    "role": "none",
+    "class": "artdeco-button__icon ",
+    "outerHTML": "<svg role=\"none\" aria-hidden=\"true\" class=\"artdeco-button__icon \" xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" data-test-icon=\"edit-small\">\n<!---->    \n    <use href=\"#edit-small\" width=\"16\" height=\"16\"></use>\n</svg>",
+    "bbox": {
+      "x": 1042.7000732421875,
+      "y": 658.3875122070312,
+      "width": 16,
+      "height": 16
+    },
+    "visible": true,
+    "enabled": true
+  }
+]

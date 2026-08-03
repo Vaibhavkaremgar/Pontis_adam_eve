@@ -49,17 +49,22 @@ function resolveResultsExpiry(workspace: ResultWorkspaceResponse, item: ResultLi
 
 function emptyWorkspace(): ResultWorkspaceResponse {
   return {
+    job: { id: "", title: "", location: "", companyName: "", sourceApp: "" },
     candidate: { id: "", name: "", role: "", company: "", headline: "", location: "", email: "", summary: "", skills: [], source: "" },
-    recording: { sessionToken: "", recordingPath: "", videoAvailable: false },
+    recording: { sessionToken: "", recordingPath: "", recordingStatus: "", recordingDuration: null, recordingMetadata: {}, videoAvailable: false },
+    interview: { status: "", statusLabel: "", completedAt: null, createdAt: null, durationMinutes: null },
     transcript: "",
     summary: "",
     scores: { overall: 0, technical: 0, communication: 0, cultureFit: 0 },
+    scoreReasons: { overall: "", technical: "", communication: "", cultureFit: "" },
     decision: "",
     status: "",
+    stage: { code: "", label: "" },
     timeline: {},
     recommendation: "",
-    analysis: { strengths: [], weaknesses: [], riskAreas: [], communication: "", technicalDepth: "" },
+    analysis: { strengths: [], weaknesses: [], riskAreas: [], communication: "", technicalDepth: "", scoreReasons: {} },
     metadata: {},
+    engagement: { currentStage: "", currentStageLabel: "", connectionStatus: "", invitationStatus: "", currentProgress: "", sourceCategory: "", reason: "", retryCount: 0, priority: 0, updatedAt: null },
     operations: { decisionState: "", availableActions: ["pass", "advance", "hold", "reject"], followUpPrompt: { show: false, message: "" } },
   };
 }
@@ -73,6 +78,14 @@ function labelForScore(score: number) {
 
 function formatScore(score: number) {
   return Number(score || 0).toFixed(1);
+}
+
+function formatDuration(value: unknown) {
+  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) return "Unavailable";
+  if (value < 60) return `${Math.round(value)} min`;
+  const hours = Math.floor(value / 60);
+  const minutes = Math.round(value % 60);
+  return minutes ? `${hours} hr ${minutes} min` : `${hours} hr`;
 }
 
 function scoreTone(score: number) {
@@ -96,6 +109,14 @@ function ScoreRow({ label, score, description }: { label: string; score: number;
       <p className="text-sm leading-6 text-slate-500">{description}</p>
     </div>
   );
+}
+
+function stageTone(stage: string) {
+  const normalized = (stage || "").toUpperCase();
+  if (["ACCEPTED", "MESSAGE_SENT", "WAITING_FOR_EVE", "HANDOFF", "INTERVIEW_COMPLETED", "PASSED"].includes(normalized)) return "high";
+  if (["MESSAGE_QUEUED", "PENDING_ACCEPTANCE", "QUEUED", "CONNECTION_SENT", "INTERVIEW_SCHEDULED", "RESUME_SHORTLISTED", "RESUME_SUBMITTED", "SHORTLISTED", "WAITING_FOR_CANDIDATE"].includes(normalized)) return "info";
+  if (["BLOCKED", "FAILED", "REJECTED"].includes(normalized)) return "low";
+  return "neutral";
 }
 
 // ─── Level 1: Job roles list ──────────────────────────────────────────────────
@@ -150,11 +171,15 @@ function JobsList({ onSelect }: { onSelect: (job: JobSummary) => void }) {
 // ─── Level 2: Candidates list for a job ──────────────────────────────────────
 function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: (item: ResultListItem) => void; onBack: () => void }) {
   const [items, setItems] = useState<ResultListItem[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     getResultsList(job.jobId).then((res) => {
-      if (res.success && res.data) setItems(res.data.candidates || []);
+      if (res.success && res.data) {
+        setItems(res.data.candidates || []);
+        setCounts(res.data.counts || {});
+      }
       setLoading(false);
     });
   }, [job.jobId]);
@@ -168,6 +193,24 @@ function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: 
         <h2 className="text-xl font-semibold text-slate-900">{job.title}</h2>
         <p className="mt-1 text-sm text-slate-500">{job.location || "Location not set"}</p>
       </div>
+
+      {!loading && (
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
+          {[
+            ["Internal", counts.internalCandidates ?? 0],
+            ["SERP", counts.serpCandidates ?? 0],
+            ["Connections Sent", counts.connectionsSent ?? 0],
+            ["Connections Accepted", counts.connectionsAccepted ?? 0],
+            ["Invitations Sent", counts.invitationsSent ?? 0],
+            ["Waiting", counts.waitingForCandidate ?? 0],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+              <p className="mt-2 text-xl font-semibold text-slate-900">{String(value)}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <div className="space-y-3">
@@ -193,6 +236,9 @@ function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: 
                   <Badge variant={item.completionState === "results_ready" ? "high" : "neutral"}>
                     {item.completionState || item.status}
                   </Badge>
+                  {item.currentStage && <Badge variant={stageTone(item.currentStage) as any}>{item.currentStageLabel || item.currentStage}</Badge>}
+                  {item.connectionStatus && <Badge variant="info">{item.connectionStatus}</Badge>}
+                  {item.invitationStatus && <Badge variant="neutral">{item.invitationStatus}</Badge>}
                   {item.score > 0 && (
                     <span className={`font-semibold ${scoreTone(item.score)}`}>
                       {formatScore(item.score)} / 10
@@ -278,6 +324,13 @@ function CandidateDetail({
     { label: "Culture Fit", score: workspace.scores.cultureFit, description: workspace.analysis.riskAreas?.length ? (workspace.analysis.riskAreas as string[]).join(" ") : "Aligned with team expectations." },
     { label: "Overall", score: workspace.scores.overall, description: workspace.summary || "A well-rounded interview summary appears here." },
   ];
+  const engagementEvents = Array.isArray(workspace.timeline?.events) ? workspace.timeline.events : [];
+  const stageLabel = workspace.engagement.currentStageLabel || workspace.stage?.label || workspace.engagement.currentStage || item.currentStageLabel || item.currentStage || "DISCOVERED";
+  const stageCode = workspace.engagement.currentStage || workspace.stage?.code || item.currentStage || "";
+  const recordingMetadata = (workspace.recording.recordingMetadata || {}) as Record<string, unknown>;
+  const scoreReasons = workspace.scoreReasons || workspace.analysis.scoreReasons || {};
+  const recordingDuration = workspace.recording.recordingDuration ?? workspace.interview?.durationMinutes ?? null;
+  const displayedJobTitle = workspace.job?.title || jobTitle;
 
   if (wsLoading) {
     return (
@@ -307,8 +360,14 @@ function CandidateDetail({
             <div className="flex flex-wrap items-center gap-3 text-sm text-slate-600">
               <span className="inline-flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 font-medium text-indigo-700">
                 <Briefcase className="h-4 w-4" />
-                {jobTitle}
+                {displayedJobTitle}
               </span>
+              {workspace.job?.location && (
+                <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
+                  <MapPin className="h-4 w-4" />
+                  {workspace.job.location}
+                </span>
+              )}
               {workspace.candidate.location && (
                 <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
                   <MapPin className="h-4 w-4" />
@@ -330,6 +389,33 @@ function CandidateDetail({
               </div>
               <Badge variant="high">{scoreLabel}</Badge>
             </div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Current Stage</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">{stageLabel}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Connection Status</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">{workspace.engagement.connectionStatus || item.connectionStatus || "UNKNOWN"}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Invitation Status</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">{workspace.engagement.invitationStatus || item.invitationStatus || "UNKNOWN"}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Current Progress</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">{workspace.engagement.currentProgress || item.currentProgress || "In progress"}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Interview Status</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">{workspace.interview?.statusLabel || workspace.interview?.status || "Not scheduled"}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">Recording</p>
+            <p className="mt-2 text-sm font-semibold text-slate-900">{workspace.recording.recordingStatus || (workspace.recording.videoAvailable ? "Available" : "Unavailable")}</p>
           </div>
         </div>
 
@@ -383,12 +469,18 @@ function CandidateDetail({
                 <p className="mt-3 text-[15px] leading-7 text-slate-700">
                   {workspace.summary || "AI summary will appear here once evaluation is complete."}
                 </p>
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <div className="rounded-2xl bg-slate-50 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Score justification</p>
                     <p className="mt-2 text-sm leading-6 text-slate-700">
-                      {workspace.decision || "Score justification will appear here."}
+                      {scoreReasons.overall || workspace.decision || "Score justification will appear here."}
                     </p>
+                    <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Score reasons</p>
+                    <div className="mt-2 space-y-1 text-sm leading-6 text-slate-700">
+                      <p><span className="font-semibold">Technical:</span> {scoreReasons.technical || "Unavailable"}</p>
+                      <p><span className="font-semibold">Communication:</span> {scoreReasons.communication || "Unavailable"}</p>
+                      <p><span className="font-semibold">Culture fit:</span> {scoreReasons.cultureFit || "Unavailable"}</p>
+                    </div>
                   </div>
                   <div className="rounded-2xl bg-slate-50 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Transcript preview</p>
@@ -396,6 +488,54 @@ function CandidateDetail({
                       {workspace.transcript ? workspace.transcript.slice(0, 320) : "Transcript not available yet."}
                     </p>
                   </div>
+                  <div className="rounded-2xl bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Recording details</p>
+                    <div className="mt-2 space-y-2 text-sm leading-6 text-slate-700">
+                      <p><span className="font-semibold">Status:</span> {workspace.recording.recordingStatus || (workspace.recording.videoAvailable ? "Available" : "Unavailable")}</p>
+                      <p><span className="font-semibold">Duration:</span> {formatDuration(recordingDuration)}</p>
+                      <p className="break-all"><span className="font-semibold">Path:</span> {workspace.recording.recordingPath || "Unavailable"}</p>
+                      {Object.keys(recordingMetadata).length > 0 && (
+                        <p><span className="font-semibold">Metadata:</span> Available in shared session record</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-[28px] border border-[rgba(120,100,80,0.08)] bg-white p-5 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-lg font-semibold text-slate-900">Engagement Timeline</h2>
+                  <Badge variant={stageTone(stageCode) as any}>
+                    {stageLabel}
+                  </Badge>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {engagementEvents.length ? engagementEvents.slice(0, 6).map((event, index) => {
+                    const type = String((event as { type?: string }).type || "");
+                    const title =
+                      type === "candidate_engagement"
+                        ? `${String((event as { fromStatus?: string }).fromStatus || "").toUpperCase()} → ${String((event as { toStatus?: string }).toStatus || "").toUpperCase()}`
+                        : `${String((event as { type?: string }).type || "event")}`;
+                    const createdAt = String((event as { createdAt?: string }).createdAt || "");
+                    const metadata = (event as { metadata?: Record<string, any> }).metadata || {};
+                    return (
+                      <div key={`${title}-${index}`} className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-slate-900">{title}</p>
+                          <p className="text-xs text-slate-500">{createdAt ? new Date(createdAt).toLocaleString() : ""}</p>
+                        </div>
+                        {Object.keys(metadata).length > 0 && (
+                          <p className="mt-2 text-xs leading-5 text-slate-500">
+                            {String(metadata.reason || metadata.workerStatus || metadata.inspectionState || "")}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  }) : (
+                    <div className="flex h-32 items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-sm text-slate-500">
+                      No engagement events yet.
+                    </div>
+                  )}
                 </div>
               </section>
             </>

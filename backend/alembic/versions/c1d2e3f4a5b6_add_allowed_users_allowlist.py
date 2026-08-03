@@ -21,7 +21,7 @@ branch_labels: str | tuple[str, ...] | None = None
 depends_on: str | tuple[str, ...] | None = None
 
 
-ADMIN_EMAIL = "karemgarvaibhav@gmail.com"
+ADMIN_EMAIL = "vaibhav@pontis.one"
 
 
 def upgrade() -> None:
@@ -45,7 +45,7 @@ def upgrade() -> None:
     )
     op.execute(
         f"""
-        UPDATE users SET role = 'admin'
+        UPDATE users SET role = 'SUPER_ADMIN'
         WHERE email = '{ADMIN_EMAIL}';
         """
     )

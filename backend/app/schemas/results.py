@@ -43,6 +43,7 @@ class ResultWorkspaceData(BaseModel):
     recommendation: str = ""
     analysis: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    engagement: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResultListItem(BaseModel):
@@ -54,6 +55,11 @@ class ResultListItem(BaseModel):
     recommendation: str = ""
     completionState: str = ""
     videoAvailable: bool = False
+    currentStage: str = ""
+    connectionStatus: str = ""
+    invitationStatus: str = ""
+    currentProgress: str = ""
+    sourceCategory: str = ""
 
 
 class ResultListData(BaseModel):
@@ -61,4 +67,3 @@ class ResultListData(BaseModel):
     recruiterId: str = ""
     candidates: list[ResultListItem] = Field(default_factory=list)
     counts: dict[str, int] = Field(default_factory=dict)
-

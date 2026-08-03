@@ -1,0 +1,27 @@
+[
+  {
+    "index": 0,
+    "tag": "svg",
+    "role": "img",
+    "text": "",
+    "aria-label": "More information about applicant collection",
+    "aria-labelledby": "",
+    "aria-describedby": "",
+    "title": "",
+    "name": "",
+    "id": "",
+    "placeholder": "",
+    "value": "",
+    "checked": false,
+    "disabled": false,
+    "expanded": "",
+    "class": "",
+    "bounding_box": {
+      "x": 570.7625122070312,
+      "y": 504.3999938964844,
+      "width": 16,
+      "height": 16.000030517578125
+    },
+    "outerHTML": "<svg role=\"img\" aria-hidden=\"false\" aria-label=\"More information about applicant collection\" xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" data-test-icon=\"question-small\" data-rtl=\"true\" data-rtl-ignore=\"iw\">\n<!---->    \n    <use href=\"#question-small\" width=\"16\" height=\"16\"></use>\n</svg>"
+  }
+]

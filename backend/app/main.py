@@ -16,11 +16,12 @@ from app.core.config import APP_ENV, APIFY_TOKEN, CORS_ALLOW_ORIGINS, INTERNAL_A
 from app.core.rate_limit_middleware import rate_limit_middleware
 from app.core.security import verify_access_token
 from app.db.session import db_health_snapshot, init_db
+from app.db.session import SessionLocal
 from app.services.candidate_service import warm_candidate_retrieval
 from app.services.embedding_service import embedding_health_snapshot
 from app.services.embedding_registry_service import ensure_embedding_version_registry
 from app.services.email_service import email_health_snapshot
-from app.services.job_queue_service import queue_health_snapshot, start_job_queue_workers, stop_job_queue_workers
+from app.services.job_queue_service import queue_health_snapshot, stop_job_queue_workers
 from app.services.metrics_service import get_metrics_snapshot
 from app.services.llm_service import llm_health
 from app.services.qdrant_service import ensure_collection_indexes, ensure_qdrant_indexes, qdrant_health_snapshot
@@ -30,7 +31,8 @@ from app.services.pdl_service import pdl_health_snapshot
 from app.services.serpapi_sourcing_service import serpapi_health_snapshot
 from app.services.apify_enrichment_service import apify_health_snapshot
 from app.services.redis_service import close_redis_client, get_redis
-from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
+from app.services.refresh_scheduler import scheduler_status, stop_scheduler
+from app.services.super_admin_seed_service import ensure_primary_super_admin_account
 from app.utils.exceptions import APIError
 from app.utils.responses import error_response, success_response
 
@@ -232,6 +234,12 @@ def on_startup() -> None:
             logger.info("candidate_warmup_completed source_provider=%s", SOURCE_PROVIDER)
         except Exception as exc:
             logger.warning("candidate_warmup_failed error=%s", str(exc))
+        try:
+            with SessionLocal() as db:
+                ensure_primary_super_admin_account(db=db)
+            logger.info("super_admin_bootstrap_completed email=vaibhav@pontis.one")
+        except Exception as exc:
+            logger.warning("super_admin_bootstrap_failed error=%s", str(exc))
 
         if APP_ENV in {"production", "prod"}:
             redis_client = get_redis()
@@ -258,9 +266,7 @@ def on_startup() -> None:
             )
     finally:
         if db_ready:
-            start_job_queue_workers()
-            start_scheduler()
-            logger.info("startup_scheduler_started")
+            logger.info("startup_background_services_not_started")
     if not db_ready:
         logger.warning("startup_completed_without_database")
 

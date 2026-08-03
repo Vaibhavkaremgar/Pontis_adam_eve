@@ -34,7 +34,7 @@ async def _run() -> int:
     context: Any | None = None
     exit_code = 0
     try:
-        context = await manager.start()
+        context = await manager.get_browser()
         print(f"[{_now()}] Browser running status: {manager.is_running()}")
         page = await _current_page(context)
         await _wait_for_dom_ready(page)

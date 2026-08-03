@@ -61,6 +61,11 @@ class PlaywrightFactory:
 
     def launch_config(self, account_id: str) -> dict[str, Any]:
         profile_dir = self.profile_directory(account_id)
+        return self.launch_config_for_profile(profile_dir)
+
+    def launch_config_for_profile(self, profile_dir: str | Path) -> dict[str, Any]:
+        profile_dir = Path(profile_dir).expanduser().resolve()
+        profile_dir.mkdir(parents=True, exist_ok=True)
         cfg = self._build_launch_args()
         cfg["user_data_dir"] = str(profile_dir)
         return cfg

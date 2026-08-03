@@ -26,6 +26,12 @@ export type ResultListItem = {
   videoAvailable: boolean;
   createdAt?: string | null;
   expiresAt?: string | null;
+  currentStage?: string;
+  currentStageLabel?: string;
+  connectionStatus?: string;
+  invitationStatus?: string;
+  currentProgress?: string;
+  sourceCategory?: string;
 };
 
 export type ResultListResponse = {
@@ -35,10 +41,23 @@ export type ResultListResponse = {
   counts: {
     completed: number;
     available: number;
+    internalCandidates?: number;
+    serpCandidates?: number;
+    connectionsSent?: number;
+    connectionsAccepted?: number;
+    invitationsSent?: number;
+    waitingForCandidate?: number;
   };
 };
 
 export type ResultWorkspaceResponse = {
+  job?: {
+    id: string;
+    title: string;
+    location: string;
+    companyName?: string;
+    sourceApp?: string;
+  };
   candidate: {
     id: string;
     name: string;
@@ -54,7 +73,17 @@ export type ResultWorkspaceResponse = {
   recording: {
     sessionToken: string;
     recordingPath: string;
+    recordingStatus?: string;
+    recordingDuration?: number | null;
+    recordingMetadata?: Record<string, unknown>;
     videoAvailable: boolean;
+  };
+  interview?: {
+    status?: string;
+    statusLabel?: string;
+    completedAt?: string | null;
+    createdAt?: string | null;
+    durationMinutes?: number | null;
   };
   transcript: string;
   summary: string;
@@ -64,8 +93,18 @@ export type ResultWorkspaceResponse = {
     communication: number;
     cultureFit: number;
   };
+  scoreReasons?: {
+    overall?: string;
+    technical?: string;
+    communication?: string;
+    cultureFit?: string;
+  };
   decision: string;
   status: string;
+  stage?: {
+    code?: string;
+    label?: string;
+  };
   timeline: {
     events?: Array<Record<string, unknown>>;
     [key: string]: unknown;
@@ -77,9 +116,23 @@ export type ResultWorkspaceResponse = {
     riskAreas?: string[];
     communication?: string;
     technicalDepth?: string;
+    scoreReasons?: Record<string, string>;
     [key: string]: unknown;
   };
   metadata: Record<string, unknown>;
+  engagement: {
+    currentStage?: string;
+    currentStageLabel?: string;
+    connectionStatus?: string;
+    invitationStatus?: string;
+    currentProgress?: string;
+    sourceCategory?: string;
+    reason?: string;
+    retryCount?: number;
+    priority?: number;
+    updatedAt?: string | null;
+    timeline?: Record<string, unknown>;
+  };
   createdAt?: string | null;
   expiresAt?: string | null;
   operations?: {

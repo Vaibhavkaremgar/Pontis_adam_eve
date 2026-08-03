@@ -22,6 +22,11 @@ type VoiceRefinePayload = {
 
 type VoiceRefineData = {
   refined: boolean;
+  queued?: boolean;
+  workflowToken?: string;
+  workflowLink?: string;
+  jobStatus?: string;
+  linkedinPostingStatus?: string;
   usedFallback?: boolean;
   job?: {
     title: string;

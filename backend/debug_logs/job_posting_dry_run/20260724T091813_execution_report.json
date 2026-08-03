@@ -1,0 +1,43 @@
+{
+  "run_ts": "20260724T091813",
+  "account_id": "linkedin-dev-account",
+  "wall_ms": 15984,
+  "spec": {
+    "title": "Content Creator",
+    "company": "Viral Bug Digital Marketing",
+    "workplace_type": "Remote",
+    "location": "Hyderabad, India",
+    "job_type": "Full-time",
+    "experience_level": "Mid-Senior level",
+    "description_len": 216,
+    "skills": [
+      "Python",
+      "AWS",
+      "PostgreSQL"
+    ],
+    "application_method": "Through LinkedIn"
+  },
+  "result": {
+    "status": "failed",
+    "dry_run": true,
+    "review_reached": false,
+    "current_step": 0,
+    "current_step_label": "",
+    "completed_steps": [],
+    "duration_ms": 14876,
+    "errors": [
+      "name '_find_form_container' is not defined"
+    ],
+    "warnings": [],
+    "diagnostics": []
+  },
+  "discrepancies": [
+    "Review page was NOT reached \u2014 wizard may have additional steps not covered by the current filler map, or a selector mismatch prevented navigation"
+  ],
+  "changes_before_publish": [
+    "BLOCKER: Review page must be reached reliably before Publish is safe",
+    "1 discrepancy(ies) between live UI and discovery model \u2014 see discrepancies section of report"
+  ],
+  "publish_attempted": false,
+  "draft_saved": false
+}

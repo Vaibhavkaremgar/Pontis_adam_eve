@@ -388,7 +388,7 @@ async def _inspect_capabilities(
         from app.linkedin.playwright.profile_inspector import LinkedInProfileInspector
 
         browser = BrowserManager(account_id=account_id)
-        context = await browser.start()
+        context = await browser.get_browser()
         try:
             inspector = LinkedInProfileInspector(context, timeout_ms=timeout_ms)
             caps = await inspector.inspect_capabilities(linkedin_url)

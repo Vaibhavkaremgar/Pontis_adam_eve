@@ -1,484 +1,150 @@
 from __future__ import annotations
 
-from uuid import UUID, uuid4
-
-from fastapi import APIRouter, Depends, Query
-from fastapi import HTTPException, Request
-from pydantic import BaseModel
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.security import require_role
-from app.core.config import config_diagnostics
+from app.db.admin_repositories import AdminRepository
 from app.db.session import get_db
-from app.models.entities import AllowedUserEntity
-from app.services.audit_service import record_audit_event
-from app.services.platform_ops_service import (
-    force_embedding_migration,
-    get_outreach_analytics,
-    get_notification_center,
-    get_platform_diagnostics,
-    get_pipeline_analytics,
-    get_pipeline_board,
-    get_recruiter_learning_state,
-    inspect_audit_logs,
-    inspect_dead_letters,
-    refresh_candidate_manually,
-    replay_dead_letter,
-    list_recent_platform_events,
+from app.schemas.admin import (
+    AgencyCreateRequest,
+    AgencyListResponse,
+    AgencySummary,
+    AgencyUpdateRequest,
+    AdminDashboardSummary,
+    AdminPagination,
+    UserCreateRequest,
+    UserListResponse,
+    UserSummary,
+    UserUpdateRequest,
 )
-from app.services.internal_candidate_matcher_service import InternalCandidateMatcher
-from app.services.operational_intelligence_service import get_operational_intelligence_snapshot
-from app.services.automation_service import list_automation_jobs
-from app.db.repositories import NotificationEventRepository, RecruiterNoteRepository, RecruiterTaskRepository
-from app.schemas.candidate import InternalCandidateMatchRequest
+from app.services.admin_service import (
+    admin_assert_actor,
+    create_admin_agency,
+    create_admin_user,
+    get_admin_dashboard,
+    list_admin_agencies,
+    list_admin_users,
+    set_admin_agency_status,
+    update_admin_agency,
+    update_admin_user,
+)
 from app.utils.responses import success_response
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-ops_access = Depends(require_role("admin", "internal_ops"))
-admin_access = Depends(require_role("admin"))
+super_admin_access = Depends(require_role("SUPER_ADMIN"))
 
 
-class AllowlistUpsertPayload(BaseModel):
-    email: str
-    note: str | None = None
+def _actor(request: Request) -> dict[str, str]:
+    return admin_assert_actor(getattr(request.state, "user", None) or {})
 
 
-def _require_admin_request(request: Request) -> dict:
-    user = getattr(request.state, "user", None) or {}
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Forbidden")
-    return user
+@router.get("/dashboard")
+def dashboard(_: dict = super_admin_access, db: Session = Depends(get_db)):
+    return success_response(AdminDashboardSummary(**get_admin_dashboard(db=db)).model_dump())
 
 
-@router.post("/allowlist")
-def add_allowlisted_user(
-    payload: AllowlistUpsertPayload,
+@router.get("/agencies")
+def agencies(
+    search: str = Query("", alias="search"),
+    status: str = Query("", alias="status"),
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, alias="pageSize", ge=1, le=100),
+    _: dict = super_admin_access,
+    db: Session = Depends(get_db),
+):
+    result = list_admin_agencies(db=db, search=search, status=status, page=page, page_size=pageSize)
+    return success_response(
+        AgencyListResponse(
+            items=[AgencySummary(**item) for item in result["items"]],
+            pagination=AdminPagination(**result["pagination"]),
+        ).model_dump()
+    )
+
+
+@router.post("/agencies")
+def create_agency(
+    payload: AgencyCreateRequest,
     request: Request,
+    _: dict = super_admin_access,
     db: Session = Depends(get_db),
 ):
-    admin_user = _require_admin_request(request)
-    email = (payload.email or "").strip().lower()
-    if not email:
-        raise HTTPException(status_code=400, detail="email is required")
-    admin_id = UUID(str(admin_user.get("id"))) if admin_user.get("id") else None
-
-    row = db.scalar(select(AllowedUserEntity).where(AllowedUserEntity.email == email))
-    now_note = (payload.note or "").strip() or None
-    if not row:
-        row = AllowedUserEntity(
-            id=uuid4(),
-            email=email,
-            added_by=admin_id,
-            note=now_note,
-            is_active=True,
-        )
-        db.add(row)
-    else:
-        row.added_by = admin_id
-        row.note = now_note if now_note is not None else row.note
-        row.is_active = True
-
-    db.flush()
-    db.refresh(row)
-    record_audit_event(
-        db=db,
-        actor_id=admin_user.get("id"),
-        action="admin_allowlist_add",
-        entity_type="allowed_user",
-        entity_id=email,
-        metadata={"email": email, "note": row.note, "isActive": row.is_active},
-    )
-    db.commit()
-    return success_response(
-        {
-            "id": str(row.id),
-            "email": row.email,
-            "addedBy": str(row.added_by or ""),
-            "note": row.note,
-            "isActive": row.is_active,
-            "createdAt": row.created_at.isoformat() if row.created_at else None,
-        }
-    )
+    return success_response(create_admin_agency(db=db, actor_id=_actor(request)["id"], payload=payload))
 
 
-@router.delete("/allowlist/{email}")
-def deactivate_allowlisted_user(
-    email: str,
+@router.patch("/agencies/{agencyId}")
+def edit_agency(
+    agencyId: str,
+    payload: AgencyUpdateRequest,
     request: Request,
+    _: dict = super_admin_access,
     db: Session = Depends(get_db),
 ):
-    admin_user = _require_admin_request(request)
-    normalized = (email or "").strip().lower()
-    if not normalized:
-        raise HTTPException(status_code=400, detail="email is required")
-
-    row = db.scalar(select(AllowedUserEntity).where(AllowedUserEntity.email == normalized))
-    if row:
-        row.is_active = False
-        db.flush()
-        record_audit_event(
-            db=db,
-            actor_id=admin_user.get("id"),
-            action="admin_allowlist_deactivate",
-            entity_type="allowed_user",
-            entity_id=normalized,
-            metadata={"email": normalized, "isActive": row.is_active},
-        )
-        db.commit()
-    return success_response(
-        {
-            "updated": bool(row),
-            "email": normalized,
-            "isActive": bool(row.is_active) if row else False,
-        }
-    )
+    return success_response(update_admin_agency(db=db, actor_id=_actor(request)["id"], agency_id=agencyId, payload=payload))
 
 
-@router.get("/allowlist")
-def list_allowlisted_users(
+@router.post("/agencies/{agencyId}/deactivate")
+def deactivate_agency(
+    agencyId: str,
     request: Request,
+    _: dict = super_admin_access,
     db: Session = Depends(get_db),
 ):
-    _require_admin_request(request)
-    rows = db.scalars(select(AllowedUserEntity).order_by(AllowedUserEntity.created_at.desc())).all()
+    return success_response(set_admin_agency_status(db=db, actor_id=_actor(request)["id"], agency_id=agencyId, is_active=False))
+
+
+@router.post("/agencies/{agencyId}/reactivate")
+def reactivate_agency(
+    agencyId: str,
+    request: Request,
+    _: dict = super_admin_access,
+    db: Session = Depends(get_db),
+):
+    return success_response(set_admin_agency_status(db=db, actor_id=_actor(request)["id"], agency_id=agencyId, is_active=True))
+
+
+@router.get("/users")
+def users(
+    search: str = Query("", alias="search"),
+    agencyId: str = Query("", alias="agencyId"),
+    role: str = Query("", alias="role"),
+    status: str = Query("", alias="status"),
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, alias="pageSize", ge=1, le=100),
+    _: dict = super_admin_access,
+    db: Session = Depends(get_db),
+):
+    result = list_admin_users(db=db, search=search, agency_id=agencyId, role=role, status=status, page=page, page_size=pageSize)
     return success_response(
-        [
-            {
-                "id": str(row.id),
-                "email": row.email,
-                "addedBy": str(row.added_by or ""),
-                "note": row.note,
-                "isActive": row.is_active,
-                "createdAt": row.created_at.isoformat() if row.created_at else None,
-            }
-            for row in rows
-        ]
+        UserListResponse(
+            items=[UserSummary(**item) for item in result["items"]],
+            pagination=AdminPagination(**result["pagination"]),
+        ).model_dump()
     )
 
 
-@router.get("/diagnostics")
-def diagnostics(_: dict = ops_access, db: Session = Depends(get_db)):
-    return success_response(get_platform_diagnostics(db))
-
-
-@router.get("/config/diagnostics")
-def config_only(_: dict = ops_access):
-    return success_response(config_diagnostics())
-
-
-@router.get("/queue/deadletters")
-def deadletters(
-    queueType: str | None = Query(None, alias="queueType"),
-    limit: int = Query(100, ge=1, le=500),
-    _: dict = ops_access,
-):
-    return success_response(inspect_dead_letters(queue_type=queueType, limit=limit))
-
-
-@router.post("/queue/deadletters/replay")
-def replay_deadletter(
-    queueType: str = Query(..., alias="queueType"),
-    jobId: str = Query(..., alias="jobId"),
-    user: dict = ops_access,
+@router.post("/users")
+def create_user(
+    payload: UserCreateRequest,
+    request: Request,
+    _: dict = super_admin_access,
     db: Session = Depends(get_db),
 ):
-    result = replay_dead_letter(queueType, jobId)
-    record_audit_event(
-        db=db,
-        actor_id=user.get("id"),
-        action="admin_replay_dead_letter",
-        entity_type="queue",
-        entity_id=f"{queueType}:{jobId}",
-        metadata={"queueType": queueType, "jobId": jobId, **result},
-    )
-    db.commit()
-    return success_response(result)
+    return success_response(create_admin_user(db=db, actor_id=_actor(request)["id"], payload=payload))
 
 
-@router.post("/candidates/refresh")
-def refresh_candidate(
-    jobId: str = Query(..., alias="jobId"),
-    candidateId: str = Query(..., alias="candidateId"),
-    user: dict = ops_access,
+@router.patch("/users/{userId}")
+def edit_user(
+    userId: str,
+    payload: UserUpdateRequest,
+    request: Request,
+    _: dict = super_admin_access,
     db: Session = Depends(get_db),
 ):
-    result = refresh_candidate_manually(db, jobId, candidateId)
-    record_audit_event(
-        db=db,
-        actor_id=user.get("id"),
-        action="admin_refresh_candidate",
-        entity_type="candidate_profile",
-        entity_id=f"{jobId}:{candidateId}",
-        metadata={"jobId": jobId, "candidateId": candidateId, **result},
-    )
-    db.commit()
-    return success_response(result)
+    return success_response(update_admin_user(db=db, actor_id=_actor(request)["id"], user_id=userId, payload=payload))
 
 
-@router.get("/recruiters/{recruiter_id}/learning")
-def recruiter_learning(
-    recruiter_id: str,
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(get_recruiter_learning_state(db, recruiter_id))
-
-
-@router.get("/outreach/analytics")
-def outreach_analytics(
-    jobId: str | None = Query(None, alias="jobId"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(get_outreach_analytics(db, job_id=jobId))
-
-
-@router.get("/audit")
-def audit_logs(
-    limit: int = Query(100, ge=1, le=500),
-    _: dict = admin_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(inspect_audit_logs(db, limit=limit))
-
-
-@router.get("/notifications")
-def notifications(
-    jobId: str | None = Query(None, alias="jobId"),
-    unreadOnly: bool = Query(False, alias="unreadOnly"),
-    limit: int = Query(100, ge=1, le=500),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(get_notification_center(db, job_id=jobId, unread_only=unreadOnly, limit=limit))
-
-
-@router.post("/notifications/read")
-def mark_notification_read(
-    notificationKey: str = Query(..., alias="notificationKey"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    row = NotificationEventRepository(db).mark_read(notificationKey)
-    if row:
-        record_audit_event(
-            db=db,
-            actor_id=None,
-            action="notification_read",
-            entity_type="notification",
-            entity_id=row.id,
-            metadata={"notificationKey": notificationKey},
-        )
-        db.commit()
-    return success_response({"read": bool(row), "notificationKey": notificationKey})
-
-
-@router.get("/pipeline/board")
-def pipeline_board(
-    jobId: str | None = Query(None, alias="jobId"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(get_pipeline_board(db, job_id=jobId))
-
-
-@router.get("/pipeline/analytics")
-def pipeline_analytics(
-    jobId: str | None = Query(None, alias="jobId"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(get_pipeline_analytics(db, job_id=jobId))
-
-
-@router.get("/tasks")
-def recruiter_tasks(
-    jobId: str | None = Query(None, alias="jobId"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    if not jobId:
-        return success_response([])
-    rows = RecruiterTaskRepository(db).list_for_job(jobId, status="open", limit=100)
-    return success_response(
-        [
-            {
-                "id": row.id,
-                "jobId": row.job_id,
-                "candidateId": row.candidate_id,
-                "title": row.title,
-                "body": row.body,
-                "status": row.status,
-                "priority": row.priority,
-                "dueAt": row.due_at.isoformat() if row.due_at else None,
-                "metadata": row.metadata_json,
-                "createdAt": row.created_at.isoformat(),
-                "updatedAt": row.updated_at.isoformat(),
-            }
-            for row in rows
-        ]
-    )
-
-
-@router.get("/notes")
-def recruiter_notes(
-    jobId: str = Query(..., alias="jobId"),
-    candidateId: str | None = Query(None, alias="candidateId"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    rows = RecruiterNoteRepository(db).list_for_job(jobId, candidate_id=candidateId, limit=100)
-    return success_response(
-        [
-            {
-                "id": row.id,
-                "jobId": row.job_id,
-                "candidateId": row.candidate_id,
-                "recruiterId": row.recruiter_id,
-                "noteType": row.note_type,
-                "body": row.body,
-                "status": row.status,
-                "metadata": row.metadata_json,
-                "createdAt": row.created_at.isoformat(),
-                "updatedAt": row.updated_at.isoformat(),
-            }
-            for row in rows
-        ]
-    )
-
-
-@router.post("/notes")
-def create_recruiter_note(
-    payload: dict,
-    user: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    job_id = str(payload.get("jobId") or "").strip()
-    body = str(payload.get("body") or "").strip()
-    if not job_id or not body:
-        return success_response({"created": False, "error": "jobId and body are required"})
-    row = RecruiterNoteRepository(db).create(
-        job_id=job_id,
-        candidate_id=str(payload.get("candidateId") or "").strip() or None,
-        recruiter_id=str(user.get("id") or "").strip() or None,
-        note_type=str(payload.get("noteType") or "note").strip(),
-        body=body,
-        metadata=dict(payload.get("metadata") or {}),
-    )
-    db.commit()
-    return success_response(
-        {
-            "id": row.id,
-            "jobId": row.job_id,
-            "candidateId": row.candidate_id,
-            "body": row.body,
-            "noteType": row.note_type,
-        }
-    )
-
-
-@router.get("/automation/jobs")
-def automation_jobs(
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(list_automation_jobs(db=db, limit=100))
-
-
-@router.post("/tasks")
-def create_recruiter_task(
-    payload: dict,
-    user: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    job_id = str(payload.get("jobId") or "").strip()
-    title = str(payload.get("title") or "").strip()
-    if not job_id or not title:
-        return success_response({"created": False, "error": "jobId and title are required"})
-    row = RecruiterTaskRepository(db).create(
-        job_id=job_id,
-        candidate_id=str(payload.get("candidateId") or "").strip() or None,
-        recruiter_id=str(user.get("id") or "").strip() or None,
-        title=title,
-        body=str(payload.get("body") or "").strip(),
-        status=str(payload.get("status") or "open").strip(),
-        priority=str(payload.get("priority") or "normal").strip(),
-        metadata=dict(payload.get("metadata") or {}),
-    )
-    db.commit()
-    return success_response(
-        {
-            "id": row.id,
-            "jobId": row.job_id,
-            "candidateId": row.candidate_id,
-            "title": row.title,
-            "status": row.status,
-        }
-    )
-
-
-@router.patch("/tasks/{task_id}/done")
-def complete_recruiter_task(
-    task_id: str,
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    row = RecruiterTaskRepository(db).mark_done(task_id)
-    if not row:
-        return success_response({"updated": False})
-    db.commit()
-    return success_response({"updated": True, "taskId": row.id, "status": row.status})
-
-
-@router.get("/events")
-def platform_events(
-    limit: int = Query(50, ge=1, le=200),
-    _: dict = ops_access,
-):
-    return success_response(list_recent_platform_events(limit=limit))
-
-
-@router.get("/intelligence")
-def operational_intelligence(
-    jobId: str | None = Query(None, alias="jobId"),
-    candidateId: str | None = Query(None, alias="candidateId"),
-    _: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    return success_response(get_operational_intelligence_snapshot(db=db, job_id=jobId, candidate_id=candidateId))
-
-
-@router.post("/embedding/migrate")
-def migrate_embedding(
-    embeddingVersion: str = Query(..., alias="embeddingVersion"),
-    vectorSize: int = Query(..., alias="vectorSize", ge=1, le=4096),
-    user: dict = admin_access,
-    db: Session = Depends(get_db),
-):
-    result = force_embedding_migration(db, embeddingVersion, vectorSize)
-    record_audit_event(
-        db=db,
-        actor_id=user.get("id"),
-        action="admin_embedding_migrate",
-        entity_type="embedding_version",
-        entity_id=embeddingVersion,
-        metadata={"vectorSize": vectorSize, **result},
-    )
-    db.commit()
-    return success_response(result)
-
-
-@router.post("/internal-candidates/match")
-def match_internal_candidates(
-    payload: InternalCandidateMatchRequest,
-    user: dict = ops_access,
-    db: Session = Depends(get_db),
-):
-    _ = user
-    matcher = InternalCandidateMatcher(db)
-    try:
-        result = matcher.match(job_id=payload.jobId, filters=payload.filters, limit=payload.limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return success_response(result)
+@router.get("/agencies/all")
+def all_agencies(_: dict = super_admin_access, db: Session = Depends(get_db)):
+    result = AdminRepository(db).list_agencies(page=1, page_size=1000)
+    return success_response(result["items"])

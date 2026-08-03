@@ -51,6 +51,13 @@ def _is_placeholder_value(value: str | None) -> bool:
     )
 
 
+def _normalize_job_post_mode(value: str | None) -> tuple[str, bool]:
+    normalized = (value or "").strip().upper()
+    if normalized in {"DRY_RUN", "LIVE"}:
+        return normalized, False
+    return "DRY_RUN", True
+
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_BASE_URL = os.getenv(
     "GEMINI_BASE_URL",
@@ -287,7 +294,8 @@ FEEDBACK_WEIGHTS = {
 LINKEDIN_ENABLED = os.getenv("LINKEDIN_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 LINKEDIN_BROWSER_PROFILE_ROOT = os.getenv("LINKEDIN_BROWSER_PROFILE_ROOT", "").strip()
 LINKEDIN_PROFILE_ROOT = os.getenv("LINKEDIN_PROFILE_ROOT", LINKEDIN_BROWSER_PROFILE_ROOT).strip()
-LINKEDIN_HEADLESS = os.getenv("LINKEDIN_HEADLESS", "false").strip().lower() in {"1", "true", "yes", "on"}
+LINKEDIN_HEADLESS = os.getenv("LINKEDIN_HEADLESS", "true").strip().lower() in {"1", "true", "yes", "on"}
+LINKEDIN_DEBUG = os.getenv("LINKEDIN_DEBUG", "false").strip().lower() in {"1", "true", "yes", "on"}
 LINKEDIN_DEFAULT_TIMEOUT = int(os.getenv("LINKEDIN_DEFAULT_TIMEOUT", "30000"))
 LINKEDIN_DOWNLOAD_PATH = os.getenv("LINKEDIN_DOWNLOAD_PATH", "backend/storage/linkedin_downloads").strip()
 LINKEDIN_VIEWPORT_WIDTH = int(os.getenv("LINKEDIN_VIEWPORT_WIDTH", "1440"))
@@ -297,6 +305,16 @@ LINKEDIN_PROXY_SERVER = os.getenv("LINKEDIN_PROXY_SERVER", "").strip()
 LINKEDIN_STEALTH_ENABLED = os.getenv("LINKEDIN_STEALTH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 LINKEDIN_DEFAULT_CONNECTION_LIMIT = int(os.getenv("LINKEDIN_DEFAULT_CONNECTION_LIMIT", "0"))
 LINKEDIN_DEFAULT_MESSAGE_LIMIT = int(os.getenv("LINKEDIN_DEFAULT_MESSAGE_LIMIT", "0"))
+LINKEDIN_JOB_POST_MODE, LINKEDIN_JOB_POST_MODE_INVALID = _normalize_job_post_mode(os.getenv("LINKEDIN_JOB_POST_MODE", "DRY_RUN"))
+LINKEDIN_CONNECTION_QUEUE_NAME = os.getenv("LINKEDIN_CONNECTION_QUEUE_NAME", "linkedin_connection_queue").strip() or "linkedin_connection_queue"
+LINKEDIN_CONNECTION_REQUESTS_PER_HOUR = int(os.getenv("LINKEDIN_CONNECTION_REQUESTS_PER_HOUR", "15"))
+LINKEDIN_CONNECTION_DAILY_LIMIT = int(os.getenv("LINKEDIN_CONNECTION_DAILY_LIMIT", "50"))
+LINKEDIN_CONNECTION_RANDOM_DELAY_MIN_SECONDS = int(os.getenv("LINKEDIN_CONNECTION_RANDOM_DELAY_MIN_SECONDS", "5"))
+LINKEDIN_CONNECTION_RANDOM_DELAY_MAX_SECONDS = int(os.getenv("LINKEDIN_CONNECTION_RANDOM_DELAY_MAX_SECONDS", "45"))
+LINKEDIN_CONNECTION_BACKOFF_BASE_SECONDS = int(os.getenv("LINKEDIN_CONNECTION_BACKOFF_BASE_SECONDS", "30"))
+LINKEDIN_CONNECTION_BACKOFF_MAX_SECONDS = int(os.getenv("LINKEDIN_CONNECTION_BACKOFF_MAX_SECONDS", "1800"))
+LINKEDIN_CONNECTION_MAX_RETRIES = int(os.getenv("LINKEDIN_CONNECTION_MAX_RETRIES", "5"))
+LINKEDIN_ACCEPTANCE_CHECK_INTERVAL_MINUTES = int(os.getenv("LINKEDIN_ACCEPTANCE_CHECK_INTERVAL_MINUTES", "10"))
 
 
 def missing_secret_warnings() -> list[str]:
@@ -436,6 +454,22 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             issues.append(ConfigIssue(key="SLACK_SIGNING_SECRET", severity="critical", message="Slack signing secret is required in production"))
         if not COOKIE_SECURE:
             issues.append(ConfigIssue(key="COOKIE_SECURE", severity="warning", message="Secure cookies are disabled in a production-like environment"))
+    if LINKEDIN_JOB_POST_MODE_INVALID:
+        issues.append(
+            ConfigIssue(
+                key="LINKEDIN_JOB_POST_MODE",
+                severity="critical",
+                message="LINKEDIN_JOB_POST_MODE must be DRY_RUN or LIVE",
+            )
+        )
+    elif LINKEDIN_JOB_POST_MODE == "LIVE" and not resolved_production:
+        issues.append(
+            ConfigIssue(
+                key="LINKEDIN_JOB_POST_MODE",
+                severity="warning",
+                message="LIVE LinkedIn job posting is configured outside production and will be blocked by the worker",
+            )
+        )
     if OUTREACH_PROVIDER == "resend" and not RESEND_API_KEY:
         issues.append(ConfigIssue(key="RESEND_API_KEY", severity="warning", message="Real outreach is configured but RESEND_API_KEY is missing"))
     if not RESEND_WEBHOOK_SECRET and not WEBHOOK_SHARED_SECRET:
@@ -466,6 +500,7 @@ def config_diagnostics() -> dict[str, Any]:
             "pdl_enabled": PDL_ENABLED,
             "internal_candidate_db": USE_INTERNAL_CANDIDATE_DB,
             "serpapi_enabled": SERPAPI_ENABLED,
+            "linkedin_job_post_mode": LINKEDIN_JOB_POST_MODE,
         },
         "derived": {
             "cookie_secure": COOKIE_SECURE,

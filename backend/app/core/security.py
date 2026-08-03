@@ -25,6 +25,17 @@ from app.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 _ephemeral_jwt_secret: str | None = None
+SUPER_ADMIN_ROLE = "superadmin"
+AGENCY_USER_ROLE = "AGENCY_USER"
+_ROLE_ALIASES = {
+    "admin": SUPER_ADMIN_ROLE,
+    "super_admin": SUPER_ADMIN_ROLE,
+    "superadmin": SUPER_ADMIN_ROLE,
+    "internal_ops": SUPER_ADMIN_ROLE,
+    "agency_user": AGENCY_USER_ROLE,
+    "recruiter": AGENCY_USER_ROLE,
+    "user": AGENCY_USER_ROLE,
+}
 
 
 def _resolved_jwt_secret() -> str:
@@ -48,12 +59,23 @@ def _resolved_jwt_secret() -> str:
     return _ephemeral_jwt_secret
 
 
-def create_access_token(*, user_id: str, email: str, role: str = "recruiter") -> str:
+def normalize_app_role(role: str | None) -> str:
+    normalized = (role or "").strip().lower()
+    if not normalized:
+        return AGENCY_USER_ROLE
+    return _ROLE_ALIASES.get(normalized, AGENCY_USER_ROLE)
+
+
+def is_super_admin_role(role: str | None) -> bool:
+    return normalize_app_role(role) == SUPER_ADMIN_ROLE
+
+
+def create_access_token(*, user_id: str, email: str, role: str = AGENCY_USER_ROLE) -> str:
     expiry = datetime.now(tz=timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS)
     payload = {
         "sub": user_id,
         "email": email,
-        "role": (role or "recruiter").strip().lower() or "recruiter",
+        "role": normalize_app_role(role),
         "exp": int(expiry.timestamp()),
     }
     return jwt.encode(payload, _resolved_jwt_secret(), algorithm="HS256")
@@ -134,7 +156,7 @@ def get_current_user(request: Request) -> dict[str, str]:
 
 
 def _normalize_role(role: str) -> str:
-    return (role or "").strip().lower()
+    return normalize_app_role(role)
 
 
 def has_role(user: dict[str, str], allowed_roles: Iterable[str]) -> bool:

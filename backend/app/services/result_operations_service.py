@@ -12,6 +12,7 @@ from app.db.repositories import (
     CandidateLifecycleEventRepository,
     CandidateProfileRepository,
     CompanyRepository,
+    InterviewRepository,
     OutreachEventRepository,
     JobRepository,
 )
@@ -125,12 +126,26 @@ def _normalize_email_list(values: list[str]) -> list[str]:
     return normalized
 
 
+def _result_agency_matches(*, db: Session, job_id: str, candidate_id: str, agency_id: str) -> bool:
+    normalized_agency_id = _normalize_text(agency_id)
+    if not normalized_agency_id:
+        return False
+    profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+    if profile and _normalize_text(getattr(profile, "agency_id", "")) == normalized_agency_id:
+        return True
+    interview = InterviewRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+    if interview and _normalize_text(getattr(interview, "agency_id", "")) == normalized_agency_id:
+        return True
+    job = JobRepository(db).get(job_id)
+    return bool(job and _normalize_text(getattr(job, "company_id", "")) == normalized_agency_id)
+
+
 def record_result_decision(
     *,
     db: Session,
     workflow_token: str,
     recruiter_id: str,
-    company_id: str,
+    agency_id: str,
     decision: str,
 ) -> dict[str, Any]:
     from app.services.results_service import resolve_result_context
@@ -146,7 +161,7 @@ def record_result_decision(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not job or not profile:
         raise APIError("Result not found", status_code=404)
-    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+    if not _result_agency_matches(db=db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id):
         raise APIError("Forbidden", status_code=403)
 
     current_status = str(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", "") or "results_ready").strip().lower()
@@ -237,7 +252,7 @@ def advance_result_candidate(
     db: Session,
     workflow_token: str,
     recruiter_id: str,
-    company_id: str,
+    agency_id: str,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     from app.services.results_service import resolve_result_context
@@ -249,7 +264,7 @@ def advance_result_candidate(
     profile = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
     if not job or not profile:
         raise APIError("Result not found", status_code=404)
-    if str(getattr(job, "company_id", "") or "").strip() != str(company_id or "").strip():
+    if not _result_agency_matches(db=db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id):
         raise APIError("Forbidden", status_code=403)
     ats_metadata = getattr(profile, "ats_metadata", {}) if isinstance(getattr(profile, "ats_metadata", {}), dict) else {}
     current_status = _normalize_text(getattr(profile, "ats_status", "") or getattr(profile, "candidate_status", "")).lower()

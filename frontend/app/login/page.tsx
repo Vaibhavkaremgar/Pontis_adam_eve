@@ -13,20 +13,21 @@
 import Image from "next/image";
 import { GoogleLogin } from "@react-oauth/google";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useAppContext } from "@/context/AppContext";
 import { requestOtp, verifyOtp, loginWithGoogle } from "@/lib/api/auth";
+import { isSuperAdminRole } from "@/lib/roles";
 import { cn } from "@/lib/utils";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function LoginPage() {
   const router = useRouter();
-  const { setUser } = useAppContext();
+  const { setUser, user, isSessionReady } = useAppContext();
 
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
@@ -40,6 +41,11 @@ export default function LoginPage() {
 
   const emailTrimmed = email.trim();
   const hasValidEmail = EMAIL_REGEX.test(emailTrimmed);
+
+  useEffect(() => {
+    if (!isSessionReady || !user) return;
+    router.replace(isSuperAdminRole(user.role) ? "/admin" : "/workspace");
+  }, [isSessionReady, router, user]);
 
   const handleRequestOtp = async () => {
     if (!hasValidEmail) {
@@ -75,7 +81,7 @@ export default function LoginPage() {
         return;
       }
       setUser(result.data.user);
-      router.push("/workspace");
+      router.push(isSuperAdminRole(result.data.user.role) ? "/admin" : "/workspace");
     } finally {
       setIsLoading(false);
     }
@@ -134,7 +140,7 @@ export default function LoginPage() {
                     }
                     setUser(result.data.user);
                     setIsGoogleLoading(false);
-                    router.push("/workspace");
+                    router.push(isSuperAdminRole(result.data.user.role) ? "/admin" : "/workspace");
                   }}
                   onError={() => {
                     console.log("Google error", "Google OAuth button failed or was dismissed");

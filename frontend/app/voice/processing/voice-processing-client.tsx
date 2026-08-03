@@ -19,7 +19,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAppContext } from "@/context/AppContext";
-import { getCandidatesWithMode } from "@/lib/api/candidates";
 import { refineWithVoice } from "@/lib/api/voice";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +31,7 @@ const STEPS = [
 
 export default function VoiceProcessingClient() {
   const router = useRouter();
-  const { user, isSessionReady, jobId, voiceNotes, setCandidates, setIsRefined } = useAppContext();
+  const { user, isSessionReady, jobId, voiceNotes, setIsRefined } = useAppContext();
   const [completed, setCompleted] = useState(0);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -67,30 +66,19 @@ export default function VoiceProcessingClient() {
 
       if (!refineResult.success) {
         setError(refineResult.error || "Could not refine job. Proceeding with original.");
-        // Soft failure - still try to fetch candidates
       }
 
-      setCompleted(3);
-
-      const candidatesResult = await getCandidatesWithMode({ jobId, mode: "volume", refresh: true });
-      if (cancelled) return;
-
-      if (!candidatesResult.success || !candidatesResult.data) {
-        setError(candidatesResult.error || "Could not load candidates.");
-        return;
-      }
-
-      setCandidates(candidatesResult.data);
       setIsRefined(true);
       setCompleted(4);
       setDone(true);
+      router.push("/review");
     };
 
     run();
     return () => {
       cancelled = true;
     };
-  }, [jobId, voiceNotes, setCandidates, setIsRefined]);
+  }, [jobId, router, voiceNotes, setIsRefined]);
 
   const noTranscript = jobId && voiceNotes.length === 0;
 

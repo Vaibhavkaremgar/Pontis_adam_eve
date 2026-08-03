@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -24,6 +25,11 @@ from app.services.redis_service import get_redis
 logger = logging.getLogger(__name__)
 
 QUEUE_TYPES = (
+    "voice_intake_finalize",
+    "linkedin_job_posting",
+    "linkedin_connection_queue",
+    "linkedin_acceptance_check_queue",
+    "linkedin_message_queue",
     "outreach_send",
     "outreach_send_after_enrichment",
     "outreach_followup",
@@ -34,9 +40,17 @@ QUEUE_TYPES = (
     "reply_processing",
 )
 
+_LINKEDIN_QUEUE_TYPES = {
+    "linkedin_job_posting",
+    "linkedin_connection_queue",
+    "linkedin_acceptance_check_queue",
+    "linkedin_message_queue",
+}
+
 _STOP_EVENT = threading.Event()
 _WORKERS: list[threading.Thread] = []
 _HANDLERS: dict[str, Callable[[dict[str, Any]], Any]] = {}
+_WORKER_START_LOCK = threading.Lock()
 _MAINTENANCE_INTERVAL_SECONDS = 5
 _QUEUE_ALERT_STUCK_SECONDS = max(30, JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS * 2)
 _QUEUE_CLEANUP_RAN = False
@@ -151,6 +165,25 @@ def enqueue_job(
         idempotency_key = _default_idempotency_key(queue_type, normalized_payload)
 
     if redis is None:
+        if queue_type in _LINKEDIN_QUEUE_TYPES:
+            background_job_id = job_id or uuid4().hex
+            normalized_payload["job_id"] = background_job_id
+            normalized_payload["status"] = "deferred"
+            normalized_payload["deferred_reason"] = "redis_unavailable"
+            logger.warning(
+                "queue_unavailable deferred queue_type=%s job_id=%s reason=redis_unavailable",
+                queue_type,
+                background_job_id,
+            )
+            return {
+                "queued": False,
+                "deferred": True,
+                "mode": "deferred",
+                "queue_type": queue_type,
+                "job_id": background_job_id,
+                "idempotency_key": idempotency_key,
+                "reason": "redis_unavailable",
+            }
         if APP_ENV in {"production", "prod"}:
             logger.critical("queue_unavailable_production queue_type=%s", queue_type)
             raise QueueError(f"Redis is required for queue '{queue_type}' in production")
@@ -238,6 +271,7 @@ def enqueue_job(
         delay_seconds=delay_seconds,
         max_attempts=normalized_payload["max_attempts"],
     )
+    start_job_queue_workers()
     return {
         "queued": True,
         "queue_type": queue_type,
@@ -265,6 +299,126 @@ def _run_inline_fallback(queue_type: str, job_id: str, payload: dict[str, Any]) 
 
 
 def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]:
+    if queue_type == "voice_intake_finalize":
+        from app.db.session import SessionLocal
+        from app.services.voice_workflow_service import finalize_voice_intake
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            job_id = str(payload.get("job_id") or "").strip()
+            if not job_id:
+                return {"status": "skipped", "reason": "missing_job_id"}
+            voice_notes = list(payload.get("voice_notes") or [])
+            transcript = str(payload.get("transcript") or "")
+            with SessionLocal() as db:
+                return finalize_voice_intake(db=db, job_id=job_id, voice_notes=voice_notes, transcript=transcript)
+
+        return _handler
+
+    if queue_type == "linkedin_job_posting":
+        from app.db.session import SessionLocal
+        from app.db.repositories import JobRepository
+        from app.linkedin import LinkedInJobEntity
+        from app.linkedin.models import LinkedInAccountEntity
+        from app.linkedin.repository import LinkedInAccountRepository
+        from app.linkedin.job_posting import JobPostingWorker
+        from app.services.voice_workflow_service import build_linkedin_job_posting_spec
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            job_id = str(payload.get("job_id") or "").strip()
+            if not job_id:
+                return {"status": "skipped", "reason": "missing_job_id"}
+            with SessionLocal() as db:
+                job = JobRepository(db).get(job_id)
+                if not job:
+                    return {"status": "skipped", "reason": "job_missing", "job_id": job_id}
+
+                account = db.query(LinkedInAccountEntity).filter(
+                    LinkedInAccountEntity.company_id == str(getattr(job, "company_id", "") or "").strip(),
+                    LinkedInAccountEntity.status == "active",
+                ).order_by(LinkedInAccountEntity.created_at.asc()).first()
+                if not account:
+                    structured = dict(getattr(job, "structured_data", {}) or {})
+                    linkedin_posting = dict(structured.get("linkedinPosting") or {})
+                    linkedin_posting.update({
+                        "status": "skipped",
+                        "reason": "linkedin_account_missing",
+                        "updatedAt": _utcnow().isoformat(),
+                    })
+                    structured["linkedinPosting"] = linkedin_posting
+                    JobRepository(db).update_structured_fields(job_id=job_id, structured_data=structured)
+                    db.commit()
+                    return {"status": "skipped", "reason": "linkedin_account_missing", "job_id": job_id}
+
+                spec = build_linkedin_job_posting_spec(db=db, job_id=job_id)
+                worker = JobPostingWorker(account_id=str(account.id), spec=spec)
+                result = asyncio.run(worker.run())
+                status_value = getattr(getattr(result, "status", None), "value", getattr(result, "status", "failed"))
+                structured = dict(getattr(job, "structured_data", {}) or {})
+                linkedin_posting = dict(structured.get("linkedinPosting") or {})
+                linkedin_posting.update(
+                    {
+                        "status": str(status_value or "failed"),
+                        "reviewReached": bool(getattr(result, "review_reached", False)),
+                        "dryRun": bool(getattr(result, "dry_run", True)),
+                        "executionMode": getattr(getattr(result, "execution_mode", None), "value", str(getattr(result, "execution_mode", "DRY_RUN"))),
+                        "publishState": getattr(getattr(result, "publish_state", None), "value", str(getattr(result, "publish_state", ""))),
+                        "publishClicked": bool(getattr(result, "publish_clicked", False)),
+                        "published": bool(getattr(result, "published", False)),
+                        "publishConfirmed": bool(getattr(result, "publish_confirmed", False)),
+                        "durationMs": int(getattr(result, "duration_ms", 0) or 0),
+                        "completedSteps": list(getattr(result, "completed_steps", []) or []),
+                        "errors": list(getattr(result, "errors", []) or []),
+                        "warnings": list(getattr(result, "warnings", []) or []),
+                        "updatedAt": _utcnow().isoformat(),
+                    }
+                )
+                structured["linkedinPosting"] = linkedin_posting
+                JobRepository(db).update_structured_fields(job_id=job_id, structured_data=structured)
+                db.commit()
+                return {
+                    "status": linkedin_posting["status"],
+                    "job_id": job_id,
+                    "account_id": str(account.id),
+                    "review_reached": bool(getattr(result, "review_reached", False)),
+                    "dry_run": bool(getattr(result, "dry_run", True)),
+                    "execution_mode": getattr(getattr(result, "execution_mode", None), "value", str(getattr(result, "execution_mode", "DRY_RUN"))),
+                    "publish_state": getattr(getattr(result, "publish_state", None), "value", str(getattr(result, "publish_state", ""))),
+                    "publish_clicked": bool(getattr(result, "publish_clicked", False)),
+                    "published": bool(getattr(result, "published", False)),
+                    "publish_confirmed": bool(getattr(result, "publish_confirmed", False)),
+                }
+
+        return _handler
+
+    if queue_type == "linkedin_connection_queue":
+        from app.services.candidate_acquisition_service import process_linkedin_connection_queue_job
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            job_id = str(payload.get("job_id") or "").strip()
+            candidate_id = str(payload.get("candidate_id") or "").strip()
+            linkedin_url = str(payload.get("linkedin_url") or "").strip()
+            if not job_id or not candidate_id or not linkedin_url:
+                return {"status": "skipped", "reason": "missing_job_candidate_or_url"}
+            return process_linkedin_connection_queue_job(payload)
+
+        return _handler
+
+    if queue_type == "linkedin_acceptance_check_queue":
+        from app.services.candidate_engagement_service import process_linkedin_acceptance_check_queue_job
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            return process_linkedin_acceptance_check_queue_job(payload)
+
+        return _handler
+
+    if queue_type == "linkedin_message_queue":
+        from app.services.candidate_engagement_service import process_linkedin_message_queue_job
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            return process_linkedin_message_queue_job(payload)
+
+        return _handler
+
     if queue_type == "outreach_send":
         from app.db.session import SessionLocal
         from app.services.outreach_service import process_outreach
@@ -751,31 +905,32 @@ def _worker_loop(queue_type: str, index: int) -> None:
 
 
 def start_job_queue_workers() -> None:
-    if _WORKERS:
-        return
+    with _WORKER_START_LOCK:
+        if _WORKERS:
+            return
 
-    global _QUEUE_CLEANUP_RAN
-    if not _QUEUE_CLEANUP_RAN:
-        try:
-            cleanup_orphaned_queue_entries()
-        except Exception as exc:
-            logger.warning("job_queue_cleanup_failed error=%s", str(exc), exc_info=exc)
-        finally:
-            _QUEUE_CLEANUP_RAN = True
+        global _QUEUE_CLEANUP_RAN
+        if not _QUEUE_CLEANUP_RAN:
+            try:
+                cleanup_orphaned_queue_entries()
+            except Exception as exc:
+                logger.warning("job_queue_cleanup_failed error=%s", str(exc), exc_info=exc)
+            finally:
+                _QUEUE_CLEANUP_RAN = True
 
-    _STOP_EVENT.clear()
-    per_type = max(1, int(JOB_QUEUE_WORKERS_PER_TYPE))
-    for queue_type in QUEUE_TYPES:
-        for index in range(per_type):
-            thread = threading.Thread(target=_worker_loop, args=(queue_type, index), daemon=True)
-            thread.start()
-            _WORKERS.append(thread)
-    logger.info(
-        "job_queue_workers_started queue_types=%s per_type=%s total_workers=%s",
-        len(QUEUE_TYPES),
-        per_type,
-        len(_WORKERS),
-    )
+        _STOP_EVENT.clear()
+        per_type = max(1, int(JOB_QUEUE_WORKERS_PER_TYPE))
+        for queue_type in QUEUE_TYPES:
+            for index in range(per_type):
+                thread = threading.Thread(target=_worker_loop, args=(queue_type, index), daemon=True)
+                thread.start()
+                _WORKERS.append(thread)
+        logger.info(
+            "job_queue_workers_started queue_types=%s per_type=%s total_workers=%s",
+            len(QUEUE_TYPES),
+            per_type,
+            len(_WORKERS),
+        )
 
 
 def stop_job_queue_workers(*, timeout_seconds: float = 5.0) -> None:

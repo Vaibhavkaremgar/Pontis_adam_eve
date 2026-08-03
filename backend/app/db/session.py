@@ -252,6 +252,14 @@ def _ensure_optional_schema_columns() -> None:
             if "role" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(32) NOT NULL DEFAULT 'recruiter'"))
 
+        if "allowed_users" in table_names:
+            allowed_columns = {column["name"] for column in inspector.get_columns("allowed_users")}
+            if "agency_id" not in allowed_columns:
+                if dialect == "postgresql":
+                    conn.execute(text("ALTER TABLE allowed_users ADD COLUMN agency_id UUID NULL DEFAULT NULL"))
+                else:
+                    conn.execute(text("ALTER TABLE allowed_users ADD COLUMN agency_id VARCHAR(36) NULL DEFAULT NULL"))
+
         if "candidate_feedback" in table_names:
             feedback_columns = {column["name"] for column in inspector.get_columns("candidate_feedback")}
             if "recruiter_id" not in feedback_columns:
@@ -293,6 +301,44 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_status_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"))
             if "ats_metadata" not in candidate_columns:
                 conn.execute(text("ALTER TABLE candidates ADD COLUMN ats_metadata JSON NOT NULL DEFAULT '{}'"))
+            if "acquisition_status" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_status VARCHAR(32) NULL DEFAULT NULL"))
+            if "acquisition_status_reason" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_status_reason TEXT NULL DEFAULT NULL"))
+            if "acquisition_discovered_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_discovered_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_queued_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_queued_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_sending_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_sending_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_sent_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_sent_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_pending_acceptance_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_pending_acceptance_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_accepted_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_accepted_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_declined_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_declined_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_failed_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_failed_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_blocked_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_blocked_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_retrying_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_retrying_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "acquisition_last_error" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_last_error TEXT NULL DEFAULT NULL"))
+            if "acquisition_queue_job_id" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_queue_job_id VARCHAR(255) NULL DEFAULT NULL"))
+            if "acquisition_idempotency_key" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_idempotency_key VARCHAR(255) NULL DEFAULT NULL"))
+            if "acquisition_retry_count" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_retry_count INTEGER NOT NULL DEFAULT 0"))
+            if "acquisition_priority" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_priority INTEGER NOT NULL DEFAULT 0"))
+            if "acquisition_account_id" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_account_id UUID NULL DEFAULT NULL"))
+            if "acquisition_updated_at" not in candidate_columns:
+                conn.execute(text("ALTER TABLE candidates ADD COLUMN acquisition_updated_at TIMESTAMPTZ NULL DEFAULT NULL"))
 
         if "candidate_applications" in table_names:
             application_columns = {column["name"] for column in inspector.get_columns("candidate_applications")}

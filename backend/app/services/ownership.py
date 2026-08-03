@@ -2,11 +2,20 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.core.security import is_super_admin_role
 from app.db.repositories import CompanyRepository, JobRepository
+from app.models.entities import UserEntity
 from app.utils.exceptions import APIError
 
 
+def _is_super_admin(*, db: Session, user_id: str) -> bool:
+    user = db.get(UserEntity, user_id)
+    return bool(user and is_super_admin_role(getattr(user, "role", "")))
+
+
 def resolve_company_id_for_user(*, db: Session, user_id: str) -> str:
+    if _is_super_admin(db=db, user_id=user_id):
+        return ""
     company = CompanyRepository(db).get_latest_for_user(user_id=user_id)
     if not company:
         raise APIError("Company not found", status_code=404)
@@ -14,6 +23,8 @@ def resolve_company_id_for_user(*, db: Session, user_id: str) -> str:
 
 
 def assert_job_ownership(*, db: Session, job_id: str, user_id: str) -> None:
+    if _is_super_admin(db=db, user_id=user_id):
+        return
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
@@ -23,6 +34,8 @@ def assert_job_ownership(*, db: Session, job_id: str, user_id: str) -> None:
 
 
 def assert_job_company_ownership(*, db: Session, job_id: str, user_id: str) -> None:
+    if _is_super_admin(db=db, user_id=user_id):
+        return
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)

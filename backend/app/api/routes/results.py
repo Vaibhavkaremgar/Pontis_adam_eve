@@ -3,14 +3,16 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.params import Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, is_super_admin_role
 from app.db.session import get_db
-from app.services.ownership import assert_job_company_ownership, resolve_company_id_for_user
+from app.models.entities import JobEntity
 from app.services.results_service import get_result_by_workflow_token, list_results, resolve_result_context, stream_result_video
 from app.services.result_operations_service import advance_result_candidate, record_result_decision
 from app.db.repositories import JobRepository
+from app.utils.exceptions import APIError
 from app.utils.responses import success_response
 
 router = APIRouter(tags=["results"])
@@ -39,14 +41,31 @@ class DecisionPayload(BaseModel):
     decision: str
 
 
+def _current_agency_id(request: Request) -> str:
+    agency_id = str(
+        getattr(request.state, "agency_id", "")
+        or getattr(request.state, "company_id", "")
+        or (request.state.user.get("agency_id") if isinstance(getattr(request.state, "user", {}), dict) else "")
+        or (request.state.user.get("company_id") if isinstance(getattr(request.state, "user", {}), dict) else "")
+        or ""
+    ).strip()
+    return agency_id
+
+
 @router.get("/results/jobs")
 def results_jobs_list(
     request: Request,
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    company_id = resolve_company_id_for_user(db=db, user_id=request.state.user["id"])
-    jobs = JobRepository(db).list_by_company(company_id) if company_id else []
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
+    if not agency_id and is_super_admin:
+        jobs = db.scalars(select(JobEntity)).all()
+    else:
+        if not agency_id:
+            raise APIError("Forbidden", status_code=403)
+        jobs = JobRepository(db).list_by_company(agency_id)
     return success_response({
         "jobs": [
             {"jobId": job.id, "title": job.title or "Untitled", "location": job.location or "", "createdAt": job.created_at.isoformat() if job.created_at else None}
@@ -62,9 +81,16 @@ def results_list(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_job_company_ownership(db=db, job_id=jobId, user_id=request.state.user["id"])
-    company_id = resolve_company_id_for_user(db=db, user_id=request.state.user["id"])
-    return success_response(list_results(db=db, job_id=jobId, recruiter_id=request.state.user["id"], company_id=company_id))
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
+    job = JobRepository(db).get(jobId)
+    if not job:
+        raise APIError("Job not found", status_code=404)
+    if not agency_id and is_super_admin:
+        agency_id = str(getattr(job, "company_id", "") or "").strip()
+    if str(getattr(job, "company_id", "") or "").strip() != agency_id:
+        raise APIError("Forbidden", status_code=403)
+    return success_response(list_results(db=db, job_id=jobId, recruiter_id=request.state.user["id"], agency_id=agency_id))
 
 
 @router.get("/results/{workflowToken}")
@@ -74,13 +100,17 @@ def results_detail(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    if not agency_id and is_super_admin:
+        job = JobRepository(db).get(context["jobId"])
+        agency_id = str(getattr(job, "company_id", "") or "").strip()
     payload = get_result_by_workflow_token(
         db=db,
         workflow_token=workflowToken,
         recruiter_id=request.state.user["id"],
-        company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
+        agency_id=agency_id,
     )
     return success_response(payload)
 
@@ -92,13 +122,17 @@ def results_video(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    if not agency_id and is_super_admin:
+        job = JobRepository(db).get(context["jobId"])
+        agency_id = str(getattr(job, "company_id", "") or "").strip()
     return stream_result_video(
         db=db,
         workflow_token=workflowToken,
         recruiter_id=request.state.user["id"],
-        company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
+        agency_id=agency_id,
         range_header=request.headers.get("range", ""),
     )
 
@@ -111,14 +145,18 @@ def results_decision(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    if not agency_id and is_super_admin:
+        job = JobRepository(db).get(context["jobId"])
+        agency_id = str(getattr(job, "company_id", "") or "").strip()
     return success_response(
         record_result_decision(
             db=db,
             workflow_token=workflowToken,
             recruiter_id=request.state.user["id"],
-            company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
+            agency_id=agency_id,
             decision=payload.decision,
         )
     )
@@ -132,14 +170,18 @@ def results_advance(
     _: dict = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
     context = resolve_result_context(db=db, workflow_token=workflowToken)
-    assert_job_company_ownership(db=db, job_id=context["jobId"], user_id=request.state.user["id"])
+    if not agency_id and is_super_admin:
+        job = JobRepository(db).get(context["jobId"])
+        agency_id = str(getattr(job, "company_id", "") or "").strip()
     return success_response(
         advance_result_candidate(
             db=db,
             workflow_token=workflowToken,
             recruiter_id=request.state.user["id"],
-            company_id=resolve_company_id_for_user(db=db, user_id=request.state.user["id"]),
+            agency_id=agency_id,
             payload=payload.model_dump(),
         )
     )

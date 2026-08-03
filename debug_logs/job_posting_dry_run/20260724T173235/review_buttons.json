@@ -1,0 +1,56 @@
+[
+  {
+    "index": 0,
+    "tag": "button",
+    "text": "Skip to main content",
+    "aria_label": "",
+    "title": "",
+    "role": "",
+    "class": "artdeco-button artdeco-button--muted artdeco-button--2 artdeco-button--secondary ember-view",
+    "outerHTML": "<button id=\"ember67\" class=\"artdeco-button artdeco-button--muted artdeco-button--2 artdeco-button--secondary ember-view\"><!---->\n<span class=\"artdeco-button__text\">\n    Skip to main content\n</span></button>",
+    "bbox": {
+      "x": 148.40000915527344,
+      "y": 8,
+      "width": 183.12498474121094,
+      "height": 32
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 1,
+    "tag": "button",
+    "text": "Keyboard shortcuts",
+    "aria_label": "",
+    "title": "",
+    "role": "",
+    "class": "artdeco-button artdeco-button--muted artdeco-button--2 artdeco-button--secondary ember-view ml4",
+    "outerHTML": "<button id=\"ember69\" class=\"artdeco-button artdeco-button--muted artdeco-button--2 artdeco-button--secondary ember-view ml4\" data-test-hotkey-modal-trigger=\"\"><!---->\n<span class=\"artdeco-button__text\">\n    Keyboard shortcuts\n</span></button>",
+    "bbox": {
+      "x": 347.5249938964844,
+      "y": 8,
+      "width": 172.73751831054688,
+      "height": 32
+    },
+    "visible": true,
+    "enabled": true
+  },
+  {
+    "index": 2,
+    "tag": "button",
+    "text": "Close jump menu",
+    "aria_label": "",
+    "title": "",
+    "role": "",
+    "class": "global-nav__a11y-menu-close artdeco-button artdeco-button--circle artdeco-button--muted artdeco-button--2 artdeco-button--tertiary ember-view",
+    "outerHTML": "<button id=\"ember70\" class=\"global-nav__a11y-menu-close artdeco-button artdeco-button--circle artdeco-button--muted artdeco-button--2 artdeco-button--tertiary ember-view\">        <svg role=\"none\" aria-hidden=\"true\" class=\"artdeco-button__icon \" xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" data-supported-dps=\"24x24\" data-test-icon=\"close-medium\">\n<!---->    \n    <use href=\"#close-medium\" width=\"24\" height=\"24\"></use>\n</svg>\n\n\n<span class=\"artdeco-button__text\">\n  ",
+    "bbox": {
+      "x": 1236.4000244140625,
+      "y": 4,
+      "width": 40,
+      "height": 40
+    },
+    "visible": true,
+    "enabled": true
+  }
+]

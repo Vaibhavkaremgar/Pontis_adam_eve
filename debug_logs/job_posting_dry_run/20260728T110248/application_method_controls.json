@@ -1,0 +1,46 @@
+[
+  {
+    "index": 0,
+    "tag": "button",
+    "role": "",
+    "text": "Cancel",
+    "aria_label": "",
+    "aria_expanded": "",
+    "placeholder": "",
+    "class": "artdeco-button artdeco-button--muted artdeco-button--1 artdeco-button--tertiary ember-view job-posting-hero-editable-item__cancel",
+    "outerHTML": "<button id=\"ember143\" class=\"artdeco-button artdeco-button--muted artdeco-button--1 artdeco-button--tertiary ember-view job-posting-hero-editable-item__cancel\"><!---->\n<span class=\"artdeco-button__text\">\n    Cancel\n</span></button>"
+  },
+  {
+    "index": 1,
+    "tag": "button",
+    "role": "",
+    "text": "",
+    "aria_label": "",
+    "aria_expanded": "false",
+    "placeholder": "",
+    "class": "job-posting-shared-apply-method-header__tooltip-trigger-button",
+    "outerHTML": "<button aria-controls=\"artdeco-hoverable-artdeco-gen-45\" aria-expanded=\"false\" class=\"job-posting-shared-apply-method-header__tooltip-trigger-button\" type=\"button\">\n          <svg role=\"img\" aria-hidden=\"false\" aria-label=\"More information about applicant collection\" xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" data-supported-dps=\"16x16\" data-test-icon=\"question-small\" data-rtl=\"true\" data-rtl-ignore=\"iw\">\n<!---->    \n    <use href=\"#question-small\" width=\"16\" he"
+  },
+  {
+    "index": 2,
+    "tag": "button",
+    "role": "",
+    "text": "On LinkedIn",
+    "aria_label": "Receive applicants On LinkedIn",
+    "aria_expanded": "false",
+    "placeholder": "",
+    "class": "artdeco-dropdown__trigger artdeco-dropdown__trigger--placement-bottom ember-view job-posting-shared-apply-method__dropdown-trigger",
+    "outerHTML": "<button aria-expanded=\"false\" aria-label=\"Receive applicants On LinkedIn\" id=\"apply-method-dropdown-trigger\" class=\"artdeco-dropdown__trigger artdeco-dropdown__trigger--placement-bottom ember-view job-posting-shared-apply-method__dropdown-trigger\" type=\"button\" tabindex=\"0\">\n        <div class=\"t-14 t-normal t-black text-align-left full-width\">\n          On LinkedIn\n        </div>\n      \n  <li-icon aria-hidden=\"true\" type=\"caret-filled-down-icon\" class=\"artdeco-dropdown__trigger-icon\" size=\"smal"
+  },
+  {
+    "index": 3,
+    "tag": "input",
+    "role": "",
+    "text": "",
+    "aria_label": "",
+    "aria_expanded": "",
+    "placeholder": "example@example.com",
+    "class": "",
+    "outerHTML": "<input name=\"job-posting-apply-method-value\" id=\"apply-method-input-ember144\" required=\"\" placeholder=\"example@example.com\" type=\"email\" style=\"\">"
+  }
+]
