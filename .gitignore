@@ -18,3 +18,4 @@ backend/linkedin_profiles/
 **/Service Worker/
 **/GrShaderCache/
 **/DawnCache/
+backend/tests/*.py
