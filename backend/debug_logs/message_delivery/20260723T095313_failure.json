@@ -1,7 +1,0 @@
-{
-  "ts": "20260723T095313",
-  "url": "https://www.linkedin.com/in/vaibhav-karemgar/",
-  "error": "typing failed: Locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for locator(\".msg-overlay-conversation-bubble\").nth(1).locator(\"[aria-label*='message' i][contenteditable='true']\").first\n    - locator resolved to <div dir=\"auto\" role=\"textbox\" aria-multiline=\"true\" contenteditable=\"true\" aria-label=\"Write a message…\" class=\"msg-form__contenteditable t-14 t-black--light t-normal flex-grow-1 full-height notranslate↵          ↵          ↵          ↵          \">…</div>\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - element is outside of the viewport\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - element is outside of the viewport\n    - retrying click action\n      - waiting 100ms\n    9 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - element is outside of the viewport\n    - retrying click action\n      - waiting 500ms\n",
-  "message_text_len": 33,
-  "title": "Vaibhav karemgar | LinkedIn"
-}
