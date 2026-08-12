@@ -189,6 +189,7 @@ def test_missing_agency_id_is_rejected_before_query(monkeypatch):
 
 
 def test_cross_agency_access_is_rejected(monkeypatch):
+    """Job ownership check: caller agency_id must match job.company_id."""
     job = _job()
     job.company_id = "agency-a"
     monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
@@ -199,3 +200,145 @@ def test_cross_agency_access_is_rejected(monkeypatch):
         matcher.match_internal_candidates_for_job(db=_Db([]), job_id="job-1", agency_id="agency-b")
 
     assert error.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# New tests for shared-pool behaviour
+# ---------------------------------------------------------------------------
+
+def test_candidate_from_different_agency_is_returned(monkeypatch):
+    """A candidate owned by agency-B must be returned when matching a job owned by agency-A."""
+    job = _job()  # company_id = "agency-1"
+    # Candidate belongs to a completely different agency.
+    cross_agency_row = _row(id="record-x", candidate_id="candidate-x", agency_id="agency-other")
+
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "Senior Python Django engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1, 0.2])
+    monkeypatch.setattr(matcher, "count_collection_points", lambda _name: 1)
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", lambda **_kwargs: [
+        {"score": 0.85, "payload": {"candidateRecordId": "record-x", "embeddingVersion": matcher.EMBEDDING_VERSION}}
+    ])
+
+    result = matcher.match_internal_candidates_for_job(
+        db=_Db([cross_agency_row]), job_id="job-1", agency_id="agency-1"
+    )
+
+    assert len(result["candidates"]) == 1
+    assert result["candidates"][0].id == "candidate-x"
+    assert result["fallback_eligible"] is False
+
+
+def test_qdrant_filter_does_not_include_agency_id(monkeypatch):
+    """The Qdrant metadata filter must contain only embeddingVersion, not agencyId."""
+    job = _job()
+    captured_filters: dict = {}
+
+    def capture_search(**kwargs):
+        captured_filters.update(kwargs.get("metadata_filters") or {})
+        return [{"score": 0.9, "payload": {"candidateRecordId": "record-1", "embeddingVersion": matcher.EMBEDDING_VERSION}}]
+
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+    monkeypatch.setattr(matcher, "count_collection_points", lambda _name: 1)
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", capture_search)
+
+    matcher.match_internal_candidates_for_job(db=_Db([_row()]), job_id="job-1", agency_id="agency-1")
+
+    assert "agencyId" not in captured_filters
+    assert "embeddingVersion" in captured_filters
+    assert captured_filters["embeddingVersion"] == matcher.EMBEDDING_VERSION
+
+
+def test_wrong_embedding_version_candidate_is_excluded(monkeypatch):
+    """A DB row whose embedding_version does not match EMBEDDING_VERSION must be dropped."""
+    job = _job()
+    stale_row = _row(embedding_version="v1_legacy")
+
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+    monkeypatch.setattr(matcher, "count_collection_points", lambda _name: 1)
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", lambda **_kwargs: [
+        {"score": 0.99, "payload": {"candidateRecordId": "record-1", "embeddingVersion": "v1_legacy"}}
+    ])
+
+    result = matcher.match_internal_candidates_for_job(
+        db=_Db([stale_row]), job_id="job-1", agency_id="agency-1"
+    )
+
+    assert result["candidates"] == []
+    assert result["fallback_eligible"] is True
+
+
+def test_non_embedded_candidate_is_excluded(monkeypatch):
+    """A DB row with embedding_status != EMBEDDED must be dropped even if Qdrant returns it."""
+    job = _job()
+    processing_row = _row(embedding_status="PROCESSING")
+
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+    monkeypatch.setattr(matcher, "count_collection_points", lambda _name: 1)
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", lambda **_kwargs: [
+        {"score": 0.99, "payload": {"candidateRecordId": "record-1", "embeddingVersion": matcher.EMBEDDING_VERSION}}
+    ])
+
+    result = matcher.match_internal_candidates_for_job(
+        db=_Db([processing_row]), job_id="job-1", agency_id="agency-1"
+    )
+
+    assert result["candidates"] == []
+    assert result["fallback_eligible"] is True
+
+
+def test_contact_information_is_not_exposed_in_match_results(monkeypatch):
+    """email, phone, and resumeText must be None/absent in initial matching results."""
+    job = _job()
+    row = _row(email="ada@example.com", phone="+1-555-0100", resume_text="secret resume content")
+
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "Senior Python Django engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+    monkeypatch.setattr(matcher, "count_collection_points", lambda _name: 1)
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", lambda **_kwargs: [
+        {"score": 0.9, "payload": {"candidateRecordId": "record-1", "embeddingVersion": matcher.EMBEDDING_VERSION}}
+    ])
+
+    result = matcher.match_internal_candidates_for_job(
+        db=_Db([row]), job_id="job-1", agency_id="agency-1"
+    )
+
+    assert len(result["candidates"]) == 1
+    candidate = result["candidates"][0]
+    assert candidate.email is None
+    assert candidate.resumeText is None
+    # profileData may carry candidateRecordId for internal linking but must not carry contact fields
+    profile_data = candidate.profileData or {}
+    assert "email" not in profile_data
+    assert "phone" not in profile_data
+
+
+def test_job_ownership_check_still_rejects_wrong_agency(monkeypatch):
+    """The job ownership guard must fire before any Qdrant or DB query."""
+    job = _job()
+    job.company_id = "correct-agency"
+    search_called = {"value": False}
+
+    def _unexpected_search(**_kwargs):
+        search_called["value"] = True
+        raise AssertionError("search must not run when agency mismatch")
+
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", _unexpected_search)
+
+    with pytest.raises(matcher.APIError) as error:
+        matcher.match_internal_candidates_for_job(
+            db=_Db([]), job_id="job-1", agency_id="wrong-agency"
+        )
+
+    assert error.value.status_code == 403
+    assert search_called["value"] is False

@@ -204,7 +204,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         hits = search_internal_candidate_chunks(
             query_vector=get_embedding(job_text),
             limit=max(1, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K),
-            metadata_filters={"agencyId": str(agency_id), "embeddingVersion": EMBEDDING_VERSION},
+            metadata_filters={"embeddingVersion": EMBEDDING_VERSION},
             raise_on_unavailable=True,
             allow_unfiltered_fallback=False,
         )
@@ -224,7 +224,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         }
 
     record_ids = list(dict.fromkeys(_text((hit.get("payload") or {}).get("candidateRecordId")) for hit in hits if _text((hit.get("payload") or {}).get("candidateRecordId"))))
-    rows = db.scalars(select(CandidateProfileEntity).where(CandidateProfileEntity.id.in_(record_ids), CandidateProfileEntity.agency_id == str(agency_id))).all() if record_ids else []
+    rows = db.scalars(select(CandidateProfileEntity).where(CandidateProfileEntity.id.in_(record_ids))).all() if record_ids else []
     row_by_id = {str(row.id): row for row in rows}
     job_skills = _job_skills(job)
     job_tokens = _tokens(job_skills)
