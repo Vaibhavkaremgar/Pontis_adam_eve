@@ -1,6 +1,17 @@
 from types import SimpleNamespace
+import os
+import sys
+from pathlib import Path
 
 import pytest
+
+os.environ.setdefault("JWT_SECRET", "test-secret")
+os.environ.setdefault("PUBLIC_APP_URL", "http://localhost:3000")
+os.environ.setdefault("INTERNAL_API_KEY", "test-internal-key")
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.services import internal_candidate_semantic_service as matcher
 from app.services.qdrant_service import QdrantUnavailableError
@@ -158,3 +169,33 @@ def test_candidates_are_ordered_by_final_hybrid_score(monkeypatch):
     ])
     result = matcher.match_internal_candidates_for_job(db=_Db(rows), job_id="job-1", agency_id="agency-1")
     assert [item.id for item in result["candidates"]] == ["candidate-2", "candidate-1"]
+
+
+def test_missing_agency_id_is_rejected_before_query(monkeypatch):
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: _job())
+    called = {"value": False}
+
+    def _unexpected_query(**_kwargs):
+        called["value"] = True
+        raise AssertionError("search should not run when agency_id is missing")
+
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", _unexpected_query)
+
+    with pytest.raises(matcher.APIError) as error:
+        matcher.match_internal_candidates_for_job(db=_Db([]), job_id="job-1", agency_id="")
+
+    assert error.value.code == "missing_agency_id"
+    assert called["value"] is False
+
+
+def test_cross_agency_access_is_rejected(monkeypatch):
+    job = _job()
+    job.company_id = "agency-a"
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "engineer")
+    monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+
+    with pytest.raises(matcher.APIError) as error:
+        matcher.match_internal_candidates_for_job(db=_Db([]), job_id="job-1", agency_id="agency-b")
+
+    assert error.value.status_code == 403

@@ -189,6 +189,8 @@ def _candidate_result(row: CandidateProfileEntity, item: dict[str, Any]) -> Cand
 
 def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: str, limit: int | None = None) -> dict[str, Any]:
     started = time.perf_counter()
+    if not _text(agency_id):
+        raise APIError("agency_id is required for candidate matching", status_code=400, code="missing_agency_id", retryable=False)
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)

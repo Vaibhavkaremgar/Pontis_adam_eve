@@ -131,6 +131,22 @@ def _candidate_refresh_fingerprint(value: Any) -> str:
     except Exception:
         return str(value)
 
+
+def resolve_job_agency_id(job: Any) -> str:
+    """Resolve the authoritative agency UUID for a job record."""
+    if job is None:
+        return ""
+    for attr in ("company_id", "agency_id"):
+        value = str(getattr(job, attr, "") or "").strip()
+        if value:
+            return value
+    agency = getattr(job, "agency", None)
+    if agency is not None:
+        value = str(getattr(agency, "id", "") or "").strip()
+        if value:
+            return value
+    return ""
+
 SKILL_SYNONYMS = {
     "js": "javascript",
     "nodejs": "node",
@@ -3335,7 +3351,13 @@ def fetch_ranked_candidates(
         from app.services.internal_candidate_semantic_service import match_internal_candidates_for_job
 
         job_for_matching = JobRepository(db).get(job_id)
-        agency_for_matching = str(getattr(job_for_matching, "company_id", "") or "")
+        agency_for_matching = resolve_job_agency_id(job_for_matching)
+        if not agency_for_matching:
+            logger.warning(
+                "candidate_refresh_skipped job_id=%s reason=missing_agency_id",
+                job_id,
+            )
+            raise APIError("agency_id is required for candidate matching", status_code=400, code="missing_agency_id", retryable=False)
         return list(match_internal_candidates_for_job(db=db, job_id=job_id, agency_id=agency_for_matching)["candidates"])
     jobs = JobRepository(db)
     job = jobs.get(job_id)

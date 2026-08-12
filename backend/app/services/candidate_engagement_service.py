@@ -19,6 +19,7 @@ from app.linkedin.models import LinkedInConnectionEntity, LinkedInConversationEn
 from app.linkedin.playwright.browser_manager import BrowserManager
 from app.linkedin.playwright.profile_inspector import LinkedInProfileInspector
 from app.linkedin.playwright.profile_types import LinkedInProfileConnectionState
+from app.linkedin.profile_resolver import has_linkedin_configuration
 from app.linkedin.repository import LinkedInConnectionRepository
 from app.linkedin.workers.messaging_worker import LinkedInMessagingWorker
 from app.linkedin.workers.messaging_types import LinkedInMessagingWorkerStatus
@@ -77,6 +78,13 @@ def _utcnow() -> datetime:
 
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _linkedin_configuration_missing(account_id: str) -> bool:
+    account_id = _normalize_text(account_id)
+    if not account_id:
+        return True
+    return not has_linkedin_configuration(account_id)
 
 
 def _transition_key(*, job_id: str, candidate_id: str, from_status: str, to_status: str, source: str, metadata: dict[str, Any]) -> str:
@@ -423,6 +431,9 @@ async def _inspect_connections_for_account(
     from app.linkedin.repository import LinkedInAccountRepository
 
     summary = {"checked": 0, "accepted": 0, "pending": 0, "declined": 0, "restricted": 0, "unknown": 0, "queued_messages": 0}
+    if _linkedin_configuration_missing(account_id):
+        logger.info("linkedin_acceptance_skipped account_id=%s reason=linkedin_not_configured", account_id)
+        return summary
     browser_manager = BrowserManager(account_id=account_id)
     context = None
     try:
@@ -739,7 +750,12 @@ def process_linkedin_acceptance_check_queue_job(payload: dict[str, Any]) -> dict
         grouped[str(row.account_id)].append(row)
 
     summary = {"checked": 0, "accepted": 0, "pending": 0, "declined": 0, "restricted": 0, "unknown": 0, "queued_messages": 0}
+    skipped_accounts = 0
     for account_id, rows in grouped.items():
+        if _linkedin_configuration_missing(account_id):
+            skipped_accounts += 1
+            logger.info("linkedin_acceptance_skipped account_id=%s reason=linkedin_not_configured", account_id)
+            continue
         account_summary = asyncio.run(
             _inspect_connections_for_account(
                 account_id=account_id,
@@ -752,6 +768,20 @@ def process_linkedin_acceptance_check_queue_job(payload: dict[str, Any]) -> dict
         for key, value in account_summary.items():
             summary[key] = int(summary.get(key, 0)) + int(value or 0)
 
+    if skipped_accounts and not summary["checked"]:
+        return {
+            "status": "skipped",
+            "reason": "linkedin_not_configured",
+            "checked": 0,
+            "accepted": 0,
+            "pending": 0,
+            "declined": 0,
+            "restricted": 0,
+            "unknown": 0,
+            "queued_messages": 0,
+            "skipped_accounts": skipped_accounts,
+        }
+
     logger.info(
         "linkedin_acceptance_check_completed checked=%s accepted=%s pending=%s declined=%s restricted=%s unknown=%s queued_messages=%s",
         summary["checked"],
@@ -762,6 +792,8 @@ def process_linkedin_acceptance_check_queue_job(payload: dict[str, Any]) -> dict
         summary["unknown"],
         summary["queued_messages"],
     )
+    if skipped_accounts:
+        summary["skipped_accounts"] = skipped_accounts
     return summary
 
 

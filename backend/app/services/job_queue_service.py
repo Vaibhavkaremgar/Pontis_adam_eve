@@ -55,6 +55,23 @@ _WORKER_START_LOCK = threading.Lock()
 _MAINTENANCE_INTERVAL_SECONDS = 5
 _QUEUE_ALERT_STUCK_SECONDS = max(30, JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS * 2)
 _QUEUE_CLEANUP_RAN = False
+# Cleanup contracts are queue-type specific. Some queues are JobEntity-backed,
+# while others use a different owning record or intentionally have no safe
+# automatic orphan proof.
+_JOB_ENTITY_BACKED_QUEUE_TYPES = {
+    "voice_intake_finalize",
+    "linkedin_job_posting",
+    "linkedin_connection_queue",
+    "linkedin_message_queue",
+    "outreach_send",
+    "outreach_send_after_enrichment",
+    "embedding_generation",
+}
+_NEVER_AUTO_CLEAN_QUEUE_TYPES = {
+    "linkedin_acceptance_check_queue",
+    "outreach_followup",
+    "reply_processing",
+}
 
 
 def _utcnow() -> datetime:
@@ -638,6 +655,56 @@ def _requeue_stale_processing(redis, queue_type: str) -> int:
     return stale_count
 
 
+def _queue_entry_is_definitely_orphaned(*, queue_type: str, payload: dict[str, Any], valid_job_ids: set[str]) -> bool | None:
+    queue_type = (queue_type or "").strip()
+    payload = dict(payload or {})
+
+    if queue_type in _NEVER_AUTO_CLEAN_QUEUE_TYPES:
+        return None
+
+    queue_job_id = str(payload.get("job_id") or "").strip()
+    if queue_type in _JOB_ENTITY_BACKED_QUEUE_TYPES:
+        if not queue_job_id:
+            return None
+        return queue_job_id not in valid_job_ids
+
+    if queue_type == "candidate_application_processing":
+        application_id = str(payload.get("application_id") or queue_job_id).strip()
+        if not application_id:
+            return None
+        from app.db.session import SessionLocal
+        from app.db.repositories import CandidateApplicationRepository
+
+        with SessionLocal() as db:
+            return CandidateApplicationRepository(db).get(application_id) is None
+
+    if queue_type == "candidate_embedding_index":
+        candidate_record_id = str(payload.get("candidate_record_id") or "").strip()
+        if not candidate_record_id:
+            return None
+        from app.db.session import SessionLocal
+        from app.models.entities import CandidateProfileEntity
+
+        with SessionLocal() as db:
+            return db.get(CandidateProfileEntity, candidate_record_id) is None
+
+    if queue_type in {"candidate_enrichment", "candidate_refresh", "outreach_send_after_enrichment"}:
+        candidate_id = str(payload.get("candidate_id") or "").strip()
+        if not candidate_id:
+            return None
+        from app.db.session import SessionLocal
+        from app.models.entities import CandidateProfileEntity
+        from sqlalchemy import select
+
+        with SessionLocal() as db:
+            candidate_exists = db.scalar(
+                select(CandidateProfileEntity.id).where(CandidateProfileEntity.candidate_id == candidate_id)
+            )
+            return candidate_exists is None
+
+    return None
+
+
 def _mark_dead(redis, queue_type: str, job_id: str, payload: dict[str, Any], error: str) -> None:
     payload = dict(payload)
     payload["status"] = "dead_letter"
@@ -813,7 +880,8 @@ def cleanup_orphaned_queue_entries() -> dict[str, int]:
 
         for job_id in ready_ids:
             payload = _load_job(redis, queue_type, str(job_id))
-            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+            orphaned = _queue_entry_is_definitely_orphaned(queue_type=queue_type, payload=payload, valid_job_ids=valid_job_ids)
+            if orphaned is not True:
                 continue
             idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
             if idempotency_key:
@@ -825,7 +893,8 @@ def cleanup_orphaned_queue_entries() -> dict[str, int]:
 
         for job_id in processing_ids:
             payload = _load_job(redis, queue_type, str(job_id))
-            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+            orphaned = _queue_entry_is_definitely_orphaned(queue_type=queue_type, payload=payload, valid_job_ids=valid_job_ids)
+            if orphaned is not True:
                 continue
             idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
             if idempotency_key:
@@ -838,7 +907,8 @@ def cleanup_orphaned_queue_entries() -> dict[str, int]:
 
         for job_id in delayed_ids:
             payload = _load_job(redis, queue_type, str(job_id))
-            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+            orphaned = _queue_entry_is_definitely_orphaned(queue_type=queue_type, payload=payload, valid_job_ids=valid_job_ids)
+            if orphaned is not True:
                 continue
             idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
             if idempotency_key:
@@ -850,7 +920,8 @@ def cleanup_orphaned_queue_entries() -> dict[str, int]:
 
         for job_id, raw_payload in dead_items.items():
             payload = _json_loads(raw_payload)
-            if payload and str(payload.get("job_id") or job_id).strip() in valid_job_ids:
+            orphaned = _queue_entry_is_definitely_orphaned(queue_type=queue_type, payload=payload, valid_job_ids=valid_job_ids)
+            if orphaned is not True:
                 continue
             idempotency_key = str((payload or {}).get("idempotency_key") or "").strip()
             if idempotency_key:

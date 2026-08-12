@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.repositories import JobRepository
 from app.schemas.candidate import CandidateExplanation, CandidateResult, InternalCandidateMatchItem
-from app.services.candidate_service import fetch_ranked_candidates
+from app.services.candidate_service import fetch_ranked_candidates, resolve_job_agency_id
 from app.services.internal_candidate_matcher_service import InternalCandidateMatchFilters
 from app.services.internal_candidate_semantic_service import match_internal_candidates_for_job
 from app.services.ranking.models import ranked_candidate_sort_key
@@ -168,10 +168,13 @@ class CandidateDiscoveryService:
         filters = self._build_internal_filters(calibrated_recruiter_preferences)
         del filters
         job = JobRepository(self.db).get(job_id)
+        agency_id = resolve_job_agency_id(job)
+        if not agency_id:
+            raise APIError("agency_id is required for candidate matching", status_code=400, code="missing_agency_id", retryable=False)
         result = match_internal_candidates_for_job(
             db=self.db,
             job_id=job_id,
-            agency_id=_as_text(getattr(job, "company_id", "")),
+            agency_id=agency_id,
             limit=limit or self.config.internal_match_limit,
         )
         items = [CandidateDiscoveryItem(candidate=item, source="internal") for item in result.get("candidates", [])]

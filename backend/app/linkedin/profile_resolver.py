@@ -38,3 +38,11 @@ def resolve_agency_profile_path(identifier: str) -> str:
     if resolved != root and root not in resolved.parents:
         raise ValueError("LinkedIn profile path is outside LINKEDIN_PROFILE_ROOT")
     return str(resolved)
+
+
+def has_linkedin_configuration(identifier: str) -> bool:
+    try:
+        resolve_agency_profile_path(identifier)
+    except ValueError:
+        return False
+    return True

@@ -40,6 +40,8 @@ if "redis" not in sys.modules:
 
 from app.services.job_queue_service import enqueue_job
 import app.services.refresh_scheduler as refresh_scheduler
+import app.services.candidate_engagement_service as candidate_engagement_service
+from app.linkedin.playwright.browser_exceptions import BrowserLaunchError
 
 
 class LinkedInLifecycleTests(unittest.TestCase):
@@ -66,6 +68,18 @@ class LinkedInLifecycleTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
+            def close(self):
+                return None
+
+            def close(self):
+                return None
+
+            def close(self):
+                return None
+
+            def close(self):
+                return None
+
         with patch("app.db.session.SessionLocal", return_value=_FakeSession()), patch(
             "app.linkedin.repository.LinkedInConnectionRepository"
         ) as mock_repo, patch("app.services.refresh_scheduler.enqueue_job") as mock_enqueue:
@@ -73,6 +87,110 @@ class LinkedInLifecycleTests(unittest.TestCase):
             refresh_scheduler._run_linkedin_acceptance_check_cycle()
 
         mock_enqueue.assert_not_called()
+
+    def test_acceptance_cycle_skips_when_linkedin_not_configured(self) -> None:
+        class _Row:
+            def __init__(self, account_id: str) -> None:
+                self.account_id = account_id
+
+        fake_db = object()
+
+        class _FakeSession:
+            def __enter__(self):
+                return fake_db
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def close(self):
+                return None
+
+        with patch("app.db.session.SessionLocal", return_value=_FakeSession()), patch(
+            "app.linkedin.repository.LinkedInConnectionRepository"
+        ) as mock_repo, patch("app.services.refresh_scheduler.has_linkedin_configuration", return_value=False), patch(
+            "app.services.refresh_scheduler.enqueue_job"
+        ) as mock_enqueue:
+            mock_repo.return_value.list_pending.return_value = [_Row("account-1")]
+            refresh_scheduler._run_linkedin_acceptance_check_cycle()
+
+        mock_enqueue.assert_not_called()
+
+    def test_acceptance_check_skips_unconfigured_account_without_playwright(self) -> None:
+        class _Row:
+            def __init__(self, account_id: str, candidate_id: str = "candidate-1", linkedin_url: str = "https://linkedin.com/in/candidate") -> None:
+                self.account_id = account_id
+                self.id = "connection-1"
+                self.candidate_id = candidate_id
+                self.linkedin_url = linkedin_url
+
+        fake_db = object()
+
+        class _FakeSession:
+            def __enter__(self):
+                return fake_db
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def close(self):
+                return None
+
+        with patch("app.db.session.SessionLocal", return_value=_FakeSession()), patch(
+            "app.linkedin.repository.LinkedInConnectionRepository"
+        ) as mock_repo, patch("app.services.candidate_engagement_service.has_linkedin_configuration", return_value=False), patch(
+            "app.services.candidate_engagement_service.BrowserManager"
+        ) as mock_browser:
+            mock_repo.return_value.list_pending.return_value = [_Row("account-1")]
+            result = candidate_engagement_service.process_linkedin_acceptance_check_queue_job({})
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "linkedin_not_configured")
+        mock_browser.assert_not_called()
+
+    def test_acceptance_check_browser_failure_stays_retryable(self) -> None:
+        class _Row:
+            def __init__(self, account_id: str, candidate_id: str = "candidate-1", linkedin_url: str = "https://linkedin.com/in/candidate") -> None:
+                self.account_id = account_id
+                self.id = "connection-1"
+                self.candidate_id = candidate_id
+                self.linkedin_url = linkedin_url
+
+        fake_db = object()
+
+        class _FakeSession:
+            def __enter__(self):
+                return fake_db
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def close(self):
+                return None
+
+        class _FakeBrowserManager:
+            def __init__(self, account_id: str) -> None:
+                self.account_id = account_id
+
+            async def get_browser(self):
+                raise BrowserLaunchError("Failed to start LinkedIn browser")
+
+            async def stop(self):
+                return None
+
+        with patch("app.db.session.SessionLocal", return_value=_FakeSession()), patch(
+            "app.linkedin.repository.LinkedInConnectionRepository"
+        ) as mock_repo, patch(
+            "app.services.candidate_engagement_service.has_linkedin_configuration",
+            return_value=True,
+        ), patch(
+            "app.services.candidate_engagement_service.BrowserManager",
+            side_effect=_FakeBrowserManager,
+        ):
+            mock_repo.return_value.list_pending.return_value = [_Row("account-1")]
+            with self.assertRaises(BrowserLaunchError):
+                candidate_engagement_service.process_linkedin_acceptance_check_queue_job({})
+
+        self.assertTrue(mock_repo.return_value.list_pending.called)
 
 
 if __name__ == "__main__":

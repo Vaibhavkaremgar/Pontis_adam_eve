@@ -23,6 +23,7 @@ from app.core.config import (
 )
 from app.db.repositories import CandidateProfileRepository, JobRepository
 from app.db.session import SessionLocal
+from app.linkedin.profile_resolver import has_linkedin_configuration
 from app.services.candidate_service import refresh_candidates_for_job
 from app.services.job_queue_service import enqueue_job
 
@@ -308,6 +309,10 @@ def _run_linkedin_acceptance_check_cycle() -> None:
             pending_rows = LinkedInConnectionRepository(db).list_pending()
             if not pending_rows:
                 logger.info("linkedin_acceptance_cycle_skipped reason=no_pending_connections")
+                return
+            configured_pending_rows = [row for row in pending_rows if has_linkedin_configuration(str(getattr(row, "account_id", "") or ""))]
+            if not configured_pending_rows:
+                logger.info("linkedin_acceptance_cycle_skipped reason=linkedin_not_configured")
                 return
         result = enqueue_job(
             "linkedin_acceptance_check_queue",
