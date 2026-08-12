@@ -36,7 +36,6 @@ def _parse_jsonish(value: Any) -> dict[str, Any]:
             return {}
     return {}
 
-
 def _to_iso(value: Any) -> str:
     raw = _normalize_text(value)
     if not raw:

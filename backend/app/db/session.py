@@ -104,6 +104,7 @@ def _verify_migrated_schema() -> None:
             "outreach_events",
             "notification_workflow_tokens",
             "recruiter_interest_requests",
+            "adam_eve_outbound_events",
             "inbound_email_replies",
             "inbound_email_attachments",
         }
@@ -815,6 +816,22 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE candidate_lifecycle_events ADD COLUMN transition_key VARCHAR(255) NOT NULL DEFAULT ''"))
             if "event_metadata" not in lifecycle_columns:
                 conn.execute(text(f"ALTER TABLE candidate_lifecycle_events ADD COLUMN event_metadata JSON NOT NULL DEFAULT {json_empty_object_default}"))
+
+        if "adam_eve_outbound_events" in table_names:
+            outbound_columns = {column["name"] for column in inspector.get_columns("adam_eve_outbound_events")}
+            if "event_id" not in outbound_columns:
+                if dialect == "postgresql":
+                    conn.execute(text("ALTER TABLE adam_eve_outbound_events ADD COLUMN event_id UUID NULL DEFAULT NULL"))
+                else:
+                    conn.execute(text("ALTER TABLE adam_eve_outbound_events ADD COLUMN event_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "notification_type" not in outbound_columns:
+                conn.execute(text("ALTER TABLE adam_eve_outbound_events ADD COLUMN notification_type VARCHAR(64) NOT NULL DEFAULT ''"))
+            if "payload" not in outbound_columns:
+                conn.execute(text(f"ALTER TABLE adam_eve_outbound_events ADD COLUMN payload JSON NOT NULL DEFAULT {json_empty_object_default}"))
+            if dialect == "postgresql":
+                event_column = next((col for col in inspector.get_columns("adam_eve_outbound_events") if col["name"] == "event_id"), None)
+                if event_column and event_column.get("nullable", True) is False:
+                    conn.execute(text("ALTER TABLE adam_eve_outbound_events ALTER COLUMN event_id DROP NOT NULL"))
 
         if "notification_events" not in table_names:
             conn.execute(

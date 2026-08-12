@@ -128,6 +128,8 @@ PONTIS_INTERNAL_API_KEY = os.getenv("PONTIS_INTERNAL_API_KEY", "").strip()
 PONTIS_INTERVIEW_RESULT_PATH = os.getenv("PONTIS_INTERVIEW_RESULT_PATH", "/api/interview-result/{workflowToken}").strip()
 PONTIS_INTERVIEW_RECORDING_PATH = os.getenv("PONTIS_INTERVIEW_RECORDING_PATH", "/api/interview-recording/{workflowToken}").strip()
 PONTIS_REQUEST_TIMEOUT_SECONDS = int(os.getenv("PONTIS_REQUEST_TIMEOUT_SECONDS", str(HTTP_TIMEOUT_SECONDS)))
+EVE_BASE_URL = os.getenv("EVE_BASE_URL", "").strip().rstrip("/")
+EVE_INTERNAL_TOKEN = os.getenv("EVE_INTERNAL_TOKEN", "").strip()
 DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
@@ -263,6 +265,11 @@ INTERVIEW_INTERNAL_SERVICE_TOKEN = (
     or os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
     or INTERNAL_API_KEY
 )
+ADAM_INTERNAL_SERVICE_TOKEN = (
+    os.getenv("ADAM_INTERNAL_SERVICE_TOKEN", "").strip()
+    or os.getenv("DASHBOARD_INTERNAL_TOKEN", "").strip()
+    or INTERNAL_API_KEY
+)
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "").strip()
 ADMIN_EMAILS = {item.strip().lower() for item in os.getenv("ADMIN_EMAILS", "").split(",") if item.strip()}
 OPS_EMAILS = {item.strip().lower() for item in os.getenv("OPS_EMAILS", "").split(",") if item.strip()}
@@ -363,6 +370,10 @@ def missing_secret_warnings() -> list[str]:
         warnings.append("Slack signature verification is disabled; re-enable it after debugging.")
     if not SLACK_CLIENT_ID or not SLACK_CLIENT_SECRET:
         warnings.append("Slack OAuth client credentials are missing; workspace install flow will be unavailable.")
+    if EVE_BASE_URL and not EVE_INTERNAL_TOKEN:
+        warnings.append("EVE_INTERNAL_TOKEN is missing; Adam will queue recruiter-interest events but cannot deliver them.")
+    if EVE_INTERNAL_TOKEN and not EVE_BASE_URL:
+        warnings.append("EVE_BASE_URL is missing; Adam cannot deliver recruiter-interest events to Eve.")
     if BOOKING_PROVIDER == "calendly" and not BOOKING_PROVIDER_URL:
         warnings.append("BOOKING_PROVIDER is calendly but BOOKING_PROVIDER_URL is missing.")
     if INTERVIEW_PROVIDER == "zoom" and not INTERVIEW_PROVIDER_URL:
@@ -460,6 +471,8 @@ def validate_runtime_config(*, production_mode: bool | None = None) -> dict[str,
             issues.append(ConfigIssue(key="SLACK_SKIP_SIGNATURE_VERIFICATION", severity="critical", message="Slack signature verification must not be disabled in production"))
         if not REDIS_URL:
             issues.append(ConfigIssue(key="REDIS_URL", severity="critical", message="Redis is required in production"))
+        if EVE_BASE_URL and not EVE_INTERNAL_TOKEN:
+            issues.append(ConfigIssue(key="EVE_INTERNAL_TOKEN", severity="warning", message="EVE_INTERNAL_TOKEN is missing; delivery will remain queued"))
         if not RESEND_WEBHOOK_SECRET and not WEBHOOK_SHARED_SECRET:
             issues.append(
                 ConfigIssue(
@@ -528,6 +541,7 @@ def config_diagnostics() -> dict[str, Any]:
             "queue_visibility_timeout_seconds": JOB_QUEUE_VISIBILITY_TIMEOUT_SECONDS,
             "queue_job_ttl_seconds": JOB_QUEUE_JOB_TTL_SECONDS,
             "pontis_api_configured": bool(PONTIS_API_BASE_URL),
+            "eve_configured": bool(EVE_BASE_URL and EVE_INTERNAL_TOKEN),
         },
     }
 

@@ -247,6 +247,54 @@ def record_result_decision(
     }
 
 
+def _enqueue_second_round_eve_event(
+    db: Session,
+    *,
+    candidate_id: str,
+    job_id: str,
+    agency_id: str,
+    profile: Any,
+    round_type: str,
+    slots: list[str],
+    meet_url: str,
+    office_address: str,
+    notes: str,
+    workflow_token: str,
+) -> None:
+    """Write a durable second_round_invite outbox event for Eve."""
+    from app.services.eve_notification_service import upsert_outbound_event
+    from uuid import uuid4 as _uuid4
+
+    eve_candidate_id = str(getattr(profile, "id", "") or candidate_id)
+    event_id = str(_uuid4())
+    adam_event_id = f"second-round:{workflow_token}:{eve_candidate_id}"
+    scheduled_at = slots[0] if slots else None
+    payload = {
+        "event_id": event_id,
+        "candidate_id": eve_candidate_id,
+        "job_id": job_id,
+        "agency_id": agency_id,
+        "notification_type": "second_round_invite",
+        "title": "You've been invited to a second round",
+        "message": "Congratulations — the team would like to meet you again.",
+        "round_name": round_type,
+        "scheduled_at": scheduled_at,
+        "meeting_url": meet_url or None,
+        "location": office_address or None,
+        "instructions": notes or None,
+    }
+    upsert_outbound_event(
+        db,
+        adam_event_id=adam_event_id,
+        candidate_id=eve_candidate_id,
+        job_id=job_id,
+        agency_id=agency_id,
+        notification_type="second_round_invite",
+        payload=payload,
+        event_id=event_id,
+    )
+
+
 def advance_result_candidate(
     *,
     db: Session,
@@ -416,6 +464,22 @@ def advance_result_candidate(
             "providerMessageId": provider_message_id,
         },
     )
+
+    # Enqueue durable Eve notification for second_round_invite
+    _enqueue_second_round_eve_event(
+        db,
+        candidate_id=candidate_id,
+        job_id=job_id,
+        agency_id=str(getattr(job, "agency_id", "") or getattr(job, "company_id", "") or ""),
+        profile=profile,
+        round_type=round_type,
+        slots=slots,
+        meet_url=meet_url,
+        office_address=office_address,
+        notes=notes,
+        workflow_token=workflow_token,
+    )
+
     db.commit()
 
     emit_trace(

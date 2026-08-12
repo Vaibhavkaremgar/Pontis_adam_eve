@@ -68,6 +68,8 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     if path.startswith("/api/slack/"):
         return await call_next(request)
+    if path.startswith("/api/internal/"):
+        return await call_next(request)
     if path.startswith("/api/health") or path == "/health" or path.startswith("/health/"):
         return await call_next(request)
     if request.method == "GET" and path == "/api/interview/session":

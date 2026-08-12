@@ -1,5 +1,7 @@
 # Monorepo-wide ignores
-.env*
+.env
+.env.*
+!.env.example
 node_modules/
 .next/
 
@@ -9,6 +11,27 @@ out/
 coverage/
 *.log
 *.tsbuildinfo
+*.py[cod]
+**/__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+# Local/test databases
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite-*
+# Local/debug artifacts
+debug_logs/
+backend/debug_logs/
+backend/backend/debug_logs/
+backend/backend/storage/reply_attachments/
+backend/backend/persistent_cache.sqlite
+backend/persistent_cache.sqlite
+# Local one-off scripts
+backend/scripts/local/
 # Playwright / Chromium profiles
 backend/linkedin_profiles/
 **/Cache/
@@ -19,3 +42,4 @@ backend/linkedin_profiles/
 **/GrShaderCache/
 **/DawnCache/
 backend/tests/*.py
+frontend/tests/*.py

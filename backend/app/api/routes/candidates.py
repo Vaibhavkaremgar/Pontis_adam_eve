@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, Header, Query
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from app.core.config import INTERNAL_API_KEY
+import secrets
+
+from app.core.config import ADAM_INTERNAL_SERVICE_TOKEN, INTERNAL_API_KEY
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.entities import JobEntity
@@ -21,12 +23,13 @@ from app.services.candidate_selection_service import (
 from app.services.ownership import assert_job_ownership, resolve_company_id_for_user
 from app.services.candidate_request_service import create_interest_request, get_request_status, record_not_interested, request_state_map
 from app.services.candidate_access_service import get_accepted_candidates, get_candidate_profile, get_pending_candidates
-from app.services.candidate_response_service import get_pending_requests_for_candidate, respond_to_candidate_request
+from app.services.candidate_response_service import get_pending_requests_for_candidate, respond_to_candidate_request, respond_to_eve_candidate_response
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
 from app.services.candidate_presentation_service import build_candidate_view_model
 from app.services.enrichment_orchestration_service import get_enrichment_state_payload
 from app.services.internal_candidate_semantic_service import match_internal_candidates_for_job
+from app.schemas.candidate import InternalCandidateResponseRequest
 
 router = APIRouter(tags=["candidates"])
 
@@ -47,6 +50,14 @@ def _verify_internal_key(x_internal_api_key: str | None = Header(default=None, a
     """
     if not INTERNAL_API_KEY or x_internal_api_key != INTERNAL_API_KEY:
         raise APIError("Forbidden", status_code=403)
+
+
+def _verify_adam_internal_service_token(request: Request) -> None:
+    provided = str(request.headers.get("Authorization", "") or "").strip()
+    if provided.startswith("Bearer "):
+        provided = provided.removeprefix("Bearer ").strip()
+    if not ADAM_INTERNAL_SERVICE_TOKEN or not provided or not secrets.compare_digest(provided, ADAM_INTERNAL_SERVICE_TOKEN):
+        raise APIError("Unauthorized", status_code=401)
 
 
 # ── IMPORTANT: static routes MUST be registered before /{candidate_id} routes.
@@ -295,6 +306,7 @@ def candidate_interest(candidate_id: str, jobId: str = Query(...), _: dict = Dep
     assert_job_ownership(db=db, job_id=jobId, user_id=_.get("id", ""))
     agency_id = _resolve_agency_scope(db, user_id=_.get("id", ""), job_id=jobId)
     result = create_interest_request(db=db, job_id=jobId, candidate_id=candidate_id, agency_id=agency_id, recruiter_id=_.get("id", ""))
+    db.commit()
     return success_response(result)
 
 
@@ -393,3 +405,22 @@ def candidate_pending_requests(
     """
     results = get_pending_requests_for_candidate(db=db, candidate_id=candidate_id)
     return success_response(results)
+
+
+@router.post("/internal/candidate-response")
+def internal_candidate_response(
+    payload: InternalCandidateResponseRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    _verify_adam_internal_service_token(request)
+    result = respond_to_eve_candidate_response(
+        db=db,
+        eve_event_id=payload.eve_event_id,
+        adam_event_id=payload.adam_event_id,
+        candidate_id=payload.candidate_id,
+        job_id=payload.job_id,
+        agency_id=payload.agency_id,
+        response=payload.response,
+    )
+    return success_response(result)

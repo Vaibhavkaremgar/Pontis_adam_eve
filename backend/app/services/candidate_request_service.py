@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.entities import CandidateFeedbackEntity, CandidateProfileEntity, CandidateRequestEntity, JobEntity, RecruiterInterestRequestEntity
+from app.services.eve_notification_service import upsert_outbound_event
 from app.utils.exceptions import APIError
 
 
@@ -45,8 +46,16 @@ def _serialize(row: CandidateRequestEntity, *, recruiter_action: str = "INTEREST
     }
 
 
-def create_interest_request(db: Session, *, job_id: str, candidate_id: str, agency_id: str, recruiter_id: str) -> dict:
-    _validate_scope(db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id)
+def create_interest_request(
+    db: Session,
+    *,
+    job_id: str,
+    candidate_id: str,
+    agency_id: str,
+    recruiter_id: str,
+    recruiter_message: str | None = None,
+) -> dict:
+    job, candidate = _validate_scope(db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id)
     feedback = db.scalar(select(CandidateFeedbackEntity).where(
         CandidateFeedbackEntity.job_id == job_id, CandidateFeedbackEntity.candidate_id == candidate_id
     ))
@@ -65,6 +74,15 @@ def create_interest_request(db: Session, *, job_id: str, candidate_id: str, agen
             agency_id=agency_id,
             recruiter_id=recruiter_id,
             request_status="interested",
+        )
+        upsert_outbound_event(
+            db,
+            adam_event_id=str(existing.id),
+            candidate_id=str(candidate.id),
+            job_id=str(job.id),
+            agency_id=agency_id,
+            recruiter_user_id=recruiter_id,
+            recruiter_message=recruiter_message,
         )
         return _serialize(existing)
     now = datetime.now(timezone.utc)
@@ -91,6 +109,15 @@ def create_interest_request(db: Session, *, job_id: str, candidate_id: str, agen
                 recruiter_id=recruiter_id,
                 request_status="interested",
             )
+            upsert_outbound_event(
+                db,
+                adam_event_id=str(existing.id),
+                candidate_id=str(candidate.id),
+                job_id=str(job.id),
+                agency_id=agency_id,
+                recruiter_user_id=recruiter_id,
+                recruiter_message=recruiter_message,
+            )
             return _serialize(existing)
         raise
     _upsert_recruiter_interest_request(
@@ -100,6 +127,15 @@ def create_interest_request(db: Session, *, job_id: str, candidate_id: str, agen
         agency_id=agency_id,
         recruiter_id=recruiter_id,
         request_status="interested",
+    )
+    upsert_outbound_event(
+        db,
+        adam_event_id=str(row.id),
+        candidate_id=str(candidate.id),
+        job_id=str(job.id),
+        agency_id=agency_id,
+        recruiter_user_id=recruiter_id,
+        recruiter_message=recruiter_message,
     )
     return _serialize(row)
 

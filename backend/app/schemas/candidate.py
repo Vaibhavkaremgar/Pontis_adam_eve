@@ -369,3 +369,12 @@ class InterviewInsightsData(BaseModel):
     intelligence: dict = Field(default_factory=dict)
     currentSession: dict | None = None
     stageHistory: list[dict] = Field(default_factory=list)
+
+
+class InternalCandidateResponseRequest(BaseModel):
+    eve_event_id: str
+    adam_event_id: str
+    candidate_id: str
+    job_id: str
+    agency_id: str
+    response: str

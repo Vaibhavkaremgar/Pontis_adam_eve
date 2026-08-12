@@ -39,6 +39,27 @@ class GUID(TypeDecorator):
         return str(value)
 
 
+class UTCDateTime(TypeDecorator):
+    """Persist datetimes as UTC and always return timezone-aware UTC values."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -687,6 +708,7 @@ class CandidateRequestEntity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    eve_event_id: Mapped[str | None] = mapped_column(GUID(), nullable=True, unique=True, index=True, default=None)
 
     agency: Mapped["CompanyEntity"] = relationship(back_populates="candidate_requests")
     job: Mapped["JobEntity"] = relationship(back_populates="candidate_requests")
@@ -717,6 +739,7 @@ class RecruiterInterestRequestEntity(Base):
     request_status: Mapped[str] = mapped_column(String(32), nullable=False, default="interested", index=True)
     candidate_response: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
     candidate_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    eve_event_id: Mapped[str | None] = mapped_column(GUID(), nullable=True, unique=True, index=True, default=None)
     recruiter_requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
@@ -724,6 +747,31 @@ class RecruiterInterestRequestEntity(Base):
     agency: Mapped["CompanyEntity"] = relationship(back_populates="recruiter_interest_requests")
     job: Mapped["JobEntity"] = relationship(back_populates="recruiter_interest_requests")
     recruiter: Mapped["UserEntity"] = relationship(back_populates="recruiter_interest_requests")
+
+
+class AdamEveOutboundEventEntity(Base):
+    __tablename__ = "adam_eve_outbound_events"
+    __table_args__ = (
+        Index("ix_adam_eve_outbound_events_status_next_retry_at", "status", "next_retry_at"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    adam_event_id: Mapped[str] = mapped_column(GUID(), nullable=False, unique=True, index=True)
+    event_id: Mapped[str | None] = mapped_column(GUID(), nullable=True, unique=True, index=True, default=None)
+    candidate_id: Mapped[str] = mapped_column(GUID(), ForeignKey("candidates.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    recruiter_user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
+    recruiter_message: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    notification_type: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    next_retry_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, default=_utc_now)
+    delivered_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_utc_now, nullable=False)
 
 
 class CandidateFeedbackEntity(Base):

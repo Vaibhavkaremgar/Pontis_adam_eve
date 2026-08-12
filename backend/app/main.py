@@ -22,6 +22,7 @@ from app.services.embedding_service import embedding_health_snapshot
 from app.services.embedding_registry_service import ensure_embedding_version_registry
 from app.services.email_service import email_health_snapshot
 from app.services.job_queue_service import queue_health_snapshot, stop_job_queue_workers
+from app.services.eve_notification_service import start_eve_notification_worker, stop_eve_notification_worker
 from app.services.metrics_service import get_metrics_snapshot
 from app.services.llm_service import llm_health
 from app.services.qdrant_service import ensure_collection_indexes, ensure_qdrant_indexes, qdrant_health_snapshot
@@ -267,6 +268,7 @@ def on_startup() -> None:
     finally:
         if db_ready:
             start_scheduler()
+            start_eve_notification_worker()
             logger.info("startup_scheduler_started")
     if not db_ready:
         logger.warning("startup_completed_without_database")
@@ -274,6 +276,7 @@ def on_startup() -> None:
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
+    stop_eve_notification_worker()
     stop_job_queue_workers()
     stop_scheduler()
     close_redis_client()
