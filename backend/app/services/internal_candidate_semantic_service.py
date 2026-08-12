@@ -200,9 +200,18 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     if not job_text.strip():
         raise APIError("Job requirements are incomplete", status_code=409)
 
+    # DIAG-1: job context
+    logger.info(
+        "[DIAG] match_start job_id=%s agency_id=%s job_text_length=%s embedding_version=%s collection=%s top_k=%s threshold=%.4f",
+        job_id, agency_id, len(job_text), EMBEDDING_VERSION,
+        INTERNAL_CANDIDATE_COLLECTION_NAME, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K, INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+    )
+
     try:
+        query_vector = get_embedding(job_text)
+        logger.info("[DIAG] embedding_ok job_id=%s vector_length=%s", job_id, len(query_vector))
         hits = search_internal_candidate_chunks(
-            query_vector=get_embedding(job_text),
+            query_vector=query_vector,
             limit=max(1, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K),
             metadata_filters={"embeddingVersion": EMBEDDING_VERSION},
             raise_on_unavailable=True,
@@ -212,6 +221,19 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         raise APIError("Internal candidate search is unavailable", status_code=503, code="internal_search_unavailable", retryable=True) from exc
 
     collection_points = count_collection_points(INTERNAL_CANDIDATE_COLLECTION_NAME)
+    # DIAG-2: Qdrant results
+    logger.info(
+        "[DIAG] qdrant_results job_id=%s collection_total_points=%s hits_returned=%s metadata_filter={embeddingVersion: %s}",
+        job_id, collection_points, len(hits), EMBEDDING_VERSION,
+    )
+    if hits:
+        top_scores = [round(float(h.get("score") or 0.0), 4) for h in hits[:5]]
+        sample_payloads = [{k: v for k, v in (h.get("payload") or {}).items() if k in ("candidateRecordId", "embeddingVersion", "agencyId", "sourceType")} for h in hits[:3]]
+        logger.info("[DIAG] qdrant_top_scores job_id=%s scores=%s", job_id, top_scores)
+        logger.info("[DIAG] qdrant_sample_payloads job_id=%s payloads=%s", job_id, sample_payloads)
+    else:
+        logger.info("[DIAG] qdrant_zero_hits job_id=%s collection_points=%s", job_id, collection_points)
+
     if not hits and collection_points == 0:
         return {
             "status": "index_not_ready", "source": "internal", "candidates": [],
@@ -224,21 +246,42 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         }
 
     record_ids = list(dict.fromkeys(_text((hit.get("payload") or {}).get("candidateRecordId")) for hit in hits if _text((hit.get("payload") or {}).get("candidateRecordId"))))
+    # DIAG-3: candidateRecordId extraction
+    missing_record_id_count = sum(1 for hit in hits if not _text((hit.get("payload") or {}).get("candidateRecordId")))
+    logger.info(
+        "[DIAG] record_id_extraction job_id=%s hits=%s record_ids_extracted=%s missing_record_id=%s",
+        job_id, len(hits), len(record_ids), missing_record_id_count,
+    )
+
     rows = db.scalars(select(CandidateProfileEntity).where(CandidateProfileEntity.id.in_(record_ids))).all() if record_ids else []
+    # DIAG-4: PostgreSQL lookup
+    logger.info(
+        "[DIAG] pg_lookup job_id=%s record_ids_queried=%s pg_rows_found=%s",
+        job_id, len(record_ids), len(rows),
+    )
+    if record_ids and not rows:
+        logger.info("[DIAG] pg_lookup_zero_rows job_id=%s sample_record_ids=%s", job_id, record_ids[:3])
+
     row_by_id = {str(row.id): row for row in rows}
     job_skills = _job_skills(job)
     job_tokens = _tokens(job_skills)
     job_experience = _job_experience(job)
     weights = INTERNAL_CANDIDATE_MATCH_WEIGHTS
     scored: list[tuple[CandidateProfileEntity, dict[str, Any]]] = []
+    dropped_no_row = dropped_status = dropped_version = 0
     for hit in hits:
         payload = hit.get("payload") or {}
         row = row_by_id.get(_text(payload.get("candidateRecordId")))
         if not row:
+            dropped_no_row += 1
             continue
         if getattr(row, "embedding_status", None) != "EMBEDDED":
+            dropped_status += 1
+            logger.info("[DIAG] dropped_status job_id=%s record_id=%s embedding_status=%s", job_id, row.id, row.embedding_status)
             continue
         if getattr(row, "embedding_version", None) != EMBEDDING_VERSION:
+            dropped_version += 1
+            logger.info("[DIAG] dropped_version job_id=%s record_id=%s row_version=%s expected=%s", job_id, row.id, row.embedding_version, EMBEDDING_VERSION)
             continue
         candidate_skills = _candidate_skills(row)
         candidate_skill_tokens = _candidate_skill_tokens(row, job_tokens)
@@ -276,6 +319,13 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     fallback_eligible = qualified_count == 0
     fallback_reason = "insufficient_internal_candidates" if fallback_eligible else "internal_candidates_sufficient"
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    # DIAG-5: final funnel summary
+    logger.info(
+        "[DIAG] funnel_summary job_id=%s qdrant_hits=%s dropped_no_pg_row=%s dropped_bad_status=%s dropped_bad_version=%s scored=%s below_threshold=%s qualified=%s final=%s threshold=%.4f duration_ms=%.2f",
+        job_id, len(hits), dropped_no_row, dropped_status, dropped_version,
+        len(scored), len(scored) - qualified_count, qualified_count, len(results),
+        INTERNAL_CANDIDATE_MATCH_THRESHOLD, duration_ms,
+    )
     logger.info(
         "internal_candidate_matching job_id=%s retrieval_count=%s qualified_count=%s top_k=%s threshold=%.4f fallback_eligible=%s reason=%s duration_ms=%.2f",
         job_id, len(hits), qualified_count, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K, INTERNAL_CANDIDATE_MATCH_THRESHOLD, fallback_eligible, fallback_reason, duration_ms,
