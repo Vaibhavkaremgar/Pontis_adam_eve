@@ -316,7 +316,7 @@ class InterviewEntity(Base):
     async_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     async_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     async_answers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    candidate_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("candidates.id"), nullable=True, index=True)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True)
     agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True)
     interview_score_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -327,7 +327,11 @@ class InterviewEntity(Base):
     updated_by_source: Mapped[str] = mapped_column(String(30), nullable=False, default="PONTIS")
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
 
-    candidate: Mapped["CandidateProfileEntity | None"] = relationship()
+    candidate: Mapped["CandidateProfileEntity | None"] = relationship(
+        primaryjoin="and_(foreign(InterviewEntity.candidate_id) == CandidateProfileEntity.candidate_id, "
+                    "foreign(InterviewEntity.job_id) == CandidateProfileEntity.job_id)",
+        viewonly=True,
+    )
     agency: Mapped["CompanyEntity | None"] = relationship()
 
 
@@ -1032,7 +1036,7 @@ class InterviewSessionEntity(Base):
     id: Mapped[str] = mapped_column(GUID(), primary_key=True)
     agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
     job_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=True, index=True, default=None)
-    candidate_id: Mapped[str | None] = mapped_column(GUID(), nullable=True, index=True, default=None)
+    candidate_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True, default=None)
     company_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     outreach_event_id: Mapped[str | None] = mapped_column(String(255), ForeignKey("outreach_events.id"), nullable=True, index=True, default=None)
     email: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)

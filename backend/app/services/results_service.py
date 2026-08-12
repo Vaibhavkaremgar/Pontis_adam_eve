@@ -494,7 +494,7 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                 LEFT JOIN notification_workflow_tokens nt
                     ON nt.job_id = i.job_id
                    AND nt.candidate_id = i.candidate_id
-                   AND nt.is_active = 1
+                   AND nt.is_active = true
                 WHERE i.job_id = :job_id
                   AND i.candidate_id = :candidate_id
                 ORDER BY i.created_at DESC
@@ -784,7 +784,7 @@ def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[
                 LEFT JOIN notification_workflow_tokens nt
                     ON nt.job_id = cp.job_id
                    AND nt.candidate_id = cp.candidate_id
-                   AND nt.is_active = 1
+                   AND nt.is_active = true
                 WHERE cp.job_id = :job_id
                   AND (cp.agency_id = :agency_id OR i.agency_id = :agency_id)
                 ORDER BY COALESCE(i.interview_score, 0) DESC, COALESCE(cp.fit_score, 0) DESC, cp.name ASC
@@ -792,8 +792,8 @@ def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[
             {"job_id": job_id, "agency_id": agency_id},
         ).mappings().all()
     except Exception as exc:
-        logger.warning("results_list_fetch_failed job_id=%s error=%s", job_id, str(exc))
-        return []
+        logger.error("results_list_fetch_failed job_id=%s error=%s", job_id, str(exc))
+        raise
 
     rows: list[dict[str, Any]] = []
     for row in results:
