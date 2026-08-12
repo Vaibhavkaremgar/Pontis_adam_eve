@@ -35,6 +35,8 @@ export function getStoredUser(): User | null {
 
 export function storeSession(user: User) {
   if (typeof window === "undefined") return;
+  // Clear the cached user first so stale profile data cannot survive a switch.
+  localStorage.removeItem(USER_KEY);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 

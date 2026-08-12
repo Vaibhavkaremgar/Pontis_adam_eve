@@ -70,3 +70,64 @@ test('auth lifecycle preserves session and csrf-safe actions', async ({ page }) 
   });
   expect(me.data.user.email).toBe(email);
 });
+
+test('auth bootstrap overwrites a stale cached user profile', async ({ page }) => {
+  const staleUser = { id: 'stale-user', email: 'old@example.com', role: 'admin', name: 'Old Recruiter' };
+  const currentUser = { id: 'user-2', email: 'new@example.com', role: 'admin', name: 'New Recruiter' };
+
+  await page.addInitScript((user) => {
+    window.localStorage.setItem('pontis_user', JSON.stringify(user));
+  }, staleUser);
+
+  await page.route('**/api/backend/auth/request-otp', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { message: 'OTP sent', email: currentUser.email }, error: null }),
+    });
+  });
+
+  await page.route('**/api/backend/auth/verify-otp', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { user: currentUser, token: 'test-token' }, error: null }),
+    });
+  });
+
+  await page.route('**/api/backend/auth/me', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { user: currentUser }, error: null }),
+    });
+  });
+
+  await page.route('**/api/backend/auth/logout', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ success: true, data: { loggedOut: true }, error: null }),
+    });
+  });
+
+  await page.goto('/login');
+  await expect(page.getByText('Welcome')).toBeVisible();
+
+  await expect
+    .poll(async () => page.evaluate(() => JSON.parse(window.localStorage.getItem('pontis_user') || 'null')?.email || ''))
+    .toBe(currentUser.email);
+
+  await page.getByPlaceholder('Work email').fill(currentUser.email);
+  await page.getByRole('button', { name: 'Send OTP' }).click();
+  await expect(page.getByPlaceholder('Enter 6-digit OTP')).toBeVisible();
+  await page.getByPlaceholder('Enter 6-digit OTP').fill('123456');
+  await page.getByRole('button', { name: 'Verify OTP' }).click();
+
+  await expect
+    .poll(async () => page.evaluate(() => JSON.parse(window.localStorage.getItem('pontis_user') || 'null')?.email || ''))
+    .toBe(currentUser.email);
+  await expect
+    .poll(async () => page.evaluate(() => JSON.parse(window.localStorage.getItem('pontis_user') || 'null')?.email || ''))
+    .not.toBe(staleUser.email);
+});

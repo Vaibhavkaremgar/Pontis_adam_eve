@@ -423,7 +423,13 @@ class CompanyRepository:
         return self.db.scalar(select(CompanyEntity).where(CompanyEntity.id == company_id))
 
     def get_latest_for_user(self, *, user_id: str) -> CompanyEntity | None:
-        return self.db.scalar(select(CompanyEntity).order_by(CompanyEntity.created_at.desc()))
+        user = self.db.get(UserEntity, user_id)
+        if not user or not getattr(user, "agency_id", None):
+            return None
+        agency_id = str(user.agency_id).strip()
+        if not agency_id:
+            return None
+        return self.db.scalar(select(CompanyEntity).where(CompanyEntity.id == agency_id))
 
     def create(
         self,
