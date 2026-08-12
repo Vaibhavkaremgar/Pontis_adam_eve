@@ -1367,7 +1367,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     };
   }, []);
 
-  // ── derived display state ──────────────────────────────────────────────────
+  // ── derived display state ─────────────────────────────────────────
   const isIdle = callStatus === "idle";
   const isErrorState = callStatus === "error";
   const isLive = callStatus === "connecting" || callStatus === "listening" || callStatus === "speaking";

@@ -396,6 +396,8 @@ def _update_candidate_from_resume(
     candidate_profile.phone = parsed_resume.phone
     candidate_profile.linkedin_url = parsed_resume.linkedin_url
     candidate_profile.github_url = parsed_resume.github_url
+    # candidates.resume_text is the canonical embedding source of truth.
+    candidate_profile.resume_text = parsed_resume.text
     candidate_profile.parsed_resume_text = parsed_resume.text
     candidate_profile.parsed_resume_json = {
         **profile,
@@ -1072,6 +1074,18 @@ def process_resend_inbound_webhook(*, db: Session, raw_body: bytes, headers: Any
     )
     row.intent = intent
     db.commit()
+
+    if candidate_profile and getattr(candidate_profile, "resume_text", ""):
+        try:
+            from app.services.job_queue_service import enqueue_job
+
+            enqueue_job(
+                "candidate_embedding_index",
+                {"candidate_record_id": str(candidate_profile.id)},
+                idempotency_key=f"candidate_embedding_index:{candidate_profile.id}:{getattr(candidate_profile, 'updated_at', '')}",
+            )
+        except Exception as exc:
+            logger.warning("candidate_embedding_index_enqueue_failed candidate_record_id=%s error=%s", getattr(candidate_profile, "id", ""), str(exc), exc_info=exc)
 
     if candidate_profile and intent == "interested" and resume_attachment is None and sender_email:
         try:

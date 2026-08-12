@@ -14,7 +14,7 @@ from app.core import config as settings
 from app.db.repositories import NotificationWorkflowTokenRepository
 from app.models.entities import UserEntity
 
-BOOKING_BASE_URL = f"{(settings.INTERVIEW_APP_URL or settings.PUBLIC_APP_URL).rstrip('/')}/booking.html"
+BOOKING_BASE_URL = "https://interview.pontis.one/booking.html"
 
 
 def _normalize_text(value: Any) -> str:
@@ -408,6 +408,127 @@ def build_slot_booking_payload(
     }
 
 
+def build_slot_selection_payload(
+    *,
+    candidate: Any,
+    job: Any,
+    recruiter_id: str = "",
+    agency_id: str = "",
+    agency_name: str = "",
+    agency_slug: str = "",
+    workflow_token: str = "",
+    booking_link: str = "",
+    interview_round: str = "first_round",
+    source_type: str = "eve",
+    db: Session | None = None,
+) -> dict[str, Any]:
+    source = _candidate_source(candidate)
+    parsed_resume_json = _candidate_value(candidate, "parsed_resume_json", "parsedResumeJson")
+    if not isinstance(parsed_resume_json, dict):
+        parsed_resume_json = _candidate_value(source, "parsed_data", "parsedData")
+        if not isinstance(parsed_resume_json, dict):
+            parsed_resume_json = {}
+
+    candidate_profile_id = _normalize_text(_candidate_value(candidate, "id"))
+    external_candidate_id = _normalize_text(_candidate_value(candidate, "candidate_id"))
+    candidate_name = _candidate_value(candidate, "name", "full_name", "fullName") or parsed_resume_json.get("full_name") or parsed_resume_json.get("fullName")
+    candidate_email = _candidate_email(candidate)
+    candidate_phone = _candidate_value(candidate, "phone") or parsed_resume_json.get("phone") or ""
+    linkedin_url = _candidate_value(candidate, "linkedin_url", "linkedinUrl") or parsed_resume_json.get("linkedin_url") or parsed_resume_json.get("linkedinUrl") or ""
+    github_url = _candidate_value(candidate, "github_url", "githubUrl") or parsed_resume_json.get("github_url") or parsed_resume_json.get("githubUrl") or ""
+    current_company = _candidate_value(candidate, "current_company", "currentCompany", "company") or parsed_resume_json.get("current_company") or parsed_resume_json.get("currentCompany") or ""
+    current_title = _candidate_value(candidate, "current_title", "currentTitle", "role", "title") or parsed_resume_json.get("current_title") or parsed_resume_json.get("currentTitle") or ""
+    summary = _candidate_value(candidate, "summary") or parsed_resume_json.get("summary") or ""
+    location = _candidate_value(candidate, "location") or parsed_resume_json.get("location") or ""
+    total_experience_years = _candidate_value(candidate, "total_experience_years", "years_experience", "yearsExperience")
+    if total_experience_years in ("", None):
+        total_experience_years = parsed_resume_json.get("years_experience", parsed_resume_json.get("yearsExperience", 0.0))
+    try:
+        total_experience_years_value = float(total_experience_years or 0.0)
+    except (TypeError, ValueError):
+        total_experience_years_value = 0.0
+
+    skills = _collect_list_values(_candidate_value(candidate, "skills") or parsed_resume_json.get("skills") or [])
+    education = _collect_list_values(_candidate_value(candidate, "education") or parsed_resume_json.get("education") or [])
+    work_experience = _collect_list_values(
+        _candidate_value(candidate, "work_experience", "workExperience")
+        or parsed_resume_json.get("work_experience")
+        or parsed_resume_json.get("workExperience")
+        or parsed_resume_json.get("employment_history")
+        or []
+    )
+    company_name = _string_field(job, "company_name", "company", "companyName")
+    job_title = _string_field(job, "title", "job_title", "jobTitle")
+    job_id = _string_field(job, "id")
+    agency_identifier = _normalize_text(agency_id or _string_field(job, "company_id"))
+    booking_target = booking_link or _build_booking_link(workflow_token)
+
+    return {
+        "candidate": {
+            "id": candidate_profile_id,
+            "candidate_id": external_candidate_id,
+            "name": _normalize_text(candidate_name),
+            "email": candidate_email,
+            "phone": _normalize_text(candidate_phone),
+            "linkedin_url": _normalize_text(linkedin_url),
+            "github_url": _normalize_text(github_url),
+            "current_company": _normalize_text(current_company),
+            "current_title": _normalize_text(current_title),
+            "total_experience_years": total_experience_years_value,
+            "skills": skills,
+            "education": education,
+            "work_experience": work_experience,
+            "summary": _normalize_text(summary),
+            "location": _normalize_text(location),
+            "parsed_resume_json": parsed_resume_json,
+        },
+        "job": {
+            "id": job_id,
+            "title": job_title,
+            "company_name": company_name,
+            "description": _string_field(job, "description"),
+            "skills_required": _collect_list_values(_candidate_value(job, "skills_required") or getattr(job, "skills_required", []) or []),
+            "interview_questions": _job_interview_questions(job),
+        },
+        "agency": {
+            "id": agency_identifier,
+            "name": _normalize_text(agency_name),
+            "slug": _normalize_text(agency_slug),
+        },
+        "recruiter": {
+            "id": _normalize_text(recruiter_id),
+            "name": _fetch_interviewer(db=db, recruiter_id=recruiter_id).get("name", ""),
+            "email": _fetch_interviewer(db=db, recruiter_id=recruiter_id).get("email", ""),
+            "title": _fetch_interviewer(db=db, recruiter_id=recruiter_id).get("title", ""),
+        },
+        "interview": {
+            "round": _normalize_text(interview_round) or "first_round",
+            "status": "slot_selection_pending",
+            "token": workflow_token,
+            "booking_link": booking_target,
+            "bookingLink": booking_target,
+            "bookingUrl": booking_target,
+            "source_type": source_type,
+            "sourceType": source_type,
+        },
+        "workflow_name": "slot_selection",
+        "workflowName": "slot_selection",
+        "workflow_token": workflow_token,
+        "workflowToken": workflow_token,
+        "token": workflow_token,
+        "booking_link": booking_target,
+        "bookingLink": booking_target,
+        "bookingUrl": booking_target,
+        "source_type": source_type,
+        "sourceType": source_type,
+        "candidate_profile_id": candidate_profile_id,
+        "job_id": job_id,
+        "agency_id": agency_identifier,
+        "company_name": company_name,
+        "job_title": job_title,
+    }
+
+
 def upsert_notification_workflow_token(
     *,
     db: Session,
@@ -420,6 +541,8 @@ def upsert_notification_workflow_token(
     token_type: str = "",
     is_active: bool = True,
     source_app: str = "ui",
+    agency_id: str | None = None,
+    user_id: str | None = None,
     force_token: bool = False,
     retry_attempts: int = 3,
 ) -> dict[str, Any]:
@@ -441,6 +564,10 @@ def upsert_notification_workflow_token(
         normalized_payload.setdefault("source_type", normalized_source_app)
         normalized_payload.setdefault("sourceType", normalized_source_app)
         row.payload = normalized_payload
+        if agency_id is not None:
+            row.agency_id = agency_id or None
+        if user_id is not None:
+            row.user_id = user_id or None
         row.expires_at = expires_at
         row.is_active = bool(is_active)
         row.status = "active" if is_active else "consumed"
@@ -470,6 +597,8 @@ def upsert_notification_workflow_token(
                     job_id=job_id,
                     candidate_id=candidate_id,
                     workflow_name=normalized_workflow_name,
+                    agency_id=agency_id,
+                    user_id=user_id,
                     token=token_value,
                     payload={
                         **_metadata_map(payload),
@@ -520,6 +649,8 @@ def create_notification_workflow_token(
     token_type: str = "",
     is_active: bool = True,
     source_app: str = "ui",
+    agency_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     return upsert_notification_workflow_token(
         db=db,
@@ -532,6 +663,8 @@ def create_notification_workflow_token(
         token_type=token_type,
         is_active=is_active,
         source_app=source_app,
+        agency_id=agency_id,
+        user_id=user_id,
         force_token=False,
     )
 

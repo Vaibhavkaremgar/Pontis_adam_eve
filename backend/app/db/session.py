@@ -103,6 +103,7 @@ def _verify_migrated_schema() -> None:
             "interviews",
             "outreach_events",
             "notification_workflow_tokens",
+            "recruiter_interest_requests",
             "inbound_email_replies",
             "inbound_email_attachments",
         }
@@ -398,6 +399,8 @@ def _ensure_optional_schema_columns() -> None:
                         source_app VARCHAR(32) NOT NULL DEFAULT 'ui',
                         job_id VARCHAR(36) NOT NULL,
                         candidate_id VARCHAR(128) NOT NULL,
+                        agency_id VARCHAR(36) NULL DEFAULT NULL,
+                        user_id VARCHAR(36) NULL DEFAULT NULL,
                         token_type VARCHAR(64) NOT NULL DEFAULT '',
                         workflow_name VARCHAR(64) NOT NULL DEFAULT '',
                         token VARCHAR(255) NOT NULL UNIQUE,
@@ -423,6 +426,31 @@ def _ensure_optional_schema_columns() -> None:
                 conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE"))
             if "used_at" not in token_columns:
                 conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN used_at TIMESTAMPTZ NULL DEFAULT NULL"))
+            if "agency_id" not in token_columns:
+                conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN agency_id VARCHAR(36) NULL DEFAULT NULL"))
+            if "user_id" not in token_columns:
+                conn.execute(text("ALTER TABLE notification_workflow_tokens ADD COLUMN user_id VARCHAR(36) NULL DEFAULT NULL"))
+
+        if "recruiter_interest_requests" not in table_names:
+            conn.execute(
+                text(
+                    f"""
+                    CREATE TABLE recruiter_interest_requests (
+                        id VARCHAR(36) PRIMARY KEY,
+                        candidate_id VARCHAR(128) NOT NULL,
+                        job_id VARCHAR(36) NOT NULL,
+                        agency_id VARCHAR(36) NOT NULL,
+                        recruiter_id VARCHAR(36) NOT NULL,
+                        request_status VARCHAR(32) NOT NULL DEFAULT 'interested',
+                        candidate_response VARCHAR(32) NULL DEFAULT NULL,
+                        candidate_response_at TIMESTAMPTZ NULL DEFAULT NULL,
+                        recruiter_requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
 
         if "inbound_email_replies" in table_names:
             inbound_columns = {column["name"] for column in inspector.get_columns("inbound_email_replies")}

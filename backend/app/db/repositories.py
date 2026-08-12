@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import String, case, cast, func, not_, or_, select, update
+from sqlalchemy import String, case, cast, func, not_, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -39,6 +39,7 @@ from app.models.entities import (
     OutreachEventEntity,
     NotificationWorkflowTokenEntity,
     NotificationEventEntity,
+    RecruiterInterestRequestEntity,
     RecruiterNoteEntity,
     RecruiterTaskEntity,
     InterviewEvaluationEntity,
@@ -3205,6 +3206,8 @@ class NotificationWorkflowTokenRepository:
         job_id: str,
         candidate_id: str,
         workflow_name: str,
+        agency_id: str | None = None,
+        user_id: str | None = None,
         token: str | None = None,
         payload: dict | None = None,
         token_type: str = "",
@@ -3229,6 +3232,8 @@ class NotificationWorkflowTokenRepository:
             source_app=normalized_source_app,
             job_id=job_id,
             candidate_id=(candidate_id or "").strip(),
+            agency_id=(agency_id or "").strip() or None,
+            user_id=(user_id or "").strip() or None,
             token_type=normalized_token_type,
             workflow_name=normalized_workflow_name,
             token=token_value,

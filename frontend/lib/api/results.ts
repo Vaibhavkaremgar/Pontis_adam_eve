@@ -50,6 +50,69 @@ export type ResultListResponse = {
   };
 };
 
+export type ReadyCandidateProfile = {
+  candidate_id: string;
+  name: string;
+  role?: string;
+  company?: string;
+  location?: string;
+  years_experience?: number;
+  skills?: string[];
+  summary?: string;
+  work_experience?: unknown[];
+  education?: unknown[];
+  certifications?: unknown[];
+  projects?: unknown[];
+  match_score?: number;
+  semantic_match?: number;
+  matched_requirements?: string[];
+  missing_requirements?: string[];
+  ai_reasoning?: string;
+  profile_access?: "LIMITED" | "FULL";
+  request_status?: string | null;
+  request_id?: string | null;
+  responded_at?: string | null;
+};
+
+export type ReadyCandidate = {
+  candidate_id: string;
+  name: string;
+  role?: string;
+  company?: string;
+  location?: string;
+  years_experience?: number;
+  skills?: string[];
+  summary?: string;
+  match_score?: number;
+  semantic_match?: number;
+  matched_requirements?: string[];
+  missing_requirements?: string[];
+  profile_access?: "LIMITED" | "FULL";
+  request_status?: string | null;
+  request_id?: string | null;
+  // Legacy optional fields — present only in old results/page.tsx flow, never populated by Ready API
+  email?: string;
+  phone?: string;
+  linkedin_url?: string;
+  lifecycle_state: "TO_BE_ACCEPTED" | "ACCEPTED" | "TO_BE_INTERVIEWED";
+  interview_status?: string;
+  booking_status?: string;
+  stage?: string;
+  scheduled_at?: string | null;
+  session_token?: string;
+  profile?: ReadyCandidateProfile;
+};
+
+export type ReadyResponse = {
+  jobId: string;
+  ready: {
+    toBeAccepted: ReadyCandidate[];
+    accepted: ReadyCandidate[];
+    toBeInterviewed: ReadyCandidate[];
+  };
+  counts: Record<string, number>;
+};
+
 export type ResultWorkspaceResponse = {
   job?: {
     id: string;
@@ -187,6 +250,13 @@ export async function getJobsForResults(): Promise<ApiResponse<JobsListResponse>
 export async function getResultsList(jobId: string): Promise<ApiResponse<ResultListResponse>> {
   return requestApi<ResultListResponse>({
     url: `${API_BASE_URL}/results?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET",
+  });
+}
+
+export async function getReadyCandidates(jobId: string): Promise<ApiResponse<ReadyResponse>> {
+  return requestApi<ReadyResponse>({
+    url: `${API_BASE_URL}/results/ready?jobId=${encodeURIComponent(jobId)}`,
     method: "GET",
   });
 }

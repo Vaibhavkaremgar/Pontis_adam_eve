@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import logging
+import re
+import time
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.core.config import (
+    EMBEDDING_VERSION,
+    INTERNAL_CANDIDATE_MATCH_LIMIT,
+    INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+    INTERNAL_CANDIDATE_MATCH_WEIGHTS,
+    INTERNAL_CANDIDATE_MIN_MATCHES,
+    INTERNAL_CANDIDATE_RETRIEVAL_TOP_K,
+)
+from app.db.repositories import JobRepository
+from app.models.entities import CandidateProfileEntity
+from app.schemas.candidate import CandidateExplanation, CandidateResult
+from app.services.embedding_service import get_embedding
+from app.services.job_text_service import build_job_text
+from app.services.qdrant_service import QdrantUnavailableError, count_collection_points, search_internal_candidate_chunks
+from app.services.qdrant_service import INTERNAL_CANDIDATE_COLLECTION_NAME
+from app.services.skill_normalizer import normalize_skills, parse_experience
+from app.utils.exceptions import APIError
+
+logger = logging.getLogger(__name__)
+
+
+def _text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _tokens(values: Any) -> set[str]:
+    if isinstance(values, dict):
+        values = list(values.keys()) + list(values.values())
+    if isinstance(values, str):
+        values = re.split(r"[,;/|]", values)
+    if not isinstance(values, (list, tuple, set)):
+        values = []
+    return normalize_skills([_text(value) for value in values if _text(value)])
+
+
+def _job_skills(job: Any) -> list[str]:
+    structured = getattr(job, "structured_data", {}) if isinstance(getattr(job, "structured_data", {}), dict) else {}
+    values = structured.get("skills_required") or structured.get("required_skills") or structured.get("skills") or getattr(job, "skills_required", [])
+    return [_text(value) for value in (values if isinstance(values, list) else [values]) if _text(value)]
+
+
+def _job_experience(job: Any) -> str:
+    structured = getattr(job, "structured_data", {}) if isinstance(getattr(job, "structured_data", {}), dict) else {}
+    for key in ("experience_required", "experienceRequired", "experience", "experience_level"):
+        value = structured.get(key) or getattr(job, key, "")
+        if value not in (None, ""):
+            return _text(value)
+    return ""
+
+
+def _job_role(job: Any) -> str:
+    structured = getattr(job, "structured_data", {}) if isinstance(getattr(job, "structured_data", {}), dict) else {}
+    return _text(structured.get("role") or structured.get("title") or getattr(job, "title", ""))
+
+
+def _candidate_skills(row: CandidateProfileEntity) -> list[str]:
+    raw = row.skills if isinstance(row.skills, (list, dict, str)) else []
+    raw_data = row.raw_data if isinstance(row.raw_data, dict) else {}
+    parsed = row.parsed_resume_json if isinstance(row.parsed_resume_json, dict) else {}
+    values = [raw, raw_data.get("skills"), parsed.get("skills")]
+    result = set()
+    for value in values:
+        result.update(_tokens(value))
+    return sorted(result)
+
+
+def _candidate_skill_tokens(row: CandidateProfileEntity, job_tokens: set[str]) -> set[str]:
+    structured = set(_candidate_skills(row))
+    resume_words = {
+        token.lower()
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9+#.-]{1,40}", _text(row.resume_text))
+    }
+    # Resume text can confirm a required skill, but it does not turn every word
+    # in a resume into an exposed candidate skill.
+    return structured.union(resume_words.intersection(job_tokens))
+
+
+def _candidate_years(row: CandidateProfileEntity) -> float:
+    if getattr(row, "total_experience_years", None):
+        return max(0.0, float(row.total_experience_years))
+    raw = row.raw_data if isinstance(row.raw_data, dict) else {}
+    parsed = row.parsed_resume_json if isinstance(row.parsed_resume_json, dict) else {}
+    for value in (raw.get("years_experience"), raw.get("experience_years"), parsed.get("years_experience"), parsed.get("experience_years")):
+        if value not in (None, ""):
+            try:
+                return max(0.0, float(parse_experience(value)))
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _experience_match(candidate_years: float, required: str) -> float:
+    try:
+        required_years = float(parse_experience(required or ""))
+    except (TypeError, ValueError):
+        required_years = 0.0
+    if required_years <= 0:
+        return 0.5
+    if candidate_years >= required_years:
+        return 1.0
+    return max(0.0, candidate_years / required_years)
+
+
+def _location_match(job: Any, row: CandidateProfileEntity) -> float:
+    structured = getattr(job, "structured_data", {}) if isinstance(getattr(job, "structured_data", {}), dict) else {}
+    job_location = _text(structured.get("location") or getattr(job, "location", "")).lower()
+    remote_policy = _text(structured.get("remotePolicy") or getattr(job, "remote_policy", "")).lower()
+    candidate_location = _text(getattr(row, "location", "")).lower()
+    if not job_location or "remote" in remote_policy or "remote" in job_location:
+        return 1.0
+    if not candidate_location:
+        return 0.5
+    return 1.0 if job_location in candidate_location or candidate_location in job_location else 0.0
+
+
+def _role_match(job: Any, row: CandidateProfileEntity) -> float:
+    job_tokens = _tokens(_job_role(job))
+    candidate_tokens = _tokens(getattr(row, "current_role", ""))
+    if not job_tokens or not candidate_tokens:
+        return 0.5
+    return len(job_tokens.intersection(candidate_tokens)) / len(job_tokens)
+
+
+def _candidate_result(row: CandidateProfileEntity, item: dict[str, Any]) -> CandidateResult:
+    semantic = float(item["semantic_similarity"])
+    score = float(item["match_score"])
+    explanation = CandidateExplanation(
+        semanticScore=semantic,
+        skillOverlap=float(item["skill_match"]),
+        finalScore=score,
+        pdlRelevance=0.0,
+        recencyScore=0.0,
+        engineeringScore=score,
+        penalties={},
+        skillsMatched=list(item["matched_requirements"]),
+        missingSkills=list(item["missing_requirements"]),
+        matchedRequirements=list(item["matched_requirements"]),
+        missingRequirements=list(item["missing_requirements"]),
+        experienceMatch=f"{float(item['experience_match']):.2f}",
+        locationMatch=float(item["location_match"]),
+        roleMatch=float(item["role_match"]),
+        candidateExperience=f"{item['candidate_years']:g} years",
+        jobExperience=item["job_experience"],
+        retrievalAttribution={"source": "internal", "embeddingVersion": item["embedding_version"]},
+        sourceBreakdown={"semanticSimilarity": semantic, "skillMatch": item["skill_match"], "experienceMatch": item["experience_match"], "locationMatch": item["location_match"]},
+    )
+    return CandidateResult(
+        id=_text(row.candidate_id or row.id),
+        name=_text(row.name or row.candidate_id or row.id),
+        role=_text(row.current_role),
+        company=_text(row.current_company),
+        # Internal review is recruiter-safe; contact data is unlocked later.
+        email=None,
+        headline=_text(row.current_role),
+        location=_text(row.location),
+        yearsExperience=item["candidate_years"],
+        skills=list(item["candidate_skills"]),
+        summary=_text(row.summary),
+        education=row.education if isinstance(row.education, list) else [],
+        projects=[],
+        certifications=[],
+        companiesHistory=[_text(row.current_company)] if _text(row.current_company) else [],
+        domainExperience=[],
+        resumeText=None,
+        profileData={"candidateRecordId": str(row.id), "agencyId": str(row.agency_id or "")},
+        fitScore=round(score * 5.0, 4),
+        decision="review",
+        explanation=explanation,
+        strategy="internal_semantic_match",
+        status="reviewed",
+        sourceProvider="internal",
+        sourceType="internal",
+        source="internal",
+        currentCompany=_text(row.current_company),
+        snippetQuality="rich" if row.resume_text else "partial",
+        rawDiscovery={"semanticSimilarity": semantic, "matchScore": score, "matchedRequirements": item["matched_requirements"], "missingRequirements": item["missing_requirements"]},
+    )
+
+
+def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: str, limit: int | None = None) -> dict[str, Any]:
+    started = time.perf_counter()
+    job = JobRepository(db).get(job_id)
+    if not job:
+        raise APIError("Job not found", status_code=404)
+    if _text(getattr(job, "company_id", "")) != _text(agency_id):
+        raise APIError("Forbidden", status_code=403)
+    job_text = build_job_text(job)
+    if not job_text.strip():
+        raise APIError("Job requirements are incomplete", status_code=409)
+
+    try:
+        hits = search_internal_candidate_chunks(
+            query_vector=get_embedding(job_text),
+            limit=max(1, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K),
+            metadata_filters={"agencyId": str(agency_id), "embeddingVersion": EMBEDDING_VERSION},
+            raise_on_unavailable=True,
+            allow_unfiltered_fallback=False,
+        )
+    except QdrantUnavailableError as exc:
+        raise APIError("Internal candidate search is unavailable", status_code=503, code="internal_search_unavailable", retryable=True) from exc
+
+    collection_points = count_collection_points(INTERNAL_CANDIDATE_COLLECTION_NAME)
+    if not hits and collection_points == 0:
+        return {
+            "status": "index_not_ready", "source": "internal", "candidates": [],
+            "qualified_count": 0, "retrieval_count": 0,
+            "semantic_top_k": INTERNAL_CANDIDATE_RETRIEVAL_TOP_K,
+            "threshold": INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+            "minimum_internal_matches": INTERNAL_CANDIDATE_MIN_MATCHES,
+            "fallback_eligible": False, "fallback_reason": "internal_index_not_ready",
+            "matching_duration_ms": round((time.perf_counter() - started) * 1000, 2),
+        }
+
+    record_ids = list(dict.fromkeys(_text((hit.get("payload") or {}).get("candidateRecordId")) for hit in hits if _text((hit.get("payload") or {}).get("candidateRecordId"))))
+    rows = db.scalars(select(CandidateProfileEntity).where(CandidateProfileEntity.id.in_(record_ids), CandidateProfileEntity.agency_id == str(agency_id))).all() if record_ids else []
+    row_by_id = {str(row.id): row for row in rows}
+    job_skills = _job_skills(job)
+    job_tokens = _tokens(job_skills)
+    job_experience = _job_experience(job)
+    weights = INTERNAL_CANDIDATE_MATCH_WEIGHTS
+    scored: list[tuple[CandidateProfileEntity, dict[str, Any]]] = []
+    for hit in hits:
+        payload = hit.get("payload") or {}
+        row = row_by_id.get(_text(payload.get("candidateRecordId")))
+        if not row:
+            continue
+        if getattr(row, "embedding_status", None) != "EMBEDDED":
+            continue
+        if getattr(row, "embedding_version", None) != EMBEDDING_VERSION:
+            continue
+        candidate_skills = _candidate_skills(row)
+        candidate_skill_tokens = _candidate_skill_tokens(row, job_tokens)
+        matched = sorted(job_tokens.intersection(candidate_skill_tokens))
+        skill_match = len(matched) / len(job_tokens) if job_tokens else 0.5
+        candidate_years = _candidate_years(row)
+        experience_match = _experience_match(candidate_years, job_experience)
+        location_match = _location_match(job, row)
+        role_match = _role_match(job, row)
+        semantic = max(0.0, min(1.0, float(hit.get("score") or 0.0)))
+        weight_sum = sum(max(0.0, float(weights.get(key, 0.0))) for key in ("semantic_similarity", "skill_match", "experience_match")) or 1.0
+        base_score = (
+            max(0.0, float(weights.get("semantic_similarity", 0.7))) * semantic
+            + max(0.0, float(weights.get("skill_match", 0.2))) * skill_match
+            + max(0.0, float(weights.get("experience_match", 0.1))) * experience_match
+        ) / weight_sum
+        final_score = max(0.0, min(1.0, base_score * (0.85 + (0.15 * location_match)) * (0.90 + (0.10 * role_match))))
+        item = {
+            "candidate_id": _text(row.candidate_id or row.id), "candidate_record_id": str(row.id),
+            "semantic_similarity": round(semantic, 4), "skill_match": round(skill_match, 4),
+            "experience_match": round(experience_match, 4), "location_match": round(location_match, 4),
+            "role_match": round(role_match, 4),
+            "match_score": round(final_score, 4), "candidate_years": candidate_years,
+            "candidate_skills": candidate_skills, "matched_requirements": matched,
+            "missing_requirements": sorted(job_tokens.difference(candidate_skill_tokens)),
+            "job_experience": job_experience, "embedding_version": _text(payload.get("embeddingVersion")) or EMBEDDING_VERSION,
+        }
+        scored.append((row, item))
+
+    scored.sort(key=lambda pair: pair[1]["match_score"], reverse=True)
+    qualified = [(row, item) for row, item in scored if item["match_score"] >= INTERNAL_CANDIDATE_MATCH_THRESHOLD]
+    resolved_limit = max(1, min(int(limit or INTERNAL_CANDIDATE_MATCH_LIMIT), INTERNAL_CANDIDATE_MATCH_LIMIT))
+    results = [_candidate_result(row, item) for row, item in qualified[:resolved_limit]]
+    qualified_count = len(qualified)
+    fallback_eligible = qualified_count == 0
+    fallback_reason = "insufficient_internal_candidates" if fallback_eligible else "internal_candidates_sufficient"
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "internal_candidate_matching job_id=%s retrieval_count=%s qualified_count=%s top_k=%s threshold=%.4f fallback_eligible=%s reason=%s duration_ms=%.2f",
+        job_id, len(hits), qualified_count, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K, INTERNAL_CANDIDATE_MATCH_THRESHOLD, fallback_eligible, fallback_reason, duration_ms,
+    )
+    return {
+        "status": "ok",
+        "source": "internal",
+        "candidates": results,
+        "qualified_count": qualified_count,
+        "retrieval_count": len(hits),
+        "semantic_top_k": INTERNAL_CANDIDATE_RETRIEVAL_TOP_K,
+        "threshold": INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+        "minimum_internal_matches": INTERNAL_CANDIDATE_MIN_MATCHES,
+        "fallback_eligible": fallback_eligible,
+        "fallback_reason": fallback_reason,
+        "matching_duration_ms": duration_ms,
+    }

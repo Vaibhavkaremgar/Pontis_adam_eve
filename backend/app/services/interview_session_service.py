@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.core.config import INTERVIEW_APP_URL, INTERVIEW_SESSION_TTL_MINUTES
-from app.db.repositories import CandidateProfileRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository
+from app.db.repositories import AutomationJobRepository, CandidateProfileRepository, CompanyRepository, InterviewRepository, InterviewSessionRepository, JobRepository, NotificationWorkflowTokenRepository
 from app.services.ats_lifecycle_service import transition_candidate_ats_state
 from app.services.audit_service import record_audit_event
 from app.services.candidate_service import ensure_candidate_email
@@ -53,7 +53,7 @@ def _interview_url(session_token: str) -> str:
     if not base_url:
         return path
     if token:
-        return f"{base_url}{path}?session={token}"
+        return f"{base_url}{path}?token={token}"
     return f"{base_url}{path}"
 
 
@@ -104,6 +104,15 @@ def _workflow_token(row) -> str:
         or scheduling_metadata.get("workflowTokenValue")
         or getattr(row, "token", "")
     ).strip()
+
+
+def _booking_candidate_id_from_payload(payload: dict[str, Any]) -> str:
+    candidate = payload.get("candidate")
+    if isinstance(candidate, dict):
+        candidate_id = str(candidate.get("candidate_id") or candidate.get("id") or "").strip()
+        if candidate_id:
+            return candidate_id
+    return str(payload.get("candidateId") or payload.get("candidate_id") or payload.get("candidate") or "").strip()
 
 
 def _stage_history(row) -> list[dict[str, Any]]:
@@ -287,7 +296,39 @@ def _resolve_booking_context(*, db: Session, token: str) -> tuple[Any, str, Any,
         )
 
     payload = _metadata_map(token_row.payload)
+    if str(getattr(token_row, "token_type", "") or "").strip().lower() == "slot_selection" and not session_row:
+        candidate_id = _booking_candidate_id_from_payload(payload)
+        if not candidate_id:
+            _booking_resolution_failed(
+                token=normalized_token,
+                reason="not_found",
+                status_code=404,
+                message="Booking link is invalid or has expired",
+            )
+        create_interview_session(
+            db=db,
+            job_id=str(token_row.job_id or ""),
+            candidate_id=candidate_id,
+            workflow_token=str(token_row.token or normalized_token),
+            source_app=str(token_row.source_app or "ui"),
+            stage_name=str(payload.get("interview", {}).get("round") or payload.get("stageName") or "recruiter_screen"),
+            available_slots=list(payload.get("interview", {}).get("availableSlots") or payload.get("availableSlots") or payload.get("available_slots") or []),
+            timezone_name=str(payload.get("interview", {}).get("timezone") or payload.get("timezone") or "UTC"),
+            suppress_side_effects=True,
+        )
+        session_row = InterviewSessionRepository(db).get_by_token(str(token_row.token or normalized_token))
+        token_row = NotificationWorkflowTokenRepository(db).get_by_token(normalized_token, source_app="ui") or token_row
+        payload = _metadata_map(token_row.payload)
+        if not session_row:
+            _booking_resolution_failed(
+                token=normalized_token,
+                reason="not_found",
+                status_code=404,
+                message="Booking link is invalid or has expired",
+            )
     session_token = str(payload.get("currentInterviewToken") or "").strip()
+    if not session_token and session_row:
+        session_token = str(getattr(session_row, "token", "") or "").strip()
     if not session_token:
         _booking_resolution_failed(
             token=normalized_token,
@@ -329,6 +370,7 @@ def create_interview_session(
     available_slots: list[str] | None = None,
     timezone_name: str | None = None,
     candidate_email_override: str = "",
+    suppress_side_effects: bool = False,
 ) -> dict[str, str | None]:
     job = JobRepository(db).get(job_id)
     if not job:
@@ -514,6 +556,8 @@ def create_interview_session(
     }
     booking_link = row.booking_url or _slot_booking_url(workflow_token_value)
     db.commit()
+    if suppress_side_effects:
+        return _session_payload(row=row, booking_link=booking_link)
     recruiter_id = JobRepository(db).get_recruiter_id(job_id)
     logger.info(
         "interview_session_created job_id=%s candidate_id=%s recruiter_id=%s session_token=%s workflow_token=%s",
@@ -712,6 +756,19 @@ def book_interview_session(*, db: Session, token: str, scheduled_at: str | None 
         "sourceType": source_type,
         "meetingLink": meeting_link,
     }
+    AutomationJobRepository(db).upsert(
+        automation_key=f"interview-execution:{row.token}",
+        automation_type="interview_execution",
+        job_id=row.job_id,
+        candidate_id=row.candidate_id,
+        scheduled_at=row.scheduled_at or datetime.now(timezone.utc),
+        payload={
+            "sessionToken": row.token,
+            "workflowToken": workflow_token_value or str((_metadata_map(row.scheduling_metadata).get("workflowToken") or row.token)),
+            "jobId": row.job_id,
+            "candidateId": row.candidate_id,
+        },
+    )
     record_audit_event(
         db=db,
         actor_id=None,

@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.db.repositories import JobRepository
 from app.schemas.candidate import CandidateExplanation, CandidateResult, InternalCandidateMatchItem
 from app.services.candidate_service import fetch_ranked_candidates
-from app.services.internal_candidate_matcher_service import InternalCandidateMatchFilters, InternalCandidateMatcher
+from app.services.internal_candidate_matcher_service import InternalCandidateMatchFilters
+from app.services.internal_candidate_semantic_service import match_internal_candidates_for_job
 from app.services.ranking.models import ranked_candidate_sort_key
 
 
@@ -119,21 +120,19 @@ class CandidateDiscoveryService:
                 limit=limit,
             )
 
-        serp_items = self._discover_serp_candidates(job_id=job_id, limit=limit)
-        merged_items = self._merge_internal_and_serp_candidates(
-            internal_items=[self._with_source(item, source="internal") for item in qualified_internal_matches],
-            serp_items=serp_items,
-            limit=limit,
-        )
+        # Internal supply is a business decision. Never invoke SerpAPI merely
+        # because the internal pool is small; the caller must explicitly invoke
+        # discover_serp_candidates after presenting this fallback state.
+        internal_items = [self._with_source(item, source="internal") for item in qualified_internal_matches]
         return self._build_response(
             agency_id=resolved_agency_id,
             job_id=job_id,
-            internal_items=[self._with_source(item, source="internal") for item in qualified_internal_matches],
-            serp_items=serp_items,
+            internal_items=internal_items,
+            serp_items=[],
             enough_internal_candidates=False,
-            used_internal_only=False,
+            used_internal_only=True,
             limit=limit,
-            candidates_override=merged_items,
+            candidates_override=internal_items,
         )
 
     def discover_internal_candidates(
@@ -167,16 +166,15 @@ class CandidateDiscoveryService:
         limit: int | None,
     ) -> list[CandidateDiscoveryItem]:
         filters = self._build_internal_filters(calibrated_recruiter_preferences)
-        raw_result = InternalCandidateMatcher(self.db).match(
+        del filters
+        job = JobRepository(self.db).get(job_id)
+        result = match_internal_candidates_for_job(
+            db=self.db,
             job_id=job_id,
-            filters=filters,
+            agency_id=_as_text(getattr(job, "company_id", "")),
             limit=limit or self.config.internal_match_limit,
         )
-        items = []
-        for raw_item in raw_result.get("items", []):
-            discovery_item = self._to_internal_discovery_item(job_id=job_id, item=raw_item)
-            if discovery_item is not None:
-                items.append(discovery_item)
+        items = [CandidateDiscoveryItem(candidate=item, source="internal") for item in result.get("candidates", [])]
         items.sort(key=lambda item: ranked_candidate_sort_key(item.candidate))
         return items
 
@@ -186,7 +184,7 @@ class CandidateDiscoveryService:
             job_id=job_id,
             refresh=True,
             debug=False,
-            request_source="api",
+            request_source="external_fallback",
         )
         items: list[CandidateDiscoveryItem] = []
         max_limit = max(1, int(limit or self.config.merged_result_limit))

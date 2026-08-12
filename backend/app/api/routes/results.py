@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.security import get_current_user, is_super_admin_role
 from app.db.session import get_db
 from app.models.entities import JobEntity
-from app.services.results_service import get_result_by_workflow_token, list_results, resolve_result_context, stream_result_video
+from app.services.results_service import get_result_by_workflow_token, list_ready_candidates, list_results, resolve_result_context, stream_result_video, stream_result_video_by_session
 from app.services.result_operations_service import advance_result_candidate, record_result_decision
 from app.db.repositories import JobRepository
 from app.utils.exceptions import APIError
@@ -93,6 +93,25 @@ def results_list(
     return success_response(list_results(db=db, job_id=jobId, recruiter_id=request.state.user["id"], agency_id=agency_id))
 
 
+@router.get("/results/ready")
+def results_ready(
+    request: Request,
+    jobId: str = Query(...),
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    is_super_admin = is_super_admin_role(getattr(request.state, "user", {}).get("role") if isinstance(getattr(request.state, "user", {}), dict) else "")
+    agency_id = _current_agency_id(request)
+    job = JobRepository(db).get(jobId)
+    if not job:
+        raise APIError("Job not found", status_code=404)
+    if not agency_id and is_super_admin:
+        agency_id = str(getattr(job, "company_id", "") or getattr(job, "agency_id", "")).strip()
+    if str(getattr(job, "company_id", "") or getattr(job, "agency_id", "")).strip() != agency_id:
+        raise APIError("Forbidden", status_code=403)
+    return success_response(list_ready_candidates(db=db, job_id=jobId, agency_id=agency_id))
+
+
 @router.get("/results/{workflowToken}")
 def results_detail(
     workflowToken: str,
@@ -133,6 +152,22 @@ def results_video(
         workflow_token=workflowToken,
         recruiter_id=request.state.user["id"],
         agency_id=agency_id,
+        range_header=request.headers.get("range", ""),
+    )
+
+
+@router.get("/recording/{session_token}")
+def recording_by_session(
+    session_token: str,
+    request: Request,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return stream_result_video_by_session(
+        db=db,
+        session_token=session_token,
+        recruiter_id=request.state.user["id"],
+        agency_id=_current_agency_id(request),
         range_header=request.headers.get("range", ""),
     )
 

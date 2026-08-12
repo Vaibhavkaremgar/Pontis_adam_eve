@@ -145,6 +145,21 @@ def _run_candidate_flywheel_cycle() -> None:
         logger.warning("candidate_flywheel_cycle_failed error=%s", str(exc))
 
 
+def _run_candidate_embedding_detection_cycle() -> None:
+    """Poll shared PostgreSQL and enqueue Adam's existing embedding jobs."""
+    from app.services.redis_service import distributed_lock
+    with distributed_lock("scheduler:candidate_embedding_detection", ttl=120) as acquired:
+        if not acquired:
+            return
+        try:
+            with SessionLocal() as db:
+                from app.services.internal_candidate_embedding_service import enqueue_stale_candidate_embedding_jobs
+                result = enqueue_stale_candidate_embedding_jobs(db=db, limit=REFRESH_CANDIDATE_LIMIT)
+                logger.info("candidate_embedding_detection_cycle_complete queued=%s skipped=%s", result.get("queued", 0), result.get("skipped", 0))
+        except Exception as exc:
+            logger.warning("candidate_embedding_detection_cycle_failed error=%s", str(exc))
+
+
 def _run_followup_cycle() -> None:
     """Send follow-up emails to candidates who haven't replied."""
     global _last_followup_cycle_at
@@ -327,6 +342,11 @@ def _run_loop() -> None:
             _run_candidate_flywheel_cycle()
         except Exception as exc:
             logger.warning("candidate_flywheel_cycle_exception error=%s", str(exc))
+
+        try:
+            _run_candidate_embedding_detection_cycle()
+        except Exception as exc:
+            logger.warning("candidate_embedding_detection_cycle_exception error=%s", str(exc))
 
         if ENABLE_FOLLOWUPS:
             try:

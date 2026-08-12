@@ -22,6 +22,7 @@ from app.services.admin_service import (
     admin_assert_actor,
     create_admin_agency,
     create_admin_user,
+    delete_admin_agency,
     get_admin_dashboard,
     list_admin_agencies,
     list_admin_users,
@@ -91,6 +92,16 @@ def deactivate_agency(
     db: Session = Depends(get_db),
 ):
     return success_response(set_admin_agency_status(db=db, actor_id=_actor(request)["id"], agency_id=agencyId, is_active=False))
+
+
+@router.delete("/agencies/{agencyId}")
+def delete_agency(
+    agencyId: str,
+    request: Request,
+    _: dict = super_admin_access,
+    db: Session = Depends(get_db),
+):
+    return success_response(delete_admin_agency(db=db, actor_id=_actor(request)["id"], agency_id=agencyId))
 
 
 @router.post("/agencies/{agencyId}/reactivate")

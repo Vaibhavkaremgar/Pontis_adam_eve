@@ -138,3 +138,26 @@ export async function recordInterviewEvaluation(payload: InterviewEvaluationPayl
     payload
   });
 }
+
+export type FirstRoundInterviewRequest = {
+  candidateId: string;
+  jobId: string;
+  availableSlots?: string[];
+  timezone?: string;
+};
+
+export type FirstRoundInterviewResponse = InterviewSession & {
+  interviewRound?: string;
+  jobTitle?: string;
+  companyName?: string;
+};
+
+export async function requestFirstRoundInterview(
+  payload: FirstRoundInterviewRequest
+): Promise<ApiResponse<FirstRoundInterviewResponse>> {
+  return requestApi<FirstRoundInterviewResponse>({
+    url: `${API_BASE_URL}/interviews/first-round/request`,
+    method: "POST",
+    payload,
+  });
+}

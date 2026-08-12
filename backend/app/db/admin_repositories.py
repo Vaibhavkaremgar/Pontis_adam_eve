@@ -6,11 +6,11 @@ from datetime import datetime, timezone
 from math import ceil
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, delete, false, func, inspect as sa_inspect, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.security import SUPER_ADMIN_ROLE, normalize_app_role
-from app.models.entities import AllowedUserEntity, CandidateProfileEntity, CompanyEntity, JobEntity, UserEntity
+from app.models.entities import AllowedUserEntity, Base, CandidateProfileEntity, CompanyEntity, JobEntity, UserEntity
 from app.utils.exceptions import APIError
 
 
@@ -177,6 +177,106 @@ class AdminRepository:
 
     def get_agency(self, agency_id: str) -> CompanyEntity | None:
         return self.db.scalar(select(CompanyEntity).where(CompanyEntity.id == agency_id))
+
+    def delete_agency(self, *, agency_id: str) -> None:
+        normalized_id = _normalized_text(agency_id)
+        agency = self.get_agency(normalized_id)
+        if agency is None:
+            raise APIError("Agency not found", status_code=404)
+
+        # Import LinkedIn models lazily so their tenant tables participate in
+        # the same dependency-aware delete without coupling admin listing to
+        # the LinkedIn worker package.
+        import app.linkedin.models  # noqa: F401
+
+        existing_table_names = set(sa_inspect(self.db.get_bind()).get_table_names())
+        inspector = sa_inspect(self.db.get_bind())
+        tables = {
+            table.name: table
+            for table in Base.metadata.tables.values()
+            if table.name in existing_table_names
+        }
+        database_column_types = {
+            (table_name, column["name"]): str(column["type"]).lower()
+            for table_name in existing_table_names
+            for column in inspector.get_columns(table_name)
+        }
+        agency_table = tables.get("agencies")
+        if agency_table is None:
+            raise APIError("Agency table is unavailable", status_code=500)
+
+        predicate_cache: dict[str, object] = {}
+
+        def agency_predicate(table, visiting: frozenset[str] = frozenset()):
+            cached = predicate_cache.get(table.name)
+            if cached is not None and table.name not in visiting:
+                return cached
+            if table.name in visiting:
+                return false()
+
+            next_visiting = visiting | {table.name}
+            conditions = []
+            for foreign_key in table.foreign_keys:
+                parent = foreign_key.column.table
+                if parent.name == "agencies":
+                    conditions.append(foreign_key.parent == normalized_id)
+                    continue
+                if parent.name not in tables:
+                    continue
+                parent_condition = agency_predicate(parent, next_visiting)
+                if str(parent_condition) == str(false()):
+                    continue
+                selected_column = foreign_key.column
+                local_type = database_column_types.get(
+                    (table.name, foreign_key.parent.name),
+                    str(foreign_key.parent.type).lower(),
+                )
+                remote_type = database_column_types.get(
+                    (parent.name, foreign_key.column.name),
+                    str(foreign_key.column.type).lower(),
+                )
+                if "uuid" in remote_type and "uuid" not in local_type:
+                    # Legacy schemas contain textual local FKs pointing at
+                    # UUID columns. Cast the UUID side to text for PostgreSQL
+                    # instead of generating an invalid varchar = uuid test.
+                    selected_column = cast(selected_column, String())
+                conditions.append(
+                    foreign_key.parent.in_(
+                        select(selected_column).select_from(parent).where(parent_condition).correlate(None)
+                    )
+                )
+
+            condition = or_(*conditions) if conditions else false()
+            if table.name not in visiting:
+                predicate_cache[table.name] = condition
+            return condition
+
+        child_tables: dict[str, set[str]] = {name: set() for name in tables if name != "agencies"}
+        for table in tables.values():
+            if table.name == "agencies":
+                continue
+            for foreign_key in table.foreign_keys:
+                parent_name = foreign_key.column.table.name
+                if parent_name in child_tables:
+                    child_tables[parent_name].add(table.name)
+
+        remaining = set(child_tables)
+        delete_order: list[str] = []
+        while remaining:
+            ready = sorted(name for name in remaining if not (child_tables[name] & remaining))
+            if not ready:
+                ready = [sorted(remaining)[0]]
+            delete_order.extend(ready)
+            remaining.difference_update(ready)
+
+        for table_name in delete_order:
+            table = tables[table_name]
+            condition = agency_predicate(table)
+            if str(condition) != str(false()):
+                self.db.execute(table.delete().where(condition))
+
+        self.db.execute(delete(agency_table).where(agency_table.c.id == normalized_id))
+        self.db.flush()
 
     def list_agencies(
         self,

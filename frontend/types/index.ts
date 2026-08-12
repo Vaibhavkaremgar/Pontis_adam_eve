@@ -69,13 +69,18 @@ export type Candidate = {
   resumeText?: string | null;
   profileData?: Record<string, unknown>;
   fitScore: number;
-  decision: "strong_match" | "potential" | "weak";
+  decision: "strong_match" | "potential" | "weak" | "review";
   explanation?: {
     semantic?: number;
     semanticScore?: number;
     skills_match?: string[];
     skillsMatched?: string[];
+    missingSkills?: string[];
+    matchedRequirements?: string[];
+    missingRequirements?: string[];
     experienceMatch?: string;
+    locationMatch?: number;
+    roleMatch?: number;
     candidateExperience?: string;
     jobExperience?: string;
     feedback_boost?: number;
@@ -114,7 +119,7 @@ export type Candidate = {
       [key: string]: number | undefined;
     };
   };
-  strategy: "HIGH" | "MEDIUM" | "LOW";
+  strategy: "HIGH" | "MEDIUM" | "LOW" | "internal_semantic_match";
   status:
     | "new"
     | "sourced"
@@ -176,6 +181,13 @@ export type Candidate = {
   recruiterSummaryLines?: string[];
   fitScoreDisplay?: string;
   matchedSkills?: string[];
+  recruiterAction?: "NONE" | "INTERESTED" | "NOT_INTERESTED" | string;
+  requestStatus?: string | null;
+  requestId?: string;
+  requestCreatedAt?: string | null;
+  requestUpdatedAt?: string | null;
+  requestRespondedAt?: string | null;
+  profileAccess?: "LIMITED" | "FULL";
 };
 
 /** Interview stage record shown in final ready step. */

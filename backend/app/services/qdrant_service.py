@@ -42,8 +42,6 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
             "jobId": PayloadSchemaType.KEYWORD,
             "recruiterId": PayloadSchemaType.KEYWORD,
             "embeddingVersion": PayloadSchemaType.KEYWORD,
-            "skillTokens": PayloadSchemaType.KEYWORD,
-            "rolePattern": PayloadSchemaType.KEYWORD,
         },
     },
     INTERNAL_CANDIDATE_COLLECTION_NAME: {
@@ -51,10 +49,10 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
         "distance": Distance.COSINE,
         "indexes": {
             "candidateId": PayloadSchemaType.KEYWORD,
+            "candidateRecordId": PayloadSchemaType.KEYWORD,
+            "agencyId": PayloadSchemaType.KEYWORD,
             "resumeFingerprint": PayloadSchemaType.KEYWORD,
             "embeddingVersion": PayloadSchemaType.KEYWORD,
-            "skillTokens": PayloadSchemaType.KEYWORD,
-            "rolePattern": PayloadSchemaType.KEYWORD,
             "sourceType": PayloadSchemaType.KEYWORD,
         },
     },
@@ -72,6 +70,8 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
             "recruiterId": PayloadSchemaType.KEYWORD,
             "jobId": PayloadSchemaType.KEYWORD,
             "candidateId": PayloadSchemaType.KEYWORD,
+            "candidateRecordId": PayloadSchemaType.KEYWORD,
+            "agencyId": PayloadSchemaType.KEYWORD,
             "memoryType": PayloadSchemaType.KEYWORD,
             "embeddingVersion": PayloadSchemaType.KEYWORD,
         },
@@ -153,18 +153,6 @@ def close_qdrant_client() -> None:
         logger.warning("qdrant_close_failed error=%s", str(exc))
     finally:
         _client = None
-    if _client is not None:
-        return _client
-
-    try:
-        _client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY or None)
-        _client.get_collections()
-        return _client
-    except Exception as exc:
-        _mark_client_unavailable(str(exc))
-        logger.warning("Qdrant unavailable; vector operations are running in no-op mode error=%s", str(exc))
-        log_metric("error", source="qdrant", kind="connection_unavailable")
-        return None
 
 
 def ensure_collection(name: str) -> None:
@@ -397,6 +385,35 @@ def delete_candidate_vectors(job_id: str) -> None:
     _delete_by_filter(CANDIDATE_COLLECTION_NAME, field_name="jobId", value=job_id)
 
 
+def delete_internal_candidate_vectors(*, candidate_record_id: str) -> None:
+    _delete_by_filter(
+        INTERNAL_CANDIDATE_COLLECTION_NAME,
+        field_name="candidateRecordId",
+        value=str(candidate_record_id),
+    )
+
+
+def internal_candidate_vector_exists(*, candidate_record_id: str) -> bool | None:
+    """Return False when the vector is absent, or None when Qdrant is unavailable."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        ensure_collection(INTERNAL_CANDIDATE_COLLECTION_NAME)
+        response = client.scroll(
+            collection_name=INTERNAL_CANDIDATE_COLLECTION_NAME,
+            scroll_filter=Filter(must=[FieldCondition(key="candidateRecordId", match=MatchValue(value=str(candidate_record_id)))]),
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        points = response[0] if isinstance(response, tuple) else response
+        return bool(points)
+    except Exception as exc:
+        logger.debug("internal_candidate_vector_exists_unavailable candidate_record_id=%s error=%s", candidate_record_id, str(exc))
+        return None
+
+
 def upsert_candidate_chunks(job_id: str, candidate_id: str, vectors: list[list[float]], chunks: list[str], payload: dict[str, Any]) -> None:
     client = _get_client()
     if not client:
@@ -539,6 +556,46 @@ def upsert_recruiter_memory(
         )
 
 
+def upsert_internal_candidate_embeddings(points: list[dict[str, Any]]) -> None:
+    """Strict, batched upsert for the candidates-table semantic index."""
+    if not points:
+        return
+    client = _get_client()
+    if not client:
+        raise QdrantUnavailableError("Qdrant unavailable during internal candidate indexing")
+    ensure_collection(INTERNAL_CANDIDATE_COLLECTION_NAME)
+    qdrant_points = [
+        PointStruct(
+            id=_stable_point_id(f"internal-candidate:{item['candidateRecordId']}"),
+            vector=item["vector"],
+            payload={
+                "candidateId": item["candidateId"],
+                "candidateRecordId": item["candidateRecordId"],
+                "agencyId": item["agencyId"],
+                "source": "internal",
+                "sourceType": "internal",
+                "contentType": "resume",
+                "embeddingVersion": item["embeddingVersion"],
+                "textHash": item["textHash"],
+                "indexedAt": item["indexedAt"],
+                "resumeFingerprint": item.get("resumeFingerprint") or "",
+            },
+        )
+        for item in points
+    ]
+    try:
+        client.upsert(collection_name=INTERNAL_CANDIDATE_COLLECTION_NAME, points=qdrant_points, wait=True)
+    except Exception as exc:
+        _mark_client_unavailable(str(exc))
+        log_metric("error", source="qdrant", kind="internal_candidate_embedding_upsert_failed")
+        raise QdrantUnavailableError(str(exc)) from exc
+    logger.info(
+        "internal_candidate_embedding_batch_upsert collection=%s count=%s",
+        INTERNAL_CANDIDATE_COLLECTION_NAME,
+        len(qdrant_points),
+    )
+
+
 def load_recruiter_memory(recruiter_id: str, *, limit: int = 25) -> list[dict[str, Any]]:
     client = _get_client()
     recruiter_id = (recruiter_id or "").strip()
@@ -610,6 +667,9 @@ def _metadata_filter(metadata_filters: dict[str, Any] | None) -> Filter | None:
     embedding_version = _normalize_filter_value(
         str(metadata_filters.get("embeddingVersion") or metadata_filters.get("embedding_version") or "")
     )
+    agency_id = _normalize_filter_value(
+        str(metadata_filters.get("agencyId") or metadata_filters.get("agency_id") or "")
+    )
     preferred_skills = [
         _normalize_filter_value(str(item))
         for item in (metadata_filters.get("preferredSkills") or [])
@@ -625,16 +685,16 @@ def _metadata_filter(metadata_filters: dict[str, Any] | None) -> Filter | None:
 
     if embedding_version:
         must.append(FieldCondition(key="embeddingVersion", match=MatchValue(value=embedding_version)))
+    if agency_id:
+        must.append(FieldCondition(key="agencyId", match=MatchValue(value=agency_id)))
 
-    for skill in preferred_skills[:4]:
-        should.append(FieldCondition(key="skillTokens", match=MatchValue(value=skill)))
-    for preferred_role in preferred_roles[:2]:
-        should.append(FieldCondition(key="rolePattern", match=MatchValue(value=preferred_role)))
+    # skillTokens / rolePattern are not stored in the internal candidate payload;
+    # preferred_skills and preferred_roles are intentionally ignored here so that
+    # the filter never references absent payload fields.
 
-    # Only apply filter when we have soft signals; otherwise do pure vector search.
-    if not should and not must:
+    if not must:
         return None
-    return Filter(must=must or None, should=should or None)
+    return Filter(must=must)
 
 
 def _mark_search_error(message: str) -> None:
@@ -710,12 +770,16 @@ def search_internal_candidate_chunks(
     query_vector: list[float],
     limit: int = 60,
     metadata_filters: dict[str, Any] | None = None,
+    raise_on_unavailable: bool = False,
+    allow_unfiltered_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     return _search_chunks(
         collection_name=INTERNAL_CANDIDATE_COLLECTION_NAME,
         query_vector=query_vector,
         limit=limit,
         metadata_filters=metadata_filters,
+        raise_on_unavailable=raise_on_unavailable,
+        allow_unfiltered_fallback=allow_unfiltered_fallback,
     )
 
 
@@ -725,9 +789,13 @@ def _search_chunks(
     query_vector: list[float],
     limit: int = 60,
     metadata_filters: dict[str, Any] | None = None,
+    raise_on_unavailable: bool = False,
+    allow_unfiltered_fallback: bool = True,
 ) -> list[dict[str, Any]]:
     client = _get_client()
     if not client:
+        if raise_on_unavailable:
+            raise QdrantUnavailableError("Qdrant unavailable during semantic search")
         return []
 
     ensure_collection(collection_name)
@@ -788,15 +856,19 @@ def _search_chunks(
             _mark_search_error(str(exc))
             _mark_client_unavailable(str(exc))
             logger.warning("Qdrant search failed (fallback path) error=%s", str(exc))
+            if raise_on_unavailable:
+                raise QdrantUnavailableError(str(exc)) from exc
             return []
     except Exception as exc:
         log_metric("error", source="qdrant", kind="search_failed")
         _mark_search_error(str(exc))
         _mark_client_unavailable(str(exc))
         logger.warning("Qdrant search failed error=%s", str(exc))
+        if raise_on_unavailable:
+            raise QdrantUnavailableError(str(exc)) from exc
         return []
 
-    if not results and query_filter is not None:
+    if not results and query_filter is not None and allow_unfiltered_fallback:
         try:
             try:
                 response = client.query_points(

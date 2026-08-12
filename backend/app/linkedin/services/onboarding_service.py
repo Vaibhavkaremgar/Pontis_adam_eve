@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,9 +11,7 @@ from sqlalchemy import select
 from app.core.config import LINKEDIN_PROFILE_ROOT
 from app.db.session import SessionLocal
 from app.linkedin.playwright.browser_context import BrowserContextConfig
-from app.linkedin.playwright.browser_manager import BrowserManager
-from app.linkedin.playwright.session_manager import SessionManager
-from app.linkedin.playwright.browser_types import BrowserSessionStatus
+from app.linkedin.playwright.playwright_factory import PlaywrightFactory
 from app.models.entities import CompanyEntity
 
 logger = logging.getLogger(__name__)
@@ -63,45 +60,77 @@ def _run_onboarding(agency_id: str, profile_path: str) -> None:
 
 
 async def _run_onboarding_async(agency_id: str, profile_path: str) -> None:
-    # Onboarding must be interactive. It never receives credentials and never
-    # calls storage_state(), cookies(), or any equivalent export API.
+    # This is intentionally independent from all LinkedIn production workers.
+    # It only launches a persistent context, opens /login, and observes the
+    # resulting page for authenticated UI signals after manual login.
     config = BrowserContextConfig(headless=False, profile_root=str(Path(profile_path).parent))
-    manager = BrowserManager(account_id=agency_id, config=config, profile_path=profile_path)
-    started_at = time.monotonic()
+    factory = PlaywrightFactory(config)
+    playwright = None
+    context = None
     authenticated = False
     try:
         logger.info("launching Playwright agency_id=%s profile_path=%s", agency_id, profile_path)
-        context = await manager.start()
-        page = (list(context.pages)[0] if getattr(context, "pages", None) else await context.new_page())
+        playwright = await factory.start_playwright()
+        launch_config = factory.launch_config_for_profile(profile_path)
+        context = await playwright.chromium.launch_persistent_context(
+            **launch_config,
+            headless=False,
+        )
+        pages = list(getattr(context, "pages", []) or [])
+        page = pages[0] if pages else await context.new_page()
+        for extra_page in pages[1:]:
+            await extra_page.close()
         await page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
         logger.info("waiting for LinkedIn login agency_id=%s", agency_id)
         while True:
-            if not manager.is_context_alive() or not manager.is_connected():
+            if context.is_closed() or page.is_closed():
+                logger.info("LinkedIn onboarding browser closed before authentication agency_id=%s", agency_id)
                 _mark_failed(agency_id)
                 return
-            status = await SessionManager(context).detect_session_status()
-            if status == BrowserSessionStatus.LOGGED_IN:
+
+            if await _has_authenticated_linkedin_ui(page):
                 logger.info("LinkedIn authenticated agency_id=%s", agency_id)
                 authenticated = True
                 break
-            if status == BrowserSessionStatus.SESSION_EXPIRED:
-                _mark_failed(agency_id)
-                return
-            if time.monotonic() - started_at >= 15 * 60:
-                _mark_failed(agency_id)
-                return
             await asyncio.sleep(2)
     except Exception:
         logger.exception("linkedin onboarding browser error agency_id=%s", agency_id)
         _mark_failed(agency_id)
     finally:
         try:
-            await manager.stop()
+            if context is not None and not context.is_closed():
+                await context.close()
+            if playwright is not None:
+                await playwright.stop()
         except Exception:
-            logger.exception("linkedin onboarding browser cleanup failed agency_id=%s", agency_id)
+            logger.warning("linkedin onboarding browser already closed agency_id=%s", agency_id)
             authenticated = False
         if authenticated:
+            logger.info("LinkedIn profile saved agency_id=%s profile_path=%s", agency_id, profile_path)
             _mark_connected(agency_id, profile_path)
+
+
+async def _has_authenticated_linkedin_ui(page: object) -> bool:
+    """Return true only when the current page exposes authenticated UI signals."""
+    try:
+        current_url = str(getattr(page, "url", "") or "").lower()
+        if any(token in current_url for token in ("/login", "/uas/login", "/checkpoint", "/challenge")):
+            return False
+        selectors = (
+            "[data-test-global-nav]",
+            "[aria-label='Home']",
+            "[aria-label*='Me']",
+            "a[href='/feed/']",
+            "input[placeholder*='Search']",
+            "input[aria-label*='Search']",
+        )
+        for selector in selectors:
+            locator = page.locator(selector).first
+            if await locator.is_visible():
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def _mark_connected(agency_id: str, profile_path: str) -> None:
@@ -114,7 +143,6 @@ def _mark_connected(agency_id: str, profile_path: str) -> None:
             row.linkedin_connected_at = row.linkedin_connected_at or now
             row.linkedin_last_verified_at = now
             row.linkedin_profile_path = profile_path
-            logger.info("LinkedIn profile saved agency_id=%s profile_path=%s", agency_id, profile_path)
             db.commit()
             logger.info("LinkedIn metadata updated agency_id=%s status=connected", agency_id)
 

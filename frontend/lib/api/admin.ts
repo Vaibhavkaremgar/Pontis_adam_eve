@@ -209,6 +209,13 @@ export async function reactivateAgency(agencyId: string): Promise<ApiResponse<Ag
   return { ...response, data: response.data ? toAgencyRecord(response.data) : null };
 }
 
+export async function deleteAgency(agencyId: string): Promise<ApiResponse<{ id: string; name: string; deleted: boolean }>> {
+  return requestApi<{ id: string; name: string; deleted: boolean }>({
+    url: `${API_BASE_URL}/admin/agencies/${encodeURIComponent(agencyId)}`,
+    method: "DELETE",
+  });
+}
+
 export async function getAdminUsers(params: {
   search?: string;
   agencyId?: string;

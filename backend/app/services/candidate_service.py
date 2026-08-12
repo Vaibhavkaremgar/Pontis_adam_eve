@@ -3328,6 +3328,15 @@ def fetch_ranked_candidates(
     recruiter_id: str | None = None,
     request_source: str = "api",
 ) -> list[CandidateResult]:
+    request_source = (request_source or "api").strip().lower() or "api"
+    if request_source not in {"external_fallback", "serpapi_fallback"}:
+        # The canonical path is internal semantic matching. External sourcing
+        # is opt-in and must be requested explicitly by the fallback workflow.
+        from app.services.internal_candidate_semantic_service import match_internal_candidates_for_job
+
+        job_for_matching = JobRepository(db).get(job_id)
+        agency_for_matching = str(getattr(job_for_matching, "company_id", "") or "")
+        return list(match_internal_candidates_for_job(db=db, job_id=job_id, agency_id=agency_for_matching)["candidates"])
     jobs = JobRepository(db)
     job = jobs.get(job_id)
     if not job:
@@ -3371,8 +3380,6 @@ def fetch_ranked_candidates(
     run_type = _infer_ranking_run_type(refresh=refresh, selection_session=selection_session)
     local_run_metrics: dict[str, dict[str, float | bool]] = {}
     pdl_run_metrics: dict[str, dict[str, float | bool]] = {}
-    request_source = (request_source or "api").strip().lower() or "api"
-
     if SOURCE_PROVIDER == "xray_apollo":
         if request_source not in {"api", "selection", "slack_calibration", "slack"}:
             logger.info(

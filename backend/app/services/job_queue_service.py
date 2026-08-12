@@ -35,6 +35,7 @@ QUEUE_TYPES = (
     "outreach_followup",
     "candidate_enrichment",
     "candidate_application_processing",
+    "candidate_embedding_index",
     "embedding_generation",
     "candidate_refresh",
     "reply_processing",
@@ -507,6 +508,21 @@ def _resolve_default_handler(queue_type: str) -> Callable[[dict[str, Any]], Any]
                 return {"status": "skipped", "reason": "missing_application_id"}
             with SessionLocal() as db:
                 result = process_candidate_application(db=db, application_id=application_id)
+                db.commit()
+                return result
+
+        return _handler
+
+    if queue_type == "candidate_embedding_index":
+        from app.db.session import SessionLocal
+        from app.services.internal_candidate_embedding_service import index_candidate_embedding
+
+        def _handler(payload: dict[str, Any]) -> Any:
+            candidate_record_id = str(payload.get("candidate_record_id") or "").strip()
+            if not candidate_record_id:
+                return {"status": "skipped", "reason": "missing_candidate_record_id"}
+            with SessionLocal() as db:
+                result = index_candidate_embedding(db=db, candidate_record_id=candidate_record_id)
                 db.commit()
                 return result
 

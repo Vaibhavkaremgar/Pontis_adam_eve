@@ -132,7 +132,7 @@ DATABASE_URL = _required_env("DATABASE_URL")
 JWT_SECRET = _required_env("JWT_SECRET")
 JWT_EXPIRY_DAYS = int(os.getenv("JWT_EXPIRY_DAYS", "7"))
 PUBLIC_APP_URL = _required_env("PUBLIC_APP_URL").strip().rstrip("/")
-INTERVIEW_APP_URL = os.getenv("INTERVIEW_APP_URL", "").strip().rstrip("/") or "https://adam-interview.pontis.one" or PUBLIC_APP_URL
+INTERVIEW_APP_URL = os.getenv("INTERVIEW_APP_URL", "").strip().rstrip("/") or "https://interview.pontis.one"
 APP_ENV = os.getenv("APP_ENV", os.getenv("ENVIRONMENT", os.getenv("NODE_ENV", "production"))).strip().lower() or "production"
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", PUBLIC_APP_URL).strip().rstrip("/")
 if not FRONTEND_ORIGIN and PUBLIC_APP_URL:
@@ -256,6 +256,13 @@ if not REDIS_URL:
 if REDIS_URL and "YOUR-REDIS-HOST" in REDIS_URL:
     REDIS_URL = ""
 INTERNAL_API_KEY = _required_env("INTERNAL_API_KEY")
+# Canonical name for the Adam -> Interview Project media-service credential.
+# Keep INTERNAL_API_KEY as a backwards-compatible deployment fallback.
+INTERVIEW_INTERNAL_SERVICE_TOKEN = (
+    os.getenv("INTERVIEW_INTERNAL_SERVICE_TOKEN", "").strip()
+    or os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
+    or INTERNAL_API_KEY
+)
 WEBHOOK_SHARED_SECRET = os.getenv("WEBHOOK_SHARED_SECRET", "").strip()
 ADMIN_EMAILS = {item.strip().lower() for item in os.getenv("ADMIN_EMAILS", "").split(",") if item.strip()}
 OPS_EMAILS = {item.strip().lower() for item in os.getenv("OPS_EMAILS", "").split(",") if item.strip()}
@@ -287,6 +294,17 @@ INTERNAL_MATCH_DEFAULT_LIMIT = int(os.getenv("INTERNAL_MATCH_DEFAULT_LIMIT", "25
 INTERNAL_MATCH_MAX_LIMIT = int(os.getenv("INTERNAL_MATCH_MAX_LIMIT", "100"))
 INTERNAL_MATCH_MIN_RESUME_SCORE = float(os.getenv("INTERNAL_MATCH_MIN_RESUME_SCORE", "0"))
 INTERNAL_MATCH_MIN_INTERVIEW_SCORE = float(os.getenv("INTERNAL_MATCH_MIN_INTERVIEW_SCORE", "0"))
+INTERNAL_CANDIDATE_RETRIEVAL_TOP_K = int(os.getenv("INTERNAL_CANDIDATE_RETRIEVAL_TOP_K", "100"))
+INTERNAL_CANDIDATE_MATCH_THRESHOLD = float(os.getenv("INTERNAL_CANDIDATE_MATCH_THRESHOLD", "0.60"))
+INTERNAL_CANDIDATE_MIN_MATCHES = int(os.getenv("INTERNAL_CANDIDATE_MIN_MATCHES", "10"))
+INTERNAL_CANDIDATE_MATCH_LIMIT = int(os.getenv("INTERNAL_CANDIDATE_MATCH_LIMIT", "50"))
+INTERNAL_CANDIDATE_EMBEDDING_BATCH_SIZE = int(os.getenv("INTERNAL_CANDIDATE_EMBEDDING_BATCH_SIZE", "64"))
+INTERNAL_CANDIDATE_EMBEDDING_RETRIES = int(os.getenv("INTERNAL_CANDIDATE_EMBEDDING_RETRIES", "3"))
+INTERNAL_CANDIDATE_MATCH_WEIGHTS = {
+    "semantic_similarity": float(os.getenv("INTERNAL_CANDIDATE_WEIGHT_SEMANTIC", "0.70")),
+    "skill_match": float(os.getenv("INTERNAL_CANDIDATE_WEIGHT_SKILL", "0.20")),
+    "experience_match": float(os.getenv("INTERNAL_CANDIDATE_WEIGHT_EXPERIENCE", "0.10")),
+}
 FEEDBACK_WEIGHTS = {
     "accept": float(os.getenv("FEEDBACK_WEIGHT_ACCEPT", "0.15")),
     "reject": float(os.getenv("FEEDBACK_WEIGHT_REJECT", "-0.25")),

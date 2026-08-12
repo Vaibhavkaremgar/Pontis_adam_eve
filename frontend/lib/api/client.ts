@@ -155,6 +155,11 @@ export async function requestApi<T>({ url, method, payload }: RequestApiInput): 
       // Forward sourcing-state metadata when present (candidates endpoint)
       ...(parsed?.sourcingState !== undefined ? { sourcingState: String(parsed.sourcingState) } : {}),
       ...(parsed?.noResultsReason !== undefined ? { noResultsReason: String(parsed.noResultsReason) } : {}),
+      ...(parsed?.total !== undefined ? { total: Number(parsed.total) } : {}),
+      ...(parsed?.internalCandidates !== undefined ? { internalCandidates: parsed.internalCandidates } : {}),
+      ...(parsed?.externalCandidates !== undefined ? { externalCandidates: parsed.externalCandidates } : {}),
+      ...(parsed?.fallbackEligible !== undefined ? { fallbackEligible: Boolean(parsed.fallbackEligible) } : {}),
+      ...(parsed?.fallbackReason !== undefined ? { fallbackReason: String(parsed.fallbackReason) } : {}),
     };
 
     logRequest({ url, method, payload, response: result });

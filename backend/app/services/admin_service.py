@@ -85,6 +85,19 @@ def set_admin_agency_status(*, db: Session, actor_id: str, agency_id: str, is_ac
     return update_admin_agency(db=db, actor_id=actor_id, agency_id=agency_id, payload=AgencyUpdateRequest(is_active=is_active))
 
 
+def delete_admin_agency(*, db: Session, actor_id: str, agency_id: str) -> dict[str, object]:
+    repository = AdminRepository(db)
+    row = repository.get_agency(agency_id)
+    if row is None:
+        raise APIError("Agency not found", status_code=404)
+    deleted_id = str(row.id)
+    deleted_name = str(row.name or "")
+    repository.delete_agency(agency_id=agency_id)
+    db.commit()
+    logger.info("agency deleted agency_id=%s name=%s actor_id=%s", deleted_id, deleted_name, actor_id)
+    return {"id": deleted_id, "name": deleted_name, "deleted": True}
+
+
 def list_admin_users(
     *,
     db: Session,

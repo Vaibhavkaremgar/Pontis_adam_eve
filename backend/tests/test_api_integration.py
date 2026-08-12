@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_integration.db")
+os.environ["DATABASE_URL"] = "sqlite:///./test_integration.db"
 os.environ.setdefault("JWT_SECRET", "integration-secret")
 os.environ.setdefault("PUBLIC_APP_URL", "http://localhost:3000")
 os.environ.setdefault("INTERNAL_API_KEY", "integration-internal-key")
@@ -1169,6 +1169,41 @@ class IntegrationTests(unittest.TestCase):
         items = resp.json()["data"]
         self.assertGreaterEqual(len(items), 1)
         self.assertIn("retrievalAttribution", items[0]["explanation"])
+
+    def test_candidate_interest_round_trips_through_review_api(self) -> None:
+        interest = self.client.post(
+            f"/api/candidates/candidate-1/interest?jobId={self.job.id}",
+            headers={"X-CSRF-Token": self.csrf},
+        )
+        self.assertEqual(interest.status_code, 200)
+        self.assertEqual(interest.json()["data"]["recruiter_action"], "INTERESTED")
+        self.assertEqual(interest.json()["data"]["status"], "PENDING")
+
+        fake_hit = [
+            {
+                "candidateId": "candidate-1",
+                "score": 0.88,
+                "payload": {
+                    "candidateId": "candidate-1",
+                    "name": "Avery",
+                    "role": "Platform Engineer",
+                    "company": "Northstar",
+                    "summary": "Built queue-backed retrieval systems with Python, Redis, and Qdrant.",
+                    "skills": ["Python", "Redis", "Qdrant"],
+                },
+            }
+        ]
+        with patch("app.services.candidate_service.ensure_all_collections", lambda: None), \
+            patch("app.services.candidate_service.is_pdl_disabled", lambda: True), \
+            patch("app.services.candidate_service.search_candidate_chunks", lambda **_: fake_hit), \
+            patch("app.services.candidate_service.embed", lambda text: [0.1] * 384):
+            resp = self.client.get(f"/api/candidates?jobId={self.job.id}")
+
+        self.assertEqual(resp.status_code, 200)
+        items = resp.json()["data"]
+        self.assertGreaterEqual(len(items), 1)
+        self.assertEqual(items[0]["recruiterAction"], "INTERESTED")
+        self.assertEqual(items[0]["requestStatus"], "PENDING")
 
     def test_webhook_verification_and_replay_helpers(self) -> None:
         timestamp = str(int(time.time()))

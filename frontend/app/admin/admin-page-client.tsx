@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, LayoutDashboard, LogOut, Pencil, Plus, Power, Search, Users } from "lucide-react";
+import { Building2, LayoutDashboard, LogOut, Pencil, Plus, Power, Search, Trash2, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { isSuperAdminRole, toAdminRoleValue } from "@/lib/roles";
 import {
   createAgency,
   createUser,
+  deleteAgency,
   deactivateAgency,
   getAdminAgencies,
   getAdminDashboard,
@@ -636,15 +637,40 @@ export default function AdminPageClient({ view }: AdminPageProps) {
                     <td className="px-6 py-4 text-sm text-slate-600">{agency.totalUsers}</td>
                     <td className="px-6 py-4 text-sm text-slate-600">{agency.totalJobs}</td>
                     <td className="px-6 py-4 text-sm text-slate-600">{agency.totalCandidates}</td>
-                    <td className="px-6 py-4">
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" size="sm" onClick={() => openEditAgency(agency)}>
-                          <Pencil className="mr-2 h-4 w-4" /> Edit
+                    <td className="px-6 py-4 align-middle">
+                      <div className="grid w-fit max-w-full grid-cols-[max-content_max-content] gap-2">
+                        <Button className="w-auto px-2" variant="outline" size="sm" onClick={() => openEditAgency(agency)}>
+                          <Pencil className="mr-1 h-3.5 w-3.5 shrink-0" /> Edit
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-auto border-red-200 px-2 text-red-700 hover:border-red-300 hover:bg-red-50 hover:text-red-800"
+                          onClick={() =>
+                            setConfirm({
+                              title: "Delete agency",
+                              description: `Delete ${agency.name} permanently? This removes the agency and its stored tenant data from the database.`,
+                              confirmLabel: "Delete permanently",
+                              action: async () => {
+                                const result = await deleteAgency(agency.id);
+                                if (!result.success) {
+                                  setError(result.error || "Unable to delete agency.");
+                                  return;
+                                }
+                                setMessage("Agency deleted.");
+                                setConfirm(null);
+                                await refreshCurrentView();
+                              },
+                            })
+                          }
+                        >
+                          <Trash2 className="mr-1 h-3.5 w-3.5 shrink-0" /> Delete
                         </Button>
                         {agency.status === "Active" ? (
                           <Button
                             variant="outline"
                             size="sm"
+                            className="col-span-2 w-full px-2"
                             onClick={() =>
                               setConfirm({
                                 title: "Deactivate agency",
@@ -663,12 +689,13 @@ export default function AdminPageClient({ view }: AdminPageProps) {
                               })
                             }
                           >
-                            <Power className="mr-2 h-4 w-4" /> Deactivate
+                            <Power className="mr-1 h-3.5 w-3.5 shrink-0" /> Deactivate
                           </Button>
                         ) : (
                           <Button
                             variant="outline"
                             size="sm"
+                            className="col-span-2 w-full px-2"
                             onClick={() =>
                               setConfirm({
                                 title: "Reactivate agency",
@@ -687,7 +714,7 @@ export default function AdminPageClient({ view }: AdminPageProps) {
                               })
                             }
                           >
-                            <Power className="mr-2 h-4 w-4" /> Reactivate
+                            <Power className="mr-1 h-3.5 w-3.5 shrink-0" /> Reactivate
                           </Button>
                         )}
                       </div>

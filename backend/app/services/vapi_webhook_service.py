@@ -255,7 +255,16 @@ def process_vapi_webhook(*, db: Session, raw_body: bytes, headers: Any) -> dict[
     ended_at = _to_iso(call.get("endedAt") or payload.get("endedAt") or event.get("endedAt") if isinstance(event, dict) else "")
     job_id = _normalize_text(metadata.get("jobId") or metadata.get("job_id") or "")
     recruiter_id = _normalize_text(metadata.get("recruiterId") or metadata.get("recruiter_id") or "")
-    session_id = _normalize_text(metadata.get("sessionId") or metadata.get("session_id") or "")
+    candidate_id = _normalize_text(metadata.get("candidateId") or metadata.get("candidate_id") or "")
+    agency_id = _normalize_text(metadata.get("agencyId") or metadata.get("agency_id") or "")
+    session_token = _normalize_text(
+        metadata.get("sessionToken")
+        or metadata.get("session_token")
+        or metadata.get("sessionId")
+        or metadata.get("session_id")
+        or ""
+    )
+    webhook_id = _extract_webhook_id(payload)
 
     logger.info(
         "vapi_webhook_received event_type=%s call_id=%s assistant_id=%s transcript_length=%s",
@@ -265,13 +274,38 @@ def process_vapi_webhook(*, db: Session, raw_body: bytes, headers: Any) -> dict[
         len(transcript),
     )
     logger.info(
-        "vapi_webhook_metadata event_type=%s job_id=%s recruiter_id=%s session_id=%s",
+        "vapi_webhook_metadata event_type=%s job_id=%s recruiter_id=%s candidate_id=%s session_token=%s",
         event_type or "unknown",
         job_id or "",
         recruiter_id or "",
-        session_id or "",
+        candidate_id or "",
+        session_token or "",
     )
 
+    # ── Route: candidate AI interview (candidateId present in metadata) ────────
+    if candidate_id and job_id:
+        from app.services.candidate_interview_webhook_service import process_candidate_interview_webhook
+        result = process_candidate_interview_webhook(
+            db=db,
+            event_type=event_type,
+            call_id=call_id,
+            candidate_id=candidate_id,
+            job_id=job_id,
+            agency_id=agency_id,
+            session_token=session_token,
+            transcript=transcript,
+            recording_url=recording_url,
+            ended_at=ended_at,
+            assistant_id=assistant_id,
+            webhook_id=webhook_id,
+        )
+        logger.info(
+            "vapi_webhook_candidate_interview_routed job_id=%s candidate_id=%s processed=%s",
+            job_id, candidate_id, result.get("processed", False),
+        )
+        return result
+
+    # ── Route: recruiter job intake (recruiterId present, no candidateId) ──────
     if event_type not in _TERMINAL_EVENT_TYPES:
         return {"ignored": True, "reason": "non_terminal_event", "event_type": event_type, "call_id": call_id}
 
@@ -281,7 +315,6 @@ def process_vapi_webhook(*, db: Session, raw_body: bytes, headers: Any) -> dict[
     if not transcript:
         logger.warning("vapi_webhook_missing_transcript event_type=%s call_id=%s job_id=%s", event_type, call_id, job_id)
 
-    webhook_id = _extract_webhook_id(payload)
     deduped = call_id and _mark_processed(call_id=call_id, webhook_id=webhook_id)
     if deduped:
         logger.info("vapi_webhook_deduped_by_redis event_type=%s call_id=%s job_id=%s", event_type, call_id, job_id)
@@ -290,7 +323,7 @@ def process_vapi_webhook(*, db: Session, raw_body: bytes, headers: Any) -> dict[
         db=db,
         job_id=job_id,
         recruiter_id=recruiter_id,
-        session_id=session_id,
+        session_id=session_token,
         call_id=call_id,
         assistant_id=assistant_id,
         recording_url=recording_url,

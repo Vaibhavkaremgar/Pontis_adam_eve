@@ -4,6 +4,11 @@ import re
 from typing import Any
 
 
+# all-MiniLM-L6-v2 has a short useful context window.  Keep the indexed
+# representation deliberately compact and put matching signals first.
+STRUCTURED_CANDIDATE_TEXT_MAX_CHARS = 1800
+
+
 def _normalize_text(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -32,6 +37,36 @@ def _normalize_list(values: Any) -> list[str]:
     return normalized
 
 
+def _flatten_profile_value(value: Any, *, limit: int = 8) -> list[str]:
+    """Turn common JSON profile shapes into short, deterministic lines."""
+    if isinstance(value, dict):
+        items: list[str] = []
+        for key, item in value.items():
+            if key.lower() in {"id", "email", "phone", "token", "password"}:
+                continue
+            if isinstance(item, (str, int, float)) and str(item).strip():
+                items.append(f"{key}: {item}")
+            elif isinstance(item, list):
+                items.extend(_flatten_profile_value(item, limit=limit))
+            if len(items) >= limit:
+                break
+        return items[:limit]
+    if isinstance(value, list):
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                result.append("; ".join(_flatten_profile_value(item, limit=4)))
+            else:
+                text = _normalize_text(item)
+                if text:
+                    result.append(text)
+            if len(result) >= limit:
+                break
+        return result[:limit]
+    text = _normalize_text(value)
+    return [text] if text else []
+
+
 def _get_value(candidate: Any, *keys: str) -> Any:
     if isinstance(candidate, dict):
         for key in keys:
@@ -45,6 +80,43 @@ def _get_value(candidate: Any, *keys: str) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def build_structured_candidate_text(candidate: Any) -> str:
+    """Build the compact, deterministic text used by internal candidate embeddings.
+
+    The order is intentional: role, skills, experience, location, summary, then
+    recent work/education and a small resume excerpt.  This prevents a long raw
+    resume from crowding out the fields recruiters search for most often.
+    """
+    role = _normalize_text(_get_value(candidate, "current_role", "role", "headline", "job_title", "title") or "")
+    company = _normalize_text(_get_value(candidate, "current_company", "company", "job_company_name") or "")
+    location = _normalize_text(_get_value(candidate, "location", "location_name", "location_region", "location_country") or "")
+    skills = _normalize_list(_get_value(candidate, "skills") or [])
+    experience = _get_value(candidate, "total_experience_years", "experience_years", "years_experience", "yearsExperience", "experience")
+    if isinstance(experience, (int, float)):
+        experience_text = f"{float(experience):g} years"
+    else:
+        experience_text = _normalize_text(experience or "")
+    summary = _normalize_text(_get_value(candidate, "summary", "bio") or "")
+    work = _flatten_profile_value(_get_value(candidate, "work_experience", "experience_history") or {}, limit=5)
+    education = _flatten_profile_value(_get_value(candidate, "education") or {}, limit=4)
+    parsed = _get_value(candidate, "parsed_resume_json", "parsedResumeJson")
+    parsed_lines = _flatten_profile_value(parsed, limit=5)
+    resume = _normalize_text(_get_value(candidate, "parsed_resume_text", "resume_text") or "")
+
+    parts = []
+    if role: parts.append(f"Role: {role}")
+    if company: parts.append(f"Current company: {company}")
+    if skills: parts.append(f"Skills: {', '.join(skills[:16])}")
+    if experience_text: parts.append(f"Experience: {experience_text}")
+    if location: parts.append(f"Location: {location}")
+    if summary: parts.append(f"Summary: {summary[:420]}")
+    if work: parts.append(f"Relevant experience: {' | '.join(work)}")
+    if education: parts.append(f"Education: {' | '.join(education)}")
+    if parsed_lines: parts.append(f"Parsed profile: {' | '.join(parsed_lines)}")
+    if resume: parts.append(f"Resume context: {resume[:500]}")
+    return "\n".join(parts)[:STRUCTURED_CANDIDATE_TEXT_MAX_CHARS].strip()
 
 
 def build_candidate_text(candidate: Any) -> str:

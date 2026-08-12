@@ -17,4 +17,9 @@ export type ApiResponse<T> = {
   /** Sourcing-state metadata forwarded from the candidates endpoint */
   sourcingState?: string;
   noResultsReason?: string;
+  total?: number;
+  internalCandidates?: unknown[];
+  externalCandidates?: unknown[];
+  fallbackEligible?: boolean;
+  fallbackReason?: string;
 };

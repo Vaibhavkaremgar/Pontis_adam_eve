@@ -69,6 +69,7 @@ class UserEntity(Base):
     agency: Mapped["CompanyEntity | None"] = relationship(back_populates="users")
     slack_users: Mapped[list["SlackUserEntity"]] = relationship(back_populates="internal_user")
     slack_installations: Mapped[list["SlackInstallationEntity"]] = relationship(back_populates="installed_by_user")
+    recruiter_interest_requests: Mapped[list["RecruiterInterestRequestEntity"]] = relationship(back_populates="recruiter")
 
 
 class AllowedUserEntity(Base):
@@ -115,6 +116,8 @@ class CompanyEntity(Base):
     candidate_lifecycle_events: Mapped[list["CandidateLifecycleEventEntity"]] = relationship(back_populates="agency")
     notification_events: Mapped[list["NotificationEventEntity"]] = relationship(back_populates="agency")
     candidate_feedback: Mapped[list["CandidateFeedbackEntity"]] = relationship(back_populates="agency")
+    candidate_requests: Mapped[list["CandidateRequestEntity"]] = relationship(back_populates="agency")
+    recruiter_interest_requests: Mapped[list["RecruiterInterestRequestEntity"]] = relationship(back_populates="agency")
     ranking_explanations: Mapped[list["RankingExplanationEntity"]] = relationship(back_populates="agency")
 
 
@@ -187,7 +190,7 @@ class JobEntity(Base):
     vacancies: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     requirements: Mapped[str | None] = mapped_column(Text, nullable=True)
-    responsibilities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responsibilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     skills: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     status: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -228,6 +231,8 @@ class JobEntity(Base):
     job_intakes: Mapped[list["JobIntakeEntity"]] = relationship(back_populates="job")
     scoring_profile: Mapped["ScoringProfileEntity | None"] = relationship(back_populates="job", uselist=False)
     feedback_items: Mapped[list["CandidateFeedbackEntity"]] = relationship(back_populates="job")
+    candidate_requests: Mapped[list["CandidateRequestEntity"]] = relationship(back_populates="job")
+    recruiter_interest_requests: Mapped[list["RecruiterInterestRequestEntity"]] = relationship(back_populates="job")
     ats_exports: Mapped[list["ATSExportEntity"]] = relationship(back_populates="job")
     outreach_events: Mapped[list["OutreachEventEntity"]] = relationship(back_populates="job")
     orchestration_sessions: Mapped[list["OrchestrationSessionEntity"]] = relationship(back_populates="job_record")
@@ -382,6 +387,10 @@ class CandidateProfileEntity(Base):
     github_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     parsed_resume_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     parsed_resume_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding_status: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    embedding_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    embedding_text_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    embedding_indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fit_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
     strategy: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -654,6 +663,63 @@ class ScoringProfileEntity(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
 
     job: Mapped["JobEntity"] = relationship(back_populates="scoring_profile")
+
+
+class CandidateRequestEntity(Base):
+    """Adam recruiter interest request; Eve may later transition pending consent."""
+    __tablename__ = "candidate_requests"
+    __table_args__ = (
+        UniqueConstraint("agency_id", "job_id", "candidate_id", name="uq_candidate_requests_agency_job_candidate"),
+        Index("ix_candidate_requests_candidate_status", "candidate_id", "status"),
+        Index("ix_candidate_requests_agency_job_status", "agency_id", "job_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING", index=True)
+    created_by: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="candidate_requests")
+    job: Mapped["JobEntity"] = relationship(back_populates="candidate_requests")
+    recruiter: Mapped["UserEntity"] = relationship()
+
+
+class RecruiterInterestRequestEntity(Base):
+    """Intent row created when a recruiter marks a candidate as interested."""
+
+    __tablename__ = "recruiter_interest_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "job_id",
+            "agency_id",
+            "recruiter_id",
+            name="uq_recruiter_interest_requests_candidate_job_agency_recruiter",
+        ),
+        Index("ix_recruiter_interest_requests_candidate_job", "candidate_id", "job_id"),
+        Index("ix_recruiter_interest_requests_agency_recruiter", "agency_id", "recruiter_id"),
+    )
+
+    id: Mapped[str] = mapped_column(GUID(), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
+    agency_id: Mapped[str] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=False, index=True)
+    recruiter_id: Mapped[str] = mapped_column(GUID(), ForeignKey("users.id"), nullable=False, index=True)
+    request_status: Mapped[str] = mapped_column(String(32), nullable=False, default="interested", index=True)
+    candidate_response: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    candidate_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    recruiter_requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, nullable=False)
+
+    agency: Mapped["CompanyEntity"] = relationship(back_populates="recruiter_interest_requests")
+    job: Mapped["JobEntity"] = relationship(back_populates="recruiter_interest_requests")
+    recruiter: Mapped["UserEntity"] = relationship(back_populates="recruiter_interest_requests")
 
 
 class CandidateFeedbackEntity(Base):
@@ -1009,6 +1075,8 @@ class NotificationWorkflowTokenEntity(Base):
     source_app: Mapped[str] = mapped_column(String(32), nullable=False, default="ui")
     job_id: Mapped[str] = mapped_column(GUID(), ForeignKey("job_descriptions.id"), nullable=False, index=True)
     candidate_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    agency_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("agencies.id"), nullable=True, index=True, default=None)
+    user_id: Mapped[str | None] = mapped_column(GUID(), ForeignKey("users.id"), nullable=True, index=True, default=None)
     token_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     workflow_name: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     token: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

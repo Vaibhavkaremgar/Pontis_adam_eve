@@ -31,7 +31,7 @@ from app.services.pdl_service import pdl_health_snapshot
 from app.services.serpapi_sourcing_service import serpapi_health_snapshot
 from app.services.apify_enrichment_service import apify_health_snapshot
 from app.services.redis_service import close_redis_client, get_redis
-from app.services.refresh_scheduler import scheduler_status, stop_scheduler
+from app.services.refresh_scheduler import scheduler_status, start_scheduler, stop_scheduler
 from app.services.super_admin_seed_service import ensure_primary_super_admin_account
 from app.utils.exceptions import APIError
 from app.utils.responses import error_response, success_response
@@ -266,7 +266,8 @@ def on_startup() -> None:
             )
     finally:
         if db_ready:
-            logger.info("startup_background_services_not_started")
+            start_scheduler()
+            logger.info("startup_scheduler_started")
     if not db_ready:
         logger.warning("startup_completed_without_database")
 

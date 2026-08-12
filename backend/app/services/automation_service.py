@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import INTERNAL_API_KEY
 from app.db.repositories import (
     AutomationJobRepository,
     CandidateProfileRepository,
@@ -53,6 +55,10 @@ def _next_business_day_same_time(value: datetime) -> datetime:
 
 def _metadata_map(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _normalize_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
 
 
 async def _post_recruiter_slack_message(*, db: Session, job_id: str, text: str) -> bool:
@@ -430,6 +436,54 @@ def _handle_interview_reminder(db: Session, row) -> dict[str, Any]:
     return {"status": "notified"}
 
 
+def _trigger_interview_execution(*, db: Session, session: Any, workflow_token: str) -> dict[str, Any]:
+    """
+    Prepare the session for the external interview application.
+
+    The external application at interview.pontis.one does NOT expose a
+    POST /api/interview/trigger endpoint.  The candidate opens the interview
+    URL directly at the scheduled time and the external app validates the
+    session token.  Adam's role here is to verify the session is in the
+    correct state and log the interview URL so it is available for
+    notifications/audit.
+    """
+    from app.core.config import INTERVIEW_APP_URL
+
+    session_token = str(getattr(session, "session_token", "") or "").strip()
+    if not session_token:
+        raise RuntimeError("missing_session_token")
+
+    base_url = (INTERVIEW_APP_URL or "").strip().rstrip("/")
+    if not base_url:
+        raise RuntimeError("interview_app_unconfigured")
+
+    interview_url = f"{base_url}/interview?token={session_token}"
+
+    logger.info(
+        "interview_execution_prepared session_token=%s interview_url=%s",
+        session_token,
+        interview_url,
+    )
+    return {"status": "ready", "interviewUrl": interview_url}
+
+
+def _handle_interview_execution(db: Session, row) -> dict[str, Any]:
+    payload = _metadata_map(row.automation_payload)
+    session_token = str(payload.get("sessionToken") or payload.get("token") or "").strip()
+    workflow_token = str(payload.get("workflowToken") or "").strip()
+    if not session_token:
+        return {"status": "skipped", "reason": "missing_session_token"}
+
+    session = InterviewSessionRepository(db).get_by_token(session_token)
+    if not session:
+        return {"status": "skipped", "reason": "session_missing"}
+
+    if str(getattr(session, "status", "") or "").strip().lower() not in {"interview_scheduled", "scheduled"}:
+        return {"status": "skipped", "reason": "session_not_scheduled"}
+
+    return _trigger_interview_execution(db=db, session=session, workflow_token=workflow_token)
+
+
 def _handle_interview_no_show(db: Session, row) -> dict[str, Any]:
     token = str((row.automation_payload or {}).get("token") or "").strip()
     if not token:
@@ -635,6 +689,8 @@ def run_automation_cycle(*, db: Session, scan_limit: int = 25) -> dict[str, Any]
                 outcome = _handle_candidate_enrichment(db, row)
             elif row.automation_type == "interview_reminder":
                 outcome = _handle_interview_reminder(db, row)
+            elif row.automation_type == "interview_execution":
+                outcome = _handle_interview_execution(db, row)
             elif row.automation_type == "interview_no_show":
                 outcome = _handle_interview_no_show(db, row)
             elif row.automation_type == "second_round_outcome_nudge":

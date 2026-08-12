@@ -37,7 +37,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Modal } from "@/components/ui/modal";
 import { useAppContext } from "@/context/AppContext";
 import { getCandidateAtsTimeline, getJobAtsNotifications } from "@/lib/api/ats";
-import { getCandidates, selectCandidateForEnrichment, swipeCandidate } from "@/lib/api/candidates";
+import {
+  createCandidateInterest,
+  createCandidateNotInterested,
+  getAcceptedCandidates,
+  getCandidates,
+  getPendingAcceptanceCandidates,
+  selectCandidateForEnrichment,
+  swipeCandidate,
+} from "@/lib/api/candidates";
+import type { CandidateFullProfile } from "@/lib/api/candidates";
 import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
 import {
@@ -486,6 +495,11 @@ function renderSignals(candidate: Candidate) {
   );
 }
 
+function getInternalMatchScore(candidate: Candidate): number | null {
+  const value = candidate.explanation?.finalScore;
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) : null;
+}
+
 function analysisSummary(analysis: CandidateSelectionAnalysis | null | undefined) {
   if (!analysis) return [];
   return [
@@ -784,7 +798,7 @@ function CandidateCard({
               </a>
             )}
             <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] text-center font-body text-[14px] font-semibold leading-tight text-[#0F6B3A]">
-              <span>Ranked</span>
+              <span>{getInternalMatchScore(candidate) !== null ? `${getInternalMatchScore(candidate)}%` : "Ranked"}</span>
             </div>
           </div>
         </div>
@@ -842,6 +856,10 @@ function CandidateCard({
         <div className="mt-4 rounded-[18px] border border-[#E5E7EB] bg-white p-4">
           <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Why ranked here</p>
           <p className="mt-2 font-body text-[13px] leading-6 text-[#374151]">{trimText(getReasoningSummary(candidate), 320)}</p>
+        </div>
+
+        <div className="mt-4">
+          {renderSignals(candidate)}
         </div>
 
         <div className="mt-6">
@@ -1310,8 +1328,11 @@ function RecruiterSwipeDeck({
   shortlistedCandidates,
   isAdvancing,
   selectedCandidateId,
+  candidateActionLoadingId,
   onSelect,
   onReject,
+  onInterested,
+  onNotInterested,
   onOpenDetails,
   onContinueToReady,
 }: {
@@ -1320,8 +1341,11 @@ function RecruiterSwipeDeck({
   shortlistedCandidates: Candidate[];
   isAdvancing: boolean;
   selectedCandidateId: string;
+  candidateActionLoadingId: string;
   onSelect: (id: string) => void;
   onReject: (id: string) => void;
+  onInterested: (id: string) => void;
+  onNotInterested: (id: string) => void;
   onOpenDetails: (c: Candidate) => void;
   onContinueToReady: () => void;
 }) {
@@ -1334,9 +1358,13 @@ function RecruiterSwipeDeck({
 
   const current = candidates[0] ?? null;
   const next = candidates[1] ?? null;
+  const recruiterAction = String(current?.recruiterAction || "NONE").toUpperCase();
+  const requestStatus = String(current?.requestStatus || "").trim().toUpperCase();
+  const hasLockedRequest = Boolean(current && recruiterAction !== "NONE" && recruiterAction !== "");
+  const isActionLoading = Boolean(candidateActionLoadingId && current?.id === candidateActionLoadingId);
 
   const triggerSwipe = (id: string, dir: "left" | "right") => {
-    if (isAdvancing || swipingId) return;
+    if (isAdvancing || swipingId || hasLockedRequest) return;
     setSwipingId(id);
     setSwipeDir(dir);
     setTimeout(() => {
@@ -1349,7 +1377,7 @@ function RecruiterSwipeDeck({
   };
 
   const onPointerDown = (event: React.PointerEvent) => {
-    if (!current || isAdvancing || swipingId) return;
+    if (!current || isAdvancing || swipingId || hasLockedRequest) return;
     isDragging.current = true;
     dragStartX.current = event.clientX;
     dragCurrentX.current = event.clientX;
@@ -1501,6 +1529,49 @@ function RecruiterSwipeDeck({
                 <p>{getCandidateCardSummary(current)}</p>
               </div>
 
+              {hasLockedRequest ? (
+                <div className="mt-4 rounded-[16px] border border-[#D8E6DF] bg-[#F4FBF7] px-4 py-3 text-center text-sm font-semibold text-[#0F6B3A]">
+                  {recruiterAction === "INTERESTED"
+                    ? requestStatus === "PENDING"
+                      ? "Interest request pending"
+                      : "Marked interested"
+                    : "Marked not interested"}
+                </div>
+              ) : (
+                <div className="mt-4 grid gap-3">
+                  <button
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onInterested(current.id);
+                    }}
+                    disabled={isAdvancing || Boolean(swipingId) || isActionLoading || Boolean(selectedCandidateId && selectedCandidateId !== current.id)}
+                    className="flex h-12 items-center justify-center gap-2 rounded-[16px] border border-[#A7F3D0] bg-[#ECFDF5] font-body text-[15px] font-semibold text-[#047857] transition hover:bg-[#D1FAE5] disabled:opacity-50"
+                  >
+                    <CheckCircle2 className="h-5 w-5" />
+                    {isActionLoading ? "Saving..." : "Interested"}
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onNotInterested(current.id);
+                    }}
+                    disabled={isAdvancing || Boolean(swipingId) || isActionLoading || Boolean(selectedCandidateId && selectedCandidateId !== current.id)}
+                    className="flex h-12 items-center justify-center gap-2 rounded-[16px] border border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
+                  >
+                    <CircleX className="h-5 w-5" />
+                    {isActionLoading ? "Saving..." : "Not Interested"}
+                  </button>
+                </div>
+              )}
+
               {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
                   Already shortlisted
@@ -1517,7 +1588,7 @@ function RecruiterSwipeDeck({
                     event.stopPropagation();
                     triggerSwipe(current.id, "left");
                   }}
-                  disabled={isAdvancing || Boolean(swipingId)}
+                  disabled={isAdvancing || Boolean(swipingId) || hasLockedRequest}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
                 >
                   <CircleX className="h-5 w-5" /> Reject
@@ -1531,7 +1602,7 @@ function RecruiterSwipeDeck({
                     event.stopPropagation();
                     triggerSwipe(current.id, "right");
                   }}
-                  disabled={isAdvancing || Boolean(swipingId)}
+                  disabled={isAdvancing || Boolean(swipingId) || hasLockedRequest}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] bg-[#0F6B3A] font-body text-[15px] font-semibold text-white shadow-[0_6px_16px_rgba(15,107,58,0.22)] transition hover:bg-[#0C5A31] disabled:opacity-50"
                 >
                   <CheckCircle2 className="h-5 w-5" /> Shortlist
@@ -1610,6 +1681,9 @@ export default function ReviewPage() {
   const [activeInterviewInsights, setActiveInterviewInsights] = useState<any>(null);
   const [decisionNote, setDecisionNote] = useState("");
   const [decisionLoading, setDecisionLoading] = useState("");
+  const [candidateActionLoadingId, setCandidateActionLoadingId] = useState("");
+  const [acceptedCandidates, setAcceptedCandidates] = useState<CandidateFullProfile[]>([]);
+  const [pendingAcceptanceCandidates, setPendingAcceptanceCandidates] = useState<CandidateFullProfile[]>([]);
   const [finalShortlistedIds, setFinalShortlistedIds] = useState<string[]>([]);
   const [candidateTimeline, setCandidateTimeline] = useState<any[]>([]);
   const [candidateNotifications, setCandidateNotifications] = useState<any[]>([]);
@@ -1636,6 +1710,22 @@ export default function ReviewPage() {
       router.replace("/job");
     }
   }, [isSessionReady, jobId, router, user]);
+
+  useEffect(() => {
+    if (!jobId || !isSessionReady || !user) return;
+    let cancelled = false;
+    const load = async () => {
+      const [acceptedResult, pendingResult] = await Promise.all([
+        getAcceptedCandidates(jobId),
+        getPendingAcceptanceCandidates(jobId),
+      ]);
+      if (cancelled) return;
+      if (acceptedResult.success && acceptedResult.data) setAcceptedCandidates(acceptedResult.data);
+      if (pendingResult.success && pendingResult.data) setPendingAcceptanceCandidates(pendingResult.data);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [jobId, isSessionReady, user]);
 
   const loadSourcedCandidates = async (options?: { source?: string; forceRefresh?: boolean }) => {
     if (!isSessionReady || !user || !jobId) return;
@@ -1938,9 +2028,14 @@ export default function ReviewPage() {
           candidate.ats_status !== "rejected" &&
           !isShortlistedStatus(candidate.status) &&
           !isShortlistedStatus(candidate.ats_status) &&
-          !finalShortlistedIds.includes(candidate.id)
+          !finalShortlistedIds.includes(candidate.id) &&
+          String(candidate.recruiterAction || "").trim().toUpperCase() === "NONE"
       ),
     [finalShortlistedIds, reviewCandidates]
+  );
+  const savedRequestCandidates = useMemo(
+    () => reviewCandidates.filter((candidate) => String(candidate.recruiterAction || "").trim().toUpperCase() !== "NONE"),
+    [reviewCandidates]
   );
 
   useEffect(() => {
@@ -2167,6 +2262,89 @@ export default function ReviewPage() {
     storeShortlistedCandidateIds(jobId, nextShortlistedIds);
     await swipeCandidate({ jobId, candidateId, action: "reject" });
     setIsAdvancing(false);
+    setSelectedCandidateId("");
+  };
+
+  const persistCandidateRequestState = (candidateId: string, patch: Partial<Candidate>) => {
+    const updatedCandidates = reviewCandidates.map((candidate) => (candidate.id === candidateId ? { ...candidate, ...patch } : candidate));
+    setReviewCandidates(updatedCandidates);
+    setRemainingCandidates((prev) => prev.map((candidate) => (candidate.id === candidateId ? { ...candidate, ...patch } : candidate)));
+    storeReviewCandidates(jobId || "", updatedCandidates);
+  };
+
+  const revertCandidateRequestState = (candidateId: string, snapshot: Candidate | null) => {
+    if (!snapshot || !jobId) return;
+    const revertedCandidates = reviewCandidates.map((candidate) => (candidate.id === candidateId ? snapshot : candidate));
+    setReviewCandidates(revertedCandidates);
+    setRemainingCandidates((prev) => prev.map((candidate) => (candidate.id === candidateId ? snapshot : candidate)));
+    storeReviewCandidates(jobId, revertedCandidates);
+  };
+
+  const handleCandidateInterest = async (candidateId: string) => {
+    if (!jobId || candidateActionLoadingId || isAdvancing) return;
+    setCandidateActionLoadingId(candidateId);
+    setSelectedCandidateId(candidateId);
+    setError("");
+    candidateStateVersionRef.current += 1;
+    const snapshot = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    persistCandidateRequestState(candidateId, {
+      recruiterAction: "INTERESTED",
+      requestStatus: "PENDING",
+    });
+    const result = await createCandidateInterest({ jobId, candidateId });
+    if (!result.success || !result.data) {
+      revertCandidateRequestState(candidateId, snapshot);
+      setError(result.error || "Could not save candidate interest.");
+      setCandidateActionLoadingId("");
+      setSelectedCandidateId("");
+      return;
+    }
+    persistCandidateRequestState(candidateId, {
+      recruiterAction: result.data.recruiter_action || "INTERESTED",
+      requestStatus: result.data.status || "PENDING",
+      requestId: result.data.request_id,
+      requestCreatedAt: result.data.created_at ?? null,
+      requestUpdatedAt: result.data.updated_at ?? null,
+      requestRespondedAt: result.data.responded_at ?? null,
+    });
+    setFeedbackMessage("Interest request saved.");
+    setCandidateActionLoadingId("");
+    setSelectedCandidateId("");
+  };
+
+  const handleCandidateNotInterested = async (candidateId: string) => {
+    if (!jobId || candidateActionLoadingId || isAdvancing) return;
+    setCandidateActionLoadingId(candidateId);
+    setSelectedCandidateId(candidateId);
+    setError("");
+    candidateStateVersionRef.current += 1;
+    const snapshot = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    persistCandidateRequestState(candidateId, {
+      recruiterAction: "NOT_INTERESTED",
+      requestStatus: null,
+      requestId: undefined,
+      requestCreatedAt: null,
+      requestUpdatedAt: null,
+      requestRespondedAt: null,
+    });
+    const result = await createCandidateNotInterested({ jobId, candidateId });
+    if (!result.success || !result.data) {
+      revertCandidateRequestState(candidateId, snapshot);
+      setError(result.error || "Could not save not interested.");
+      setCandidateActionLoadingId("");
+      setSelectedCandidateId("");
+      return;
+    }
+    persistCandidateRequestState(candidateId, {
+      recruiterAction: result.data.recruiter_action || "NOT_INTERESTED",
+      requestStatus: result.data.status ?? null,
+      requestId: result.data.request_id,
+      requestCreatedAt: result.data.created_at ?? null,
+      requestUpdatedAt: result.data.updated_at ?? null,
+      requestRespondedAt: result.data.responded_at ?? null,
+    });
+    setFeedbackMessage("Marked as not interested.");
+    setCandidateActionLoadingId("");
     setSelectedCandidateId("");
   };
 
@@ -2439,17 +2617,94 @@ export default function ReviewPage() {
                 </div>
               </div>
 
+              {savedRequestCandidates.length > 0 && (
+                <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4">
+                  <p className="font-body text-[15px] font-semibold text-[#111827]">Saved candidate responses</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {savedRequestCandidates.map((candidate) => (
+                      <span
+                        key={`saved-${candidate.id}`}
+                        className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[12px] font-semibold ${
+                          String(candidate.recruiterAction || "").toUpperCase() === "INTERESTED"
+                            ? "bg-[#ECFDF5] text-[#047857]"
+                            : "bg-[#FEF2F2] text-[#DC2626]"
+                        }`}
+                      >
+                        {candidate.name || candidate.id}
+                        <span className="opacity-70">
+                          {String(candidate.recruiterAction || "").toUpperCase() === "INTERESTED" ? "Interested" : "Not interested"}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <RecruiterSwipeDeck
                 candidates={swipeCandidates}
                 shortlistedIds={completedShortlistedIds}
                 shortlistedCandidates={visibleShortlistedCandidates}
                 isAdvancing={isAdvancing}
                 selectedCandidateId={selectedCandidateId}
+                candidateActionLoadingId={candidateActionLoadingId}
                 onOpenDetails={(candidate) => setActiveCandidate(candidate)}
                 onSelect={(candidateId) => void handleSelect(candidateId)}
                 onReject={(candidateId) => void handleReject(candidateId)}
+                onInterested={(candidateId) => void handleCandidateInterest(candidateId)}
+                onNotInterested={(candidateId) => void handleCandidateNotInterested(candidateId)}
                 onContinueToReady={() => void handleContinueToReady()}
               />
+            </div>
+          )}
+
+          {!isLoading && calibrationComplete && (
+            <div className="space-y-4">
+              {pendingAcceptanceCandidates.length > 0 && (
+                <div className="rounded-[20px] border border-[#FEF3C7] bg-[#FFFBEB] px-4 py-4">
+                  <p className="font-body text-[15px] font-semibold text-[#92400E]">Awaiting candidate response</p>
+                  <p className="mt-1 font-body text-sm text-[#78350F]">These candidates have been sent an interest request and have not yet responded.</p>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {pendingAcceptanceCandidates.map((candidate) => (
+                      <div key={`pending-${candidate.candidate_id}`} className="flex items-center justify-between rounded-[14px] border border-[#FDE68A] bg-white px-4 py-3">
+                        <div>
+                          <p className="font-body text-[14px] font-semibold text-[#111827]">{candidate.name}</p>
+                          {candidate.role && <p className="font-body text-[13px] text-[#6B7280]">{candidate.role}</p>}
+                        </div>
+                        <span className="rounded-full bg-[#FEF3C7] px-3 py-1 text-[12px] font-semibold text-[#92400E]">Pending</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {acceptedCandidates.length > 0 && (
+                <div className="rounded-[20px] border border-[#D1FAE5] bg-[#ECFDF5] px-4 py-4">
+                  <p className="font-body text-[15px] font-semibold text-[#065F46]">Candidates who accepted</p>
+                  <p className="mt-1 font-body text-sm text-[#047857]">These candidates accepted your interest request. Full profile details are now available.</p>
+                  <div className="mt-3 flex flex-col gap-2">
+                    {acceptedCandidates.map((candidate) => (
+                      <div key={`accepted-${candidate.candidate_id}`} className="rounded-[14px] border border-[#A7F3D0] bg-white px-4 py-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="font-body text-[14px] font-semibold text-[#111827]">{candidate.name}</p>
+                            {candidate.role && <p className="font-body text-[13px] text-[#6B7280]">{candidate.role}{candidate.company ? ` @ ${candidate.company}` : ""}</p>}
+                          </div>
+                          <span className="rounded-full bg-[#D1FAE5] px-3 py-1 text-[12px] font-semibold text-[#065F46]">Accepted</span>
+                        </div>
+                        {candidate.email && (
+                          <p className="mt-2 font-body text-[13px] text-[#374151]">Email: <span className="font-semibold">{candidate.email}</span></p>
+                        )}
+                        {candidate.phone && (
+                          <p className="font-body text-[13px] text-[#374151]">Phone: <span className="font-semibold">{candidate.phone}</span></p>
+                        )}
+                        {candidate.linkedin_url && (
+                          <a href={candidate.linkedin_url} target="_blank" rel="noreferrer" className="mt-1 inline-block font-body text-[13px] font-semibold text-[#0F6B3A] hover:underline">LinkedIn profile</a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

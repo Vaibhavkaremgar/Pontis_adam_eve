@@ -16,11 +16,11 @@ from urllib.parse import quote
 
 import requests
 from fastapi.responses import StreamingResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import (
-    INTERNAL_API_KEY,
+    INTERVIEW_INTERNAL_SERVICE_TOKEN,
     HTTP_TIMEOUT_SECONDS,
     INTERVIEW_APP_URL,
     PUBLIC_APP_URL,
@@ -34,6 +34,8 @@ from app.db.repositories import (
     NotificationWorkflowTokenRepository,
     OrchestrationSessionRepository,
 )
+from app.models.entities import CandidateRequestEntity
+from app.services.ready_profile_serializer import build_ready_card, build_ready_profile
 from app.services.ats_lifecycle_service import candidate_timeline, normalize_ats_status
 from app.services.interview_stage_service import get_interview_insights
 from app.services.slack_integration import post_slack_message
@@ -444,7 +446,6 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                 SELECT
                     i.id                         AS interview_id,
                     i.job_id,
-                    i.company_id,
                     i.agency_id,
                     i.candidate_id,
                     i.status,
@@ -462,9 +463,10 @@ def _fetch_interview_result_row(db: Session, *, job_id: str, candidate_id: str) 
                     i.feedback,
                     i.interviewer_notes,
                     i.video_url,
-                    i.completed_at,
+                    NULL AS completed_at,
                     i.created_at,
                     s.id                     AS session_id,
+                    s.session_token          AS session_token,
                     s.status                 AS session_status,
                     s.booking_status         AS session_booking_status,
                     s.stage                  AS session_stage,
@@ -635,7 +637,7 @@ def _build_candidate_snapshot(
             "source": "shared_db",
         },
         "recording": {
-            "sessionToken": _normalize_text(interview_row.get("workflow_token") or workflow_token),
+            "sessionToken": _normalize_text(interview_row.get("session_token") or ""),
             **recording,
         },
         "transcript": transcript,
@@ -682,7 +684,7 @@ def _build_candidate_snapshot(
             "recruiterId": recruiter_id,
             "agencyId": _normalize_text(getattr(profile, "agency_id", "") or interview_row.get("candidate_agency_id") or getattr(job, "company_id", "") or ""),
             "evaluationReady": evaluation_ready,
-            "sessionToken": _normalize_text(interview_row.get("workflow_token") or workflow_token),
+            "sessionToken": _normalize_text(interview_row.get("session_token") or ""),
             "scheduledAt": (
                 interview_row["completed_at"].isoformat()
                 if interview_row.get("completed_at") else
@@ -757,10 +759,11 @@ def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[
                     i.transcript,
                     i.video_url,
                     i.feedback,
-                    i.completed_at,
+                    NULL AS completed_at,
                     i.created_at AS interview_created_at,
                     i.duration_minutes,
                     s.id AS session_id,
+                    s.session_token AS session_token,
                     s.status AS session_status,
                     s.booking_status,
                     s.stage AS session_stage,
@@ -810,6 +813,7 @@ def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[
         )
         interview_row = {
             "interview_id": row_data.get("interview_id"),
+            "session_token": row_data.get("session_token"),
             "agency_id": row_data.get("interview_agency_id"),
             "status": row_data.get("status"),
             "interview_score": row_data.get("interview_score"),
@@ -846,6 +850,9 @@ def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[
             invitation_status = "UNKNOWN"
         stage_code, stage_label = _result_stage(profile, interview_row, session_row)
         transcript = _normalize_text(interview_row.get("transcript") or "")
+        completed_status = _normalize_lower(interview_row.get("status")) in {"completed", "interview_completed", "results_ready"}
+        if not completed_status and not interview_row.get("completed_at"):
+            continue
         rows.append(
             {
                 "candidateId": _normalize_text(row_data.get("candidate_id") or ""),
@@ -865,6 +872,81 @@ def _candidate_result_rows(db: Session, job_id: str, *, agency_id: str) -> list[
             }
         )
     return rows
+
+
+def list_ready_candidates(*, db: Session, job_id: str, agency_id: str) -> dict[str, Any]:
+    """Return the deduplicated, pre-interview lifecycle for one authorized job."""
+    job = JobRepository(db).get(job_id)
+    if not job:
+        raise APIError("Job not found", status_code=404)
+    if _normalize_text(getattr(job, "company_id", "") or getattr(job, "agency_id", "")) != _normalize_text(agency_id):
+        raise APIError("Forbidden", status_code=403)
+
+    requests = db.scalars(
+        select(CandidateRequestEntity).where(
+            CandidateRequestEntity.job_id == job_id,
+            CandidateRequestEntity.agency_id == agency_id,
+            CandidateRequestEntity.status.in_(["PENDING", "ACCEPTED"]),
+        ).order_by(CandidateRequestEntity.created_at.asc())
+    ).all()
+    ready = {"toBeAccepted": [], "accepted": [], "toBeInterviewed": []}
+    latest_requests: dict[str, CandidateRequestEntity] = {}
+
+    for request_row in requests:
+        candidate_id = _normalize_text(request_row.candidate_id)
+        if not candidate_id:
+            continue
+        existing = latest_requests.get(candidate_id)
+        if not existing:
+            latest_requests[candidate_id] = request_row
+            continue
+        existing_updated_at = getattr(existing, "updated_at", None) or getattr(existing, "created_at", None)
+        current_updated_at = getattr(request_row, "updated_at", None) or getattr(request_row, "created_at", None)
+        if current_updated_at and existing_updated_at and current_updated_at >= existing_updated_at:
+            latest_requests[candidate_id] = request_row
+        elif current_updated_at and not existing_updated_at:
+            latest_requests[candidate_id] = request_row
+
+    for candidate_id, request_row in latest_requests.items():
+        session = InterviewSessionRepository(db).get_by_job_and_candidate(job_id=job_id, candidate_id=candidate_id)
+        if session and _normalize_text(getattr(session, "agency_id", "")) not in {"", _normalize_text(agency_id)}:
+            continue
+        interview_row = _fetch_interview_result_row(db, job_id=job_id, candidate_id=candidate_id)
+        interview_status = _normalize_lower(interview_row.get("status"))
+        if interview_status in {"completed", "interview_completed", "results_ready"} or interview_row.get("completed_at"):
+            continue
+
+        candidate_row = CandidateProfileRepository(db).get(job_id=job_id, candidate_id=candidate_id)
+        if not candidate_row:
+            continue
+
+        lifecycle_state = (
+            "TO_BE_ACCEPTED" if _normalize_lower(request_row.status) == "pending"
+            else ("TO_BE_INTERVIEWED" if session else "ACCEPTED")
+        )
+
+        card = build_ready_card(candidate_row, request_row)
+        card["job_id"] = job_id
+        card["lifecycle_state"] = lifecycle_state
+        card["interview_status"] = _normalize_text(interview_row.get("status") or getattr(session, "status", ""))
+        card["booking_status"] = _normalize_text(getattr(session, "booking_status", "") if session else "")
+        card["stage"] = _normalize_text(getattr(session, "stage", "") if session else "")
+        card["scheduled_at"] = getattr(session, "scheduled_at", None).isoformat() if session and getattr(session, "scheduled_at", None) else None
+        card["session_token"] = _normalize_text(getattr(session, "session_token", "") if session else "")
+        card["profile"] = build_ready_profile(candidate_row, request_row)
+
+        if _normalize_lower(request_row.status) == "pending":
+            ready["toBeAccepted"].append(card)
+        elif session:
+            ready["toBeInterviewed"].append(card)
+        else:
+            ready["accepted"].append(card)
+
+    return {
+        "jobId": job_id,
+        "ready": ready,
+        "counts": {key: len(value) for key, value in ready.items()},
+    }
 
 
 def list_results(*, db: Session, job_id: str, recruiter_id: str, agency_id: str) -> dict[str, Any]:
@@ -938,6 +1020,71 @@ def get_result_by_workflow_token(*, db: Session, workflow_token: str, recruiter_
     return result
 
 
+def _proxy_recording(*, recording_path: str, range_header: str = ""):
+    """Stream a recording from Interview Project without buffering it in Adam."""
+    recording_path = _normalize_text(recording_path).lstrip("/")
+    if not recording_path:
+        raise APIError("Video is not available yet", status_code=404)
+
+    interview_app_url = (INTERVIEW_APP_URL or "").rstrip("/")
+    if not interview_app_url:
+        raise APIError("Video is not available yet", status_code=404)
+
+    video_url = f"{interview_app_url}/api/video/{quote(recording_path, safe='/')}"
+    headers = {
+        "Accept": "video/*,application/octet-stream;q=0.9,*/*;q=0.8",
+        "X-Internal-API-Key": INTERVIEW_INTERNAL_SERVICE_TOKEN,
+    }
+    if range_header.strip():
+        headers["Range"] = range_header.strip()
+    try:
+        upstream = requests.get(video_url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, stream=True)
+    except requests.RequestException:
+        raise APIError("Recording service unavailable", status_code=502, retryable=True)
+
+    if upstream.status_code in (401, 403):
+        upstream.close()
+        raise APIError("Recording service unavailable", status_code=502, retryable=True)
+    if upstream.status_code == 404:
+        upstream.close()
+        raise APIError("Video is not available yet", status_code=404)
+    if upstream.status_code >= 400:
+        upstream.close()
+        raise APIError("Recording service unavailable", status_code=502, retryable=True)
+
+    response_headers = {}
+    for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control"):
+        if upstream.headers.get(header):
+            response_headers[header] = upstream.headers[header]
+    return StreamingResponse(
+        upstream.iter_content(chunk_size=65536),
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("Content-Type") or "video/mp4",
+        headers=response_headers,
+    )
+
+
+def stream_result_video_by_session(*, db: Session, session_token: str, recruiter_id: str, agency_id: str, range_header: str = ""):
+    session = InterviewSessionRepository(db).get_by_token(session_token)
+    if not session or not session.job_id or not session.candidate_id:
+        raise APIError("Interview session not found", status_code=404)
+    if not _result_agency_matches(db=db, job_id=session.job_id, candidate_id=session.candidate_id, agency_id=agency_id):
+        raise APIError("Forbidden", status_code=403)
+
+    interview_row = _fetch_interview_result_row(db, job_id=session.job_id, candidate_id=session.candidate_id)
+    recording_path = _normalize_text(
+        interview_row.get("video_url")
+        or _metadata_map(getattr(session, "scheduling_metadata", {})).get("recordingPath")
+        or _metadata_map(getattr(session, "scheduling_metadata", {})).get("recording_path")
+    )
+    if not recording_path:
+        raise APIError("Video is not available yet", status_code=404)
+    interview_status = _normalize_lower(interview_row.get("status"))
+    if interview_status not in {"completed", "interview_completed", "results_ready"} and not interview_row.get("completed_at"):
+        raise APIError("Interview is not completed", status_code=409)
+    return _proxy_recording(recording_path=recording_path, range_header=range_header)
+
+
 def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, agency_id: str, range_header: str = ""):
     payload, job_id, candidate_id, resolved_workflow_token = _workflow_token_payload(db, workflow_token)
     if not job_id or not candidate_id:
@@ -964,31 +1111,4 @@ def stream_result_video(*, db: Session, workflow_token: str, recruiter_id: str, 
     if not recording_path:
         raise APIError("Video is not available yet", status_code=404)
 
-    interview_app_url = (INTERVIEW_APP_URL or "").rstrip("/")
-    if not interview_app_url:
-        raise APIError("Video is not available yet", status_code=404)
-
-    video_url = f"{interview_app_url}/api/video/{quote(recording_path, safe='/')}"
-    headers = {
-        "Accept": "video/*,application/octet-stream;q=0.9,*/*;q=0.8",
-        "X-Internal-API-Key": INTERNAL_API_KEY,
-    }
-    if range_header.strip():
-        headers["Range"] = range_header.strip()
-    try:
-        upstream = requests.get(video_url, headers=headers, timeout=HTTP_TIMEOUT_SECONDS, stream=True)
-        if upstream.status_code < 400:
-            resp_headers = {}
-            for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Cache-Control"):
-                if upstream.headers.get(h):
-                    resp_headers[h] = upstream.headers[h]
-            return StreamingResponse(
-                upstream.iter_content(chunk_size=65536),
-                status_code=upstream.status_code,
-                media_type=upstream.headers.get("Content-Type") or "video/mp4",
-                headers=resp_headers,
-            )
-    except Exception as exc:
-        logger.warning("interview_video_proxy_failed url=%s error=%s", video_url, str(exc))
-
-    raise APIError("Video is not available yet", status_code=404)
+    return _proxy_recording(recording_path=recording_path, range_header=range_header)

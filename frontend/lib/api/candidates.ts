@@ -101,6 +101,17 @@ type SelectionUpdateData = {
   };
 };
 
+type CandidateRequestState = {
+  request_id?: string;
+  candidate_id: string;
+  job_id: string;
+  status?: string;
+  recruiter_action?: "NONE" | "INTERESTED" | "NOT_INTERESTED" | string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  responded_at?: string | null;
+};
+
 /** This function calls backend API and returns structured response. */
 export async function getCandidates({ jobId, refined, debug }: CandidateQuery): Promise<ApiResponse<Candidate[]>> {
   const params = new URLSearchParams({ jobId });
@@ -124,6 +135,74 @@ export async function getCandidatesWithMode({
   if (refresh) params.set("refresh", "true");
   return requestApi<Candidate[]>({
     url: `${API_BASE_URL}/candidates?${params.toString()}`,
+    method: "GET",
+  });
+}
+
+export async function createCandidateInterest(payload: { jobId: string; candidateId: string }): Promise<ApiResponse<CandidateRequestState>> {
+  return requestApi<CandidateRequestState>({
+    url: `${API_BASE_URL}/candidates/${encodeURIComponent(payload.candidateId)}/interest?jobId=${encodeURIComponent(payload.jobId)}`,
+    method: "POST",
+  });
+}
+
+export async function createCandidateNotInterested(payload: { jobId: string; candidateId: string }): Promise<ApiResponse<CandidateRequestState>> {
+  return requestApi<CandidateRequestState>({
+    url: `${API_BASE_URL}/candidates/${encodeURIComponent(payload.candidateId)}/not-interested?jobId=${encodeURIComponent(payload.jobId)}`,
+    method: "POST",
+  });
+}
+
+export async function getCandidateRequestStatus(payload: { jobId: string; candidateId: string }): Promise<ApiResponse<CandidateRequestState>> {
+  return requestApi<CandidateRequestState>({
+    url: `${API_BASE_URL}/candidates/${encodeURIComponent(payload.candidateId)}/request-status?jobId=${encodeURIComponent(payload.jobId)}`,
+    method: "GET",
+  });
+}
+
+export type CandidateFullProfile = {
+  candidate_id: string;
+  name: string;
+  role?: string;
+  company?: string;
+  location?: string;
+  years_experience?: number;
+  skills?: string[];
+  summary?: string;
+  email?: string;
+  phone?: string;
+  linkedin_url?: string;
+  github_url?: string;
+  resume_text?: string;
+  work_experience?: unknown[];
+  education?: unknown[];
+  certifications?: string[];
+  projects?: string[];
+  profile_access: "LIMITED" | "FULL";
+  request_status?: string | null;
+  recruiter_action?: string;
+  request_id?: string;
+  responded_at?: string | null;
+  agency_name?: string;
+};
+
+export async function getCandidateFullProfile(payload: { jobId: string; candidateId: string }): Promise<ApiResponse<CandidateFullProfile>> {
+  return requestApi<CandidateFullProfile>({
+    url: `${API_BASE_URL}/candidates/${encodeURIComponent(payload.candidateId)}/profile?jobId=${encodeURIComponent(payload.jobId)}`,
+    method: "GET",
+  });
+}
+
+export async function getAcceptedCandidates(jobId: string): Promise<ApiResponse<CandidateFullProfile[]>> {
+  return requestApi<CandidateFullProfile[]>({
+    url: `${API_BASE_URL}/candidates/accepted?jobId=${encodeURIComponent(jobId)}`,
+    method: "GET",
+  });
+}
+
+export async function getPendingAcceptanceCandidates(jobId: string): Promise<ApiResponse<CandidateFullProfile[]>> {
+  return requestApi<CandidateFullProfile[]>({
+    url: `${API_BASE_URL}/candidates/pending-acceptance?jobId=${encodeURIComponent(jobId)}`,
     method: "GET",
   });
 }

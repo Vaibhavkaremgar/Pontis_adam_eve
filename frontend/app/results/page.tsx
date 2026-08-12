@@ -12,14 +12,17 @@ import { Button } from "@/components/ui/button";
 import { useAppContext } from "@/context/AppContext";
 import {
   advanceResultWorkflow,
+  getReadyCandidates,
   getJobsForResults,
   getResultWorkspace,
   getResultsList,
   submitResultDecision,
   type JobSummary,
+  type ReadyCandidate,
   type ResultListItem,
   type ResultWorkspaceResponse,
 } from "@/lib/api/results";
+import { requestFirstRoundInterview } from "@/lib/api/interviews";
 
 const RESULTS_RETENTION_DAYS = 7;
 
@@ -119,7 +122,7 @@ function stageTone(stage: string) {
   return "neutral";
 }
 
-// ─── Level 1: Job roles list ──────────────────────────────────────────────────
+// â”€â”€â”€ Level 1: Job roles list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function JobsList({ onSelect }: { onSelect: (job: JobSummary) => void }) {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -168,11 +171,15 @@ function JobsList({ onSelect }: { onSelect: (job: JobSummary) => void }) {
   );
 }
 
-// ─── Level 2: Candidates list for a job ──────────────────────────────────────
+// â”€â”€â”€ Level 2: Candidates list for a job â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: (item: ResultListItem) => void; onBack: () => void }) {
   const [items, setItems] = useState<ResultListItem[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState<{ toBeAccepted: ReadyCandidate[]; accepted: ReadyCandidate[]; toBeInterviewed: ReadyCandidate[] }>({ toBeAccepted: [], accepted: [], toBeInterviewed: [] });
+  const [interviewRequestState, setInterviewRequestState] = useState<Record<string, "idle" | "loading" | "requested" | "error">>({});
+  const pendingCandidates = ready.toBeAccepted;
+  const acceptedCandidates = ready.accepted;
 
   useEffect(() => {
     getResultsList(job.jobId).then((res) => {
@@ -181,6 +188,9 @@ function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: 
         setCounts(res.data.counts || {});
       }
       setLoading(false);
+    });
+    getReadyCandidates(job.jobId).then((res) => {
+      if (res.success && res.data) setReady(res.data.ready);
     });
   }, [job.jobId]);
 
@@ -212,6 +222,103 @@ function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: 
         </div>
       )}
 
+      {!loading && (pendingCandidates.length > 0 || acceptedCandidates.length > 0 || ready.toBeInterviewed.length > 0) && (
+        <h3 className="pt-2 text-sm font-semibold uppercase tracking-[0.16em] text-indigo-950">Ready</h3>
+      )}
+
+      {/* Candidate workflow: To Be Accepted / Accepted */}
+      {!loading && pendingCandidates.length > 0 && (
+        <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4">
+          <p className="text-sm font-semibold text-amber-900">To Be Accepted</p>
+          <p className="mt-1 text-xs text-amber-700">Interest requests sent â€” awaiting candidate response.</p>
+          <div className="mt-3 space-y-2">
+            {pendingCandidates.map((candidate) => (
+              <div key={`pending-${candidate.candidate_id}`} className="flex items-center justify-between rounded-xl border border-amber-200 bg-white px-4 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{candidate.name}</p>
+                  {candidate.role && <p className="text-xs text-slate-500">{candidate.role}{candidate.company ? ` â€” ${candidate.company}` : ""}</p>}
+                </div>
+                <Badge variant="neutral">Pending</Badge>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && acceptedCandidates.length > 0 && (
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+          <p className="text-sm font-semibold text-emerald-900">Accepted</p>
+          <p className="mt-1 text-xs text-emerald-700">These candidates accepted your interest request. Full profile is now available.</p>
+          <div className="mt-3 space-y-2">
+            {acceptedCandidates.map((candidate) => {
+              const reqState = (interviewRequestState[candidate.candidate_id] ?? "idle") as string;
+              const handleYes = async () => {
+                setInterviewRequestState((prev) => ({ ...prev, [candidate.candidate_id]: "loading" }));
+                const res = await requestFirstRoundInterview({ candidateId: candidate.candidate_id, jobId: job.jobId });
+                setInterviewRequestState((prev) => ({ ...prev, [candidate.candidate_id]: res.success ? "requested" : "error" }));
+                if (res.success) {
+                  const refreshed = await getReadyCandidates(job.jobId);
+                  if (refreshed.success && refreshed.data) setReady(refreshed.data.ready);
+                }
+              };
+              return (
+                <div key={`accepted-${candidate.candidate_id}`} className="rounded-xl border border-emerald-200 bg-white px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{candidate.name}</p>
+                      {candidate.role && <p className="text-xs text-slate-500">{candidate.role}{candidate.company ? ` â€” ${candidate.company}` : ""}</p>}
+                    </div>
+                    <Badge variant="high">Accepted</Badge>
+                  </div>
+                  {candidate.email && <p className="mt-2 text-xs text-slate-600">Email: <span className="font-semibold">{candidate.email}</span></p>}
+                  {candidate.phone && <p className="text-xs text-slate-600">Phone: <span className="font-semibold">{candidate.phone}</span></p>}
+                  {candidate.linkedin_url && (
+                    <a href={candidate.linkedin_url} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs font-semibold text-emerald-700 hover:underline">LinkedIn profile</a>
+                  )}
+                  <div className="mt-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-3">
+                    {reqState === "requested" ? (
+                      <p className="text-xs font-semibold text-indigo-700">&#10003; Interview Requested â€” candidate will receive a booking link.</p>
+                    ) : reqState === "error" ? (
+                      <p className="text-xs text-rose-600">Could not send interview request. Please try again.</p>
+                    ) : (
+                      <>
+                        <p className="text-xs font-semibold text-indigo-900">Shall we conduct the first-round interview on your behalf?</p>
+                        <div className="mt-2 flex gap-2">
+                          <Button size="sm" className="rounded-full bg-indigo-600 text-white hover:bg-indigo-700" onClick={() => void handleYes()} disabled={reqState === "loading"}>{reqState === "loading" ? "Sending..." : "Yes"}</Button>
+                          <Button size="sm" variant="outline" className="rounded-full border-slate-300 text-slate-600" onClick={() => setInterviewRequestState((prev) => ({ ...prev, [candidate.candidate_id]: "idle" }))} disabled={reqState === "loading"}>No</Button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {!loading && ready.toBeInterviewed.length > 0 && (
+        <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4">
+          <p className="text-sm font-semibold text-indigo-950">To Be Interviewed</p>
+          <p className="mt-1 text-xs text-indigo-700">Interview workflow in progress.</p>
+          <div className="mt-3 space-y-2">
+            {ready.toBeInterviewed.map((candidate) => (
+              <div key={`interview-${candidate.candidate_id}`} className="rounded-xl border border-indigo-200 bg-white px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">{candidate.name}</p>
+                    <p className="text-xs text-slate-500">{candidate.role || "Role unavailable"}{candidate.company ? ` — ${candidate.company}` : ""}</p>
+                  </div>
+                  <Badge variant="info">{candidate.interview_status || candidate.booking_status || candidate.stage || "Requested"}</Badge>
+                </div>
+                {candidate.scheduled_at && <p className="mt-2 text-xs text-slate-600">Scheduled: {new Date(candidate.scheduled_at).toLocaleString()}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Existing post-interview results */}
       {loading ? (
         <div className="space-y-3">
           {Array.from({ length: 3 }).map((_, i) => (
@@ -256,7 +363,7 @@ function CandidatesList({ job, onSelect, onBack }: { job: JobSummary; onSelect: 
   );
 }
 
-// ─── Level 3: Candidate detail ────────────────────────────────────────────────
+// â”€â”€â”€ Level 3: Candidate detail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function CandidateDetail({
   item,
   jobTitle,
@@ -458,7 +565,7 @@ function CandidateDetail({
           ) : (
             <>
               <InterviewRecordingPlayer
-                workflowToken={item.workflowToken}
+                workflowToken={workspace.recording.sessionToken || item.workflowToken}
                 available={Boolean(workspace.recording.videoAvailable || workspace.recording.recordingPath)}
                 title="Interview recording"
                 className="rounded-[28px]"
@@ -514,7 +621,7 @@ function CandidateDetail({
                     const type = String((event as { type?: string }).type || "");
                     const title =
                       type === "candidate_engagement"
-                        ? `${String((event as { fromStatus?: string }).fromStatus || "").toUpperCase()} → ${String((event as { toStatus?: string }).toStatus || "").toUpperCase()}`
+                        ? `${String((event as { fromStatus?: string }).fromStatus || "").toUpperCase()} â†’ ${String((event as { toStatus?: string }).toStatus || "").toUpperCase()}`
                         : `${String((event as { type?: string }).type || "event")}`;
                     const createdAt = String((event as { createdAt?: string }).createdAt || "");
                     const metadata = (event as { metadata?: Record<string, any> }).metadata || {};
@@ -593,7 +700,7 @@ function CandidateDetail({
   );
 }
 
-// ─── Main page ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Main page â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 type View =
   | { level: "jobs" }
   | { level: "candidates"; job: JobSummary }

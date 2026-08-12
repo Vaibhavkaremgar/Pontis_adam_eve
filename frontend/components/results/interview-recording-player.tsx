@@ -20,7 +20,7 @@ export function InterviewRecordingPlayer({ workflowToken, title = "Interview rec
   const [attempt, setAttempt] = useState(0);
   const sourceUrl = useMemo(() => {
     if (!workflowToken) return "";
-    return `/api/backend/results/video/${encodeURIComponent(workflowToken)}?v=${attempt}`;
+    return `/api/backend/recording/${encodeURIComponent(workflowToken)}?v=${attempt}`;
   }, [attempt, workflowToken]);
 
   useEffect(() => {
@@ -108,4 +108,3 @@ export function InterviewRecordingPlayer({ workflowToken, title = "Interview rec
     </div>
   );
 }
-

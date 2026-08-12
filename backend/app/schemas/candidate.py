@@ -14,7 +14,12 @@ class CandidateExplanation(BaseModel):
     engineeringScore: float = 0.0
     penalties: dict[str, float]
     skillsMatched: list[str] = Field(default_factory=list)
+    missingSkills: list[str] = Field(default_factory=list)
+    matchedRequirements: list[str] = Field(default_factory=list)
+    missingRequirements: list[str] = Field(default_factory=list)
     experienceMatch: str = ""
+    locationMatch: float = 0.0
+    roleMatch: float = 0.0
     candidateExperience: str = ""
     jobExperience: str = ""
     aiReasoning: str = ""
