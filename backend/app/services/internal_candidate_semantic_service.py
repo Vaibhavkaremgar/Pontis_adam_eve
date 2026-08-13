@@ -85,18 +85,48 @@ def _candidate_skill_tokens(row: CandidateProfileEntity, job_tokens: set[str]) -
     return structured.union(resume_words.intersection(job_tokens))
 
 
-def _candidate_years(row: CandidateProfileEntity) -> float:
-    if getattr(row, "total_experience_years", None):
-        return max(0.0, float(row.total_experience_years))
+def _parse_years(value: Any) -> float:
+    """Safely extract a float year count from numeric or string values.
+
+    Examples: 14 -> 14.0 | "14 years" -> 14.0 | "6+ years" -> 6.0 | None -> 0.0
+    """
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    text = re.sub(r"[^0-9.]", " ", str(value))
+    for token in text.split():
+        try:
+            return max(0.0, float(token))
+        except ValueError:
+            continue
+    return 0.0
+
+
+def _candidate_years(row: CandidateProfileEntity) -> tuple[float, str]:
+    """Return (years, source_label) using the full key priority order."""
+    col = getattr(row, "total_experience_years", None)
+    if col is not None and float(col) > 0:
+        return max(0.0, float(col)), "candidate.total_experience_years"
     raw = row.raw_data if isinstance(row.raw_data, dict) else {}
     parsed = row.parsed_resume_json if isinstance(row.parsed_resume_json, dict) else {}
-    for value in (raw.get("years_experience"), raw.get("experience_years"), parsed.get("years_experience"), parsed.get("experience_years")):
-        if value not in (None, ""):
-            try:
-                return max(0.0, float(parse_experience(value)))
-            except (TypeError, ValueError):
-                continue
-    return 0.0
+    profile_data = raw.get("profileData") if isinstance(raw.get("profileData"), dict) else {}
+    explanation = raw.get("explanation") if isinstance(raw.get("explanation"), dict) else {}
+    checks: list[tuple[Any, str]] = [
+        (raw.get("yearsExperience"),                          "raw_data.yearsExperience"),
+        (raw.get("years_experience"),                         "raw_data.years_experience"),
+        (raw.get("experience_years"),                         "raw_data.experience_years"),
+        (profile_data.get("inferred_experience"),             "raw_data.profileData.inferred_experience"),
+        (raw.get("inferredExperience"),                       "raw_data.inferredExperience"),
+        (explanation.get("candidateExperience"),              "raw_data.explanation.candidateExperience"),
+        (parsed.get("years_experience"),                      "parsed_resume_json.years_experience"),
+        (parsed.get("experience_years"),                      "parsed_resume_json.experience_years"),
+    ]
+    for value, source in checks:
+        years = _parse_years(value)
+        if years > 0:
+            return years, source
+    return 0.0, "none"
 
 
 def _experience_match(candidate_years: float, required: str) -> float:
@@ -320,7 +350,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         candidate_skill_tokens = _candidate_skill_tokens(row, job_tokens)
         matched = sorted(job_tokens.intersection(candidate_skill_tokens))
         skill_match = len(matched) / len(job_tokens) if job_tokens else 0.5
-        candidate_years = _candidate_years(row)
+        candidate_years, experience_source = _candidate_years(row)
         experience_match = _experience_match(candidate_years, job_experience)
         location_match = _location_match(job, row)
         role_match = _role_match(job, row)
@@ -341,6 +371,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
             "candidate_skills": candidate_skills, "matched_requirements": matched,
             "missing_requirements": sorted(job_tokens.difference(candidate_skill_tokens)),
             "job_experience": job_experience, "embedding_version": _text(payload.get("embeddingVersion")) or EMBEDDING_VERSION,
+            "experience_source": experience_source,
         }
         scored.append((row, item))
 
@@ -375,6 +406,21 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
             item["location_match"],
             item["role_match"],
             item["match_score"],
+        )
+        logger.error(
+            "[EXPERIENCE_FIXED_DEBUG]\n"
+            "candidate_id=%s\n"
+            "candidate_name=%s\n"
+            "experience_source=%s\n"
+            "candidate_years=%s\n"
+            "job_required_years=%s\n"
+            "experience_match=%s",
+            item["candidate_id"],
+            _text(row.name or row.candidate_id or row.id),
+            item["experience_source"],
+            item["candidate_years"],
+            item["job_experience"],
+            item["experience_match"],
         )
     qualified = [(row, item) for row, item in scored if item["match_score"] >= INTERNAL_CANDIDATE_MATCH_THRESHOLD]
     resolved_limit = max(1, min(int(limit or INTERNAL_CANDIDATE_MATCH_LIMIT), INTERNAL_CANDIDATE_MATCH_LIMIT))
