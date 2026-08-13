@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.core.config import (
     EMBEDDING_VERSION,
@@ -161,7 +162,87 @@ def _role_match(job: Any, row: CandidateProfileEntity) -> float:
     return len(job_tokens.intersection(candidate_tokens)) / len(job_tokens)
 
 
-def _candidate_result(row: CandidateProfileEntity, item: dict[str, Any]) -> CandidateResult:
+def _education_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _text(value)
+    if not isinstance(value, dict):
+        return ""
+
+    degree = _text(
+        value.get("degree")
+        or value.get("qualification")
+        or value.get("title")
+        or value.get("fieldOfStudy")
+        or value.get("field")
+    )
+    institution = _text(
+        value.get("institution")
+        or value.get("school")
+        or value.get("university")
+        or value.get("name")
+    )
+    year = _text(
+        value.get("year")
+        or value.get("graduationYear")
+        or value.get("graduation_year")
+        or value.get("endDate")
+    )
+    summary = _text(value.get("summary") or value.get("description"))
+
+    parts: list[str] = []
+    if degree:
+        parts.append(degree)
+    if institution and institution.lower() not in {part.lower() for part in parts}:
+        parts.append(institution)
+    if year and year.lower() not in {part.lower() for part in parts}:
+        parts.append(year)
+    if summary and summary.lower() not in " ".join(parts).lower():
+        parts.append(summary)
+    return " - ".join(parts).strip(" -")
+
+
+def _normalize_education(value: Any) -> tuple[list[str], bool, bool]:
+    """Return (normalized_values, normalized, invalid)."""
+    if value is None or value == "":
+        return [], False, False
+
+    if isinstance(value, str):
+        cleaned = _text(value)
+        return ([cleaned] if cleaned else []), bool(cleaned), False
+
+    if isinstance(value, dict):
+        cleaned = _education_text(value)
+        return ([cleaned] if cleaned else []), True, not bool(cleaned)
+
+    if isinstance(value, list):
+        normalized: list[str] = []
+        normalized_required = False
+        for item in value:
+            if isinstance(item, str):
+                cleaned = _text(item)
+            elif isinstance(item, dict):
+                cleaned = _education_text(item)
+                normalized_required = True
+            else:
+                cleaned = ""
+                normalized_required = True
+            if cleaned and cleaned.lower() not in {entry.lower() for entry in normalized}:
+                normalized.append(cleaned)
+        if not normalized:
+            return [], normalized_required, bool(value)
+        return normalized, normalized_required, False
+
+    return [], True, True
+
+
+def _candidate_result(
+    row: CandidateProfileEntity,
+    item: dict[str, Any],
+    *,
+    education: list[str] | None = None,
+) -> CandidateResult:
     semantic = float(item["semantic_similarity"])
     score = float(item["match_score"])
     explanation = CandidateExplanation(
@@ -196,7 +277,7 @@ def _candidate_result(row: CandidateProfileEntity, item: dict[str, Any]) -> Cand
         yearsExperience=item["candidate_years"],
         skills=list(item["candidate_skills"]),
         summary=_text(row.summary),
-        education=row.education if isinstance(row.education, list) else [],
+        education=list(education or []),
         projects=[],
         certifications=[],
         companiesHistory=[_text(row.current_company)] if _text(row.current_company) else [],
@@ -433,7 +514,9 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     )
     qualified = [(row, item) for row, item in scored if item["match_score"] >= INTERNAL_CANDIDATE_MATCH_THRESHOLD]
     resolved_limit = max(1, min(int(limit or INTERNAL_CANDIDATE_MATCH_LIMIT), INTERNAL_CANDIDATE_MATCH_LIMIT))
-    results = [_candidate_result(row, item) for row, item in qualified[:resolved_limit]]
+    candidate_rows = qualified[:resolved_limit]
+    results: list[CandidateResult] = []
+    skipped_candidates = 0
     qualified_count = len(qualified)
     # ── DIAG: Post-qualification summary ─────────────────────────────────────
     logger.error(
@@ -451,6 +534,62 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     fallback_eligible = qualified_count == 0
     fallback_reason = "insufficient_internal_candidates" if fallback_eligible else "internal_candidates_sufficient"
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    logger.info(
+        "candidate_result_construction_started job_id=%s candidate_count=%s",
+        job_id,
+        len(candidate_rows),
+    )
+    for row, item in candidate_rows:
+        candidate_record_id = _text(row.id)
+        original_education = getattr(row, "education", None)
+        normalized_education, normalized_required, invalid_education = _normalize_education(original_education)
+        if normalized_required and not invalid_education:
+            logger.info(
+                "candidate_result_education_normalized candidate_record_id=%s original_type=%s normalized_item_count=%s",
+                candidate_record_id,
+                type(original_education).__name__,
+                len(normalized_education),
+            )
+        elif invalid_education:
+            logger.warning(
+                "candidate_result_education_invalid candidate_record_id=%s original_type=%s safe_fallback=empty_list",
+                candidate_record_id,
+                type(original_education).__name__,
+            )
+        try:
+            results.append(
+                _candidate_result(
+                    row,
+                    item,
+                    education=normalized_education if normalized_education or original_education is not None else [],
+                )
+            )
+        except ValidationError as exc:
+            skipped_candidates += 1
+            field = "unknown"
+            errors = exc.errors() if hasattr(exc, "errors") else []
+            if errors:
+                loc = errors[0].get("loc") or ()
+                if loc:
+                    field = ".".join(str(part) for part in loc)
+            logger.exception(
+                "candidate_result_construction_failed job_id=%s candidate_record_id=%s field=%s exception_type=%s safe_message=%s",
+                job_id,
+                candidate_record_id,
+                field,
+                type(exc).__name__,
+                _text(str(exc)),
+            )
+        except Exception as exc:
+            skipped_candidates += 1
+            logger.exception(
+                "candidate_result_construction_failed job_id=%s candidate_record_id=%s field=%s exception_type=%s safe_message=%s",
+                job_id,
+                candidate_record_id,
+                "unknown",
+                type(exc).__name__,
+                _text(str(exc)),
+            )
     # ── DIAG: Persistence stage ───────────────────────────────────────────────────
     # NOTE: internal_candidate_semantic_service does NOT write to the candidates
     # table — it reads from it. Persistence happens upstream in candidate_service.py
@@ -458,7 +597,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     # SOURCE for this service, not the destination.
     # What we CAN log here is how many CandidateResult objects are being returned
     # to the API layer, and their candidate_ids.
-    persisted_candidate_ids = [_text(row.candidate_id or row.id) for row, _ in qualified[:resolved_limit]]
+    persisted_candidate_ids = [_text(row.candidate_id or row.id) for row, _ in candidate_rows]
     logger.error(
         "[DIAG_PERSIST] job_id=%s candidates_being_returned=%s candidate_ids=%s",
         job_id,
@@ -484,6 +623,24 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         qualified_count,
         len(results),
     )
+    logger.info(
+        "candidate_result_construction_completed job_id=%s input_candidates=%s successfully_constructed=%s skipped_candidates=%s final_result_count=%s",
+        job_id,
+        len(candidate_rows),
+        len(results),
+        skipped_candidates,
+        len(results),
+    )
+    if not results:
+        reason = "no_input_candidates" if not candidate_rows else "all_candidates_failed_construction"
+        logger.info(
+            "candidate_result_construction_zero job_id=%s input_candidates=%s successfully_constructed=%s failed_candidates=%s reason=%s",
+            job_id,
+            len(candidate_rows),
+            len(results),
+            skipped_candidates,
+            reason,
+        )
     return {
         "status": "ok",
         "source": "internal",

@@ -157,10 +157,10 @@ class IntegrationTests(unittest.TestCase):
         cls._patchers = [
             patch.object(main_module, "init_db", lambda: None),
             patch.object(main_module, "ensure_qdrant_indexes", lambda: None),
-            patch.object(main_module, "run_startup_connectivity_check", lambda: None),
+            patch.object(main_module, "run_startup_connectivity_check", lambda: None, create=True),
             patch.object(main_module, "ensure_embedding_version_registry", lambda: None),
             patch.object(main_module, "warm_candidate_retrieval", lambda: 0),
-            patch.object(main_module, "start_job_queue_workers", lambda: None),
+            patch.object(main_module, "start_job_queue_workers", lambda: None, create=True),
             patch.object(main_module, "start_scheduler", lambda: None),
         ]
         for patcher in cls._patchers:
@@ -1205,6 +1205,36 @@ class IntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(len(items), 1)
         self.assertEqual(items[0]["recruiterAction"], "INTERESTED")
         self.assertEqual(items[0]["requestStatus"], "PENDING")
+
+    def test_candidates_route_handles_structured_education(self) -> None:
+        from app.db.repositories import CandidateProfileRepository
+        from app.services import internal_candidate_semantic_service as matcher
+
+        candidate_repo = CandidateProfileRepository(self.db)
+        candidate = candidate_repo.get(job_id=self.job.id, candidate_id="candidate-1")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        candidate.embedding_status = "EMBEDDED"
+        candidate.embedding_version = matcher.EMBEDDING_VERSION
+        candidate.education = [{"degree": "B.Tech", "institution": "ABC", "year": 2020}]
+        self.db.commit()
+
+        with patch("app.api.routes.candidates.assert_job_ownership", lambda **_: None), \
+            patch("app.api.routes.candidates._resolve_agency_scope", lambda *_, **__: self.company.id), \
+            patch.object(matcher.JobRepository, "get", lambda _self, _job_id: self.job), \
+            patch.object(matcher, "build_job_text", lambda _job: "Senior Python Django engineer"), \
+            patch.object(matcher, "get_embedding", lambda _text: [0.1, 0.2]), \
+            patch.object(matcher, "count_collection_points", lambda _name: 1), \
+            patch.object(matcher, "search_internal_candidate_chunks", lambda **_: [
+                {"score": 0.9, "payload": {"candidateRecordId": str(candidate.id), "embeddingVersion": matcher.EMBEDDING_VERSION}}
+            ]):
+            resp = self.client.get(f"/api/candidates?jobId={self.job.id}")
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["success"])
+        self.assertGreaterEqual(body["total"], 1)
+        self.assertEqual(body["data"][0]["education"], ["B.Tech - ABC - 2020"])
 
     def test_webhook_verification_and_replay_helpers(self) -> None:
         timestamp = str(int(time.time()))
