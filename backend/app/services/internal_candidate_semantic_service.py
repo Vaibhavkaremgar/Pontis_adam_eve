@@ -197,6 +197,14 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     if _text(getattr(job, "agency_id", "")) != _text(agency_id):
         raise APIError("Forbidden", status_code=403)
     job_text = build_job_text(job)
+    logger.error(
+        "[MATCH_DEBUG] job_text_length=%s",
+        len(job_text),
+    )
+    logger.error(
+        "[MATCH_DEBUG] job_text_preview=%s",
+        job_text[:1500],
+    )
     if not job_text.strip():
         raise APIError("Job requirements are incomplete", status_code=409)
 
@@ -219,6 +227,18 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         )
     except QdrantUnavailableError as exc:
         raise APIError("Internal candidate search is unavailable", status_code=503, code="internal_search_unavailable", retryable=True) from exc
+
+    logger.error(
+        "[MATCH_DEBUG] job_id=%s qdrant_hits=%s",
+        job_id,
+        len(hits),
+    )
+    if hits:
+        logger.error(
+            "[MATCH_DEBUG] first_hit_payload=%s score=%s",
+            hits[0].get("payload"),
+            hits[0].get("score"),
+        )
 
     collection_points = count_collection_points(INTERNAL_CANDIDATE_COLLECTION_NAME)
     # DIAG-2: Qdrant results
@@ -252,6 +272,11 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         "[DIAG] record_id_extraction job_id=%s hits=%s record_ids_extracted=%s missing_record_id=%s",
         job_id, len(hits), len(record_ids), missing_record_id_count,
     )
+    logger.error(
+        "[MATCH_DEBUG] record_ids=%s extracted=%s",
+        len(record_ids),
+        record_ids[:5],
+    )
 
     rows = db.scalars(select(CandidateProfileEntity).where(CandidateProfileEntity.id.in_(record_ids))).all() if record_ids else []
     # DIAG-4: PostgreSQL lookup
@@ -261,6 +286,10 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     )
     if record_ids and not rows:
         logger.info("[DIAG] pg_lookup_zero_rows job_id=%s sample_record_ids=%s", job_id, record_ids[:3])
+    logger.error(
+        "[MATCH_DEBUG] postgres_rows_found=%s",
+        len(rows),
+    )
 
     row_by_id = {str(row.id): row for row in rows}
     job_skills = _job_skills(job)
@@ -269,6 +298,10 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     weights = INTERNAL_CANDIDATE_MATCH_WEIGHTS
     scored: list[tuple[CandidateProfileEntity, dict[str, Any]]] = []
     dropped_no_row = dropped_status = dropped_version = 0
+    logger.error(
+        "[MATCH_DEBUG] starting_candidate_filtering hits=%s",
+        len(hits),
+    )
     for hit in hits:
         payload = hit.get("payload") or {}
         row = row_by_id.get(_text(payload.get("candidateRecordId")))
@@ -311,11 +344,20 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         }
         scored.append((row, item))
 
+    logger.error(
+        "[MATCH_DEBUG] scored_candidates=%s",
+        len(scored),
+    )
     scored.sort(key=lambda pair: pair[1]["match_score"], reverse=True)
     qualified = [(row, item) for row, item in scored if item["match_score"] >= INTERNAL_CANDIDATE_MATCH_THRESHOLD]
     resolved_limit = max(1, min(int(limit or INTERNAL_CANDIDATE_MATCH_LIMIT), INTERNAL_CANDIDATE_MATCH_LIMIT))
     results = [_candidate_result(row, item) for row, item in qualified[:resolved_limit]]
     qualified_count = len(qualified)
+    logger.error(
+        "[MATCH_DEBUG] qualified_candidates=%s threshold=%s",
+        qualified_count,
+        INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+    )
     fallback_eligible = qualified_count == 0
     fallback_reason = "insufficient_internal_candidates" if fallback_eligible else "internal_candidates_sufficient"
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -329,6 +371,14 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     logger.info(
         "internal_candidate_matching job_id=%s retrieval_count=%s qualified_count=%s top_k=%s threshold=%.4f fallback_eligible=%s reason=%s duration_ms=%.2f",
         job_id, len(hits), qualified_count, INTERNAL_CANDIDATE_RETRIEVAL_TOP_K, INTERNAL_CANDIDATE_MATCH_THRESHOLD, fallback_eligible, fallback_reason, duration_ms,
+    )
+    logger.error(
+        "[MATCH_DEBUG] summary qdrant_hits=%s rows=%s scored=%s qualified=%s final=%s",
+        len(hits),
+        len(rows),
+        len(scored),
+        qualified_count,
+        len(results),
     )
     return {
         "status": "ok",
