@@ -85,6 +85,19 @@ def get_candidates(
     )
     candidates = internal_result["candidates"]
 
+    import logging as _logging
+    _api_logger = _logging.getLogger(__name__)
+    _api_logger.error(
+        "[DIAG_API] GET /candidates job_id=%s agency_id=%s match_count=%s candidate_ids=%s threshold=%.4f qualified_count=%s fallback_eligible=%s",
+        jobId,
+        agency_id,
+        len(candidates),
+        [c.id for c in candidates[:20]],
+        internal_result.get("threshold", -1),
+        internal_result.get("qualified_count", -1),
+        internal_result.get("fallback_eligible"),
+    )
+
     payload: list[dict] = []
     request_states = request_state_map(db, job_id=jobId, agency_id=agency_id)
     for candidate in candidates:

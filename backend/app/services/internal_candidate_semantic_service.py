@@ -422,10 +422,27 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
             item["job_experience"],
             item["experience_match"],
         )
+    # ── DIAG: Pre-qualification summary ─────────────────────────────────────
+    top20_scores = [round(float(item["match_score"]), 4) for _, item in scored[:20]]
+    logger.error(
+        "[DIAG_QUALIFY] PRE-QUALIFICATION job_id=%s total_scored=%s threshold=%.4f top20_scores=%s",
+        job_id,
+        len(scored),
+        INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+        top20_scores,
+    )
     qualified = [(row, item) for row, item in scored if item["match_score"] >= INTERNAL_CANDIDATE_MATCH_THRESHOLD]
     resolved_limit = max(1, min(int(limit or INTERNAL_CANDIDATE_MATCH_LIMIT), INTERNAL_CANDIDATE_MATCH_LIMIT))
     results = [_candidate_result(row, item) for row, item in qualified[:resolved_limit]]
     qualified_count = len(qualified)
+    # ── DIAG: Post-qualification summary ─────────────────────────────────────
+    logger.error(
+        "[DIAG_QUALIFY] POST-QUALIFICATION job_id=%s qualified_count=%s threshold=%.4f results_to_return=%s",
+        job_id,
+        qualified_count,
+        INTERNAL_CANDIDATE_MATCH_THRESHOLD,
+        len(results),
+    )
     logger.error(
         "[MATCH_DEBUG] qualified_candidates=%s threshold=%s",
         qualified_count,
@@ -434,6 +451,20 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     fallback_eligible = qualified_count == 0
     fallback_reason = "insufficient_internal_candidates" if fallback_eligible else "internal_candidates_sufficient"
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    # ── DIAG: Persistence stage ───────────────────────────────────────────────────
+    # NOTE: internal_candidate_semantic_service does NOT write to the candidates
+    # table — it reads from it. Persistence happens upstream in candidate_service.py
+    # (profile_repo.upsert) during X-Ray sourcing. The candidates table is the
+    # SOURCE for this service, not the destination.
+    # What we CAN log here is how many CandidateResult objects are being returned
+    # to the API layer, and their candidate_ids.
+    persisted_candidate_ids = [_text(row.candidate_id or row.id) for row, _ in qualified[:resolved_limit]]
+    logger.error(
+        "[DIAG_PERSIST] job_id=%s candidates_being_returned=%s candidate_ids=%s",
+        job_id,
+        len(results),
+        persisted_candidate_ids,
+    )
     # DIAG-5: final funnel summary
     logger.info(
         "[DIAG] funnel_summary job_id=%s qdrant_hits=%s dropped_no_pg_row=%s dropped_bad_status=%s dropped_bad_version=%s scored=%s below_threshold=%s qualified=%s final=%s threshold=%.4f duration_ms=%.2f",
