@@ -360,13 +360,13 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         logger.error(
             "[MATCH_SCORE_DEBUG]\n"
             "candidate_id=%s\n"
-            "candidate=%s\n"
-            "semantic=%s\n"
-            "skill=%s\n"
-            "experience=%s\n"
-            "location=%s\n"
-            "role=%s\n"
-            "final=%s",
+            "candidate_name=%s\n"
+            "semantic_similarity=%s\n"
+            "skill_match=%s\n"
+            "experience_match=%s\n"
+            "location_match=%s\n"
+            "role_match=%s\n"
+            "final_match_score=%s",
             item["candidate_id"],
             _text(row.name or row.candidate_id or row.id),
             item["semantic_similarity"],

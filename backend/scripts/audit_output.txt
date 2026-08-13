@@ -1,0 +1,230 @@
+
+================================================================================
+  STEP 0: FINDING MOST RECENT JOB WITH REAL VOICE TRANSCRIPT
+================================================================================
+
+  Strategy 1 — job_intakes.transcript > 500 chars: 6 found
+    job_id=26ea1741-cb27-45b3-9f34-95aa25f443ee  title='Playwright  using C sharp'  transcript_len=5455
+    job_id=c72ec86a-2beb-4d23-91fd-c76dc82ae4db  title='embedded engineer'  transcript_len=2971
+    job_id=424171ce-3c09-47c5-8841-b1775aa102b6  title='python developer'  transcript_len=5607
+    job_id=4933748f-2d46-40a2-ac63-5c34fd1e6b16  title='python developer'  transcript_len=2252
+    job_id=f87289b9-0057-446a-97f0-83dd24b3bc60  title='python developer'  transcript_len=5704
+    job_id=d73835b3-351e-4a5a-a1b8-3218ffaf339b  title='python developer'  transcript_len=2442
+
+  Strategy 2 — structured_data.voiceTranscript > 500 chars: 6 found
+    job_id=26ea1741-cb27-45b3-9f34-95aa25f443ee  title='Playwright  using C sharp'  vt_len=5455
+    job_id=c72ec86a-2beb-4d23-91fd-c76dc82ae4db  title='embedded engineer'  vt_len=2971
+    job_id=424171ce-3c09-47c5-8841-b1775aa102b6  title='python developer'  vt_len=5607
+    job_id=4933748f-2d46-40a2-ac63-5c34fd1e6b16  title='python developer'  vt_len=2252
+    job_id=f87289b9-0057-446a-97f0-83dd24b3bc60  title='python developer'  vt_len=5704
+    job_id=d73835b3-351e-4a5a-a1b8-3218ffaf339b  title='python developer'  vt_len=2442
+
+  Strategy 3 — recruiterIntelligence.voiceTranscript > 500 chars: 0 found
+
+  Strategy 4 — recruiterCalibration.state.voice_transcript > 500 chars: 0 found
+
+  Strategy 5 — structured_data.voiceExtraction.transcript > 500 chars: 6 found
+    job_id=26ea1741-cb27-45b3-9f34-95aa25f443ee  title='Playwright  using C sharp'  ve_t_len=5455
+    job_id=c72ec86a-2beb-4d23-91fd-c76dc82ae4db  title='embedded engineer'  ve_t_len=2971
+    job_id=424171ce-3c09-47c5-8841-b1775aa102b6  title='python developer'  ve_t_len=5607
+    job_id=4933748f-2d46-40a2-ac63-5c34fd1e6b16  title='python developer'  ve_t_len=2252
+    job_id=f87289b9-0057-446a-97f0-83dd24b3bc60  title='python developer'  ve_t_len=5704
+    job_id=d73835b3-351e-4a5a-a1b8-3218ffaf339b  title='python developer'  ve_t_len=2442
+
+  SELECTED JOB_ID: 26ea1741-cb27-45b3-9f34-95aa25f443ee
+  TRANSCRIPT SOURCE: job_intakes.transcript
+  TRANSCRIPT LENGTH: 5455
+
+================================================================================
+  A) JOB IDENTITY
+================================================================================
+  job_id:    26ea1741-cb27-45b3-9f34-95aa25f443ee
+  title:     'Playwright  using C sharp'
+  agency_id: 0f71cf1f-1aca-4188-a76b-0b97af1483ad
+  status:    active
+  updated:   2026-07-28 16:18:14.318017+00:00
+
+================================================================================
+  B) TRANSCRIPT — length and first 1000 chars
+================================================================================
+  Source:  job_intakes.transcript
+  Length:  5455 chars
+
+--- TRANSCRIPT FIRST 1000 CHARS ---
+Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from Pontis. I reviewed the details for the playwright developer role at Pontis. I'd like to ask a few focus questions to better understand exactly what you're looking for. So we can prioritize the strongest candidates. Since you're seeking someone with 6 years of experience in playwright and C, Can you share which specific technical skills or expertise within Playwright and C are Absolutely non negotiable for this role. For example, Are there particular frameworks, testing types, Or coding standards they must be proficient in? Recruiter: Yes. The candidate should have expertise in playwright using C sharp coding. Adam: Got it. So expertise in playwright with C number is a must have. Beyond coding skills, Recruiter: Is Tisha. Correct. Adam: Understood Tisha. Beyond strong skills in playwright 
+--- END ---
+
+================================================================================
+  C) STRUCTURED JOB REQUIREMENTS
+================================================================================
+  skills_required:    ['Playwright', 'C#', 'Framework design', 'Debugging']
+  responsibilities:   '{"{","}","Creating test frameworks from scratch","Enhancing existing frameworks","Executing and maintaining existing scripts","Hands-on development"}'
+  experience_level:   '6 years (flexible for highly capable candidates)'
+  experience_required:'6 years'
+
+================================================================================
+  D) ALL TRANSCRIPT-RELATED FIELDS
+================================================================================
+
+  -- D1: job_intakes row --
+  id:             d52991c8-5bbf-46e6-8b9f-dc60a1504bb0
+  intake_status:  completed
+  completed_at:   2026-07-28 16:17:25.799057+00:00
+  transcript len: 5455
+  transcript[:200]: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from"
+  structured_data_json keys: ['title', 'skills', 'location', 'seniority', 'compensation', 'voiceSummary', 'company_stage', 'remote_policy', 'asyncQuestions', 'certifications']
+
+  -- D2: structured_data top-level voice keys --
+  voiceTranscript: str len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from"
+  voice_transcript: ABSENT
+  voiceTranscriptRaw: str len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role?\nRecruiter: 6 years.\nAdam: This is Adam from"
+  voiceTranscriptClean: str len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from"
+  voiceExtraction: dict keys=['source', 'job', 'company', 'confidence', 'success', 'transcript', 'cleanedTranscript', 'rawTranscript']
+    .transcript: len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from"
+    .rawTranscript: len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role?\nRecruiter: 6 years.\nAdam: This is Adam from"
+    .cleanedTranscript: len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from"
+  voice_extraction: ABSENT
+  voiceSummary: str len=5455  first 200: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India. Let's focus on this. What is the target years of experience for this role? Recruiter: 6 years. Adam: This is Adam from"
+  voice_summary: ABSENT
+  transcript: ABSENT
+  asyncQuestions: list len=6
+  async_questions: list len=6
+
+  -- D3: recruiterIntelligence voice fields --
+  recruiterIntelligence.transcript: ABSENT
+  recruiterIntelligence.voiceTranscript: ABSENT
+  recruiterIntelligence.voiceSummary: ABSENT
+  recruiterIntelligence.voice_summary: ABSENT
+  recruiterIntelligence.voiceTranscriptRaw: ABSENT
+  recruiterIntelligence.voiceTranscriptClean: ABSENT
+
+  -- D4: recruiterCalibration.state.voice_transcript --
+  recruiterCalibration.state.voice_transcript: len=0  first 200: ''
+
+================================================================================
+  E) EXACT build_job_text(job) OUTPUT — MATCHER CODE PATH
+================================================================================
+
+  TOTAL LENGTH: 3070 chars
+
+--- FULL EMBEDDING TEXT START ---
+Title: Playwright using C sharp
+Role: Playwright using C sharp
+Experience: 6 years (flexible for highly capable candidates)
+Skills: Playwright, C#, Framework design, Debugging
+
+Responsibilities:
+- {"{","}","Creating test frameworks from scratch","Enhancing existing frameworks","Executing and maintaining existing scripts","Hands-on development"}
+
+Job Description:
+**Job Title: Automation Test Engineer (Playwright & C#)** **Location:** Hyderabad, Telangana, India **Role Type:** Individual Contributor (IC) **Role Overview:** Pontus is seeking a highly skilled Automation Test Engineer to join our team in Hyderabad. This is a hands-on, individual contributor role focused on the design, development, and enhancement of robust automation frameworks. The ideal candidate will take full ownership of our testing architecture, ensuring high-quality code standards and efficient test execution. **Key Responsibilities:** * **Framework Development:** Architect, build, and enhance automation test frameworks from the ground up using Playwright and C#. * **Technical Execution:** Maintain and optimize existing automation suites to ensure reliability and scalability. * **Quality Assurance:** Write clean, maintainable, and efficient code. Poor code quality is a primary disqualifier for this position. * **Problem Solving:** Utilize advanced debugging skills to identify, isolate, and resolve complex technical issues within the automation lifecycle. **Required Qualifications:** * **Core Expertise:** Proven, hands-on proficiency in both Playwright and C#. These are non-negotiable requirements. * **Experience:** Ideally 6 years of experience in automation testing; however, we are open to candidates with slightly less experience if they demonstrate exceptional technical capability and problem-solving skills. * **Technical Proficiency:** Strong background in designing and scaling test frameworks from scratch. **Preferred Skills (Nice to Have):** * Familiarity with CI/CD pipeline integration. * Strong analytical mindset with a focus on deep debugging. **What We Are Looking For:** * A dedicated individual contributor who thrives in a hands-on technical environment. * A candidate who prioritizes code quality and takes full ownership of their work. * An engineer who can demonstrate their expertise through technical coding assessments, framework design discussions, and practical debugging exercises. **Note:** This role is focused on technical execution and framework ownership; there is no requirement for managing junior staff or communicating with non-technical stakeholders. Responsibilities: - { - } - Creating test frameworks from scratch - Enhancing existing frameworks - Executing and maintaining existing scripts - Hands-on development Required Skills: - Playwright - C# - Framework design - Debugging Experience Level: 6 years (flexible for highly capable candidates) Company: Pontis
+
+Location: Hyderabad, Telangana, INDIA
+Compensation: ₹6 LPA – ₹12 LPA
+Work Authorization: 
+Remote Policy: hybrid
+Company: 
+Industry: 
+Company Description: 
+
+Voice Input:
+--- FULL EMBEDDING TEXT END ---
+
+================================================================================
+  F) EVIDENCE CHECKS — what is and is not in the embedding text
+================================================================================
+
+  F1. Transcript text in embedding:              False
+      transcript first 50: "Adam: You're hiring a playwright using C at Pontus"
+
+  F2. recruiterCalibration data in embedding:    True
+      matched snippet: 'Playwright'
+      archetype skills (all): ['Playwright', 'C#', 'Azure DevOps', 'Playwright', 'C#', 'SpecFlow']
+
+  F3. Selected archetype skills in embedding:    True
+      matched snippet: 'Playwright'
+      skill 'Playwright': True
+      skill 'C#': True
+      skill 'Azure DevOps': False
+      skill 'Playwright': True
+      skill 'C#': True
+
+  F4. Selected archetype roles in embedding:     False
+      role 'Senior Software Development Engineer in Test': False
+      role 'Automation Test Lead': False
+      role 'Principal Automation Engineer': False
+
+  F5. recruiterIntelligence.intentProfile in embedding: False
+      preference_text first 80: ''
+      culture_preferences: []
+
+  F6. skills_required in embedding:              True
+      matched snippet: 'Playwright'
+      Skills line in embedding text: 'Skills: Playwright, C#, Framework design, Debugging'
+      job.skills_required value: ['Playwright', 'C#', 'Framework design', 'Debugging']
+      structured_data skills value: ['Playwright', 'C#', 'Framework design', 'Debugging']
+
+  F7. responsibilities in embedding:             True
+      matched snippet: '{"{","}","Creating test frameworks from scratch","Enhancing '
+      Responsibility lines in embedding: ['- {"{","}","Creating test frameworks from scratch","Enhancing existing frameworks","Executing and maintaining existing scripts","Hands-on development"}']
+      job.responsibilities value: '{"{","}","Creating test frameworks from scratch","Enhancing existing frameworks","Executing and maintaining existing scr'
+
+================================================================================
+  G) FINAL EMBEDDING TEXT LENGTH
+================================================================================
+  Total chars: 3070
+  Total lines: 20
+  'Voice Input:' section: ''
+
+================================================================================
+  H) FIELDS STORED IN DB BUT NEVER READ BY build_job_text()
+================================================================================
+
+  -- structured_data keys NEVER read by build_job_text() --
+  UNUSED [asyncQuestions]: list  len=6
+  UNUSED [async_questions]: list  len=6
+  UNUSED [certifications]: list  len=0
+  UNUSED [company_stage]: str len=0
+  UNUSED [education_level]: str len=0
+  UNUSED [nice_to_have_skills]: list  len=0
+  UNUSED [preferred_institutions]: list  len=0
+  UNUSED [recruiterCalibration]: dict  keys=['source', 'archetypeCount', 'calibrationSetIds', 'currentCalibrationSetId', 'selectedArchetypeIds', 'selectedArchetypes', 'selectedCandidateIds', 'rejectedCandidateIds']
+  UNUSED [seniority]: str len=6  first 80: 'senior'
+  UNUSED [voiceExtraction]: dict  keys=['source', 'job', 'company', 'confidence', 'success', 'transcript', 'cleanedTranscript', 'rawTranscript']
+  UNUSED [voiceSummary]: str len=5455  first 80: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India"
+  UNUSED [voiceTranscript]: str len=5455  first 80: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India"
+  UNUSED [voiceTranscriptClean]: str len=5455  first 80: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India"
+  UNUSED [voiceTranscriptRaw]: str len=5455  first 80: "Adam: You're hiring a playwright using C at Pontus In Hyderabad Telangana, India"
+
+  -- Specific high-value unused fields --
+
+  recruiterCalibration (entire object — NEVER read by build_job_text):
+    .source: str len=23  ->  'groq_candidate_profiles'
+    .archetypeCount: int = 6
+    .calibrationSetIds: list len=3
+    .currentCalibrationSetId: str len=0  ->  ''
+    .selectedArchetypeIds: list len=3
+    .selectedArchetypes: list len=3
+    .selectedCandidateIds: list len=3
+    .rejectedCandidateIds: list len=3
+    .setTitles: list len=3
+    .currentRoundIndex: int = 3
+    .history: list len=3
+    .state: dict keys=['job_id', 'recruiter_id', 'orchestration_session_id', 'voice_transcript', 'status', 'stage', 'current_round_index', 'archetype_sets']
+    .updatedAt: str len=32  ->  '2026-07-28T16:18:14.309380+00:00'
+
+================================================================================
+  FINAL SUMMARY
+================================================================================
+  Job ID:                          26ea1741-cb27-45b3-9f34-95aa25f443ee
+  Transcript source:               job_intakes.transcript
+  Transcript length:               5455
+  Embedding text length:           3070 chars
+  F1 transcript in embedding:      False
+  F2 calibration in embedding:     True
+  F3 archetype skills in embedding:True
+  F4 archetype roles in embedding: False
+  F5 intentProfile in embedding:   False
+  F6 skills_required in embedding: True
+  F7 responsibilities in embedding:True
+  Voice Input section content:     ''

@@ -40,16 +40,19 @@ def _normalize_list(values: Any) -> list[str]:
 def _extract_voice_transcript(structured_data: Any) -> str:
     if not isinstance(structured_data, dict):
         return ""
-    voice_extraction = structured_data.get("voice_extraction") or structured_data.get("transcript") or {}
-    if not isinstance(voice_extraction, dict):
-        return ""
-    transcript = (
-        voice_extraction.get("transcript")
-        or voice_extraction.get("notes")
-        or voice_extraction.get("summary")
-        or ""
-    )
-    return _normalize_text(transcript)
+    # Check top-level transcript fields (camelCase keys written by voice_service.py)
+    for key in ("voiceTranscript", "voiceTranscriptClean", "voiceTranscriptRaw"):
+        val = structured_data.get(key)
+        if val and isinstance(val, str):
+            return _normalize_text(val)
+    # Check nested voiceExtraction object (camelCase and snake_case)
+    voice_extraction = structured_data.get("voiceExtraction") or structured_data.get("voice_extraction")
+    if isinstance(voice_extraction, dict):
+        for key in ("transcript", "cleanedTranscript", "rawTranscript", "notes", "summary"):
+            val = voice_extraction.get(key)
+            if val and isinstance(val, str):
+                return _normalize_text(val)
+    return ""
 
 
 def _normalize_job_list(value: Any) -> list[str]:
