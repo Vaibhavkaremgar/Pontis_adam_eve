@@ -349,6 +349,33 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         len(scored),
     )
     scored.sort(key=lambda pair: pair[1]["match_score"], reverse=True)
+    score_values = [float(item["match_score"]) for _, item in scored]
+    logger.error(
+        "[MATCH_SCORE_DEBUG] highest_score=%s lowest_score=%s average_score=%s",
+        max(score_values) if score_values else 0.0,
+        min(score_values) if score_values else 0.0,
+        (sum(score_values) / len(score_values)) if score_values else 0.0,
+    )
+    for row, item in scored[:20]:
+        logger.error(
+            "[MATCH_SCORE_DEBUG]\n"
+            "candidate_id=%s\n"
+            "candidate=%s\n"
+            "semantic=%s\n"
+            "skill=%s\n"
+            "experience=%s\n"
+            "location=%s\n"
+            "role=%s\n"
+            "final=%s",
+            item["candidate_id"],
+            _text(row.name or row.candidate_id or row.id),
+            item["semantic_similarity"],
+            item["skill_match"],
+            item["experience_match"],
+            item["location_match"],
+            item["role_match"],
+            item["match_score"],
+        )
     qualified = [(row, item) for row, item in scored if item["match_score"] >= INTERNAL_CANDIDATE_MATCH_THRESHOLD]
     resolved_limit = max(1, min(int(limit or INTERNAL_CANDIDATE_MATCH_LIMIT), INTERNAL_CANDIDATE_MATCH_LIMIT))
     results = [_candidate_result(row, item) for row, item in qualified[:resolved_limit]]
