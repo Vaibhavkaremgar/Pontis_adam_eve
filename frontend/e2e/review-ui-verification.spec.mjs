@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-function buildCandidate(index) {
+function buildCandidate(index, overrides = {}) {
   return {
     id: `candidate-${index}`,
     name: `Candidate ${index}`,
@@ -33,6 +33,7 @@ function buildCandidate(index) {
       skillsMatched: ['Python', 'FastAPI'],
       aiReasoning: 'Strong match for the role.',
     },
+    ...overrides,
   };
 }
 
@@ -68,7 +69,11 @@ async function installReviewFixtures(page) {
     );
   });
 
-  const candidates = Array.from({ length: 10 }, (_, index) => buildCandidate(index + 1));
+  const candidates = Array.from({ length: 10 }, (_, index) =>
+    buildCandidate(index + 1, index === 0
+      ? { source: 'internal', sourceType: 'internal', sourceProvider: 'internal' }
+      : { source: 'serpapi', sourceType: 'linkedin_xray', sourceProvider: 'serpapi' })
+  );
 
   await page.route('**/api/backend/auth/me', async (route) => {
     await route.fulfill({
@@ -152,6 +157,52 @@ async function installReviewFixtures(page) {
     });
   });
 
+  await page.route('**/api/backend/candidates/*/interest*', async (route) => {
+    const body = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          request_id: `request-${body.candidateId}`,
+          candidate_id: body.candidateId,
+          job_id: body.jobId,
+          status: 'PENDING',
+          recruiter_action: 'INTERESTED',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          responded_at: null,
+          eve_delivery_status: 'queued',
+        },
+        error: null,
+      }),
+    });
+  });
+
+  await page.route('**/api/backend/candidates/*/not-interested*', async (route) => {
+    const body = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        success: true,
+        data: {
+          request_id: `request-${body.candidateId}`,
+          candidate_id: body.candidateId,
+          job_id: body.jobId,
+          status: 'DECLINED',
+          recruiter_action: 'NOT_INTERESTED',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          responded_at: new Date().toISOString(),
+          eve_delivery_status: 'queued',
+        },
+        error: null,
+      }),
+    });
+  });
+
   await page.route('**/api/backend/interviews*', async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/backend/interviews') {
@@ -216,7 +267,7 @@ async function installReviewFixtures(page) {
 async function openReviewPage(page) {
   await page.goto('/review');
   await expect(page.getByText('Review Candidates')).toBeVisible();
-  await expect(page.getByText('Swipe to shortlist')).toBeVisible();
+  await expect(page.getByText('Swipe to interested')).toBeVisible();
   await expect(page.getByText('Voice intake summary')).toBeVisible();
 }
 
@@ -252,7 +303,7 @@ test.describe('review page interaction verification', () => {
     await expect(popup).toHaveURL(/linkedin\.com\/in\/candidate-1/);
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Reject' }).click();
+    await page.getByRole('button', { name: 'Interested' }).click();
     await expectCounts(page, 9, 0);
     await expect(page.getByText('Candidate 1')).toHaveCount(0);
     await expect(page.getByRole('dialog')).toHaveCount(0);
@@ -286,10 +337,10 @@ test.describe('review page interaction verification', () => {
     await openReviewPage(page);
 
     await expectCounts(page, 10, 0);
-    await page.getByRole('button', { name: 'Shortlist' }).tap();
+    await page.getByRole('button', { name: 'Interested' }).tap();
     await expectCounts(page, 9, 1);
 
-    await page.getByRole('button', { name: 'Reject' }).tap();
+    await page.getByRole('button', { name: 'Shortlist' }).tap();
     await expectCounts(page, 8, 1);
 
     await context.close();

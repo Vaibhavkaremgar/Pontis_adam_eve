@@ -194,8 +194,8 @@ class CandidateDiscoveryService:
         for candidate in candidates[:max_limit]:
             items.append(
                 CandidateDiscoveryItem(
-                    candidate=self._coerce_candidate_result(candidate, source="serp"),
-                    source="serp",
+                    candidate=self._coerce_candidate_result(candidate, source="serpapi"),
+                    source="serpapi",
                 )
             )
         return items
@@ -277,11 +277,11 @@ class CandidateDiscoveryService:
             debug=None,
             outreachStatus="pending",
             enrichmentStatus="pending",
-            sourceProvider="internal_db",
+            sourceProvider="internal",
             sourceQuery="",
             sourceTimestamp="",
-            sourceType="internal_db",
-            source="internal_db",
+            sourceType="internal",
+            source="internal",
             source_url="",
             linkedinUrl="",
             githubUrl=None,
@@ -318,18 +318,23 @@ class CandidateDiscoveryService:
             result = CandidateResult.model_validate(candidate)
         result.profileData = dict(result.profileData or {})
         result.profileData.setdefault("discovery_source", source)
-        result.source = source
-        if source == "serp":
-            result.sourceProvider = result.sourceProvider or "xray_apollo"
+        normalized_source = "internal" if source == "internal" else "serpapi"
+        result.source = normalized_source
+        if normalized_source == "serpapi":
+            result.sourceProvider = result.sourceProvider or "serpapi"
             result.sourceType = result.sourceType or "linkedin_xray"
+        else:
+            result.sourceProvider = result.sourceProvider or "internal"
+            result.sourceType = result.sourceType or "internal"
         return result
 
     def _with_source(self, item: CandidateDiscoveryItem, *, source: str) -> CandidateDiscoveryItem:
         candidate = item.candidate.model_copy(deep=True)
-        candidate.source = source
-        candidate.sourceType = candidate.sourceType or source
-        candidate.sourceProvider = candidate.sourceProvider or ("internal_db" if source == "internal" else candidate.sourceProvider)
-        return CandidateDiscoveryItem(candidate=candidate, source=source, internalMatch=item.internalMatch)
+        normalized_source = "internal" if source == "internal" else "serpapi"
+        candidate.source = normalized_source
+        candidate.sourceType = candidate.sourceType or ("internal" if normalized_source == "internal" else "linkedin_xray")
+        candidate.sourceProvider = candidate.sourceProvider or ("internal" if normalized_source == "internal" else "serpapi")
+        return CandidateDiscoveryItem(candidate=candidate, source=normalized_source, internalMatch=item.internalMatch)
 
     def _merge_internal_and_serp_candidates(
         self,

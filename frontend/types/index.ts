@@ -167,6 +167,7 @@ export type Candidate = {
   sourceQuery?: string;
   sourceTimestamp?: string;
   sourceType?: string;
+  source?: "internal" | "serpapi" | string;
   sourceUrl?: string;
   source_url?: string;
   linkedinUrl?: string;

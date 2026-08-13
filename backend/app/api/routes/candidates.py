@@ -22,7 +22,7 @@ from app.services.candidate_selection_service import (
 )
 from app.services.ownership import assert_job_ownership, resolve_company_id_for_user
 from app.services.candidate_request_service import create_interest_request, get_request_status, record_not_interested, request_state_map
-from app.services.candidate_access_service import get_accepted_candidates, get_candidate_profile, get_pending_candidates
+from app.services.candidate_access_service import get_accepted_candidates, get_candidate_profile, get_internal_candidate_profile, get_pending_candidates
 from app.services.candidate_response_service import get_pending_requests_for_candidate, respond_to_candidate_request, respond_to_eve_candidate_response
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
@@ -362,6 +362,19 @@ def candidate_full_profile(
     """
     agency_id = _resolve_agency_scope(db, user_id=_.get("id", ""), job_id=jobId)
     profile = get_candidate_profile(db=db, candidate_id=candidate_id, job_id=jobId, agency_id=agency_id)
+    return success_response(profile)
+
+
+@router.get("/candidates/{candidate_id}/internal-profile")
+def candidate_internal_profile(
+    candidate_id: str,
+    jobId: str = Query(...),
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the richer internal candidate profile already stored in Adam's DB."""
+    agency_id = _resolve_agency_scope(db, user_id=_.get("id", ""), job_id=jobId)
+    profile = get_internal_candidate_profile(db=db, candidate_id=candidate_id, job_id=jobId, agency_id=agency_id)
     return success_response(profile)
 
 

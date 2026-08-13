@@ -43,7 +43,21 @@ def _serialize(row: CandidateRequestEntity, *, recruiter_action: str = "INTEREST
         "created_at": _iso(row.created_at),
         "updated_at": _iso(row.updated_at),
         "responded_at": _iso(row.responded_at),
+        "eve_delivery_status": "queued",
     }
+
+
+def _candidate_email(candidate: CandidateProfileEntity) -> str:
+    raw_data = candidate.raw_data if isinstance(candidate.raw_data, dict) else {}
+    email = (
+        str(candidate.email or "").strip()
+        or str(raw_data.get("work_email") or "").strip()
+        or str(raw_data.get("email") or "").strip()
+        or str(raw_data.get("personal_email") or "").strip()
+    )
+    if not email or "@" not in email:
+        raise APIError("Candidate email is required to notify Eve", status_code=422)
+    return email
 
 
 def create_interest_request(
@@ -56,6 +70,7 @@ def create_interest_request(
     recruiter_message: str | None = None,
 ) -> dict:
     job, candidate = _validate_scope(db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id)
+    candidate_email = _candidate_email(candidate)
     feedback = db.scalar(select(CandidateFeedbackEntity).where(
         CandidateFeedbackEntity.job_id == job_id, CandidateFeedbackEntity.candidate_id == candidate_id
     ))
@@ -79,6 +94,7 @@ def create_interest_request(
             db,
             adam_event_id=str(existing.id),
             candidate_id=str(candidate.id),
+            candidate_email=candidate_email,
             job_id=str(job.id),
             agency_id=agency_id,
             recruiter_user_id=recruiter_id,
@@ -113,6 +129,7 @@ def create_interest_request(
                 db,
                 adam_event_id=str(existing.id),
                 candidate_id=str(candidate.id),
+                candidate_email=candidate_email,
                 job_id=str(job.id),
                 agency_id=agency_id,
                 recruiter_user_id=recruiter_id,
@@ -132,6 +149,7 @@ def create_interest_request(
         db,
         adam_event_id=str(row.id),
         candidate_id=str(candidate.id),
+        candidate_email=candidate_email,
         job_id=str(job.id),
         agency_id=agency_id,
         recruiter_user_id=recruiter_id,

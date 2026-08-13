@@ -33,6 +33,7 @@ from app.models.entities import (
     CompanyEntity,
     JobEntity,
 )
+from app.services.ready_profile_serializer import build_ready_profile
 from app.utils.exceptions import APIError
 
 
@@ -256,6 +257,47 @@ def get_candidate_profile(
         return _full_profile(candidate, request, agency)
 
     return _limited_profile(candidate, request)
+
+
+def get_internal_candidate_profile(
+    db: Session,
+    *,
+    candidate_id: str,
+    job_id: str,
+    agency_id: str,
+) -> dict:
+    """
+    Return the structured internal candidate profile from Adam's DB.
+
+    This is recruiter-safe and intentionally omits private contact fields,
+    while still exposing the richer structured profile fields already stored
+    in Adam (work experience, education, projects, certifications, resume
+    text snippet, LinkedIn URL when available).
+    """
+    job, candidate = _validate_scope(db, job_id=job_id, candidate_id=candidate_id, agency_id=agency_id)
+    request = db.scalar(
+        select(CandidateRequestEntity).where(
+            CandidateRequestEntity.candidate_id == candidate_id,
+            CandidateRequestEntity.job_id == job_id,
+            CandidateRequestEntity.agency_id == agency_id,
+        )
+    )
+    profile = build_ready_profile(candidate, request)
+    profile.update(
+        {
+            "profile_access": "INTERNAL",
+            "linkedin_url": _text(candidate.linkedin_url or (candidate.raw_data or {}).get("linkedin_url") or ""),
+            "github_url": _text(candidate.github_url or (candidate.raw_data or {}).get("github_url") or ""),
+            "resume_text": _text(candidate.resume_text or candidate.parsed_resume_text or ""),
+            "raw_profile_available": bool(candidate.raw_data or candidate.parsed_resume_json or candidate.resume_text or candidate.parsed_resume_text),
+            "request_status": request.status if request else None,
+            "recruiter_action": "INTERESTED" if request else "NONE",
+            "request_id": str(request.id) if request else None,
+            "responded_at": _iso(request.responded_at) if request else None,
+            "job_id": job.id,
+        }
+    )
+    return profile
 
 
 def get_accepted_candidates(

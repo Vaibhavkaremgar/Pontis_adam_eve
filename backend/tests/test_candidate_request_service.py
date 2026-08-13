@@ -73,6 +73,7 @@ class CandidateRequestServiceTests(unittest.TestCase):
             skills=["Python", "FastAPI"],
             raw_data={
                 "name": "Avery",
+                "email": "avery@example.com",
                 "current_company": "Northstar",
                 "current_title": "Platform Engineer",
                 "skills": ["Python", "FastAPI"],
@@ -115,7 +116,7 @@ class CandidateRequestServiceTests(unittest.TestCase):
             company="Beta Corp",
             summary="Backend engineer.",
             skills=["Python"],
-            raw_data={"name": "Beta Candidate"},
+            raw_data={"name": "Beta Candidate", "email": "beta@example.com"},
             fit_score=3.5,
             decision="potential",
             strategy="MEDIUM",
@@ -145,6 +146,7 @@ class CandidateRequestServiceTests(unittest.TestCase):
 
         self.assertEqual(first["request_id"], second["request_id"])
         self.assertEqual(first["status"], "PENDING")
+        self.assertEqual(first["eve_delivery_status"], "queued")
         count = self.db.execute(
             text("SELECT COUNT(*) FROM candidate_requests WHERE job_id = :job_id AND candidate_id = :candidate_id"),
             {"job_id": self.job.id, "candidate_id": "candidate-1"},

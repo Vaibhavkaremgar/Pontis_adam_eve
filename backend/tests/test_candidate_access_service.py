@@ -22,13 +22,14 @@ from app.db.repositories import CandidateProfileRepository, CompanyRepository, J
 from app.models.entities import Base, CandidateRequestEntity
 from app.services.candidate_access_service import (
     can_view_full_profile,
+    get_internal_candidate_profile,
     get_accepted_candidates,
     get_candidate_profile,
     get_pending_candidates,
 )
 from app.utils.exceptions import APIError
 
-PRIVATE_FIELDS = {"email", "phone", "resume_text", "raw_data", "parsed_resume_json"}
+PRIVATE_FIELDS = {"email", "phone", "raw_data", "parsed_resume_json"}
 
 
 class CandidateAccessServiceTests(unittest.TestCase):
@@ -252,6 +253,23 @@ class CandidateAccessServiceTests(unittest.TestCase):
         self.assertIn("email", profile)
         self.assertIn("phone", profile)
         self.assertIn("resume_text", profile)
+
+    def test_get_internal_profile_returns_richer_safe_fields(self) -> None:
+        profile = get_internal_candidate_profile(
+            self.db,
+            candidate_id="candidate-1",
+            job_id=self.job.id,
+            agency_id=self.company.id,
+        )
+        self.assertEqual(profile["profile_access"], "INTERNAL")
+        self.assertIn("work_experience", profile)
+        self.assertIn("education", profile)
+        self.assertIn("projects", profile)
+        self.assertIn("certifications", profile)
+        self.assertIn("raw_profile_available", profile)
+        self.assertIn("resume_text", profile)
+        for field in PRIVATE_FIELDS:
+            self.assertNotIn(field, profile)
 
     # ── 3. Job-scoped consent ─────────────────────────────────────────────────
 

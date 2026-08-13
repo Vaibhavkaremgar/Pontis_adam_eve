@@ -48,6 +48,7 @@ def _build_recruiter_interest_payload(
     *,
     adam_event_id: str,
     candidate_id: str,
+    candidate_email: str | None,
     job_id: str,
     agency_id: str,
     recruiter_user_id: str | None,
@@ -56,6 +57,7 @@ def _build_recruiter_interest_payload(
     return {
         "adam_event_id": adam_event_id,
         "candidate_id": candidate_id,
+        "candidate_email": candidate_email,
         "job_id": job_id,
         "agency_id": agency_id,
         "recruiter_user_id": recruiter_user_id,
@@ -68,6 +70,7 @@ def upsert_outbound_event(
     *,
     adam_event_id: str,
     candidate_id: str,
+    candidate_email: str | None = None,
     job_id: str,
     agency_id: str,
     recruiter_user_id: str | None = None,
@@ -84,6 +87,15 @@ def upsert_outbound_event(
         return row
 
     now = _utcnow()
+    normalized_payload = dict(payload or {})
+    if _normalize_text(notification_type) == "recruiter_interest":
+        normalized_payload.setdefault("adam_event_id", normalized_adam_event_id)
+        normalized_payload.setdefault("candidate_id", _normalize_text(candidate_id))
+        normalized_payload.setdefault("candidate_email", _normalize_text(candidate_email) or None)
+        normalized_payload.setdefault("job_id", _normalize_text(job_id))
+        normalized_payload.setdefault("agency_id", _normalize_text(agency_id))
+        normalized_payload.setdefault("recruiter_user_id", _normalize_text(recruiter_user_id) or None)
+        normalized_payload.setdefault("recruiter_message", recruiter_message)
     row = AdamEveOutboundEventEntity(
         id=str(uuid4()),
         adam_event_id=normalized_adam_event_id,
@@ -94,7 +106,7 @@ def upsert_outbound_event(
         recruiter_user_id=_normalize_text(recruiter_user_id) or None,
         recruiter_message=(recruiter_message if recruiter_message is None else str(recruiter_message).strip() or None),
         notification_type=_normalize_text(notification_type) or "recruiter_interest",
-        payload=payload or {},
+        payload=normalized_payload,
         status="pending",
         attempt_count=0,
         last_error=None,
@@ -132,9 +144,15 @@ def _deliver_event(row: AdamEveOutboundEventEntity) -> tuple[bool, bool, str]:
     }
 
     if notification_type == "recruiter_interest":
+        candidate_email_value = ""
+        if isinstance(row.payload, dict):
+            candidate_email_value = _normalize_text(row.payload.get("candidate_email"))
+        if not candidate_email_value:
+            return False, False, "eve_contract_error missing_candidate_email"
         payload = _build_recruiter_interest_payload(
             adam_event_id=str(row.adam_event_id),
             candidate_id=str(row.candidate_id),
+            candidate_email=candidate_email_value,
             job_id=str(row.job_id),
             agency_id=str(row.agency_id),
             recruiter_user_id=str(row.recruiter_user_id).strip() if row.recruiter_user_id else None,

@@ -110,6 +110,7 @@ type CandidateRequestState = {
   created_at?: string | null;
   updated_at?: string | null;
   responded_at?: string | null;
+  eve_delivery_status?: "queued" | "delivered" | "failed" | string;
 };
 
 /** This function calls backend API and returns structured response. */
@@ -178,17 +179,25 @@ export type CandidateFullProfile = {
   education?: unknown[];
   certifications?: string[];
   projects?: string[];
-  profile_access: "LIMITED" | "FULL";
+  profile_access?: "LIMITED" | "FULL" | "INTERNAL";
   request_status?: string | null;
   recruiter_action?: string;
   request_id?: string;
   responded_at?: string | null;
   agency_name?: string;
+  raw_profile_available?: boolean;
 };
 
 export async function getCandidateFullProfile(payload: { jobId: string; candidateId: string }): Promise<ApiResponse<CandidateFullProfile>> {
   return requestApi<CandidateFullProfile>({
     url: `${API_BASE_URL}/candidates/${encodeURIComponent(payload.candidateId)}/profile?jobId=${encodeURIComponent(payload.jobId)}`,
+    method: "GET",
+  });
+}
+
+export async function getInternalCandidateProfile(payload: { jobId: string; candidateId: string }): Promise<ApiResponse<CandidateFullProfile>> {
+  return requestApi<CandidateFullProfile>({
+    url: `${API_BASE_URL}/candidates/${encodeURIComponent(payload.candidateId)}/internal-profile?jobId=${encodeURIComponent(payload.jobId)}`,
     method: "GET",
   });
 }

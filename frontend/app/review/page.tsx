@@ -42,6 +42,7 @@ import {
   createCandidateNotInterested,
   getAcceptedCandidates,
   getCandidates,
+  getInternalCandidateProfile,
   getPendingAcceptanceCandidates,
   selectCandidateForEnrichment,
   swipeCandidate,
@@ -111,6 +112,38 @@ function selectionPipelineLabel(update: {
 function isShortlistedStatus(value: unknown): boolean {
   const normalized = String(value || "").trim().toLowerCase();
   return ["selected", "shortlisted", "accepted"].includes(normalized);
+}
+
+function normalizeCandidateSource(value: unknown): "internal" | "serpapi" | "" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "internal" || normalized === "internal_db") return "internal";
+  if (normalized === "serpapi" || normalized === "serp" || normalized === "xray" || normalized === "linkedin_xray" || normalized === "xray_apollo") {
+    return "serpapi";
+  }
+  return "";
+}
+
+function getCandidateSource(candidate: Candidate | null | undefined): "internal" | "serpapi" | "" {
+  if (!candidate) return "";
+  return (
+    normalizeCandidateSource(candidate.source) ||
+    normalizeCandidateSource(candidate.sourceType) ||
+    normalizeCandidateSource(candidate.sourceProvider)
+  );
+}
+
+function getSourceActionLabels(candidate: Candidate | null | undefined): { primary: string; secondary: string; sourceLabel: string } {
+  const source = getCandidateSource(candidate);
+  if (source === "internal") {
+    return { primary: "Interested", secondary: "Not Interested", sourceLabel: "Internal" };
+  }
+  return { primary: "Shortlist", secondary: "Reject", sourceLabel: "SerpAPI" };
+}
+
+function normalizeCandidateForReview(candidate: Candidate): Candidate {
+  const source = getCandidateSource(candidate);
+  return source ? { ...candidate, source } : candidate;
 }
 
 function atsStatusLabel(candidate: Candidate): string {
@@ -673,15 +706,61 @@ function ProfileToggleButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-function CandidateDetails({ candidate }: { candidate: Candidate }) {
+function CandidateDetails({
+  candidate,
+  internalProfile,
+  isLoadingProfile,
+}: {
+  candidate: Candidate;
+  internalProfile: CandidateFullProfile | null;
+  isLoadingProfile: boolean;
+}) {
+  const source = getCandidateSource(candidate);
   const lowConfidence = String(candidate.snippetQuality || "").trim().toLowerCase() === "thin";
-  const topSkills = formatList(getCandidateSkills(candidate), "Not Available").slice(0, 8);
-  const role = lowConfidence ? "Not Available" : String(candidate.role || "").trim() || "Not Available";
-  const linkedInUrl = getCandidateLinkedInUrl(candidate);
-  const safeLocation = lowConfidence ? "Not Available" : String(candidate.location || "").trim() || "Not Available";
-  const currentCompany = lowConfidence ? "Not Available" : String(candidate.currentCompany || candidate.company || "").trim() || "Not Available";
-  const profileSummary = lowConfidence ? "Not Available" : String(candidate.summary || "").trim() || "Not Available";
+  const profileSource = source === "internal" && internalProfile ? internalProfile : null;
+  const topSkills = formatList((profileSource?.skills as string[] | undefined) || getCandidateSkills(candidate), "Not Available").slice(0, 8);
+  const role = lowConfidence ? "Not Available" : String(profileSource?.role || candidate.role || candidate.headline || "").trim() || "Not Available";
+  const linkedInUrl = String(profileSource?.linkedin_url || getCandidateLinkedInUrl(candidate) || "").trim();
+  const safeLocation = lowConfidence ? "Not Available" : String(profileSource?.location || candidate.location || "").trim() || "Not Available";
+  const currentCompany = lowConfidence ? "Not Available" : String(profileSource?.company || candidate.currentCompany || candidate.company || "").trim() || "Not Available";
+  const experienceLabel = profileSource?.years_experience
+    ? `${profileSource.years_experience.toFixed(1)} years`
+    : candidate.yearsExperience
+      ? `${candidate.yearsExperience.toFixed(1)} years`
+      : "Not Available";
+  const profileSummary = lowConfidence ? "Not Available" : String(profileSource?.summary || candidate.summary || "").trim() || "Not Available";
   const whyMatched = lowConfidence ? "Not Available" : trimText(getReasoningSummary(candidate), 420) || "Not Available";
+  const sourceLabel = source === "internal" ? "Internal DB" : source === "serpapi" ? "SerpAPI" : "Unknown";
+
+  const toDisplayList = (value: unknown): string[] => {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => {
+          if (typeof item === "string") return item.trim();
+          if (item && typeof item === "object") {
+            const record = item as Record<string, unknown>;
+            return String(
+              record.company ||
+                record.title ||
+                record.role ||
+                record.name ||
+                record.degree ||
+                record.institution ||
+                record.school ||
+                record.description ||
+                JSON.stringify(item)
+            ).trim();
+          }
+          return String(item || "").trim();
+        })
+        .filter(Boolean);
+    }
+    if (typeof value === "string") {
+      return [value.trim()].filter(Boolean);
+    }
+    return [String(value)].filter(Boolean);
+  };
 
   return (
     <div className="space-y-4">
@@ -691,11 +770,12 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
           ["Current Title", role],
           ["Current Company", currentCompany],
           ["Location", safeLocation],
+          ["Experience", experienceLabel],
           ["LinkedIn URL", linkedInUrl || "Not Available"],
-        ]
-          .map(([label, value]) => (
-            <DetailRow key={`${candidate.id}-${label}`} label={label} value={value} />
-          ))}
+          ["Source", sourceLabel],
+        ].map(([label, value]) => (
+          <DetailRow key={`${candidate.id}-${label}`} label={label} value={value} />
+        ))}
       </div>
 
       <div className="rounded-[18px] border border-[#ECE7DE] bg-white p-4">
@@ -713,6 +793,55 @@ function CandidateDetails({ candidate }: { candidate: Candidate }) {
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-4">
           <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
           <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(profileSummary, 420)}</p>
+        </div>
+      )}
+
+      {profileSource && (
+        <div className="space-y-4 rounded-[18px] border border-[#ECE7DE] bg-white p-4">
+          <div className="flex items-center justify-between gap-4">
+            <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#1D4ED8]">Internal profile</p>
+            {isLoadingProfile && <span className="text-[12px] font-medium text-[#6B7280]">Loading profile...</span>}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2 rounded-[14px] border border-[#ECE7DE] bg-[#FAFAF8] p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Work experience</p>
+              <div className="space-y-2 text-[13px] leading-6 text-[#374151]">
+                {toDisplayList(profileSource.work_experience).length > 0
+                  ? toDisplayList(profileSource.work_experience).map((item, index) => <p key={`${candidate.id}-work-${index}`}>{item}</p>)
+                  : <p>Not Available</p>}
+              </div>
+            </div>
+            <div className="space-y-2 rounded-[14px] border border-[#ECE7DE] bg-[#FAFAF8] p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Education</p>
+              <div className="space-y-2 text-[13px] leading-6 text-[#374151]">
+                {toDisplayList(profileSource.education).length > 0
+                  ? toDisplayList(profileSource.education).map((item, index) => <p key={`${candidate.id}-edu-${index}`}>{item}</p>)
+                  : <p>Not Available</p>}
+              </div>
+            </div>
+            <div className="space-y-2 rounded-[14px] border border-[#ECE7DE] bg-[#FAFAF8] p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Projects</p>
+              <div className="space-y-2 text-[13px] leading-6 text-[#374151]">
+                {toDisplayList(profileSource.projects).length > 0
+                  ? toDisplayList(profileSource.projects).map((item, index) => <p key={`${candidate.id}-project-${index}`}>{item}</p>)
+                  : <p>Not Available</p>}
+              </div>
+            </div>
+            <div className="space-y-2 rounded-[14px] border border-[#ECE7DE] bg-[#FAFAF8] p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Certifications</p>
+              <div className="space-y-2 text-[13px] leading-6 text-[#374151]">
+                {toDisplayList(profileSource.certifications).length > 0
+                  ? toDisplayList(profileSource.certifications).map((item, index) => <p key={`${candidate.id}-cert-${index}`}>{item}</p>)
+                  : <p>Not Available</p>}
+              </div>
+            </div>
+          </div>
+          <div className="space-y-2 rounded-[14px] border border-[#ECE7DE] bg-[#FAFAF8] p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Resume</p>
+            <p className="text-[13px] leading-6 text-[#374151]">
+              {trimText(profileSource.resume_text || "Not Available", 1000) || "Not Available"}
+            </p>
+          </div>
         </div>
       )}
 
@@ -810,7 +939,7 @@ function CandidateCard({
             {statusLabel(candidate)}
           </span>
           <span className="inline-flex rounded-full bg-[#EEF7FF] px-3 py-1 font-body text-[11px] font-semibold text-[#1D4ED8]">
-            {candidate.sourceProvider === "xray_apollo" ? "Candidate source" : candidate.sourceProvider || "Source pending"}
+            {getCandidateSource(candidate) === "internal" ? "Internal" : getCandidateSource(candidate) === "serpapi" ? "SerpAPI" : "Source pending"}
           </span>
           <span className="inline-flex rounded-full bg-[#F4FBF7] px-3 py-1 font-body text-[11px] font-semibold text-[#0F6B3A]">
             {candidate.enrichmentStatus === "pending"
@@ -848,7 +977,7 @@ function CandidateCard({
             <Sparkles className="h-4 w-4 shrink-0 text-[#6B7280]" />
             <span className="font-body text-[14px] text-[#4B5563]">Source</span>
             <span className="ml-auto font-body text-[14px] font-semibold text-[#111827]">
-              {candidate.sourceProvider === "xray_apollo" ? "Candidate source" : candidate.sourceProvider || "Pending"}
+              {getCandidateSource(candidate) === "internal" ? "Internal" : getCandidateSource(candidate) === "serpapi" ? "SerpAPI" : "Pending"}
             </span>
           </div>
         </div>
@@ -1362,6 +1491,8 @@ function RecruiterSwipeDeck({
   const requestStatus = String(current?.requestStatus || "").trim().toUpperCase();
   const hasLockedRequest = Boolean(current && recruiterAction !== "NONE" && recruiterAction !== "");
   const isActionLoading = Boolean(candidateActionLoadingId && current?.id === candidateActionLoadingId);
+  const currentSource = getCandidateSource(current);
+  const actionLabels = getSourceActionLabels(current);
 
   const triggerSwipe = (id: string, dir: "left" | "right") => {
     if (isAdvancing || swipingId || hasLockedRequest) return;
@@ -1371,6 +1502,11 @@ function RecruiterSwipeDeck({
       setSwipeDir(null);
       setSwipingId("");
       setDragOffset(0);
+      if (currentSource === "internal") {
+        if (dir === "right") onInterested(id);
+        else onNotInterested(id);
+        return;
+      }
       if (dir === "right") onSelect(id);
       else onReject(id);
     }, 280);
@@ -1434,14 +1570,18 @@ function RecruiterSwipeDeck({
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <div className="space-y-1">
-          <p className="font-heading text-[22px] font-semibold text-[#111827]">Swipe to shortlist</p>
+          <p className="font-heading text-[22px] font-semibold text-[#111827]">
+            Swipe to {actionLabels.primary.toLowerCase()}
+          </p>
           <p className="font-body text-sm text-[#8A6F55]">
             {candidates.length} remaining · {shortlistedCandidates.length} shortlisted
           </p>
         </div>
       </div>
 
-      <p className="text-center font-body text-xs text-[#9CA3AF]">Swipe right to shortlist · Swipe left to reject · Tap for details</p>
+      <p className="text-center font-body text-xs text-[#9CA3AF]">
+        Swipe right to {actionLabels.primary.toLowerCase()} · Swipe left to {actionLabels.secondary.toLowerCase()} · Tap for details
+      </p>
 
       <div className="relative mx-auto h-[520px] w-full max-w-[420px] select-none">
         {next && <div className="absolute inset-0 scale-[0.96] rounded-[28px] border border-[#E7E0D4] bg-white shadow-[0_4px_16px_rgba(0,0,0,0.06)]" />}
@@ -1470,13 +1610,13 @@ function RecruiterSwipeDeck({
                   className="pointer-events-none absolute left-5 top-6 rounded-xl border-4 border-[#0F6B3A] px-4 py-2 font-heading text-[20px] font-bold text-[#0F6B3A]"
                   style={{ opacity: isRight ? overlayOpacity : 0, transform: "rotate(-15deg)" }}
                 >
-                  SHORTLIST
+                  {actionLabels.primary.toUpperCase()}
                 </div>
                 <div
                   className="pointer-events-none absolute right-5 top-6 rounded-xl border-4 border-[#DC2626] px-4 py-2 font-heading text-[20px] font-bold text-[#DC2626]"
                   style={{ opacity: !isRight ? overlayOpacity : 0, transform: "rotate(15deg)" }}
                 >
-                  REJECT
+                  {actionLabels.secondary.toUpperCase()}
                 </div>
               </>
             )}
@@ -1529,48 +1669,15 @@ function RecruiterSwipeDeck({
                 <p>{getCandidateCardSummary(current)}</p>
               </div>
 
-              {hasLockedRequest ? (
-                <div className="mt-4 rounded-[16px] border border-[#D8E6DF] bg-[#F4FBF7] px-4 py-3 text-center text-sm font-semibold text-[#0F6B3A]">
-                  {recruiterAction === "INTERESTED"
+              <div className="mt-4 rounded-[16px] border border-[#D8E6DF] bg-[#F4FBF7] px-4 py-3 text-center text-sm font-semibold text-[#0F6B3A]">
+                {hasLockedRequest
+                  ? recruiterAction === "INTERESTED"
                     ? requestStatus === "PENDING"
                       ? "Interest request pending"
                       : "Marked interested"
-                    : "Marked not interested"}
-                </div>
-              ) : (
-                <div className="mt-4 grid gap-3">
-                  <button
-                    type="button"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onInterested(current.id);
-                    }}
-                    disabled={isAdvancing || Boolean(swipingId) || isActionLoading || Boolean(selectedCandidateId && selectedCandidateId !== current.id)}
-                    className="flex h-12 items-center justify-center gap-2 rounded-[16px] border border-[#A7F3D0] bg-[#ECFDF5] font-body text-[15px] font-semibold text-[#047857] transition hover:bg-[#D1FAE5] disabled:opacity-50"
-                  >
-                    <CheckCircle2 className="h-5 w-5" />
-                    {isActionLoading ? "Saving..." : "Interested"}
-                  </button>
-                  <button
-                    type="button"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onNotInterested(current.id);
-                    }}
-                    disabled={isAdvancing || Boolean(swipingId) || isActionLoading || Boolean(selectedCandidateId && selectedCandidateId !== current.id)}
-                    className="flex h-12 items-center justify-center gap-2 rounded-[16px] border border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
-                  >
-                    <CircleX className="h-5 w-5" />
-                    {isActionLoading ? "Saving..." : "Not Interested"}
-                  </button>
-                </div>
-              )}
+                    : "Marked not interested"
+                  : `${actionLabels.primary} / ${actionLabels.secondary}`}
+              </div>
 
               {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
@@ -1591,7 +1698,8 @@ function RecruiterSwipeDeck({
                   disabled={isAdvancing || Boolean(swipingId) || hasLockedRequest}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
                 >
-                  <CircleX className="h-5 w-5" /> Reject
+                  {actionLabels.secondary === "Reject" ? <CircleX className="h-5 w-5" /> : <CircleX className="h-5 w-5" />}
+                  {actionLabels.secondary}
                 </button>
                 <button
                   type="button"
@@ -1605,7 +1713,7 @@ function RecruiterSwipeDeck({
                   disabled={isAdvancing || Boolean(swipingId) || hasLockedRequest}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] bg-[#0F6B3A] font-body text-[15px] font-semibold text-white shadow-[0_6px_16px_rgba(15,107,58,0.22)] transition hover:bg-[#0C5A31] disabled:opacity-50"
                 >
-                  <CheckCircle2 className="h-5 w-5" /> Shortlist
+                  <CheckCircle2 className="h-5 w-5" /> {actionLabels.primary}
                 </button>
               </div>
             </div>
@@ -1640,6 +1748,36 @@ function RecruiterCandidateModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { jobId } = useAppContext();
+  const [internalProfile, setInternalProfile] = useState<CandidateFullProfile | null>(null);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open || !candidate || !jobId) {
+      setInternalProfile(null);
+      setIsProfileLoading(false);
+      return;
+    }
+    if (getCandidateSource(candidate) !== "internal") {
+      setInternalProfile(null);
+      setIsProfileLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsProfileLoading(true);
+    void (async () => {
+      const result = await getInternalCandidateProfile({ jobId, candidateId: candidate.id });
+      if (cancelled) return;
+      setInternalProfile(result.success && result.data ? result.data : null);
+      setIsProfileLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate?.id, candidate?.source, candidate?.sourceProvider, candidate?.sourceType, jobId, open]);
+
   return (
     <Modal
       open={open}
@@ -1650,7 +1788,7 @@ function RecruiterCandidateModal({
       description=""
       className="max-w-4xl max-h-[90vh] overflow-y-auto"
     >
-      {candidate && <CandidateDetails candidate={candidate} />}
+      {candidate && <CandidateDetails candidate={candidate} internalProfile={internalProfile} isLoadingProfile={isProfileLoading} />}
     </Modal>
   );
 }
@@ -1754,11 +1892,13 @@ export default function ReviewPage() {
     if (cachedCandidates.length > 0) {
       if (candidateStateVersionRef.current === loadVersion) {
         const normalizedCachedCandidates = cachedCandidates.slice(0, 30).map((candidate) =>
+          normalizeCandidateForReview(
           persistedRejectedIds.has(candidate.id)
             ? { ...candidate, status: "rejected" as const }
             : persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status)
             ? { ...candidate, status: "selected" as const }
             : candidate
+          )
         );
         setReviewCandidates(normalizedCachedCandidates);
         setRemainingCandidates(
@@ -1815,11 +1955,13 @@ export default function ReviewPage() {
 
       const rankedCandidates = result.data.slice(0, 30);
       const normalizedRankedCandidates = rankedCandidates.map((candidate) =>
+        normalizeCandidateForReview(
         persistedRejectedIds.has(candidate.id) || String(candidate.status || "").trim().toLowerCase() === "rejected" || String(candidate.ats_status || "").trim().toLowerCase() === "rejected"
           ? { ...candidate, status: "rejected" as const }
           : persistedShortlistedIds.has(candidate.id) || isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status)
           ? { ...candidate, status: "selected" as const }
           : candidate
+        )
       );
       const shortlistedIdsFromRanked = normalizedRankedCandidates
         .filter((candidate) => isShortlistedStatus(candidate.status) || isShortlistedStatus(candidate.ats_status))
@@ -2137,12 +2279,16 @@ export default function ReviewPage() {
 
   const handleSelect = async (candidateId: string) => {
     if (!jobId || isAdvancing) return;
+    const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    if (getCandidateSource(nextCandidate) === "internal") {
+      setError("Internal candidates use Interested / Not Interested.");
+      return;
+    }
     setIsAdvancing(true);
     setError("");
     setSelectedCandidateId(candidateId);
     setFeedbackMessage("Enriching candidate data from LinkedIn...");
     candidateStateVersionRef.current += 1;
-    const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
     const nextShortlistedIds = Array.from(new Set([...finalShortlistedIds, candidateId]));
     const updatedCandidates = reviewCandidates.map((candidate) =>
       candidate.id === candidateId ? { ...candidate, status: "selected" as const } : candidate
@@ -2245,6 +2391,11 @@ export default function ReviewPage() {
 
   const handleReject = async (candidateId: string) => {
     if (!jobId || isAdvancing) return;
+    const nextCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    if (getCandidateSource(nextCandidate) === "internal") {
+      setError("Internal candidates use Interested / Not Interested.");
+      return;
+    }
     setIsAdvancing(true);
     setSelectedCandidateId(candidateId);
     candidateStateVersionRef.current += 1;
@@ -2282,11 +2433,16 @@ export default function ReviewPage() {
 
   const handleCandidateInterest = async (candidateId: string) => {
     if (!jobId || candidateActionLoadingId || isAdvancing) return;
+    const currentCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    if (getCandidateSource(currentCandidate) !== "internal") {
+      setError("SerpAPI candidates use Shortlist / Reject.");
+      return;
+    }
     setCandidateActionLoadingId(candidateId);
     setSelectedCandidateId(candidateId);
     setError("");
     candidateStateVersionRef.current += 1;
-    const snapshot = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    const snapshot = currentCandidate;
     persistCandidateRequestState(candidateId, {
       recruiterAction: "INTERESTED",
       requestStatus: "PENDING",
@@ -2307,18 +2463,23 @@ export default function ReviewPage() {
       requestUpdatedAt: result.data.updated_at ?? null,
       requestRespondedAt: result.data.responded_at ?? null,
     });
-    setFeedbackMessage("Interest request saved.");
+    setFeedbackMessage(result.data.eve_delivery_status === "queued" ? "Interest request saved and queued for Eve." : "Interest request saved.");
     setCandidateActionLoadingId("");
     setSelectedCandidateId("");
   };
 
   const handleCandidateNotInterested = async (candidateId: string) => {
     if (!jobId || candidateActionLoadingId || isAdvancing) return;
+    const currentCandidate = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    if (getCandidateSource(currentCandidate) !== "internal") {
+      setError("SerpAPI candidates use Shortlist / Reject.");
+      return;
+    }
     setCandidateActionLoadingId(candidateId);
     setSelectedCandidateId(candidateId);
     setError("");
     candidateStateVersionRef.current += 1;
-    const snapshot = reviewCandidates.find((candidate) => candidate.id === candidateId) || null;
+    const snapshot = currentCandidate;
     persistCandidateRequestState(candidateId, {
       recruiterAction: "NOT_INTERESTED",
       requestStatus: null,
