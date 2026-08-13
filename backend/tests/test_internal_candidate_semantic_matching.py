@@ -50,7 +50,8 @@ def _row(**overrides):
 
 def _job():
     return SimpleNamespace(
-        company_id="agency-1", structured_data={"skills_required": ["Python", "Django"], "experience_required": "5 years", "location": "Bengaluru"},
+        agency_id="agency-1", company_id="agency-1",
+        structured_data={"skills_required": ["Python", "Django"], "experience_required": "5 years", "location": "Bengaluru"},
         skills_required=["Python", "Django"], location="Bengaluru", remote_policy="",
     )
 
@@ -188,18 +189,39 @@ def test_missing_agency_id_is_rejected_before_query(monkeypatch):
     assert called["value"] is False
 
 
-def test_cross_agency_access_is_rejected(monkeypatch):
-    """Job ownership check: caller agency_id must match job.company_id."""
-    job = _job()
-    job.company_id = "agency-a"
-    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: job)
-    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "engineer")
+def test_agency_ownership_check_uses_job_agency_id(monkeypatch):
+    """Regression: ownership check must use job.agency_id, not job.company_id.
+
+    - agency-A owns the job  → allowed
+    - agency-B does not      → 403 Forbidden
+    """
+    def _make_job(agency_id: str):
+        return SimpleNamespace(
+            agency_id=agency_id, company_id="unrelated-company",
+            structured_data={"skills_required": ["Python"], "experience_required": "3 years", "location": "remote"},
+            skills_required=["Python"], location="remote", remote_policy="remote",
+        )
+
+    # agency-A is the owner → match must succeed
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: _make_job("agency-a"))
+    monkeypatch.setattr(matcher, "build_job_text", lambda _job: "Python engineer")
     monkeypatch.setattr(matcher, "get_embedding", lambda _text: [0.1])
+    monkeypatch.setattr(matcher, "count_collection_points", lambda _name: 1)
+    monkeypatch.setattr(matcher, "search_internal_candidate_chunks", lambda **_kwargs: [
+        {"score": 0.9, "payload": {"candidateRecordId": "record-1", "embeddingVersion": matcher.EMBEDDING_VERSION}}
+    ])
+    result = matcher.match_internal_candidates_for_job(
+        db=_Db([_row(agency_id="agency-a")]), job_id="job-1", agency_id="agency-a"
+    )
+    assert result["status"] == "ok"
 
-    with pytest.raises(matcher.APIError) as error:
-        matcher.match_internal_candidates_for_job(db=_Db([]), job_id="job-1", agency_id="agency-b")
-
-    assert error.value.status_code == 403
+    # agency-B is NOT the owner → must be rejected with 403
+    monkeypatch.setattr(matcher.JobRepository, "get", lambda _self, _job_id: _make_job("agency-a"))
+    with pytest.raises(matcher.APIError) as exc_info:
+        matcher.match_internal_candidates_for_job(
+            db=_Db([]), job_id="job-1", agency_id="agency-b"
+        )
+    assert exc_info.value.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -320,10 +342,9 @@ def test_contact_information_is_not_exposed_in_match_results(monkeypatch):
     assert "phone" not in profile_data
 
 
-def test_job_ownership_check_still_rejects_wrong_agency(monkeypatch):
-    """The job ownership guard must fire before any Qdrant or DB query."""
-    job = _job()
-    job.company_id = "correct-agency"
+def test_ownership_guard_fires_before_search(monkeypatch):
+    """The ownership guard must fire before any Qdrant search."""
+    job = _job()  # agency_id = "agency-1"
     search_called = {"value": False}
 
     def _unexpected_search(**_kwargs):

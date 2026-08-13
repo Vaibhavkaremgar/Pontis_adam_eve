@@ -194,7 +194,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
     job = JobRepository(db).get(job_id)
     if not job:
         raise APIError("Job not found", status_code=404)
-    if _text(getattr(job, "company_id", "")) != _text(agency_id):
+    if _text(getattr(job, "agency_id", "")) != _text(agency_id):
         raise APIError("Forbidden", status_code=403)
     job_text = build_job_text(job)
     if not job_text.strip():
