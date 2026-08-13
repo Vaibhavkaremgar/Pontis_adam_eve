@@ -186,6 +186,7 @@ class IntegrationTests(unittest.TestCase):
         )
         self.job = JobRepository(self.db).create(
             company_id=self.company.id,
+            agency_id=self.company.id,
             created_by=self.user.id,
             source_app="ui",
             title=f"Platform Engineer {suffix}",
@@ -1782,6 +1783,7 @@ class IntegrationTests(unittest.TestCase):
 
         adam_job = job_repo.create(
             company_id=self.company.id,
+            agency_id=self.company.id,
             created_by=self.user.id,
             source_app="ui",
             title="Isolation Check",
@@ -2594,6 +2596,7 @@ class IntegrationTests(unittest.TestCase):
         candidate_id = "candidate-cross-job"
         other_job = JobRepository(self.db).create(
             company_id=self.company.id,
+            agency_id=self.company.id,
             title="Backend Engineer B",
             description="Second job for cross-job identity regression.",
             location="Remote",

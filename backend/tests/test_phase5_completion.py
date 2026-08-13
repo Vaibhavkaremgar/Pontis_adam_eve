@@ -52,6 +52,7 @@ class Phase5CompletionTests(unittest.TestCase):
         )
         self.job = JobRepository(self.db).create(
             company_id=self.company.id, created_by=self.user.id, source_app="ui",
+            agency_id=self.company.id,
             title="Engineer", description="Build things.", location="Remote",
             compensation="$180k", work_authorization="required", remote_policy="remote",
             experience_required="5+ years", skills_required=["Python"], responsibilities=["Ship"],
@@ -72,6 +73,7 @@ class Phase5CompletionTests(unittest.TestCase):
         )
         self.job_b = JobRepository(self.db).create(
             company_id=self.company_b.id, created_by=self.user_b.id, source_app="ui",
+            agency_id=self.company_b.id,
             title="Backend Engineer", description="Build APIs.", location="Remote",
             compensation="$150k", work_authorization="required", remote_policy="remote",
             experience_required="3+ years", skills_required=["Python"], responsibilities=["Build"],

@@ -5,6 +5,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.db.repositories import CompanyRepository, JobRepository
+from app.models.entities import UserEntity
 from app.services.embedding_service import get_embedding
 from app.services.job_text_service import build_job_text
 from app.services.qdrant_service import delete_job_vectors, ensure_all_collections, upsert_job_chunks
@@ -71,6 +72,13 @@ def create_hiring_job(
     slack_team_id: str = "",
     slack_user_id: str = "",
 ) -> str:
+    user = db.get(UserEntity, user_id)
+    if not user:
+        raise APIError("User not found", status_code=404)
+    agency_id = str(getattr(user, "agency_id", "") or "").strip()
+    if not agency_id:
+        raise APIError("Company not found", status_code=404)
+
     company_name = (company.get("name") or "").strip()
     website = (company.get("website") or "").strip()
     description = (company.get("description") or "").strip()
@@ -122,6 +130,7 @@ def create_hiring_job(
         )
     job_row = job_repo.create(
         company_id=company_row.id,
+        agency_id=agency_id,
         created_by=user_id,
         source_app=source_app,
         job_id=job_external_id,

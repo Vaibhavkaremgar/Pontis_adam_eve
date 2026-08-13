@@ -54,6 +54,7 @@ class CandidateAccessServiceTests(unittest.TestCase):
         )
         self.job = JobRepository(self.db).create(
             company_id=self.company.id,
+            agency_id=self.company.id,
             created_by=self.user.id,
             source_app="ui",
             title="Platform Engineer",
@@ -99,6 +100,7 @@ class CandidateAccessServiceTests(unittest.TestCase):
         )
         self.job_b = JobRepository(self.db).create(
             company_id=self.company_b.id,
+            agency_id=self.company_b.id,
             created_by=self.user_b.id,
             source_app="ui",
             title="Backend Engineer",
@@ -258,6 +260,7 @@ class CandidateAccessServiceTests(unittest.TestCase):
         # Create a second job under the same agency
         job_2 = JobRepository(self.db).create(
             company_id=self.company.id,
+            agency_id=self.company.id,
             created_by=self.user.id,
             source_app="ui",
             title="Senior Engineer",

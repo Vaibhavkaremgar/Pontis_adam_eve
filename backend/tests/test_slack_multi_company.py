@@ -286,6 +286,7 @@ class SlackMultiCompanyTests(unittest.TestCase):
     def test_job_creation_uses_the_real_slack_user_and_logs_audit_event(self, _mock_get_embedding, _mock_bootstrap) -> None:
         installation = SlackInstallationRepository(self.db).upsert(
             company_id=self.company_a.id,
+            agency_id=self.company_a.id,
             team_id="T111",
             team_name="Vaibhav Workspace",
             enterprise_id="E111",
