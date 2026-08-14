@@ -728,9 +728,10 @@ function CandidateDetails({
     : candidate.yearsExperience
       ? `${candidate.yearsExperience.toFixed(1)} years`
       : "Not Available";
-  const profileSummary = lowConfidence ? "Not Available" : String(profileSource?.summary || candidate.summary || "").trim() || "Not Available";
+  const profileSummary = String(profileSource?.summary || candidate.summary || "").trim() || "Not Available";
   const whyMatched = lowConfidence ? "Not Available" : trimText(getReasoningSummary(candidate), 420) || "Not Available";
   const sourceLabel = source === "internal" ? "Internal DB" : source === "serpapi" ? "SerpAPI" : "Unknown";
+  const showFullSummary = source === "internal";
 
   const toDisplayList = (value: unknown): string[] => {
     if (!value) return [];
@@ -791,8 +792,12 @@ function CandidateDetails({
 
       {profileSummary && (
         <div className="rounded-[18px] border border-[#ECE7DE] bg-[#F8F7F3] p-4">
-          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Summary</p>
-          <p className="mt-3 font-body text-[13px] leading-6 text-[#4B5563]">{trimText(profileSummary, 420)}</p>
+          <p className="font-body text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">
+            {showFullSummary ? "Complete Summary" : "Summary"}
+          </p>
+          <p className="mt-3 whitespace-pre-wrap font-body text-[13px] leading-6 text-[#4B5563]">
+            {showFullSummary ? profileSummary : trimText(profileSummary, 420)}
+          </p>
         </div>
       )}
 
@@ -1493,6 +1498,7 @@ function RecruiterSwipeDeck({
   const isActionLoading = Boolean(candidateActionLoadingId && current?.id === candidateActionLoadingId);
   const currentSource = getCandidateSource(current);
   const actionLabels = getSourceActionLabels(current);
+  const isInternalCard = currentSource === "internal";
 
   const triggerSwipe = (id: string, dir: "left" | "right") => {
     if (isAdvancing || swipingId || hasLockedRequest) return;
@@ -1623,39 +1629,49 @@ function RecruiterSwipeDeck({
 
             <div className="flex h-full flex-col p-7">
               <div className="mb-4 flex items-start justify-between gap-4">
-                <div className="space-y-2">
+                <div className="min-w-0 space-y-2">
                   <h3 className="font-heading text-[26px] font-bold leading-tight text-[#111827]">{current.name || current.id.slice(0, 8)}</h3>
-                  <p className="font-body text-[14px] text-[#4B5563]">
-                    {getCandidateCurrentRole(current) || current.role || "Not Available"}
-                    {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
-                  </p>
-                  {getCandidateLocation(current) && (
-                    <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
-                      <MapPin className="h-3.5 w-3.5" />
-                      {getCandidateLocation(current)}
+                  {isInternalCard ? (
+                    <p className="line-clamp-3 font-body text-[14px] leading-6 text-[#5F564D]">
+                      {trimText(getCandidateCardSummary(current), 220)}
                     </p>
+                  ) : (
+                    <>
+                      <p className="font-body text-[14px] text-[#4B5563]">
+                        {getCandidateCurrentRole(current) || current.role || "Not Available"}
+                        {(current.currentCompany || current.company) ? ` @ ${current.currentCompany || current.company}` : ""}
+                      </p>
+                      {getCandidateLocation(current) && (
+                        <p className="flex items-center gap-1 font-body text-[13px] text-[#9CA3AF]">
+                          <MapPin className="h-3.5 w-3.5" />
+                          {getCandidateLocation(current)}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
-                <div className="flex flex-col items-end gap-2">
-                  {getCandidateLinkedInUrl(current) && (
-                    <a
-                      href={getCandidateLinkedInUrl(current)}
-                      target="_blank"
-                      rel="noreferrer"
-                      onPointerDown={(event) => event.stopPropagation()}
-                      onMouseDown={(event) => event.stopPropagation()}
-                      onClick={(event) => event.stopPropagation()}
-                      aria-label="Open LinkedIn profile"
-                      className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
-                    >
-                      LinkedIn
-                      <ArrowUpRight className="h-3.5 w-3.5" />
-                    </a>
-                  )}
-                </div>
+                {!isInternalCard && (
+                  <div className="flex flex-col items-end gap-2">
+                    {getCandidateLinkedInUrl(current) && (
+                      <a
+                        href={getCandidateLinkedInUrl(current)}
+                        target="_blank"
+                        rel="noreferrer"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label="Open LinkedIn profile"
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[#D8E6DF] bg-[#EEF7F1] px-3 py-2 text-[11px] font-semibold text-[#0F6B3A] transition hover:bg-[#E4F2EA]"
+                      >
+                        LinkedIn
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </a>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {getCandidateSkills(current).length > 0 && (
+              {!isInternalCard && getCandidateSkills(current).length > 0 && (
                 <div className="mb-4 flex flex-wrap gap-2">
                   {getCandidateSkills(current).slice(0, 4).map((skill) => (
                     <span key={`${current.id}-${skill}`} className="rounded-full bg-[#F4FBF7] px-3 py-1 text-[12px] font-medium text-[#0F6B3A]">
@@ -1665,9 +1681,11 @@ function RecruiterSwipeDeck({
                 </div>
               )}
 
-              <div className="rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm leading-7 text-[#4B5563]">
-                <p>{getCandidateCardSummary(current)}</p>
-              </div>
+              {!isInternalCard && (
+                <div className="rounded-[18px] border border-[#ECE7DE] bg-[#FBFAF7] p-4 text-sm leading-7 text-[#4B5563]">
+                  <p>{getCandidateCardSummary(current)}</p>
+                </div>
+              )}
 
               <div className="mt-4 rounded-[16px] border border-[#D8E6DF] bg-[#F4FBF7] px-4 py-3 text-center text-sm font-semibold text-[#0F6B3A]">
                 {hasLockedRequest
@@ -1679,7 +1697,7 @@ function RecruiterSwipeDeck({
                   : `${actionLabels.primary} / ${actionLabels.secondary}`}
               </div>
 
-              {(shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
+              {!isInternalCard && (shortlistedIds.includes(current.id) || isShortlistedStatus(current.status) || isShortlistedStatus(current.ats_status)) && (
                 <div className="mb-3 rounded-full bg-[#DDF5E6] px-4 py-1.5 text-center font-body text-[13px] font-semibold text-[#0F6B3A]">
                   Already shortlisted
                 </div>
@@ -1698,8 +1716,7 @@ function RecruiterSwipeDeck({
                   disabled={isAdvancing || Boolean(swipingId) || hasLockedRequest}
                   className="flex h-14 flex-1 items-center justify-center gap-2 rounded-[16px] border-2 border-[#FCA5A5] bg-white font-body text-[15px] font-semibold text-[#DC2626] transition hover:bg-[#FEF2F2] disabled:opacity-50"
                 >
-                  {actionLabels.secondary === "Reject" ? <CircleX className="h-5 w-5" /> : <CircleX className="h-5 w-5" />}
-                  {actionLabels.secondary}
+                  <CircleX className="h-5 w-5" /> {actionLabels.secondary}
                 </button>
                 <button
                   type="button"
