@@ -1,0 +1,22 @@
+=== PRE-MIGRATION INSPECTION ===
+sqlalchemy imported ok
+host: tokaido.proxy.rlwy.net:26186/railway
+connected ok
+total tables: 86
+
+--- candidate_voice_intakes ---
+  exists: True
+  columns: ['id', 'candidate_id', 'transcript', 'voice_notes', 'status', 'created_at', 'completed_at']
+  indexes: ['idx_cvi_candidate']
+  foreign_keys: [{'name': 'candidate_voice_intakes_candidate_id_fkey', 'constrained_columns': ['candidate_id'], 'referred_schema': None, 'referred_table': 'candidates', 'referred_columns': ['id'], 'options': {'ondelete': 'CASCADE'}, 'comment': None}]
+  row_count: 7
+
+--- candidate_job_recommendations ---
+  exists: True
+  columns: ['id', 'candidate_id', 'job_id', 'match_score', 'recommendation_rank', 'recommendation_status', 'match_reason', 'viewed_at', 'applied_at', 'hidden_at', 'generated_at', 'created_at', 'tracked_at', 'agency_id', 'job_role', 'status', 'updated_at', 'application_status', 'application_notes', 'ats_application_id']
+  indexes: ['candidate_job_recommendations_candidate_id_job_id_key', 'idx_candidate_job_recommendations_candidate', 'idx_candidate_job_recommendations_job', 'idx_candidate_job_recommendations_score', 'idx_candidate_job_recommendations_status', 'idx_cjr_candidate_status', 'ix_cjr_application_status']
+  row_count: 117
+
+alembic_version rows: [('7b1c30901cbf',)]
+
+=== DONE ===
