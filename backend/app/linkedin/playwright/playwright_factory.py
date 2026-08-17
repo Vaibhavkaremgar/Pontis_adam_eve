@@ -7,6 +7,7 @@ from typing import Any
 from app.linkedin.playwright.browser_context import BrowserContextConfig
 from app.linkedin.playwright.browser_exceptions import ConfigurationError
 
+
 logger = logging.getLogger(__name__)
 
 
