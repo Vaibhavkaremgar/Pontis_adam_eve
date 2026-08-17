@@ -592,19 +592,23 @@ def generate_personalized_email(*, candidate_profile, job) -> tuple[str, str]:
     return _build_heuristic_email(candidate_profile=candidate_profile, job=job)
 
 
+# DISABLED: Follow-up email sending has been turned off.
+# def _build_followup_email(*, candidate_profile, job, follow_up_number: int) -> tuple[str, str]:
+#     """Build a short follow-up email. No LLM — deterministic and safe."""
+#     first_name = (candidate_profile.name or "").split()[0] if candidate_profile.name else "there"
+#     subject = f"following up - {job.title} opportunity"
+#     body = (
+#         f"Hey {first_name},\n\n"
+#         f"Just wanted to follow up on my previous note about the {job.title} role"
+#         f"{' in ' + job.location if job.location else ''}.\n\n"
+#         "I know inboxes get busy — totally understand. If the timing isn't right, no worries at all.\n\n"
+#         "But if you're open to a quick 15-minute chat, I'd love to connect.\n\n"
+#         "Cheers"
+#     )
+#     return subject, body
 def _build_followup_email(*, candidate_profile, job, follow_up_number: int) -> tuple[str, str]:
-    """Build a short follow-up email. No LLM — deterministic and safe."""
-    first_name = (candidate_profile.name or "").split()[0] if candidate_profile.name else "there"
-    subject = f"following up - {job.title} opportunity"
-    body = (
-        f"Hey {first_name},\n\n"
-        f"Just wanted to follow up on my previous note about the {job.title} role"
-        f"{' in ' + job.location if job.location else ''}.\n\n"
-        "I know inboxes get busy — totally understand. If the timing isn't right, no worries at all.\n\n"
-        "But if you're open to a quick 15-minute chat, I'd love to connect.\n\n"
-        "Cheers"
-    )
-    return subject, body
+    """DISABLED: Follow-up emails are turned off."""
+    return "", ""
 
 
 def _build_shortlist_outreach_email(*, candidate_profile, job) -> tuple[str, str, str]:
@@ -2527,12 +2531,21 @@ def queue_outreach_delivery(*, job_id: str, selected_candidates: list[str], cust
 
 def run_followup_cycle(db: Session) -> dict:
     """
-    CRON-driven follow-up engine.
-    Finds outreach events due for a follow-up and sends exactly one follow-up max.
+    DISABLED: Follow-up cycle has been turned off.
     """
-    if not ENABLE_FOLLOWUPS:
-        logger.info("followup_skipped reason=disabled")
-        return {"sent": 0, "skipped": 0, "total": 0}
+    logger.info("followup_skipped reason=manually_disabled")
+    return {"sent": 0, "skipped": 0, "total": 0}
+
+# DISABLED: Original follow-up cycle body commented out below.
+# def run_followup_cycle(db: Session) -> dict:
+#     """
+#     CRON-driven follow-up engine.
+#     Finds outreach events due for a follow-up and sends exactly one follow-up max.
+#     """
+#     if not ENABLE_FOLLOWUPS:
+#         logger.info("followup_skipped reason=disabled")
+#         return {"sent": 0, "skipped": 0, "total": 0}
+def _run_followup_cycle_disabled(db: Session) -> dict:
 
     now = datetime.now(timezone.utc)
     outreach_repo = OutreachEventRepository(db)

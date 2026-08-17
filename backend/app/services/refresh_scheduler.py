@@ -162,31 +162,37 @@ def _run_candidate_embedding_detection_cycle() -> None:
 
 
 def _run_followup_cycle() -> None:
-    """Send follow-up emails to candidates who haven't replied."""
-    global _last_followup_cycle_at
+    """DISABLED: Follow-up email cycle has been turned off."""
+    logger.info("followup_cycle_skipped reason=manually_disabled")
+    return
 
-    from app.services.redis_service import distributed_lock
-    with distributed_lock("scheduler:followup", ttl=120) as acquired:
-        if not acquired:
-            logger.info("scheduler_lock_skipped job=followup reason=already_running")
-            return
-
-    with _status_lock:
-        _last_followup_cycle_at = _utcnow()
-
-    try:
-        result = enqueue_job(
-            "outreach_followup",
-            {"requested_at": _utcnow().isoformat()},
-            idempotency_key=f"outreach_followup:{_utcnow().strftime('%Y%m%d%H%M')}",
-        )
-        logger.info(
-            "followup_cycle_queued job_id=%s queue_type=%s",
-            result.get("job_id"),
-            result.get("queue_type"),
-        )
-    except Exception as exc:
-        logger.error("followup_cycle_failed error=%s", str(exc))
+# DISABLED: Original follow-up cycle scheduler body commented out below.
+# def _run_followup_cycle() -> None:
+#     """Send follow-up emails to candidates who haven't replied."""
+#     global _last_followup_cycle_at
+#
+#     from app.services.redis_service import distributed_lock
+#     with distributed_lock("scheduler:followup", ttl=120) as acquired:
+#         if not acquired:
+#             logger.info("scheduler_lock_skipped job=followup reason=already_running")
+#             return
+#
+#     with _status_lock:
+#         _last_followup_cycle_at = _utcnow()
+#
+#     try:
+#         result = enqueue_job(
+#             "outreach_followup",
+#             {"requested_at": _utcnow().isoformat()},
+#             idempotency_key=f"outreach_followup:{_utcnow().strftime('%Y%m%d%H%M')}",
+#         )
+#         logger.info(
+#             "followup_cycle_queued job_id=%s queue_type=%s",
+#             result.get("job_id"),
+#             result.get("queue_type"),
+#         )
+#     except Exception as exc:
+#         logger.error("followup_cycle_failed error=%s", str(exc))
 
 
 def _run_outreach_learning_cycle() -> None:
