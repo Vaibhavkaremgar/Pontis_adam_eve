@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import EMBEDDING_VERSION, VECTOR_SIZE
+from app.core.config import EMBEDDING_MODEL_NAME, EMBEDDING_VERSION, VECTOR_SIZE
 from app.db.session import SessionLocal
 from app.models.entities import EmbeddingVersionRegistryEntity
 
@@ -18,7 +18,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ensure_embedding_version_registry(db: Session | None = None) -> EmbeddingVersionRegistryEntity:
+def ensure_embedding_version_registry(db: Session | None = None) -> EmbeddingVersionRegistryEntity:  # noqa: C901
     owns_session = db is None
     session = db or SessionLocal()
     try:
@@ -35,6 +35,7 @@ def ensure_embedding_version_registry(db: Session | None = None) -> EmbeddingVer
                 session.flush()
                 if owns_session:
                     session.commit()
+            check_embedding_model_drift(session)
             return row
 
         row = EmbeddingVersionRegistryEntity(
@@ -42,7 +43,7 @@ def ensure_embedding_version_registry(db: Session | None = None) -> EmbeddingVer
             embedding_version=EMBEDDING_VERSION,
             status="active",
             vector_size=VECTOR_SIZE,
-            details={"source": "bootstrap"},
+            details={"source": "bootstrap", "model_name": EMBEDDING_MODEL_NAME},
             activated_at=_utcnow(),
             created_at=_utcnow(),
             updated_at=_utcnow(),
@@ -52,15 +53,74 @@ def ensure_embedding_version_registry(db: Session | None = None) -> EmbeddingVer
         if owns_session:
             session.commit()
         logger.info(
-            "embedding_version_registered embedding_version=%s vector_size=%s",
+            "embedding_version_registered embedding_version=%s vector_size=%s model_name=%s",
             EMBEDDING_VERSION,
             VECTOR_SIZE,
+            EMBEDDING_MODEL_NAME,
         )
         return row
     except Exception:
         if owns_session:
             session.rollback()
         raise
+    finally:
+        if owns_session:
+            session.close()
+
+
+def check_embedding_model_drift(db: Session | None = None) -> None:
+    """Warn at startup if the active registry row was built with a different model.
+
+    This catches the case where EMBEDDING_MODEL_NAME is changed in config without
+    bumping EMBEDDING_VERSION, which would silently mix incompatible vector geometries
+    in the same Qdrant collection.
+
+    # TODO (option a): replace this warning with a derived EMBEDDING_VERSION that is
+    # computed as hash(EMBEDDING_MODEL_NAME + str(actual_dimension)) so the two values
+    # can never drift. Requires a full re-index migration to invalidate existing rows
+    # whose embedding_version was set under the old naming scheme.
+    """
+    owns_session = db is None
+    session = db or SessionLocal()
+    try:
+        row = session.scalar(
+            select(EmbeddingVersionRegistryEntity)
+            .where(
+                EmbeddingVersionRegistryEntity.embedding_version == EMBEDDING_VERSION,
+                EmbeddingVersionRegistryEntity.status == "active",
+            )
+        )
+        if row is None:
+            return
+        recorded_model = (row.details or {}).get("model_name", "") if isinstance(row.details, dict) else ""
+        if not recorded_model:
+            # Row predates model-name tracking; backfill silently so future restarts
+            # have a baseline to compare against.
+            updated_details = dict(row.details or {})
+            updated_details["model_name"] = EMBEDDING_MODEL_NAME
+            row.details = updated_details
+            row.updated_at = _utcnow()
+            session.flush()
+            if owns_session:
+                session.commit()
+            logger.info(
+                "embedding_registry_model_name_backfilled embedding_version=%s model_name=%s",
+                EMBEDDING_VERSION,
+                EMBEDDING_MODEL_NAME,
+            )
+            return
+        if recorded_model != EMBEDDING_MODEL_NAME:
+            logger.warning(
+                "EMBEDDING_MODEL_DRIFT DETECTED: embedding_version=%s was indexed with "
+                "model_name=%r but the current config has EMBEDDING_MODEL_NAME=%r. "
+                "Cosine similarity between old and new vectors is meaningless. "
+                "Bump EMBEDDING_VERSION and re-index all candidates, or revert "
+                "EMBEDDING_MODEL_NAME to %r.",
+                EMBEDDING_VERSION,
+                recorded_model,
+                EMBEDDING_MODEL_NAME,
+                recorded_model,
+            )
     finally:
         if owns_session:
             session.close()

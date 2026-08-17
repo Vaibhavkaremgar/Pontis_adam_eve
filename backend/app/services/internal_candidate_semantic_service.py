@@ -316,7 +316,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         "[MATCH_DEBUG] job_text_preview=%s",
         job_text[:1500],
     )
-    if not job_text.strip():
+    if len(job_text.strip()) < 20:
         raise APIError("Job requirements are incomplete", status_code=409)
 
     # DIAG-1: job context

@@ -156,7 +156,7 @@ def build_job_text(job, structured_data: Any | None = None, transcript: str = ""
         f"Voice Input:\n{transcript_text}"
     ).strip()
     if not job_text:
-        job_text = original_jd or transcript_text or " "
+        job_text = original_jd or transcript_text or ""
 
     source = "structured_data" if role or skills or experience or location or compensation else "transcript" if transcript_text else "description"
     logger.info(

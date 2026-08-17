@@ -1,0 +1,16 @@
+[
+  {
+    "_comment": "Replace these entries with real IDs from your database by running: python -m eval.generate_fixture",
+    "job_id": "REPLACE_WITH_REAL_JOB_ID",
+    "agency_id": "REPLACE_WITH_REAL_AGENCY_ID",
+    "job_title": "Senior Python Engineer",
+    "good_candidate_id": "REPLACE_WITH_GOOD_CANDIDATE_ID",
+    "good_candidate_name": "Good Fit Candidate",
+    "good_stage": "shortlisted",
+    "good_resume_score": 82.0,
+    "bad_candidate_id": "REPLACE_WITH_BAD_CANDIDATE_ID",
+    "bad_candidate_name": "Bad Fit Candidate",
+    "bad_stage": "rejected",
+    "bad_resume_score": 18.0
+  }
+]

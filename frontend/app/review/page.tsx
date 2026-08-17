@@ -266,7 +266,10 @@ function getSnippetQualityLabel(candidate: Candidate): string {
 
 function getReasoningSummary(candidate: Candidate): string {
   // Prefer the shared view-model recruiterSummary injected by candidate_presentation_service
-  if (candidate.recruiterSummary) return candidate.recruiterSummary;
+  if (candidate.recruiterSummary) {
+    const parsed = parseLabeledSummary(candidate.recruiterSummary);
+    return parsed || candidate.recruiterSummary;
+  }
   const explanation = candidate.explanation;
   if (explanation?.aiReasoning) return explanation.aiReasoning;
   const profileData = getCandidateProfileData(candidate);
@@ -274,6 +277,42 @@ function getReasoningSummary(candidate: Candidate): string {
   if (quality === "rich") return "High-signal profile with enough detail for confident review.";
   if (quality === "partial") return "Moderate signal profile with enough context to keep in the review set.";
   return "Low-information profile kept in the queue so recruiters do not lose potentially relevant candidates.";
+}
+
+function parseLabeledSummary(text: string): string {
+  const raw = String(text || "").trim();
+  // Detect labeled format: "Name: ... Title: ... Company: ..."
+  if (!/\b(Name|Title|Company|Experience|Skills|Source snippet)\s*:/i.test(raw)) return "";
+
+  const extract = (label: string): string => {
+    const match = raw.match(new RegExp(`${label}\\s*:\s*([^\\n]+?)(?=\\s*(?:Name|Title|Company|Experience signal|Core skills|Source snippet)\\s*:|$)`, "i"));
+    return match ? match[1].trim() : "";
+  };
+
+  const name = extract("Name");
+  const title = extract("Title");
+  const company = extract("Company");
+  const experienceRaw = extract("Experience(?:\\s+signal)?");
+  const skillsRaw = extract("(?:Core\\s+)?[Ss]kills(?:\\s+surfaced)?");
+
+  const expYears = experienceRaw.match(/(\d+(?:\.\d+)?)/);
+  const expLabel = expYears ? `${expYears[1]} years of experience` : experienceRaw || "";
+
+  const skills = skillsRaw
+    ? skillsRaw.split(/[,/|;]/).map((s) => s.trim()).filter(Boolean)
+    : [];
+  const skillsLabel = skills.length > 0 ? `core skills in ${skills.join(" and ")}` : "";
+
+  const parts: string[] = [];
+  if (name) parts.push(name);
+  if (title && expLabel) parts.push(`is a ${title} with ${expLabel}`);
+  else if (title) parts.push(`is a ${title}`);
+  else if (expLabel) parts.push(`has ${expLabel}`);
+  if (company) parts.push(`currently working at ${company}`);
+  if (skillsLabel) parts.push(`with ${skillsLabel}`);
+
+  if (parts.length < 2) return "";
+  return `${parts[0]} ${parts.slice(1).join(", ")}.`;
 }
 
 function normalizeSummaryText(value: string): string {
@@ -728,7 +767,8 @@ function CandidateDetails({
     : candidate.yearsExperience
       ? `${candidate.yearsExperience.toFixed(1)} years`
       : "Not Available";
-  const profileSummary = String(profileSource?.summary || candidate.summary || "").trim() || "Not Available";
+  const rawProfileSummary = String(profileSource?.summary || candidate.summary || "").trim();
+  const profileSummary = parseLabeledSummary(rawProfileSummary) || rawProfileSummary || "Not Available";
   const whyMatched = lowConfidence ? "Not Available" : trimText(getReasoningSummary(candidate), 420) || "Not Available";
   const sourceLabel = source === "internal" ? "Internal DB" : source === "serpapi" ? "SerpAPI" : "Unknown";
   const showFullSummary = source === "internal";
