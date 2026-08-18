@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
@@ -76,7 +76,6 @@ def get_recruiter_intelligence_job(
             "selection": _cal_resp,
             "calibration": _cal_resp,
             "voice_intake_summary": str(intake_data.get("summary") or "").strip(),
-            "voice_intake_transcript": str(intake.transcript or "").strip() if intake else "",
         }
     )
 
@@ -200,3 +199,4 @@ def finalize_recruiter_intelligence_job(
             "calibration": _cal_resp,
         }
     )
+

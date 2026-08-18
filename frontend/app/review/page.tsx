@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 /**
  * What this file does:
@@ -2195,6 +2195,8 @@ export default function ReviewPage() {
   const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const voiceIntakeSummary = useMemo(
     () => {
+      const transcript = intelligence?.voice_intake_transcript?.trim();
+      if (transcript) return transcript;
       const storedSummary = intelligence?.voice_intake_summary?.trim();
       if (storedSummary) return storedSummary;
       return summarizeVoiceIntakeText(

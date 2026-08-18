@@ -15,6 +15,7 @@ import type { ApiResponse } from "./types";
 
 export type RecruiterIntelligenceSession = {
   voice_intake_summary?: string;
+  voice_intake_transcript?: string;
   interview: {
     job_id?: string;
     recruiter_id?: string;
