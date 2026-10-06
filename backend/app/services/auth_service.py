@@ -241,6 +241,8 @@ def login_with_google_token(*, db: Session, token: str) -> LoginData:
     email = str(idinfo.get("email") or "").strip().lower()
     if not email:
         raise APIError("Google account email is missing", status_code=401)
+    if idinfo.get("email_verified") is not True:
+        raise APIError("Google account email is not verified", status_code=401)
     _ensure_email_allowed(db=db, email=email)
 
     user, agency_id, role = _load_portal_user(db=db, email=email)

@@ -244,6 +244,7 @@ def _ensure_slot_selection_artifacts(db: Session, *, request_row: CandidateReque
         request_id=str(request_row.id),
     )
     existing_notification = NotificationEventRepository(db).get_by_key(notification_key)
+    email_already_sent = existing_notification is not None
     NotificationEventRepository(db).upsert(
         notification_key=notification_key,
         job_id=str(request_row.job_id),
@@ -263,7 +264,7 @@ def _ensure_slot_selection_artifacts(db: Session, *, request_row: CandidateReque
     db.commit()
 
     candidate_email = str(profile.email or "").strip()
-    if candidate_email:
+    if candidate_email and not email_already_sent:
         subject = f"Interview slot selection: {job.title or ''}".strip()
         body = (
             f"Hi {profile.name or 'there'},\n\n"
@@ -333,7 +334,9 @@ def respond_to_candidate_request(
         raise APIError(f"Invalid action '{action}'. Must be 'accept' or 'decline'.", status_code=400)
 
     row = db.scalar(
-        select(CandidateRequestEntity).where(CandidateRequestEntity.id == request_id)
+        select(CandidateRequestEntity)
+        .where(CandidateRequestEntity.id == request_id)
+        .with_for_update()
     )
     if not row:
         raise APIError("Request not found", status_code=404)

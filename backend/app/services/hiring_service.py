@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 from app.db.repositories import CompanyRepository, JobRepository
 from app.models.entities import UserEntity
 from app.services.embedding_service import get_embedding
+from app.services.internal_candidate_semantic_service import match_internal_candidates_for_job
 from app.services.job_text_service import build_job_text
 from app.services.qdrant_service import delete_job_vectors, ensure_all_collections, upsert_job_chunks
 from app.utils.exceptions import APIError
 from app.utils.text import chunk_text
+from app.services.linkedin_fallback_service import maybe_trigger_linkedin_fallback
 
 
 logger = logging.getLogger(__name__)
@@ -169,7 +171,6 @@ def create_hiring_job(
             job_row.company_id,
             user_id,
         )
-        return job_row.id
     except Exception:
         db.rollback()
         try:
@@ -177,3 +178,35 @@ def create_hiring_job(
         except Exception:
             pass
         raise
+
+    # ── Internal candidate matching → LinkedIn fallback ───────────────────────
+    # Run matching immediately after job creation. If zero qualified internal
+    # candidates are found, enqueue the existing LinkedIn Playwright posting.
+    # Errors here must never fail the job-creation response.
+    try:
+        match_result = match_internal_candidates_for_job(
+            db=db,
+            job_id=job_row.id,
+            agency_id=agency_id,
+        )
+        fallback_result = maybe_trigger_linkedin_fallback(
+            db=db,
+            job_id=job_row.id,
+            match_result=match_result,
+        )
+        if fallback_result.get("triggered"):
+            db.commit()
+        logger.info(
+            "job_created_fallback_check job_id=%s fallback_triggered=%s reason=%s",
+            job_row.id,
+            fallback_result.get("triggered"),
+            fallback_result.get("reason", ""),
+        )
+    except Exception as exc:
+        logger.warning(
+            "job_created_fallback_check_failed job_id=%s error=%s",
+            job_row.id,
+            exc,
+        )
+
+    return job_row.id

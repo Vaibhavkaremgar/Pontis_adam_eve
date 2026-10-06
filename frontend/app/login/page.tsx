@@ -132,18 +132,23 @@ export default function LoginPage() {
                     }
                     setIsGoogleLoading(true);
                     setError("");
-                    const result = await loginWithGoogle({ token: idToken });
-                    if (!result.success || !result.data) {
-                      setError(result.error || "Google login failed. Please try again.");
+                    try {
+                      const result = await loginWithGoogle({ token: idToken });
+                      if (!result.success || !result.data) {
+                        setError(result.error || "Google login failed. Please try again.");
+                        return;
+                      }
+                      setUser(result.data.user);
+                      router.push(isSuperAdminRole(result.data.user.role) ? "/admin" : "/workspace");
+                    } catch {
+                      setError("Google login failed. Please try again.");
+                    } finally {
                       setIsGoogleLoading(false);
-                      return;
                     }
-                    setUser(result.data.user);
-                    setIsGoogleLoading(false);
-                    router.push(isSuperAdminRole(result.data.user.role) ? "/admin" : "/workspace");
                   }}
                   onError={() => {
                     console.log("Google error", "Google OAuth button failed or was dismissed");
+                    setIsGoogleLoading(false);
                     setError("Login failed. Please try again.");
                   }}
                 />

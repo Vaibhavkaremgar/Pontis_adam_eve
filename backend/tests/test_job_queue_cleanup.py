@@ -23,7 +23,12 @@ from app.services import job_queue_service as queue_service
 
 # Minimal stub for a foreign-key target that is present in the ORM metadata graph
 # but not needed for these queue cleanup tests.
-Table("linkedin_accounts", Base.metadata, Column("id", String(36), primary_key=True))
+Table(
+    "linkedin_accounts",
+    Base.metadata,
+    Column("id", String(36), primary_key=True),
+    extend_existing=True,
+)
 
 
 class _FakeRedis:
