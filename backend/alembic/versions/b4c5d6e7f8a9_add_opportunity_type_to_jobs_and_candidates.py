@@ -51,6 +51,23 @@ def upgrade() -> None:
                 ),
             )
 
+        opportunity_table = sa.table(
+            table_name,
+            sa.column("opportunity_type", sa.String(length=16)),
+        )
+        opportunity_type = opportunity_table.c.opportunity_type
+        op.execute(
+            opportunity_table.update()
+            .where(opportunity_type.in_(("job", "internship")))
+            .values(
+                opportunity_type=sa.case(
+                    (opportunity_type == "job", "jobs"),
+                    (opportunity_type == "internship", "intern"),
+                    else_=opportunity_type,
+                )
+            )
+        )
+
         inspector = sa.inspect(bind)
         index_name = f"ix_{table_name}_opportunity_type"
         index_names = {index["name"] for index in inspector.get_indexes(table_name)}
