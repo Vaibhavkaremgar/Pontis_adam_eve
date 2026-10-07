@@ -17,21 +17,33 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _opportunity_type_check_values(constraint: dict[str, object]) -> set[str] | None:
+    sqltext = str(constraint.get("sqltext") or "").lower().replace('"', "")
+    uses_in_check = bool(re.search(r"\bin\s*\(", sqltext)) and not re.search(
+        r"\bnot\s+in\s*\(", sqltext
+    )
+    uses_membership_check = uses_in_check or bool(re.search(r"=\s*any\s*\(", sqltext))
+    if not re.search(r"\bopportunity_type\b", sqltext) or not uses_membership_check:
+        return None
+    return set(re.findall(r"'([^']+)'", sqltext))
+
+
 def _has_equivalent_opportunity_type_check(inspector: sa.Inspector, table_name: str) -> bool:
+    return any(
+        _opportunity_type_check_values(constraint) == {"jobs", "intern"}
+        for constraint in inspector.get_check_constraints(table_name)
+    )
+
+
+def _drop_legacy_opportunity_type_checks(
+    inspector: sa.Inspector, table_name: str
+) -> None:
     for constraint in inspector.get_check_constraints(table_name):
-        sqltext = (constraint.get("sqltext") or "").lower().replace('"', "")
-        string_values = set(re.findall(r"'([^']+)'", sqltext))
-        uses_in_check = bool(re.search(r"\bin\s*\(", sqltext)) and not re.search(
-            r"\bnot\s+in\s*\(", sqltext
-        )
-        uses_membership_check = uses_in_check or bool(re.search(r"=\s*any\s*\(", sqltext))
-        if (
-            re.search(r"\bopportunity_type\b", sqltext)
-            and uses_membership_check
-            and string_values == {"jobs", "intern"}
-        ):
-            return True
-    return False
+        if _opportunity_type_check_values(constraint) != {"job", "internship"}:
+            continue
+        constraint_name = constraint.get("name")
+        if constraint_name:
+            op.drop_constraint(str(constraint_name), table_name, type_="check")
 
 
 def upgrade() -> None:
@@ -50,6 +62,9 @@ def upgrade() -> None:
                     server_default="jobs",
                 ),
             )
+
+        inspector = sa.inspect(bind)
+        _drop_legacy_opportunity_type_checks(inspector, table_name)
 
         opportunity_table = sa.table(
             table_name,
