@@ -70,6 +70,7 @@ const initialCompany: Company = {
 
 const initialJob: Job = {
   jobId: "",
+  opportunityType: undefined,
   title: "",
   employmentType: "full-time",
   vacancies: 1,

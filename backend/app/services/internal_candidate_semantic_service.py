@@ -34,6 +34,12 @@ def _text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _filter_candidate_rows_by_opportunity_type(rows: list[CandidateProfileEntity], opportunity_type: str) -> list[CandidateProfileEntity]:
+    """Apply the pool boundary before semantic scoring while preserving retrieval order."""
+    expected = _text(opportunity_type).lower()
+    return [row for row in rows if _text(getattr(row, "opportunity_type", "")).lower() == expected]
+
+
 def _tokens(values: Any) -> set[str]:
     if isinstance(values, dict):
         values = list(values.keys()) + list(values.values())
@@ -307,6 +313,9 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         raise APIError("Job not found", status_code=404)
     if _text(getattr(job, "agency_id", "")) != _text(agency_id):
         raise APIError("Forbidden", status_code=403)
+    opportunity_type = _text(getattr(job, "opportunity_type", "jobs")).lower() or "jobs"
+    if opportunity_type not in {"jobs", "intern"}:
+        raise APIError("Job opportunity type is invalid", status_code=409, code="invalid_opportunity_type", retryable=False)
     job_text = build_job_text(job)
     logger.error(
         "[MATCH_DEBUG] job_text_length=%s",
@@ -389,7 +398,12 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         record_ids[:5],
     )
 
-    rows = db.scalars(select(CandidateProfileEntity).where(CandidateProfileEntity.id.in_(record_ids))).all() if record_ids else []
+    rows = db.scalars(
+        select(CandidateProfileEntity).where(
+            CandidateProfileEntity.id.in_(record_ids),
+            CandidateProfileEntity.opportunity_type == opportunity_type,
+        )
+    ).all() if record_ids else []
     # DIAG-4: PostgreSQL lookup
     logger.info(
         "[DIAG] pg_lookup job_id=%s record_ids_queried=%s pg_rows_found=%s",
@@ -402,6 +416,7 @@ def match_internal_candidates_for_job(*, db: Session, job_id: str, agency_id: st
         len(rows),
     )
 
+    rows = _filter_candidate_rows_by_opportunity_type(list(rows), opportunity_type)
     row_by_id = {str(row.id): row for row in rows}
     job_skills = _job_skills(job)
     job_tokens = _tokens(job_skills)

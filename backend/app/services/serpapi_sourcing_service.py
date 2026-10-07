@@ -3421,66 +3421,7 @@ def discover_linkedin_xray_candidates(
     structured = getattr(job, "structured_data", None)
     if not isinstance(structured, dict):
         structured = {}
-    calibration = structured.get("recruiterCalibration")
-    if not isinstance(calibration, dict):
-        calibration = {}
-    current_pair = calibration.get("current_pair") if isinstance(calibration.get("current_pair"), dict) else calibration.get("currentPair")
-    if not isinstance(current_pair, dict):
-        current_pair = {}
     selected_archetypes: list[dict[str, Any]] = []
-    for source in (
-        current_pair,
-        calibration.get("selected_archetypes") if isinstance(calibration.get("selected_archetypes"), list) else [],
-        calibration.get("selectedArchetypes") if isinstance(calibration.get("selectedArchetypes"), list) else [],
-        calibration.get("archetype_pool") if isinstance(calibration.get("archetype_pool"), list) else [],
-        calibration.get("archetype_sets") if isinstance(calibration.get("archetype_sets"), list) else [],
-        structured.get("archetypePool") if isinstance(structured.get("archetypePool"), list) else [],
-        structured.get("archetypeSets") if isinstance(structured.get("archetypeSets"), list) else [],
-    ):
-        if isinstance(source, dict):
-            for key in ("profile_sets", "profileSets", "candidate_profiles", "candidateProfiles", "archetypes", "profiles", "selected_archetypes", "selectedArchetypes"):
-                items = source.get(key)
-                if isinstance(items, list):
-                    selected_archetypes.extend([item for item in items if isinstance(item, dict)])
-            selected = source.get("selected_archetype") or source.get("selectedArchetype")
-            if isinstance(selected, dict):
-                selected_archetypes.append(selected)
-        elif isinstance(source, list):
-            selected_archetypes.extend([item for item in source if isinstance(item, dict)])
-            for item in source:
-                if not isinstance(item, dict):
-                    continue
-                selected = item.get("selected_archetype") or item.get("selectedArchetype")
-                if isinstance(selected, dict):
-                    selected_archetypes.append(selected)
-    deduped_archetypes: list[dict[str, Any]] = []
-    seen_archetype_keys: set[str] = set()
-    for item in selected_archetypes:
-        profile_key = _normalize_lower(
-            _normalize_text(
-                item.get("id")
-                or item.get("profile_id")
-                or item.get("profileId")
-                or item.get("profile_title")
-                or item.get("profileTitle")
-                or item.get("headlineRole")
-                or item.get("title")
-                or ""
-            )
-        )
-        if not profile_key:
-            profile_key = _normalize_lower(_normalize_text(item.get("summary") or item.get("preferred_project_type") or item.get("preferredProjectType") or ""))
-        if profile_key and profile_key in seen_archetype_keys:
-            continue
-        if profile_key:
-            seen_archetype_keys.add(profile_key)
-        deduped_archetypes.append(item)
-    selected_archetypes = deduped_archetypes
-    if not selected_archetypes and isinstance(current_pair, dict):
-        pair_candidates = current_pair.get("archetypes") if isinstance(current_pair.get("archetypes"), list) else []
-        selected_archetypes = [item for item in pair_candidates if isinstance(item, dict)][:3]
-    if not selected_archetypes and isinstance(calibration.get("archetype_pool"), list):
-        selected_archetypes = [item for item in calibration.get("archetype_pool") if isinstance(item, dict)][:3]
 
     job_description = _normalize_text(
         getattr(job, "description", "")

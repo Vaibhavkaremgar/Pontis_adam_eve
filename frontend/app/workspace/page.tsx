@@ -5,12 +5,12 @@ import { useRouter } from "next/navigation";
 import { BriefcaseBusiness, ChartNoAxesCombined, ChevronRight } from "lucide-react";
 
 import { AppShell } from "@/components/layout/app-shell";
-import { useAppContext } from "@/context/AppContext";
+import { initialJob, useAppContext } from "@/context/AppContext";
 import { isSuperAdminRole } from "@/lib/roles";
 
 export default function WorkspacePage() {
   const router = useRouter();
-  const { user } = useAppContext();
+  const { user, setJob } = useAppContext();
 
   useEffect(() => {
     if (isSuperAdminRole(user?.role)) {
@@ -30,7 +30,10 @@ export default function WorkspacePage() {
 
         <div className="grid w-full gap-4 sm:grid-cols-2">
           <button
-            onClick={() => router.push("/company")}
+            onClick={() => {
+              setJob(initialJob);
+              router.push("/opportunity-type");
+            }}
             className="group flex flex-col gap-4 rounded-2xl border border-[rgba(120,100,80,0.1)] bg-white p-6 text-left shadow-sm transition hover:shadow-md"
           >
             <div className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-[#F3EDE3] text-[#0F6B3A]">

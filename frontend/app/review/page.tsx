@@ -2,15 +2,14 @@
 
 /**
  * What this file does:
- * Runs ideal candidate profile selection and the post-selection X-Ray review flow.
+ * Runs the candidate sourcing and recruiter review flow.
  *
  * What API it connects to:
  * GET /recruiters/:recruiterId/intelligence/jobs/:jobId
- * POST /recruiters/:recruiterId/intelligence/jobs/:jobId/choice
  * GET /candidates?jobId=...&refresh=true
  *
  * How it fits in the pipeline:
- * Voice intake -> ideal candidate profile generation -> X-Ray sourcing -> recruiter review
+ * Voice intake -> candidate sourcing -> recruiter review
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -48,7 +47,7 @@ import {
   swipeCandidate,
 } from "@/lib/api/candidates";
 import type { CandidateFullProfile } from "@/lib/api/candidates";
-import { chooseRecruiterCalibrationArchetype, getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
+import { getRecruiterIntelligence } from "@/lib/api/recruiter-intelligence";
 import { getInterviewInsights, submitInterviewDecision } from "@/lib/api/interviews";
 import {
   getStoredReviewCandidates,
@@ -582,98 +581,6 @@ function analysisSummary(analysis: CandidateSelectionAnalysis | null | undefined
       ? `Company overlap: ${analysis.preferenceSignals.sharedCompanies.slice(0, 5).join(", ")}`
       : "",
   ].filter(Boolean);
-}
-
-function calibrationValueList(value: unknown): string[] {
-  const collected: string[] = [];
-
-  const visit = (item: unknown) => {
-    if (item == null) return;
-    if (Array.isArray(item)) {
-      item.forEach(visit);
-      return;
-    }
-    if (typeof item === "string") {
-      const cleaned = item.trim();
-      if (!cleaned) return;
-      if (/[;,|]/.test(cleaned)) {
-        cleaned
-          .replace(/;/g, ",")
-          .replace(/\|/g, ",")
-          .split(",")
-          .map((part) => part.trim())
-          .filter(Boolean)
-          .forEach((part) => collected.push(part));
-        return;
-      }
-      collected.push(cleaned);
-      return;
-    }
-    if (typeof item === "number" || typeof item === "boolean") {
-      collected.push(String(item));
-      return;
-    }
-    if (typeof item === "object") {
-      const record = item as Record<string, unknown>;
-      for (const key of ["text", "label", "title", "name", "role", "value", "skill", "strength", "signal", "tradeoff"]) {
-        if (record[key] != null) {
-          visit(record[key]);
-          return;
-        }
-      }
-      Object.values(record).forEach(visit);
-    }
-  };
-
-  visit(value);
-
-  const unique: string[] = [];
-  const seen = new Set<string>();
-  for (const item of collected) {
-    const normalized = item.trim();
-    if (!normalized) continue;
-    const key = normalized.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(normalized);
-  }
-  return unique;
-}
-
-function calibrationText(value: unknown, fallback = ""): string {
-  const values = calibrationValueList(value);
-  if (values.length > 0) return values.join(", ");
-  if (typeof value === "string" && value.trim()) return value.trim();
-  return fallback;
-}
-
-function getCalibrationCurrentProfiles(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): Array<Record<string, unknown>> {
-  const currentPair = (calibration?.current_pair ?? {}) as Record<string, unknown>;
-  const profiles = currentPair.profile_sets || currentPair.profileSets || currentPair.candidate_profiles || currentPair.candidateProfiles || currentPair.profiles || currentPair.archetypes;
-  return Array.isArray(profiles) ? profiles.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")) : [];
-}
-
-function getCalibrationCurrentArchetypes(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): Array<Record<string, unknown>> {
-  return getCalibrationCurrentProfiles(calibration);
-}
-
-function getCalibrationCurrentSetId(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
-  if (!calibration) return "";
-  const currentPair = (calibration.current_pair ?? {}) as Record<string, unknown>;
-  return calibrationText(
-    calibration.current_calibration_set_id ||
-      currentPair.calibration_set_id ||
-      currentPair.calibrationSetId ||
-      ""
-  );
-}
-
-function getCalibrationRoundLabel(calibration: RecruiterIntelligenceSession["calibration"] | null | undefined): string {
-  if (!calibration) return "1 / 3";
-  const current = Number(calibration.current_round_index || 1);
-  const totalSets = calibration.profile_sets || calibration.candidate_profile_sets || calibration.archetype_sets;
-  const total = Array.isArray(totalSets) ? totalSets.length || 3 : 3;
-  return `${current} / ${total}`;
 }
 
 function formatList(values?: string[], fallback = "Not provided"): string[] {
@@ -1861,14 +1768,11 @@ export default function ReviewPage() {
   const [shortlistedCandidates, setShortlistedCandidates] = useState<Candidate[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
-  const [isCalibrationLoading, setIsCalibrationLoading] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [isContinuingToReady, setIsContinuingToReady] = useState(false);
   const [error, setError] = useState("");
-  const [calibrationError, setCalibrationError] = useState("");
   const [sourcingError, setSourcingError] = useState("");
   const [sourcingState, setSourcingState] = useState("");
-  const [calibrationSelectionId, setCalibrationSelectionId] = useState("");
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [isVoiceSummaryOpen, setIsVoiceSummaryOpen] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
@@ -2049,7 +1953,6 @@ export default function ReviewPage() {
         forceRefresh,
         rankedCount: rankedCandidates.length,
         reviewableCount: normalizedRankedCandidates.length,
-        calibrationComplete,
         likelyReason: typeof debugPayload?.likelyReason === "string" ? debugPayload.likelyReason : "",
         reviewabilityReasons: debugPayload?.reviewabilityReasons ?? null,
       });
@@ -2078,49 +1981,18 @@ export default function ReviewPage() {
     let cancelled = false;
     const load = async () => {
       setIsLoading(true);
-      setCalibrationError("");
       setError("");
 
       const intelligenceResult = await getRecruiterIntelligence(user.id, jobId);
       if (cancelled) return;
 
-      if (!intelligenceResult.success || !intelligenceResult.data) {
-        setCalibrationError(intelligenceResult.error || "Could not load candidate profiles.");
-        setIntelligence(null);
-        setIsLoading(false);
-        return;
+      setIntelligence(intelligenceResult.success && intelligenceResult.data ? intelligenceResult.data : null);
+      const cachedCandidates = getStoredReviewCandidates(jobId);
+      if (cachedCandidates.length > 0) {
+        setReviewCandidates(cachedCandidates.slice(0, 30));
+        setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
       }
-
-      setIntelligence(intelligenceResult.data);
-
-      const calibration = intelligenceResult.data.calibration;
-      const calibrationReady = Boolean(calibration && calibration.stage === "real_sourcing_ready");
-      const hasCurrentCalibration = Boolean(getCalibrationCurrentArchetypes(calibration).length > 0);
-
-      if (!calibrationReady && hasCurrentCalibration) {
-        setSession(null);
-        setActiveCandidate(null);
-        setReviewCandidates([]);
-        setRemainingCandidates([]);
-        setShortlistedCandidates([]);
-        setSourcingError("");
-        setIsLoading(false);
-        return;
-      }
-
-      if (calibrationReady) {
-        const cachedCandidates = getStoredReviewCandidates(jobId);
-        if (cachedCandidates.length > 0) {
-          setReviewCandidates(cachedCandidates.slice(0, 30));
-          setFeedbackMessage(`Restored ${cachedCandidates.length} cached candidate${cachedCandidates.length === 1 ? "" : "s"} for this role.`);
-        }
-        await loadSourcedCandidates({ source: "auto", forceRefresh: false });
-      } else {
-        setReviewCandidates([]);
-        setRemainingCandidates([]);
-        setShortlistedCandidates([]);
-        setSourcingError("");
-      }
+      await loadSourcedCandidates({ source: "auto", forceRefresh: false });
       if (cancelled) return;
       setActiveCandidate(null);
       setIsLoading(false);
@@ -2189,10 +2061,6 @@ export default function ReviewPage() {
   const finalCandidates = reviewCandidates;
   const analysis = null;
   const summaryLines = useMemo(() => analysisSummary(analysis), [analysis]);
-  const calibration = intelligence?.calibration ?? null;
-  const calibrationArchetypes = useMemo(() => getCalibrationCurrentProfiles(calibration), [calibration]);
-  const calibrationRoundLabel = useMemo(() => getCalibrationRoundLabel(calibration), [calibration]);
-  const calibrationSetId = useMemo(() => getCalibrationCurrentSetId(calibration), [calibration]);
   const voiceIntakeSummary = useMemo(
     () => {
       const transcript = intelligence?.voice_intake_transcript?.trim();
@@ -2200,13 +2068,7 @@ export default function ReviewPage() {
       const storedSummary = intelligence?.voice_intake_summary?.trim();
       if (storedSummary) return storedSummary;
       return summarizeVoiceIntakeText(
-          intelligence?.calibration?.voice_summary ||
-          intelligence?.selection?.voice_summary ||
           intelligence?.interview?.voice_summary ||
-          intelligence?.calibration?.transcript ||
-          intelligence?.calibration?.voice_transcript ||
-          intelligence?.selection?.transcript ||
-          intelligence?.selection?.voice_transcript ||
           intelligence?.interview?.transcript ||
           intelligence?.interview?.voice_transcript ||
           ""
@@ -2217,7 +2079,6 @@ export default function ReviewPage() {
   useEffect(() => {
     setIsVoiceSummaryOpen(false);
   }, [jobId, voiceIntakeSummary]);
-  const calibrationComplete = calibration?.stage === "real_sourcing_ready";
   const interviewProgression = activeInterviewInsights?.progression || [];
   const activeInterviewStage = interviewProgression.find((item: any) => item?.active) || interviewProgression[0] || null;
   const completedInterviewStages = interviewProgression.filter((item: any) => item?.completed).length;
@@ -2243,21 +2104,11 @@ export default function ReviewPage() {
     if (!jobId || isLoading || reviewLoading) {
       return;
     }
-    const logKey = `${jobId}:${calibrationComplete ? "calibrated" : "uncalibrated"}:${reviewCandidates.length}:${swipeCandidates.length}`;
+    const logKey = `${jobId}:${reviewCandidates.length}:${swipeCandidates.length}`;
     if (reviewDeckLogRef.current === logKey) {
       return;
     }
     reviewDeckLogRef.current = logKey;
-    if (!calibrationComplete) {
-      console.warn("[review:deck-hidden]", {
-        jobId,
-        reason: "calibration_not_ready",
-        calibrationStage: calibration?.stage ?? "",
-        reviewCandidateCount: reviewCandidates.length,
-        swipeCandidateCount: swipeCandidates.length,
-      });
-      return;
-    }
     if (reviewCandidates.length > 0 && swipeCandidates.length === 0) {
       console.warn("[review:deck-empty]", {
         jobId,
@@ -2268,7 +2119,7 @@ export default function ReviewPage() {
         rejectedCount: reviewCandidates.filter((candidate) => candidate.status === "rejected" || candidate.ats_status === "rejected").length,
       });
     }
-  }, [calibration?.stage, calibrationComplete, finalShortlistedIds.length, isLoading, jobId, reviewCandidates, reviewLoading, swipeCandidates.length]);
+  }, [finalShortlistedIds.length, isLoading, jobId, reviewCandidates, reviewLoading, swipeCandidates.length]);
 
   const visibleShortlistedCandidates = useMemo(
     () =>
@@ -2295,46 +2146,6 @@ export default function ReviewPage() {
   const shortlistedCount = useMemo(() => {
     return visibleShortlistedCandidates.length || completedShortlistedIds.length;
   }, [completedShortlistedIds.length, visibleShortlistedCandidates.length]);
-
-  const handleCalibrationSelect = async (archetypeId: string) => {
-    if (!jobId || !user || isCalibrationLoading) return;
-    setIsCalibrationLoading(true);
-    setCalibrationError("");
-    setFeedbackMessage("");
-    setCalibrationSelectionId(archetypeId);
-
-    const result = await chooseRecruiterCalibrationArchetype(user.id, jobId, {
-      jobId,
-      candidateId: archetypeId,
-      calibrationSetId,
-    });
-
-    const calibrationResult = result.data ?? null;
-    if (!result.success || !calibrationResult) {
-      setCalibrationError(result.error || "Could not save candidate profile choice.");
-      setCalibrationSelectionId("");
-      setIsCalibrationLoading(false);
-      return;
-    }
-
-    setIntelligence((prev) =>
-      prev
-        ? {
-            ...prev,
-            calibration: calibrationResult.calibration ?? calibrationResult.selection ?? prev.calibration,
-          }
-        : prev
-    );
-
-    const nextCalibration = calibrationResult.calibration ?? calibrationResult.selection ?? null;
-    const nextStage = String(nextCalibration?.stage || "").trim();
-      if (nextStage === "real_sourcing_ready") {
-        await loadSourcedCandidates({ source: "calibration", forceRefresh: false });
-      }
-
-    setCalibrationSelectionId("");
-    setIsCalibrationLoading(false);
-  };
 
   const handleSelect = async (candidateId: string) => {
     if (!jobId || isAdvancing) return;
@@ -2638,10 +2449,9 @@ export default function ReviewPage() {
             </div>
           </div>
 
-          {(feedbackMessage || calibrationError || sourcingError || error) && (
+          {(feedbackMessage || sourcingError || error) && (
             <div className="space-y-3">
               {feedbackMessage && <p className="rounded-xl border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">{feedbackMessage}</p>}
-              {calibrationError && <p className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-800">{calibrationError}</p>}
               {sourcingError && (
                 <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
                   {sourcingError.includes("409") || sourcingError.toLowerCase().includes("conflict")
@@ -2657,148 +2467,13 @@ export default function ReviewPage() {
 
           {isLoading && <p className="text-sm text-gray-500">Loading candidate profiles and sourcing candidates...</p>}
 
-          {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length > 0 && (
-            <div className="space-y-8 pt-4 md:pt-6">
-              <div className="flex flex-col items-start justify-between gap-5 md:flex-row md:items-center">
-                <div className="space-y-2 md:pr-4">
-                  <p className="font-body text-[11px] font-semibold uppercase tracking-[0.24em] text-[#0F6B3A]">
-                    Ideal candidate profile set {calibrationRoundLabel}
-                  </p>
-                  <p className="max-w-3xl font-body text-sm leading-6 text-[#6B7280]">
-                    Pick the closer resume profile. Each set has 2 profiles, and Adam uses your choice to guide candidate scanning.
-                  </p>
-                </div>
-                <Badge className="inline-flex whitespace-nowrap rounded-full bg-[#EAF4FF] px-5 py-2 text-[13px] font-semibold text-[#1D4ED8] shadow-none">
-                  2 profiles
-                </Badge>
-              </div>
-
-              <div className="grid gap-6 md:grid-cols-2">
-                {calibrationArchetypes.map((archetype) => {
-                  const profileId = String(archetype.id || archetype.archetype_id || "").trim();
-                  const profileData = (archetype.profileData && typeof archetype.profileData === "object" ? archetype.profileData : {}) as Record<string, unknown>;
-                  const yearsExperience = calibrationText(profileData.years_experience || profileData.yearsExperience || archetype.years_experience || archetype.yearsExperience);
-                  const currentRole = calibrationText(
-                    profileData.currentRole ||
-                      profileData.current_role ||
-                      profileData.profileTitle ||
-                      profileData.profile_title ||
-                      profileData.candidateHeadline ||
-                      profileData.candidate_headline ||
-                      archetype.current_role ||
-                      archetype.currentRole ||
-                      archetype.role ||
-                      archetype.title ||
-                      archetype.name ||
-                      "Ideal candidate profile"
-                  );
-                  const currentCompany = calibrationText(profileData.currentCompany || profileData.current_company || archetype.current_company || archetype.currentCompany || archetype.company);
-                  const locationLabel = calibrationText(profileData.location || profileData.currentLocation || profileData.current_location || archetype.location);
-                  const topSkills = calibrationValueList(profileData.topSkills || profileData.top_skills || archetype.top_skills || archetype.skills);
-                  const careerHighlight = calibrationText(profileData.careerHighlight || profileData.career_highlight || archetype.career_highlight || archetype.description || "");
-                  const education = calibrationText(profileData.education || archetype.education || "");
-                  const worksBestAt = calibrationText(profileData.worksBestAt || profileData.works_best_at || archetype.works_best_at || archetype.background || "");
-                  const isChoosing = calibrationSelectionId === profileId;
-                  const headerLabel = currentRole || yearsExperience || "Ideal candidate profile";
-                  const experienceLabel = yearsExperience ? `Exp: ${yearsExperience}` : "";
-                  const subtitle = [currentCompany, locationLabel].filter(Boolean).join(" • ");
-
-                  return (
-                    <Card
-                      key={profileId || headerLabel}
-                      className="overflow-hidden rounded-[24px] border border-[#E7E0D4] bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]"
-                    >
-                      <CardHeader className="space-y-3">
-                        <div className="flex items-start gap-4">
-                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-[#DDF5E6] font-heading text-[22px] font-bold text-[#0F6B3A]">
-                            {headerLabel.charAt(0).toUpperCase()}
-                          </div>
-                          <div className="min-w-0 flex-1 space-y-2">
-                            <CardTitle className="line-clamp-2 font-heading text-[24px] font-semibold leading-tight text-[#111827]">
-                              {headerLabel}
-                            </CardTitle>
-                            {experienceLabel && (
-                              <p className="font-body text-[13px] font-medium text-[#6B7280]">{experienceLabel}</p>
-                            )}
-                            <p className="break-words font-body text-[13px] leading-5 text-[#6B7280]">
-                              {subtitle}
-                            </p>
-                          </div>
-                        </div>
-                      </CardHeader>
-                      <CardContent className="space-y-4">
-                        <div className="space-y-3 rounded-[18px] border border-[#DDF5E6] bg-[#F4FBF7] p-4 text-sm text-[#4B5563]">
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#0F6B3A]">Top skills</p>
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {(topSkills.length > 0 ? topSkills : ["Skills from intake"]).slice(0, 6).map((skill) => (
-                                <span
-                                  key={`${profileId}-skill-${skill}`}
-                                  className="max-w-full rounded-full bg-white px-3 py-1 text-[12px] font-semibold text-[#0F6B3A] shadow-sm break-words"
-                                >
-                                  {skill}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="grid gap-3">
-                            <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Career highlight</p>
-                              <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {careerHighlight || "Grounded resume snapshot tied to the intake."}
-                              </p>
-                            </div>
-                            <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Works best at</p>
-                              <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {worksBestAt || "High-fit environments and operating styles from the intake."}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="grid gap-3">
-                            <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Education</p>
-                              <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">
-                                {education || "Varied education backgrounds from the intake"}
-                              </p>
-                            </div>
-                            <div className="min-w-0 overflow-hidden rounded-[14px] border border-white/70 bg-white p-4 shadow-[0_1px_0_rgba(0,0,0,0.02)]">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#6B7280]">Location</p>
-                              <p className="mt-2 max-w-full break-words whitespace-normal leading-6 text-[#374151]">{locationLabel || "From intake location"}</p>
-                            </div>
-                          </div>
-                        </div>
-                        <Button
-                          data-testid={`archetype-select-${profileId}`}
-                          className="h-12 w-full rounded-[14px] bg-[#0F6B3A] text-[15px] font-semibold text-white shadow-[0_8px_18px_rgba(15,107,58,0.18)] transition-colors duration-200 hover:bg-[#0C5A31]"
-                          onClick={() => void handleCalibrationSelect(profileId)}
-                          disabled={isCalibrationLoading || !profileId}
-                        >
-                          {isChoosing ? "Saving selection..." : "Select profile"}
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {!isLoading && calibration && !calibrationComplete && calibrationArchetypes.length === 0 && (
-            <div className="rounded-[20px] border border-[#DDF5E6] bg-[#F4FBF7] px-4 py-3 text-sm text-[#0F6B3A]">
-              Ideal candidate profiles are being prepared. Adam will show the selection cards here shortly.
-            </div>
-          )}
-
-          {calibrationError && <p className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{calibrationError}</p>}
-
-          {!isLoading && calibrationComplete && reviewLoading && (
+          {!isLoading && reviewLoading && (
             <div className="rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-3 text-sm text-[#6B7280]">
               Candidate scanning is running now. Results will appear as soon as the backend returns ranked candidates.
             </div>
           )}
 
-          {!isLoading && calibrationComplete && swipeCandidates.length > 0 && (
+          {!isLoading && swipeCandidates.length > 0 && (
             <div className="space-y-8 pt-4 md:pt-6">
               {voiceIntakeSummary && (
                 <div className="flex justify-start">
@@ -2877,7 +2552,7 @@ export default function ReviewPage() {
             </div>
           )}
 
-          {!isLoading && calibrationComplete && (
+          {!isLoading && (
             <div className="space-y-4">
               {pendingAcceptanceCandidates.length > 0 && (
                 <div className="rounded-[20px] border border-[#FEF3C7] bg-[#FFFBEB] px-4 py-4">
@@ -2945,7 +2620,7 @@ export default function ReviewPage() {
             </div>
           )}
 
-          {!isLoading && calibrationComplete && swipeCandidates.length === 0 && !reviewLoading && (
+          {!isLoading && swipeCandidates.length === 0 && !reviewLoading && (
             <div className="space-y-4 rounded-[20px] border border-[#E7E0D4] bg-white px-4 py-4 text-sm">
               {sourcingState === "quota_exhausted" ? (
                 <div className="rounded-[16px] border border-amber-100 bg-amber-50 px-4 py-3">

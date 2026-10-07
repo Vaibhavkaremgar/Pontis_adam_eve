@@ -42,4 +42,5 @@ backend/linkedin_profiles/
 **/GrShaderCache/
 **/DawnCache/
 backend/tests/*.py
+!backend/tests/test_opportunity_type_matching.py
 frontend/tests/*.py

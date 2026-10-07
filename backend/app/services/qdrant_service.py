@@ -54,6 +54,7 @@ QDRANT_SCHEMA: dict[str, dict[str, Any]] = {
             "resumeFingerprint": PayloadSchemaType.KEYWORD,
             "embeddingVersion": PayloadSchemaType.KEYWORD,
             "sourceType": PayloadSchemaType.KEYWORD,
+            "opportunityType": PayloadSchemaType.KEYWORD,
         },
     },
     RECRUITER_PREFERENCES_COLLECTION_NAME: {
@@ -574,6 +575,7 @@ def upsert_internal_candidate_embeddings(points: list[dict[str, Any]]) -> None:
                 "agencyId": item["agencyId"],
                 "source": "internal",
                 "sourceType": "internal",
+                "opportunityType": item["opportunityType"],
                 "contentType": "resume",
                 "embeddingVersion": item["embeddingVersion"],
                 "textHash": item["textHash"],

@@ -6,7 +6,7 @@
  * GET/POST /recruiters/{recruiterId}/intelligence/jobs/{jobId}
  *
  * How it fits in the pipeline:
- * Bridges the adaptive voice interview, intent summary, and comparison-round session state.
+ * Bridges the adaptive voice interview and intent summary state.
  */
 import { API_BASE_URL } from "@/lib/config";
 
@@ -37,56 +37,6 @@ export type RecruiterIntelligenceSession = {
     current_question?: string;
     stage_summary?: string;
   };
-  selection: {
-    status?: string;
-    stage?: string;
-    current_calibration_set_id?: string;
-    rounds?: Array<{
-      round_index: number;
-      calibration_set_id?: string;
-      candidate_ids: string[];
-      candidates: Array<Record<string, unknown>>;
-      signal_quality: number;
-      contrast_axes: string[];
-      rationale: string;
-      pair_explanation?: Record<string, unknown>;
-    }>;
-    current_pair?: Record<string, unknown>;
-    intent_profile?: Record<string, unknown>;
-    recommended_questions?: string[];
-    telemetry?: Record<string, number>;
-    voice_summary?: string;
-    transcript?: string;
-    voice_transcript?: string;
-  };
-  calibration?: {
-    status?: string;
-    stage?: string;
-    current_round_index?: number;
-    current_calibration_set_id?: string;
-    orchestration_session_id?: string;
-    rounds?: Array<{
-      round_index: number;
-      calibration_set_id?: string;
-      candidate_ids: string[];
-      candidates: Array<Record<string, unknown>>;
-      signal_quality: number;
-      contrast_axes: string[];
-      rationale: string;
-      pair_explanation?: Record<string, unknown>;
-    }>;
-    current_pair?: Record<string, unknown>;
-    current_profile_set?: Record<string, unknown>;
-    intent_profile?: Record<string, unknown>;
-    recommended_questions?: string[];
-    telemetry?: Record<string, number>;
-    voice_summary?: string;
-    transcript?: string;
-    voice_transcript?: string;
-    archetype_sets?: Array<Record<string, unknown>>;
-    profile_sets?: Array<Record<string, unknown>>;
-    candidate_profile_sets?: Array<Record<string, unknown>>;
-  };
 };
 
 export type RecruiterIntelligenceUpdatePayload = {
@@ -94,12 +44,6 @@ export type RecruiterIntelligenceUpdatePayload = {
   transcript: string;
   voiceSummary?: string;
   entities?: Record<string, unknown>;
-};
-
-export type RecruiterCalibrationChoicePayload = {
-  jobId: string;
-  candidateId: string;
-  calibrationSetId?: string;
 };
 
 export async function getRecruiterIntelligence(
@@ -119,21 +63,6 @@ export async function updateRecruiterIntelligence(
 ): Promise<ApiResponse<RecruiterIntelligenceSession>> {
   return requestApi<RecruiterIntelligenceSession>({
     url: `${API_BASE_URL.replace(/\/$/, "")}/recruiters/${encodeURIComponent(recruiterId)}/intelligence/jobs/${encodeURIComponent(jobId)}`,
-    method: "POST",
-    payload: {
-      ...payload,
-      jobId
-    }
-  });
-}
-
-export async function chooseRecruiterCalibrationArchetype(
-  recruiterId: string,
-  jobId: string,
-  payload: RecruiterCalibrationChoicePayload
-): Promise<ApiResponse<RecruiterIntelligenceSession>> {
-  return requestApi<RecruiterIntelligenceSession>({
-    url: `${API_BASE_URL.replace(/\/$/, "")}/recruiters/${encodeURIComponent(recruiterId)}/intelligence/jobs/${encodeURIComponent(jobId)}/choice`,
     method: "POST",
     payload: {
       ...payload,

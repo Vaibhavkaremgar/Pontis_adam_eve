@@ -16,12 +16,6 @@ from app.services.recruiter_interview_orchestrator import (
     start_recruiter_interview_session,
     update_recruiter_interview_session,
 )
-from app.services.recruiter_preference_round_service import (
-    bootstrap_preference_calibration_session,
-    build_calibration_state_response,
-    finalize_preference_calibration_session,
-    record_preference_calibration_choice,
-)
 from app.utils.exceptions import APIError
 from app.utils.responses import success_response
 
@@ -33,12 +27,6 @@ class RecruiterIntelligenceUpdateRequest(BaseModel):
     transcript: str = ""
     voiceSummary: str = ""
     entities: dict[str, Any] = Field(default_factory=dict)
-
-
-class RecruiterCalibrationChoiceRequest(BaseModel):
-    jobId: str
-    candidateId: str
-    calibrationSetId: str = ""
 
 
 def _user_id(user: Any) -> str:
@@ -58,28 +46,15 @@ def get_recruiter_intelligence_job(
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = start_recruiter_interview_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    calibration_state = bootstrap_preference_calibration_session(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-        voice_summary=interview_state.get("voice_summary", ""),
-        voice_transcript=interview_state.get("transcript", ""),
-        gap_analysis=interview_state.get("gap_analysis") or {},
-    )
-    db.commit()
-    _cal_resp = build_calibration_state_response(calibration_state)
     intake = JobIntakeRepository(db).get_by_job(job_id)
     intake_data = intake.structured_data_json if intake and isinstance(intake.structured_data_json, dict) else {}
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": _cal_resp,
-            "calibration": _cal_resp,
             "voice_intake_summary": str(intake_data.get("summary") or "").strip(),
             "voice_intake_transcript": str(intake.transcript or "").strip() if intake else "",
         }
     )
-
 
 @router.post("/{recruiter_id}/intelligence/jobs/{job_id}")
 def update_recruiter_intelligence_job(
@@ -100,49 +75,10 @@ def update_recruiter_intelligence_job(
         transcript=payload.transcript or payload.voiceSummary,
         parsed_entities=payload.entities,
     )
-    calibration_state = bootstrap_preference_calibration_session(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-        voice_summary=interview_state.get("voice_summary", ""),
-        voice_transcript=interview_state.get("transcript", ""),
-        gap_analysis=interview_state.get("gap_analysis") or {},
-    )
     db.commit()
-    _cal_resp = build_calibration_state_response(calibration_state)
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": _cal_resp,
-            "calibration": _cal_resp,
-        }
-    )
-
-
-@router.post("/{recruiter_id}/intelligence/jobs/{job_id}/choice")
-def choose_recruiter_calibration_archetype(
-    recruiter_id: str,
-    job_id: str,
-    payload: RecruiterCalibrationChoiceRequest,
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if _user_id(request.state.user) != recruiter_id:
-        raise APIError("Forbidden", status_code=403)
-    assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
-    calibration_state = record_preference_calibration_choice(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-        selected_candidate_id=payload.candidateId,
-        calibration_set_id=payload.calibrationSetId,
-    )
-    db.commit()
-    return success_response(
-        {
-            "selection": build_calibration_state_response(calibration_state),
-            "calibration": build_calibration_state_response(calibration_state),
         }
     )
 
@@ -159,44 +95,9 @@ def advance_recruiter_intelligence_job(
         raise APIError("Forbidden", status_code=403)
     assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
     interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    calibration_state = bootstrap_preference_calibration_session(
-        db=db,
-        recruiter_id=recruiter_id,
-        job_id=job_id,
-        voice_summary=interview_state.get("voice_summary", ""),
-        voice_transcript=interview_state.get("transcript", ""),
-        gap_analysis=interview_state.get("gap_analysis") or {},
-    )
     db.commit()
-    _cal_resp = build_calibration_state_response(calibration_state)
     return success_response(
         {
             "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": _cal_resp,
-            "calibration": _cal_resp,
-        }
-    )
-
-
-@router.post("/{recruiter_id}/intelligence/jobs/{job_id}/finalize")
-def finalize_recruiter_intelligence_job(
-    recruiter_id: str,
-    job_id: str,
-    request: Request,
-    _: dict = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if _user_id(request.state.user) != recruiter_id:
-        raise APIError("Forbidden", status_code=403)
-    assert_job_ownership(db=db, job_id=job_id, user_id=recruiter_id)
-    interview_state = advance_recruiter_interview_stage(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    calibration_state = finalize_preference_calibration_session(db=db, recruiter_id=recruiter_id, job_id=job_id)
-    db.commit()
-    _cal_resp = build_calibration_state_response(calibration_state)
-    return success_response(
-        {
-            "interview": build_recruiter_interview_response(state=interview_state),
-            "selection": _cal_resp,
-            "calibration": _cal_resp,
         }
     )

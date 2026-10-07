@@ -27,11 +27,7 @@ from app.db.repositories import (
 from app.services.candidate_service import fetch_ranked_candidates
 from app.services.hiring_service import create_hiring_job
 from app.services.llm_service import generate
-from app.services.recruiter_preference_round_service import (
-    bootstrap_preference_calibration_session,
-    build_calibration_state_response,
-)
-from app.services.slack_integration import build_calibration_blocks, build_candidate_blocks, post_slack_message_with_result
+from app.services.slack_integration import build_candidate_blocks, post_slack_message_with_result
 from app.services.slack_tenant_service import SlackCompanyResolver, record_slack_audit_event
 from app.utils.exceptions import APIError
 from app.services.role_classifier import classify_role, get_role_followup_bank
@@ -44,7 +40,6 @@ ORCHESTRATION_STAGE_SLACK = "slack_intake"
 ORCHESTRATION_STAGE_VOICE = "voice_intake"
 ORCHESTRATION_STAGE_COMPLETED = "intake_completed"
 ORCHESTRATION_STAGE_SOURCING = "sourcing"
-ORCHESTRATION_STAGE_CALIBRATION = "calibration"
 ORCHESTRATION_STAGE_CANDIDATES = "candidates_ready"
 ORCHESTRATION_STAGE_OUTREACH = "outreach"
 ORCHESTRATION_STAGE_INTERVIEW = "interview"
@@ -1526,31 +1521,9 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
 
     if session_row.job_id:
         logger.info("orchestration_finalize_idempotent session_id=%s job_id=%s", session_row.id, session_row.job_id)
-        recruiter_id = _normalize_text(actor_user_id or slack_user_id)
-        calibration_state = None
-        if recruiter_id:
-            calibration_state = bootstrap_preference_calibration_session(
-                db=db,
-                recruiter_id=recruiter_id,
-                job_id=session_row.job_id,
-                voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
-                voice_transcript=str((session_row.structured_context or {}).get("transcript") or (session_row.structured_context or {}).get("voiceTranscript") or ""),
-                gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
-            )
-            session_row.structured_context = {
-                **dict(session_row.structured_context or {}),
-                "calibrationState": build_calibration_state_response(calibration_state),
-                "calibrationStage": calibration_state.get("stage", "archetype_calibration"),
-                "calibrationStartedAt": (session_row.structured_context or {}).get("calibrationStartedAt") or _now().isoformat(),
-            }
-            session_row.current_stage = ORCHESTRATION_STAGE_CALIBRATION
-            session_row.updated_at = _now()
-            session_row.state_version = int(getattr(session_row, "state_version", 0) or 0) + 1
-            db.commit()
         return {
             "jobId": session_row.job_id,
             "companyId": session_row.company_id,
-            "calibration": build_calibration_state_response(calibration_state) if calibration_state else None,
             "idempotent": True,
         }
 
@@ -1593,11 +1566,11 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
 
     session_row.company_id = job.company_id
     session_row.job_id = job.id
-    session_row.current_stage = ORCHESTRATION_STAGE_CALIBRATION
+    session_row.current_stage = ORCHESTRATION_STAGE_SOURCING
     session_row.updated_at = _now()
     session_row.state_version = int(getattr(session_row, "state_version", 0) or 0) + 1
     _append_event(db, session_id=session_row.id, event_type="INTAKE_COMPLETED", payload={"jobId": job.id, "companyId": job.company_id, "intake": intake})
-    _append_event(db, session_id=session_row.id, event_type="CALIBRATION_STARTED", payload={"jobId": job.id, "companyId": job.company_id})
+    _append_event(db, session_id=session_row.id, event_type="SOURCING_STARTED", payload={"jobId": job.id, "companyId": job.company_id})
     record_slack_audit_event(
         db=db,
         company_id=job.company_id,
@@ -1613,32 +1586,12 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
         },
     )
 
-    recruiter_id = _normalize_text(actor_user_id or slack_user_id)
-    calibration_state = None
-    if recruiter_id:
-        calibration_state = bootstrap_preference_calibration_session(
-            db=db,
-            recruiter_id=recruiter_id,
-            job_id=job.id,
-            voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
-            voice_transcript=str((session_row.structured_context or {}).get("transcript") or (session_row.structured_context or {}).get("voiceTranscript") or ""),
-            gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
-        )
-        session_row.structured_context = {
-            **dict(session_row.structured_context or {}),
-            "calibrationState": build_calibration_state_response(calibration_state),
-            "calibrationStage": calibration_state.get("stage", "archetype_calibration"),
-            "calibrationStartedAt": _now().isoformat(),
-        }
-
-    session_row.current_stage = ORCHESTRATION_STAGE_CALIBRATION
+    session_row.current_stage = ORCHESTRATION_STAGE_SOURCING
     session_row.completed_at = _now()
     session_row.structured_context = {
         **dict(session_row.structured_context or {}),
         "finalJobId": job.id,
         "finalCompanyId": job.company_id,
-        "calibrationState": build_calibration_state_response(calibration_state) if calibration_state else {},
-        "calibrationStarted": True,
         "completed": True,
     }
     session_row.updated_at = _now()
@@ -1647,7 +1600,6 @@ def _finalize_sourcing(db: Session, session_row) -> dict[str, Any]:
     return {
         "jobId": job.id,
         "companyId": job.company_id,
-        "calibration": build_calibration_state_response(calibration_state) if calibration_state else None,
     }
 
 
@@ -2231,30 +2183,17 @@ def complete_voice_handoff(
     transcript_hash = _stable_hash(session_row.id, token, combined_text)
     if _normalize_text(getattr(session_row, "last_processed_transcript_hash", "")) == transcript_hash:
         logger.info("voice_transcript_duplicate session_id=%s token=%s", session_row.id, token[:8])
-        calibration_state = None
         finalization = None
         if session_row.job_id:
             finalization = {
                 "jobId": session_row.job_id,
                 "companyId": session_row.company_id,
             }
-            recruiter_id = _normalize_text(session_row.slack_user_id or (dict(session_row.slack_context or {})).get("userId") or "")
-            if recruiter_id:
-                calibration_state = bootstrap_preference_calibration_session(
-                    db=db,
-                    recruiter_id=recruiter_id,
-                    job_id=session_row.job_id,
-                    voice_summary=str((session_row.structured_context or {}).get("voiceSummary") or ""),
-                    voice_transcript=str((session_row.structured_context or {}).get("transcript") or (session_row.structured_context or {}).get("voiceTranscript") or ""),
-                    gap_analysis=dict((session_row.structured_context or {}).get("gapAnalysis") or {}),
-                )
-                finalization["calibration"] = build_calibration_state_response(calibration_state)
         return {
             "completed": _session_is_complete(session_row),
             "session": _session_payload(session_row),
             "duplicate": True,
             "finalization": finalization if session_row.job_id else None,
-            "calibration": build_calibration_state_response(calibration_state) if calibration_state else None,
         }
 
     session_row.last_processed_transcript_hash = transcript_hash

@@ -81,6 +81,10 @@ export default function JobPage() {
         router.replace("/login");
         return;
       }
+      if (!job.opportunityType) {
+        router.replace("/opportunity-type");
+        return;
+      }
 
       setIsAtsLoading(true);
       const result = await getCompany();
@@ -115,7 +119,7 @@ export default function JobPage() {
     return () => {
       cancelled = true;
     };
-  }, [isSessionReady, router, setCompany, user]);
+  }, [isSessionReady, job.opportunityType, router, setCompany, user]);
 
   const canSubmit = Boolean(form.jobId.trim() && form.title.trim() && form.description.trim());
 

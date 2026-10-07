@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -23,6 +25,7 @@ class Job(BaseModel):
 
 class JobInput(BaseModel):
     jobId: str
+    opportunityType: Literal["jobs", "intern"] = "jobs"
     title: str
     employmentType: str = "full-time"
     vacancies: int = Field(default=1, ge=1)

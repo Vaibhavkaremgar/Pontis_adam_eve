@@ -115,28 +115,12 @@ def build_recall_query_from_job(job: Any, intake: dict[str, Any] | None = None) 
                     return [s.strip() for s in re.split(r"[,;]+", v) if s.strip()]
             return []
 
-        # Extract archetype signal keywords for recall enrichment
-        archetype_signals: list[str] = []
-        calibration = structured.get("recruiterCalibration") or {}
-        if isinstance(calibration, dict):
-            for key in ("selected_archetypes", "selectedArchetypes", "archetype_pool"):
-                pool = calibration.get(key)
-                if isinstance(pool, list):
-                    for arch in pool[:2]:
-                        if not isinstance(arch, dict):
-                            continue
-                        for sk in ("signal_keywords", "signalKeywords", "keywords"):
-                            kws = arch.get(sk)
-                            if isinstance(kws, list):
-                                archetype_signals.extend(_t(k) for k in kws[:3] if _t(k))
-                    break
-
         return build_recall_query_text(
             role=_field("role", "title", "job_title"),
             skills=_skills(),
             location=_field("location"),
             seniority=_field("seniority", "experience_level", "experienceRequired"),
-            archetype_signals=archetype_signals[:4],
+            archetype_signals=[],
             job_summary=_field("voice_summary", "voiceSummary") or _t(getattr(job, "description", ""))[:200],
         )
     except Exception as exc:

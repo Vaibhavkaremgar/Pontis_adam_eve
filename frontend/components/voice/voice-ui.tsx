@@ -6,7 +6,7 @@
  * - Starts Vapi directly with job context injected as variableValues + dynamic firstMessage
  * - Captures BOTH assistant and user turns as structured VoiceTurn[]
  * - On call-end: auto-triggers the appropriate completion path for the active mode
- * - Dashboard mode refines the job and navigates to /review
+ * - Dashboard mode refines the job and navigates to candidate review
  * - Slack mode completes orchestration and stays out of dashboard routing
  * - Shows retry on failure
  */
@@ -354,10 +354,10 @@ const EXPECTATION_STEPS = [
   },
   {
     id: 2,
-    title: "Calibration",
+    title: "Candidate sourcing",
     duration: "~3-5 min",
     details:
-      "We’ll show 3-4 candidate pairs and ask which you prefer. This reveals your true priorities, like startup vs enterprise or top school vs top company.",
+      "Adam uses the refined job requirements to find and rank matching candidates.",
   },
   {
     id: 3,
@@ -1055,7 +1055,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     setPipelineStatus("done");
     terminalStateRef.current = "done";
 
-    // Auto-navigate to review so the calibration gate can appear before sourcing.
+    // Candidate sourcing starts when the review page loads.
     setTimeout(() => router.push("/review"), 1200);
   }, [completionMode, isSlackCompletionMode, jobId, router, setIsRefined, setVoiceNotes, slackToken, user]);
 
@@ -1258,7 +1258,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
     const effectiveOrigin = publicAppUrl || getEffectiveVapiOrigin();
     const originHint = suggestVapiOriginHint(runtimeSnapshot);
 
-    const interviewQuestions = intelligence?.interview?.recommended_questions || intelligence?.selection?.recommended_questions || [];
+    const interviewQuestions = intelligence?.interview?.recommended_questions || [];
     const firstQuestion = intelligence?.interview?.current_question || interviewQuestions[0] || "What's the most important thing you're looking for in this candidate?";
     const questionList = interviewQuestions.length
       ? interviewQuestions.map((question, index) => `${index + 1}. ${question}`).join("\n")
@@ -1375,7 +1375,7 @@ export function VoiceUi({ completionMode = "dashboard", slackToken = "" }: Voice
   const pipelineLabel: Record<typeof pipelineStatus, string> = {
     idle: "",
     refining: "Analysing conversation and updating job profile...",
-    done: "Done — loading calibration.",
+    done: "Done — loading candidates.",
     error: pipelineError,
   };
 

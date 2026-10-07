@@ -85,6 +85,7 @@ def index_candidate_embedding(*, db: Session, candidate_record_id: str) -> dict[
             "candidateRecordId": str(row.id),
             "candidateId": str(row.candidate_id or row.id),
             "agencyId": str(row.agency_id or ""),
+            "opportunityType": str(row.opportunity_type or "jobs").strip().lower(),
             "embeddingVersion": EMBEDDING_VERSION,
             "textHash": text_hash,
             "indexedAt": indexed_at.isoformat(),

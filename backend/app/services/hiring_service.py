@@ -89,6 +89,7 @@ def create_hiring_job(
     job_external_id = (job.get("jobId") or job.get("job_id") or "").strip()
     title = (job.get("title") or "").strip()
     employment_type = (job.get("employmentType") or job.get("employment_type") or "full-time").strip().lower()
+    opportunity_type = (job.get("opportunityType") or job.get("opportunity_type") or "jobs").strip().lower()
     vacancies_raw = job.get("vacancies", 1)
     job_description = (job.get("description") or "").strip()
     location = (job.get("location") or "").strip()
@@ -103,6 +104,8 @@ def create_hiring_job(
         vetting_mode = "volume"
     if employment_type not in {"full-time", "part-time", "contract"}:
         raise APIError("job.employmentType must be full-time, part-time, or contract", status_code=400)
+    if opportunity_type not in {"jobs", "intern"}:
+        raise APIError("job.opportunityType must be jobs or intern", status_code=400)
     try:
         vacancies = int(vacancies_raw)
     except (TypeError, ValueError) as exc:
@@ -138,6 +141,7 @@ def create_hiring_job(
         job_id=job_external_id,
         title=title,
         employment_type=employment_type,
+        opportunity_type=opportunity_type,
         vacancies=vacancies,
         description=job_description,
         company_name=company_name,
@@ -154,6 +158,7 @@ def create_hiring_job(
         structured_data={
             "remotePolicy": remote_policy,
             "experienceRequired": experience_required,
+            "opportunityType": opportunity_type,
         },
     )
     try:

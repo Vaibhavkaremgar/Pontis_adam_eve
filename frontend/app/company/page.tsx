@@ -36,7 +36,7 @@ function normalizeForm(c: { name?: string; website?: string; description?: strin
 
 export default function CompanyPage() {
   const router = useRouter();
-  const { user, isSessionReady, company, setCompany } = useAppContext();
+  const { user, isSessionReady, company, job, setCompany } = useAppContext();
   const [form, setForm] = useState(() => normalizeForm(company));
   const [error, setError] = useState("");
   const [connectError, setConnectError] = useState("");
@@ -51,8 +51,12 @@ export default function CompanyPage() {
 
     if (!user) {
       router.replace("/login");
+      return;
     }
-  }, [isSessionReady, router, user]);
+    if (!job.opportunityType) {
+      router.replace("/opportunity-type");
+    }
+  }, [isSessionReady, job.opportunityType, router, user]);
 
   useEffect(() => {
     let cancelled = false;

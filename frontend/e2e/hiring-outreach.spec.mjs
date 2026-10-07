@@ -601,14 +601,6 @@ test('review shortlist carries into outreach and queues the selected candidates'
   await page.goto('/review');
   await expect(page.getByText('Review Candidates')).toBeVisible();
 
-  await expect(page.getByText('Preference calibration 1 / 3')).toBeVisible();
-  await expect(page.getByTestId('calibration-select-archetype-startup-builder')).toBeVisible();
-  await page.getByTestId('calibration-select-archetype-startup-builder').click();
-  await expect(page.getByText('Preference calibration 2 / 3')).toBeVisible();
-  await page.getByTestId('calibration-select-archetype-operator').click();
-  await expect(page.getByText('Preference calibration 3 / 3')).toBeVisible();
-  await page.getByTestId('calibration-select-archetype-ai-infra').click();
-
   const selectCurrentBatchCandidate = async () => {
     const candidateId = ['candidate-1', 'candidate-3', 'candidate-5'][selectionStep];
     await page.getByTestId(`batch-select-${candidateId}`).click();

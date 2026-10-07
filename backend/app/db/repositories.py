@@ -562,6 +562,7 @@ class JobRepository:
         company_website_url: str = "",
         industry: str = "",
         employment_type: str = "",
+        opportunity_type: str = "jobs",
         vacancies: int | None = None,
         structured_data: dict | None = None,
     ) -> JobEntity:
@@ -577,6 +578,7 @@ class JobRepository:
             company_website_url=company_website_url.strip() or None,
             industry=industry.strip() or None,
             employment_type=employment_type.strip() or None,
+            opportunity_type=opportunity_type.strip().lower(),
             vacancies=vacancies,
             description=description.strip(),
             responsibilities=list(responsibilities or []),
@@ -1518,6 +1520,7 @@ class CandidateProfileRepository:
             job_id=job_id,
             company_id=job.company_id,
             candidate_id=normalized_candidate_id,
+            opportunity_type=(job.opportunity_type or "jobs").strip().lower(),
         )
         if workflow_token:
             row.workflow_token = _normalize_text(workflow_token)
@@ -1579,6 +1582,7 @@ class CandidateProfileRepository:
                 job_id=job_id,
                 company_id=job.company_id,
                 candidate_id=normalized_candidate_id,
+                opportunity_type=(job.opportunity_type or "jobs").strip().lower(),
             )
             try:
                 with self.db.begin_nested():

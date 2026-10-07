@@ -35,6 +35,7 @@ export type Company = {
 /** Job brief captured in step 2 and used to trigger backend embedding pipeline. */
 export type Job = {
   jobId: string;
+  opportunityType?: "jobs" | "intern";
   title: string;
   employmentType: "full-time" | "part-time" | "contract";
   vacancies: number;
